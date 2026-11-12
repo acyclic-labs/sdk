@@ -73,6 +73,7 @@ const SHARED_VOLUME: &str = "shared";
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub use config::ModelResolver;
 pub use config::{LocalHarnessConfig, WorkspaceMounting};
+pub use open::PreparedLocalHarness;
 
 pub use observer::{Event, Observer};
 pub use tool_output::LiveKind;
@@ -151,6 +152,13 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
+    /// Initializes and pins the saved home before provider credentials bind.
+    /// Starts neither configured MCP children nor agent execution.
+    pub fn prepare(
+        config: LocalHarnessConfig,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<PreparedLocalHarness>> {
+        Box::pin(open::prepare(config))
+    }
     #[cfg(any(test, not(target_arch = "wasm32")))]
     fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
         self.agent.as_ref().ok_or_else(|| {

@@ -80,6 +80,8 @@ pub struct LocalHarnessConfig {
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
+    /// Original fold input, retained when home settings select another model.
+    pub(super) model_base: Option<String>,
     /// Resolves the model selection, approver models and search at open.
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) models: Option<(Arc<ModelResolver>, Option<String>)>,
@@ -177,7 +179,7 @@ impl LocalHarnessConfig {
     /// The one resolution of a [`Self::resolving`] composition under its native `settings`;
     /// `injected` settings keep search off the environment's native sources.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    pub(super) fn resolve(
+    pub(super) async fn resolve(
         mut self,
         settings: Option<&crate::native_settings::SettingsConfig>,
         injected: bool,
@@ -205,7 +207,7 @@ impl LocalHarnessConfig {
         let role = crate::templates::root()?.model;
         let selection = crate::templates::resolve_model(role.as_deref(), Some(&selection))
             .ok_or_else(|| Error::Invalid("root model absent".into()))?;
-        self.model = Some(models.resolve(selection)?);
+        self.model_base = Some(selection.to_owned());
         for model in self.approval_policy.models() {
             self.approval_models
                 .insert(model.into(), models.resolve(model)?);
@@ -229,6 +231,10 @@ impl LocalHarnessConfig {
         #[cfg(target_arch = "wasm32")]
         let _ = injected;
         Ok(self)
+    }
+
+    pub(super) fn has_model(&self) -> bool {
+        self.model.is_some() || self.model_base.is_some()
     }
 
     /// Opens workspace coordination without a model, tools, settings or agent execution.
@@ -258,6 +264,7 @@ impl LocalHarnessConfig {
             signing_store: None,
             test_state: None,
             model,
+            model_base: None,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             models: None,
             tools: Vec::new(),
@@ -626,10 +633,232 @@ mod resolver_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn readiness_requires_selected_capacity_unless_compaction_is_disabled() -> Result<()> {
+        let workspace = tempfile::tempdir().map_err(storage)?;
+        let state_parent = tempfile::tempdir().map_err(storage)?;
+        let state = state_parent.path().join("uncreated-state");
+        let role = crate::templates::root()?.model;
+        let selection =
+            crate::templates::resolve_model(role.as_deref(), None).unwrap_or("fixture/base");
+        let (provider, name) = selection
+            .split_once('/')
+            .ok_or_else(|| Error::Invalid("model requires provider/model".into()))?;
+        let model = Model::new(provider.into(), name.into(), "1".into())?;
+        let unsupported: Arc<dyn ModelProvider> = Arc::new(
+            crate::test_support::ScriptedModelProvider::new(Vec::new()).without_accounting(),
+        );
+        for resolving in [false, true] {
+            for disabled in [false, true] {
+                let mut config = if resolving {
+                    let unsupported = unsupported.clone();
+                    let available = crate::local::tests::text();
+                    let models = Arc::new(ModelResolver::new(selection, move |selection| {
+                        let (provider, name) = selection.split_once('/').ok_or_else(|| {
+                            Error::Invalid("model requires provider/model".into())
+                        })?;
+                        Ok((
+                            Model::new(provider.into(), name.into(), "1".into())?,
+                            if selection == "fixture/no-capacity" {
+                                unsupported.clone()
+                            } else {
+                                available.clone()
+                            },
+                        ))
+                    }));
+                    LocalHarnessConfig::resolving(workspace.path(), models, None).home_file(
+                        "agent.ts",
+                        acyclic_stream::OwnedBytes::from_static(
+                            b"export default base => ({...base, model: 'fixture/no-capacity'});",
+                        ),
+                    )
+                } else {
+                    LocalHarnessConfig::new(workspace.path(), (model.clone(), unsupported.clone()))
+                }
+                .state_directory(&state)
+                .without_user_settings()
+                .without_default_tools()
+                .workspace_mounting(WorkspaceMounting::Physical);
+                if disabled {
+                    config = config.compaction(crate::context::CompactionPolicy::Disabled);
+                }
+                let refusals = LocalHarness::doctor(config).await;
+                if disabled {
+                    assert!(refusals.is_empty(), "{refusals:?}");
+                } else {
+                    assert!(
+                        refusals
+                            .iter()
+                            .any(|error| error.to_string().contains("context capacity")),
+                        "{refusals:?}"
+                    );
+                }
+                assert!(!state.exists(), "readiness created durable state");
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn readiness_checks_the_composed_model_without_creating_state() -> Result<()> {
+        let workspace = tempfile::tempdir().map_err(storage)?;
+        let state_parent = tempfile::tempdir().map_err(storage)?;
+        let state = state_parent.path().join("uncreated-state");
+        let provider = crate::local::tests::text();
+        let models = Arc::new(ModelResolver::new("unknown/default", move |selection| {
+            if selection != "available/ready" {
+                return Err(Error::Unauthorized(format!(
+                    "model unavailable: {selection}"
+                )));
+            }
+            Ok((
+                Model::new("available".into(), "ready".into(), "1".into())?,
+                provider.clone(),
+            ))
+        }));
+        let role = crate::templates::root()?.model;
+        for (base, home, override_model) in [
+            ("unknown/model", None, None),
+            ("missing/credentials", None, None),
+            (
+                "missing/credentials",
+                Some(b"export default base => ({...base, model: 'available/ready'});".as_slice()),
+                Some("available/ready"),
+            ),
+            (
+                "available/ready",
+                Some(b"export default base => ({...base, model: 'missing/selected'});".as_slice()),
+                Some("missing/selected"),
+            ),
+        ] {
+            let selection = override_model.unwrap_or_else(|| {
+                crate::templates::resolve_model(role.as_deref(), Some(base)).unwrap_or(base)
+            });
+            let expected = (selection != "available/ready").then_some(selection);
+            let mut config =
+                LocalHarnessConfig::resolving(workspace.path(), models.clone(), Some(base.into()))
+                    .state_directory(&state)
+                    .without_user_settings()
+                    .without_default_tools()
+                    .workspace_mounting(WorkspaceMounting::Physical);
+            if let Some(home) = home {
+                config =
+                    config.home_file("agent.ts", acyclic_stream::OwnedBytes::from_static(home));
+            }
+            let refusals = LocalHarness::doctor(config).await;
+            if let Some(selection) = expected {
+                assert!(
+                    refusals
+                        .iter()
+                        .any(|error| error.to_string().contains(selection)),
+                    "{refusals:?}"
+                );
+            } else {
+                assert!(refusals.is_empty(), "{refusals:?}");
+            }
+            assert!(!state.exists(), "readiness created durable state");
+        }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn saved_home_selects_credentials_and_ignores_replacement_initializers() -> Result<()> {
+        let workspace = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let resolved = Arc::new(AtomicUsize::new(0));
+        let calls = resolved.clone();
+        let provider = crate::local::tests::text();
+        let models = Arc::new(ModelResolver::new("unavailable/base", move |selection| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            let name = selection.strip_prefix("available/").ok_or_else(|| {
+                Error::Unauthorized("unselected provider has no credentials".into())
+            })?;
+            Ok((
+                Model::new("available".into(), name.into(), "1".into())?,
+                provider.clone(),
+            ))
+        }));
+        let config = |source| {
+            LocalHarnessConfig::resolving(workspace.path(), models.clone(), None)
+                .state_directory(state.path())
+                .home_file("agent.ts", acyclic_stream::OwnedBytes::from_static(source))
+                .without_user_settings()
+                .without_default_tools()
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Disabled)
+        };
+        let prepared = LocalHarness::prepare(config(
+            b"export default base => ({...base, model: 'available/initial'});",
+        ))
+        .await?;
+        assert_eq!(prepared.model_selection(None).await?, "available/initial");
+        assert_eq!(
+            resolved.load(Ordering::Relaxed),
+            0,
+            "preparation bound provider credentials"
+        );
+        let harness = prepared.open().await?;
+        crate::local::tests::settings::write(
+            &harness,
+            "agent.ts",
+            "import { model } from './choice.ts'; export default base => ({...base, model});",
+        )
+        .await?;
+        crate::local::tests::settings::write(
+            &harness,
+            "choice.ts",
+            "export const model = 'available/saved';",
+        )
+        .await?;
+        drop(harness);
+        for ignored in [
+            b"invalid syntax".as_slice(),
+            b"import x from './missing.ts'; export default x;".as_slice(),
+        ] {
+            let prepared = LocalHarness::prepare(config(ignored)).await?;
+            assert_eq!(prepared.model_selection(None).await?, "available/saved");
+            let harness = prepared.open().await?;
+            assert_eq!(harness.agent()?.0.name, "saved");
+        }
+        assert_eq!(resolved.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn home_model_resolves_before_provider_credentials_and_folds_only_once() -> Result<()> {
+        let workspace = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let provider = crate::local::tests::text();
+        let models = Arc::new(ModelResolver::new("unavailable/base", move |selection| {
+            if selection != "available/ready" {
+                return Err(Error::Unauthorized(
+                    "unselected provider has no credentials".into(),
+                ));
+            }
+            Ok((
+                Model::new("available".into(), "ready".into(), "1".into())?,
+                provider.clone(),
+            ))
+        }));
+        let config = LocalHarnessConfig::resolving(workspace.path(), models, None)
+            .state_directory(state.path())
+            .home_file("agent.ts", acyclic_stream::OwnedBytes::from_static(
+                b"export default base => ({...base, model: base.model === 'available/ready' ? 'incorrect/double-fold' : 'available/ready'});"
+            ))
+            .without_user_settings()
+            .without_default_tools()
+            .workspace_mounting(WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Disabled);
+        let harness = LocalHarness::open(config).await?;
+        assert_eq!(harness.agent()?.0.name, "ready");
+        assert_eq!(harness.agent()?.0.provider, "available");
+        Ok(())
+    }
+
     // 1k compositions over one resolver construct each selection's provider
     // once; a changed selection, here a changed settings model, resolves anew.
-    #[test]
-    fn role_model_wins_over_settings_and_session_selection_with_one_provider() -> Result<()> {
+    #[tokio::test]
+    async fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
         let constructed = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&constructed);
         let models = Arc::new(ModelResolver::new("first", move |selection| {
@@ -641,6 +870,12 @@ mod resolver_tests {
                 provider,
             ))
         }));
+        let role = crate::templates::root()?.model;
+        let expected = |selection| {
+            crate::templates::resolve_model(role.as_deref(), Some(selection))
+                .unwrap_or(selection)
+                .to_owned()
+        };
         let workspace = tempfile::tempdir().map_err(storage)?;
         let codex = tempfile::tempdir().map_err(storage)?;
         let settings = || {
@@ -648,16 +883,16 @@ mod resolver_tests {
                 .codex_home(codex.path())
         };
         let selected = |config: LocalHarnessConfig| {
-            config
-                .model
-                .map(|(model, _)| model.name)
-                .ok_or_else(|| Error::Invalid("model unresolved".into()))
+            let selection = config
+                .model_base
+                .ok_or_else(|| Error::Invalid("model unresolved".into()))?;
+            models.resolve(&selection).map(|(model, _)| model.name)
         };
         for _ in 0..1000 {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
             assert_eq!(
-                selected(config.resolve(Some(&settings()), true)?)?,
-                "morph/morph-kimik31"
+                selected(config.resolve(Some(&settings()), true).await?)?,
+                expected("first")
             );
         }
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
@@ -665,8 +900,8 @@ mod resolver_tests {
             .map_err(storage)?;
         let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
         assert_eq!(
-            selected(config.resolve(Some(&settings()), true)?)?,
-            "morph/morph-kimik31"
+            selected(config.resolve(Some(&settings()), true).await?)?,
+            expected("second")
         );
         let explicit = LocalHarnessConfig::resolving(
             workspace.path(),
@@ -674,16 +909,17 @@ mod resolver_tests {
             Some("first".into()),
         );
         assert_eq!(
-            selected(explicit.resolve(Some(&settings()), true)?)?,
-            "morph/morph-kimik31"
+            selected(explicit.resolve(Some(&settings()), true).await?)?,
+            expected("first")
         );
         let defaults = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None)
             .without_user_settings();
         assert_eq!(
-            selected(defaults.resolve(None, true)?)?,
-            "morph/morph-kimik31"
+            selected(defaults.resolve(None, true).await?)?,
+            expected("first")
         );
-        assert_eq!(constructed.load(Ordering::Relaxed), 1);
+        let selections = std::collections::BTreeSet::from([expected("first"), expected("second")]);
+        assert_eq!(constructed.load(Ordering::Relaxed), selections.len());
         Ok(())
     }
 }
@@ -692,30 +928,32 @@ mod resolver_tests {
 mod fixed_role_binding_tests {
     use super::*;
 
-    #[test]
-    fn incompatible_fixed_binding_requires_a_role_resolver_before_opening() -> Result<()> {
-        let provider: Arc<dyn ModelProvider> =
-            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
-        let model = Model::new("other".into(), "fixed".into(), "1".into())?;
-        let config = LocalHarnessConfig::new(".", (model, provider));
-        let error = match config.resolve(None, true) {
-            Err(error) => error,
-            Ok(_) => return Err(Error::Invalid("incompatible binding admitted".into())),
-        };
-        assert!(error.to_string().contains("LocalHarnessConfig::resolving"));
-        Ok(())
-    }
-
-    #[test]
-    fn fixed_binding_for_the_configured_role_remains_supported() -> Result<()> {
-        let provider: Arc<dyn ModelProvider> =
-            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
-        let model = Model::new("morph".into(), "morph-kimik31".into(), "1".into())?;
-        let config = LocalHarnessConfig::new(".", (model.clone(), provider));
-        assert_eq!(
-            config.resolve(None, true)?.model.map(|binding| binding.0),
-            Some(model)
-        );
+    #[tokio::test]
+    async fn fixed_bindings_obey_the_configured_role_selection() -> Result<()> {
+        let role = crate::templates::root()?.model;
+        let selected =
+            crate::templates::resolve_model(role.as_deref(), None).unwrap_or("test/fixed");
+        for selection in [selected.to_owned(), format!("{selected}-different")] {
+            let (provider, name) = selection
+                .split_once('/')
+                .ok_or_else(|| Error::Invalid("role model requires provider/model".into()))?;
+            let model = Model::new(provider.into(), name.into(), "1".into())?;
+            let provider: Arc<dyn ModelProvider> =
+                Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+            let allowed = crate::templates::resolve_model(role.as_deref(), Some(&selection))
+                == Some(selection.as_str());
+            let result = LocalHarnessConfig::new(".", (model.clone(), provider))
+                .resolve(None, true)
+                .await;
+            if allowed {
+                assert_eq!(result?.model.map(|binding| binding.0), Some(model));
+            } else {
+                let error = result
+                    .err()
+                    .ok_or_else(|| Error::Invalid("incompatible binding admitted".into()))?;
+                assert!(error.to_string().contains("LocalHarnessConfig::resolving"));
+            }
+        }
         Ok(())
     }
 }

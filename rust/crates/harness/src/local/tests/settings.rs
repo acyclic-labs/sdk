@@ -809,7 +809,8 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
         let result = super::super::agent_settings::admit(
             &tree,
             harness.root,
-            harness.agent.clone().expect("the configured model"),
+            harness.agent.clone(),
+            None,
             None,
             harness.clock.as_ref(),
         )

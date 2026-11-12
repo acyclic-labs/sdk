@@ -12,7 +12,6 @@ struct Opening {
     /// The agents' defaults, from which their tools and turns are built.
     preset: crate::preset::Preset,
     tools: ToolRegistry,
-    compaction: crate::context::CompactionPolicy,
     /// The configured compaction choice, reselected when `agent.ts` changes
     /// the model.
     compaction_choice: Option<crate::context::CompactionPolicy>,
@@ -42,33 +41,112 @@ struct Storage {
     journal: VolumeRef,
     shared: VolumeRef,
     seed: (VolumeRef, crate::resources::GenerationRef),
+    home_generation: crate::resources::GenerationRef,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     workspace: Option<Arc<workspace::LocalWorkspace>>,
 }
 
 pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
-    let mut opening = Opening::configure(config)?;
+    prepare(config).await?.open().await
+}
+
+/// A pinned local home, prepared before the session model is bound.
+/// Preparing initializes durable state but never starts MCP children or agents.
+pub struct PreparedLocalHarness {
+    opening: Opening,
+    storage: Storage,
+}
+
+impl PreparedLocalHarness {
+    /// Selects the model from the saved home, optionally replacing the startup
+    /// fold's base. Initialization inputs are applied only by their receipt.
+    pub async fn model_selection(&self, base: Option<&str>) -> Result<String> {
+        let opening = &self.opening;
+        let stored = &self.storage;
+        let bound = opening
+            .config
+            .model
+            .as_ref()
+            .map(|(model, _)| format!("{}/{}", model.provider, model.name));
+        let base = base
+            .or(opening.config.model_base.as_deref())
+            .or(bound.as_deref())
+            .ok_or_else(|| Error::Invalid("model selection is absent".into()))?;
+        let verifier = stored.issuer.verifier(&mut None)?;
+        let capabilities = Capabilities::new([
+            stored
+                .scratch
+                .capability(VolumeOperation::Read, &mut None)?,
+            stored.scratch.directory_read_capability("", &mut None)?,
+        ]);
+        let signed = stored.issuer.bootstrap_scope(
+            "settings",
+            &capabilities,
+            Some(stored.owner.agent),
+            &mut None,
+        )?;
+        let volumes = agent_settings::Volumes {
+            files: &stored.files,
+            verifier: &verifier,
+            signed: &signed,
+            home: &stored.scratch,
+            journal: &stored.journal,
+            maximum_bytes: opening.config.limits.file_bytes,
+        };
+        agent_settings::Tree::pinned(&volumes, stored.home_generation.clone())?
+            .model_selection(base)
+            .await
+    }
+
+    /// Binds providers and opens the host over this same pinned home.
+    pub async fn open(self) -> Result<LocalHarness> {
+        let opening = self.opening.activate().await?;
+        opening.finish(self.storage).await
+    }
+}
+
+pub(crate) async fn prepare(config: LocalHarnessConfig) -> Result<PreparedLocalHarness> {
+    let mut opening = Opening::configure(config).await?;
     opening.config = opening.config.prepare_state()?;
     if let Some(refusal) = opening.host_refusals().into_iter().next() {
         return Err(refusal);
     }
-    let opening = opening.activate().await?;
     let storage = opening.storage().await?;
-    opening.finish(storage).await
+    Ok(PreparedLocalHarness { opening, storage })
 }
 
 /// Read-only local prerequisites. Never captures a checkout, opens storage,
 /// creates signing authority or starts configured MCP children.
 pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
     let mut refusals = config.preflight();
-    if let Err(error) = Opening::configure(config) {
+    let checked = async {
+        let opening = Opening::configure(config).await?;
+        let mut model = opening.config.model.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(models), Some(base)) = (&opening.models, &opening.config.model_base) {
+            let selected = crate::config::agent_from_home(&opening.config.home_files, base).await?;
+            let selected = models.resolve(&selected.model)?;
+            selected.0.validate()?;
+            model = Some(selected);
+        }
+        if let Some((model, provider)) = model {
+            crate::context::CompactionPolicy::for_model(
+                opening.compaction_choice,
+                &model,
+                provider.as_ref(),
+            )?;
+        }
+        Ok::<_, Error>(())
+    }
+    .await;
+    if let Err(error) = checked {
         refusals.push(error);
     }
     refusals
 }
 
 impl Opening {
-    fn configure(config: LocalHarnessConfig) -> Result<Self> {
+    async fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let models = config.models.as_ref().map(|(models, _)| Arc::clone(models));
@@ -78,7 +156,7 @@ impl Opening {
             let mut config = config;
             if config.without_user_settings {
                 config.settings = None;
-                (config.resolve(None, true)?, None)
+                (config.resolve(None, true).await?, None)
             } else if config.model.is_none() && config.models.is_none() {
                 (config, None)
             } else {
@@ -88,7 +166,10 @@ impl Opening {
                     config.settings.take(),
                     config.hermetic,
                 )?;
-                (config.resolve(Some(&settings), injected)?, Some(settings))
+                (
+                    config.resolve(Some(&settings), injected).await?,
+                    Some(settings),
+                )
             }
         };
         if config.approval_issuer.is_some() {
@@ -110,7 +191,7 @@ impl Opening {
             }
         }
         let mut config = config;
-        let passive = config.model.is_none();
+        let passive = !config.has_model();
         if passive && (!config.default_tools.is_empty() || !config.tools.is_empty()) {
             return Err(Error::Invalid(
                 "native host coordination cannot register tools".into(),
@@ -121,15 +202,6 @@ impl Opening {
         }
         let preset = config.preset_value();
         let tools = configure_tools(&mut config)?;
-        let compaction = if let Some((model, provider)) = &config.model {
-            crate::context::CompactionPolicy::for_model(
-                config.compaction.clone(),
-                model,
-                provider.as_ref(),
-            )?
-        } else {
-            crate::context::CompactionPolicy::Disabled
-        };
         #[cfg(any(test, not(target_arch = "wasm32")))]
         // Coordination uses the existing checkout. Only our own native shell
         // needs its auxiliary volumes projected before a command can run.
@@ -140,7 +212,6 @@ impl Opening {
             preset,
             tools,
             compaction_choice,
-            compaction,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             models,
             #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -353,6 +424,35 @@ impl Opening {
             workspace.as_ref(),
             self.user_roots(),
         )?;
+        if !self.config.home_files.is_empty() {
+            files
+                .seed_once(
+                    &crate::filesystem::workspace_ref(
+                        scratch.provider().clone(),
+                        &scratch.storage_name(&mut None)?,
+                    )?,
+                    &crate::IdempotencyKey::new("home-v1")?,
+                    || {
+                        Ok(self
+                            .config
+                            .home_files
+                            .iter()
+                            .map(|(path, bytes)| (format!("/{path}"), bytes.clone()))
+                            .collect())
+                    },
+                )
+                .await?;
+        }
+        let home_generation = files
+            .resolve(
+                &crate::filesystem::workspace_ref(
+                    scratch.provider().clone(),
+                    &scratch.storage_name(&mut None)?,
+                )?,
+                None,
+            )
+            .await?
+            .generation;
         Ok(Storage {
             issuer,
             owner,
@@ -364,6 +464,7 @@ impl Opening {
             journal,
             shared,
             seed,
+            home_generation,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace,
         })
@@ -390,7 +491,7 @@ impl Opening {
         // dead previous owner left is dead; owners in this process share it.
         let state = workspace::OwnerState {
             store,
-            processes: if self.config.model.is_none() {
+            processes: if !self.config.has_model() {
                 None
             } else {
                 Some(fence_stale_processes(directory.join("processes")).await?)
@@ -454,6 +555,7 @@ impl Opening {
             journal,
             shared,
             seed,
+            home_generation,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace,
         } = opened;
@@ -527,25 +629,6 @@ impl Opening {
             ..crate::runtime::Bindings::local()
         }
         .build()?;
-        if !self.config.home_files.is_empty() {
-            files
-                .seed_once(
-                    &crate::filesystem::workspace_ref(
-                        scratch.provider().clone(),
-                        &scratch.storage_name(&mut None)?,
-                    )?,
-                    &crate::IdempotencyKey::new("home-v1")?,
-                    || {
-                        Ok(self
-                            .config
-                            .home_files
-                            .iter()
-                            .map(|(path, bytes)| (format!("/{path}"), bytes.clone()))
-                            .collect())
-                    },
-                )
-                .await?;
-        }
         let volumes = agent_settings::Volumes {
             files: &files,
             verifier: &verifier,
@@ -555,7 +638,7 @@ impl Opening {
             maximum_bytes: self.config.limits.file_bytes,
         };
         #[cfg(any(test, not(target_arch = "wasm32")))]
-        let settings_tree = agent_settings::Tree::new(&volumes).await?;
+        let settings_tree = agent_settings::Tree::pinned(&volumes, home_generation.clone())?;
         // `plugins.ts` selects the plugin hooks as the session starts.
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let plugin_set = agent_settings::plugins(
@@ -567,32 +650,39 @@ impl Opening {
         )
         .await?;
         // `agent.ts` selects the model and its sampling as the session starts.
-        let (agent, sampling) = match self.config.model.clone() {
-            Some(started) => {
-                #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-                let settings_tree = agent_settings::Tree::new(&volumes).await?;
-                #[cfg(any(test, not(target_arch = "wasm32")))]
-                let resolver = self
-                    .models
-                    .as_deref()
-                    .map(|models| move |selection: &str| models.resolve(selection));
-                #[cfg(any(test, not(target_arch = "wasm32")))]
-                let resolve = resolver.as_ref().map(|resolve| {
-                    resolve as &(dyn Fn(&str) -> Result<(Model, Arc<dyn ModelProvider>)> + Sync)
-                });
-                #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-                let resolve = None;
-                let settings = agent_settings::admit(
-                    &settings_tree,
-                    owner.agent,
-                    started.clone(),
-                    resolve,
-                    self.config.clock.as_ref(),
-                )
-                .await?;
-                (Some(settings.model), settings.sampling)
-            }
-            None => (None, None),
+        let (agent, sampling) = if self.config.has_model() {
+            let started = self.config.model.clone();
+            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+            let settings_tree = agent_settings::Tree::pinned(&volumes, home_generation.clone())?;
+            #[cfg(any(test, not(target_arch = "wasm32")))]
+            let resolver = self
+                .models
+                .as_deref()
+                .map(|models| move |selection: &str| models.resolve(selection));
+            #[cfg(any(test, not(target_arch = "wasm32")))]
+            let resolve = resolver.as_ref().map(|resolve| {
+                resolve as &(dyn Fn(&str) -> Result<(Model, Arc<dyn ModelProvider>)> + Sync)
+            });
+            #[cfg(not(any(test, not(target_arch = "wasm32"))))]
+            let resolve = None;
+            let settings = agent_settings::admit(
+                &settings_tree,
+                owner.agent,
+                started,
+                resolve,
+                self.config.model_base.as_deref(),
+                self.config.clock.as_ref(),
+            )
+            .await?;
+            settings.model.0.validate()?;
+            crate::context::CompactionPolicy::for_model(
+                self.compaction_choice.clone(),
+                &settings.model.0,
+                settings.model.1.as_ref(),
+            )?;
+            (Some(settings.model), settings.sampling)
+        } else {
+            (None, None)
         };
         Ok(LocalHarness {
             topology: self.config.topology,
@@ -668,7 +758,7 @@ fn scopes(
 ) -> Result<(RuntimeScope, Scope)> {
     let (project, scratch, journal, seed, shared, system) = volumes;
     let mut grants = Vec::new();
-    if opening.config.model.is_some() {
+    if opening.config.has_model() {
         grants.extend([
             "model:generate".to_owned(),
             crate::contract::capability::INTERACTION_ROUTE.to_owned(),
@@ -792,12 +882,12 @@ impl SessionVolumes {
 
 fn configure_tools(config: &mut LocalHarnessConfig) -> Result<ToolRegistry> {
     let mut names = config.default_tools.clone();
-    if config.model.is_some() && !names.iter().any(|name| name == "ask_question") {
+    if config.has_model() && !names.iter().any(|name| name == "ask_question") {
         names.push("ask_question".into());
     }
     let tools = crate::tools::registry(&names, |_| true, std::mem::take(&mut config.tools))?;
     #[cfg(not(target_arch = "wasm32"))]
-    if config.model.is_none() && config.web_tools {
+    if !config.has_model() && config.web_tools {
         return Err(Error::Invalid(
             "native host coordination cannot register web tools".into(),
         ));

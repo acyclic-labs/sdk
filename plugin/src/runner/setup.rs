@@ -6,6 +6,60 @@ use std::io::{IsTerminal as _, Write as _};
 
 type Failure = Box<dyn std::error::Error>;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser as _;
+
+    #[tokio::test]
+    async fn home_selection_checks_credentials_for_the_effective_model() -> Result<(), Failure> {
+        let directory = tempfile::tempdir()?;
+        let workspace = directory.path().join("project");
+        std::fs::create_dir(&workspace)?;
+        let catalog = directory.path().join("catalog.json");
+        std::fs::write(
+            &catalog,
+            serde_json::to_vec(&serde_json::json!({
+                "available": {
+                    "adapter": "responses", "authentication": "optional",
+                    "base_url": "http://127.0.0.1:9",
+                    "models": {"ready": {"capacity": {"context_tokens": 8192, "output_tokens": 1024}}}
+                }
+            }))?,
+        )?;
+        let agent = directory.path().join("agent.ts");
+        std::fs::write(
+            &agent,
+            "import { model } from './choice.ts'; export default base => ({...base, model});",
+        )?;
+        let choice = directory.path().join("choice.ts");
+        std::fs::write(&choice, "export const model = 'available/ready';")?;
+        let args = Args::try_parse_from([
+            "graphcoder".to_owned(),
+            "--default-config".into(),
+            "--workspace".into(),
+            workspace.display().to_string(),
+            "--host-state-directory".into(),
+            directory.path().join("state").display().to_string(),
+            "--workspace-mounting".into(),
+            "physical".into(),
+            "--catalog".into(),
+            catalog.display().to_string(),
+            "--home-file".into(),
+            format!("agent.ts={}", agent.display()),
+            "--home-file".into(),
+            format!("choice.ts={}", choice.display()),
+        ])?;
+        let registry = registry(&args)?;
+        assert!(registry.needs_credentials(registry.default_model())?);
+        let prepared = LocalHarness::prepare(configure(&args, super::registry(&args)?)?).await?;
+        let selected = prepared.model_selection(None).await?;
+        assert_eq!(selected, "available/ready");
+        assert!(!registry.needs_credentials(&selected)?);
+        Ok(())
+    }
+}
+
 fn credentials(args: &Args) -> Result<Credentials, Failure> {
     if args.default_config {
         let configured = args
@@ -55,9 +109,13 @@ fn settings(args: &Args) -> Result<Option<SettingsConfig>, Failure> {
     }))
 }
 
-fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
+fn base_selection(
+    args: &Args,
+    registry: &Registry,
+    model: Option<&str>,
+) -> Result<String, Failure> {
     let role = acyclic_harness::templates::root()?.model;
-    let configured = args.model.clone().or(settings(args)?
+    let configured = model.map(str::to_owned).or(settings(args)?
         .map(|settings| settings.configured_model())
         .transpose()?
         .flatten());
@@ -68,9 +126,33 @@ fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
     )
 }
 
+async fn selection_from(
+    args: &Args,
+    registry: &Registry,
+    model: Option<&str>,
+) -> Result<String, Failure> {
+    let base = base_selection(args, registry, model)?;
+    let home = args
+        .home_file
+        .iter()
+        .map(|(path, source)| {
+            Ok((
+                path.clone(),
+                acyclic_harness::local::read_regular_file(source)?.into(),
+            ))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, Failure>>()?;
+    Ok(acyclic_harness::config::agent_from_home(&home, &base)
+        .await?
+        .model)
+}
+
 const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set MORPH_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
 
-pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Option<Tty>, Failure> {
+pub(super) async fn first_run(
+    args: &mut Args,
+    registry: &mut Registry,
+) -> Result<Option<Tty>, Failure> {
     if args.default_config
         || !onboarding::interactive()
         || args.input_format != InputFormat::Text
@@ -82,7 +164,10 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
     {
         return Ok(None);
     }
-    let selected = selection(args, registry)?;
+    let base = base_selection(args, registry, args.model.as_deref())?;
+    let prepared = LocalHarness::prepare(configure(args, self::registry(args)?)?).await?;
+    let selected = prepared.model_selection(Some(&base)).await?;
+    args.model = Some(base);
     if !registry.needs_credentials(&selected)? {
         return Ok(None);
     }
@@ -121,11 +206,12 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
                 .clone();
             selected
         };
-    let provider = selected
+    let effective = prepared.model_selection(Some(&selected)).await?;
+    let provider = effective
         .split_once('/')
-        .ok_or("model selection requires provider/model")?
+        .ok_or("selected model has no provider")?
         .0;
-    if registry.needs_credentials(&selected)? {
+    if registry.needs_credentials(&effective)? {
         if !Credentials::keychain_available() {
             return Err("OS keychain unavailable; recovery: unlock/start the OS credential service, or configure an environment key or --credentials FILE before starting graphcoder".into());
         }
@@ -137,7 +223,7 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
     // Discard cached missing-source observations after publishing a credential,
     // and admit the exact selection before making it the next launch's default.
     let refreshed = self::registry(args)?;
-    refreshed.resolve(&selected)?;
+    refreshed.resolve(&effective)?;
     if let Some(settings) = settings(args)? {
         settings.set_model(&selected)?;
     }
@@ -151,7 +237,7 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
     let mut refusals = Vec::new();
     let mut notes = Vec::new();
     let registry = doctor_registry(args, &mut refusals)?;
-    let selected = selection(args, &registry);
+    let selected = selection_from(args, &registry, args.model.as_deref()).await;
     let needs_key =
         doctor_provider(&registry, selected.as_deref(), &mut notes, &mut refusals).await;
     doctor_facilities(args, needs_key, headless, &mut notes, &mut refusals);

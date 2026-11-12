@@ -67,6 +67,58 @@ pub async fn admit_policy(source: &[u8], tree: &dyn Tree) -> crate::Result<Polic
 
 /// The agent's settings entry point.
 pub const AGENT: &str = "agent.ts";
+
+/// Select startup agent settings from injected home modules over the seed,
+/// before resolving any provider credentials. Static imports use the same
+/// effective tree and evaluator as the admitted session.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn agent_from_home(
+    home: &std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
+    model: &str,
+) -> crate::Result<AgentConfig> {
+    struct Home<'a>(&'a std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>);
+    impl Tree for Home<'_> {
+        fn read<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> futures::future::BoxFuture<'a, crate::Result<Option<acyclic_stream::OwnedBytes>>>
+        {
+            Box::pin(async move {
+                let seed = || crate::seed::file(path).map(acyclic_stream::OwnedBytes::from_static);
+                Ok(if crate::layers::layered(path) {
+                    match self.0.get(path) {
+                        Some(bytes) if crate::layers::is_off(bytes) => None,
+                        Some(bytes) => Some(bytes.clone()),
+                        None => seed(),
+                    }
+                } else {
+                    seed()
+                })
+            })
+        }
+    }
+    let layers = [
+        crate::layers::Layer {
+            name: "seed",
+            generation: "",
+            bytes: crate::seed::file(AGENT),
+        },
+        crate::layers::Layer {
+            name: "home",
+            generation: "",
+            bytes: home.get(AGENT).map(AsRef::as_ref),
+        },
+    ];
+    let (value, _) = compose(
+        AGENT,
+        &layers,
+        &Home(home),
+        serde_json::json!({"model": model}),
+    )
+    .await?;
+    serde_json::from_value(value)
+        .map_err(|error| crate::Error::Invalid(format!("{AGENT}: {error}")))
+}
 /// The agent's own policy: plain data, intersected by the kernel.
 pub const POLICY: &str = "policy.ts";
 
