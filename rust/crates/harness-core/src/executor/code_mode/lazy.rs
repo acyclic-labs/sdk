@@ -6,22 +6,49 @@ use super::*;
 struct Selection {
     version: u8,
     source: [u8; 32],
-    call: std::result::Result<ToolInvocation, ToolFailureCause>,
+    call: std::result::Result<SelectedCall, ToolFailureCause>,
 }
+
+/// A host-selected canonical capability, separate from the model's spelling.
+#[derive(Serialize, Deserialize, PartialEq, Debug, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SelectedCall {
+    invocation: ToolInvocation,
+    revision: String,
+}
+
+impl SelectedCall {
+    pub(super) fn bind(
+        self,
+        registry: &ToolRegistry,
+        io: Option<&PreparationIo>,
+    ) -> Result<(ToolInvocation, Option<Arc<crate::tool::Tool>>)> {
+        let tool = registry
+            .get_shared(&self.invocation.name, Some(&self.revision), io)?
+            .cloned()
+            .ok_or(Error::Indeterminate(self.invocation.operation_id))?;
+        Ok((self.invocation, Some(tool)))
+    }
+}
+
+#[cfg(test)]
+mod tests;
 
 impl StockExecution<'_> {
     pub(super) async fn lazy_call(
         &self,
         invocation: ToolInvocation,
+        turn: (OperationId, u32),
         source: (&str, &str),
-    ) -> Result<std::result::Result<ToolInvocation, ToolFailureCause>> {
-        let context = self.invocation_context(&invocation)?.ok_or_else(|| {
+    ) -> Result<std::result::Result<SelectedCall, ToolFailureCause>> {
+        let mut context = self.invocation_context(&invocation)?.ok_or_else(|| {
             stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Unsupported,
                 "file programs require an issued task context",
             )
         })?;
+        context.model_turn = turn;
         let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.authored-call.v1");
         if let Some(io) = self.io {
             io.preflight(acyclic_fs::WorkCounters {
@@ -65,7 +92,7 @@ impl StockExecution<'_> {
             }
             return Ok(selection.call);
         }
-        let selected: Result<ToolInvocation> = async {
+        let selected: Result<SelectedCall> = async {
             let tool = self
                 .stock
                 .tools
@@ -80,7 +107,7 @@ impl StockExecution<'_> {
                     work,
                 )
             })??;
-            let mut canonical = tool
+            let canonical = tool
                 .executor
                 .canonical(&invocation, self.native_work())?
                 .ok_or_else(|| {
@@ -89,21 +116,16 @@ impl StockExecution<'_> {
             let capability = tool.executor.capability().ok_or_else(|| {
                 Error::Unsupported("file-authored tools require a canonical capability".into())
             })?;
-            canonical.invocation.name = with_history_io(self.io, |work| {
-                preparation_format(
-                    format_args!(
-                        "{}@{}",
-                        capability.definition.name, capability.definition.revision
-                    ),
-                    work,
-                )
-            })?;
+            let revision = stock_string_copy(&capability.definition.revision, self.io)?;
             if let Some(io) = self.io {
                 for custody in canonical.custody.into_iter().flatten() {
                     io.absorb_native_custody(custody)?;
                 }
             }
-            Ok(canonical.invocation)
+            Ok(SelectedCall {
+                invocation: canonical.invocation,
+                revision,
+            })
         }
         .await;
         let call = match selected {

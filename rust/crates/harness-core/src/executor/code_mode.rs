@@ -522,18 +522,29 @@ impl StockExecution<'_> {
             .module
             .then(|| call.name.value.strip_prefix("acyclic."))
             .flatten();
-        let name = match canonical {
+        let pinned = match canonical {
             Some(name) => match self.stock.tools.capability(name, self.io)? {
-                Some(tool) => with_history_io(self.io, |work| {
-                    preparation_format(
-                        format_args!("{}@{}", tool.definition.name, tool.definition.revision),
-                        work,
-                    )
-                })?,
-                None => stock_string_copy(name, self.io)?,
+                Some(tool) => self
+                    .stock
+                    .tools
+                    .get_shared(
+                        &tool.definition.name,
+                        Some(&tool.definition.revision),
+                        self.io,
+                    )?
+                    .cloned(),
+                None => None,
             },
-            None => stock_string_copy(&call.name.value, self.io)?,
+            None => None,
         };
+        let name = stock_string_copy(
+            pinned
+                .as_ref()
+                .map(|tool| tool.definition.name.as_str())
+                .or(canonical)
+                .unwrap_or(&call.name.value),
+            self.io,
+        )?;
 
         let decoded = self
             .io
@@ -566,7 +577,7 @@ impl StockExecution<'_> {
             arguments,
             self.native_work(),
         )?;
-        let invocation = if !call.module
+        let (invocation, pinned) = if !call.module
             && self.stock.tools.has_lazy_tools()
             && self
                 .stock
@@ -575,14 +586,18 @@ impl StockExecution<'_> {
                 .is_none()
         {
             match self
-                .lazy_call(invocation, (&call.name.value, &call.arguments.value))
+                .lazy_call(
+                    invocation,
+                    (operation, step),
+                    (&call.name.value, &call.arguments.value),
+                )
                 .await?
             {
-                Ok(invocation) => invocation,
+                Ok(selected) => selected.bind(&self.stock.tools, self.io)?,
                 Err(cause) => return Ok(ExecutionProgress::Ready(Err(cause))),
             }
         } else {
-            invocation
+            (invocation, pinned)
         };
         let name = stock_string_copy(&invocation.name, self.io)?;
         // Local call/result messages supply the identical stock metadata contract;
@@ -598,7 +613,7 @@ impl StockExecution<'_> {
             journal,
             operation,
             step,
-            invocation,
+            (invocation, pinned),
             0,
             &mut messages,
             hook_context,
