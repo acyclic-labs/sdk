@@ -9,6 +9,20 @@ use futures::{FutureExt, TryStreamExt};
 use std::io::{Read, Write};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+fn child_executable(harness: &LocalHarness) -> Result<std::path::PathBuf> {
+    let scratch = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .mounts
+        .scratch_root
+        .as_ref()
+        .unwrap();
+    let child = scratch.join(format!("shell-job-child{}", std::env::consts::EXE_SUFFIX));
+    // The command's grant includes scratch, while the host test image is outside it.
+    std::fs::copy(std::env::current_exe().map_err(storage)?, &child).map_err(storage)?;
+    Ok(child)
+}
 #[test]
 fn shell_job_child() {
     if let Ok(address) = std::fs::read_to_string("shell-job.exit") {
@@ -157,10 +171,10 @@ async fn foreground_deadline_retains_capture_and_publication_after_cleanup() -> 
         operation_id: context.operation_id(),
         call_id: "foreground-timeout".into(),
         name: "shell".into(),
-        arguments: serde_json::json!({"command": [std::env::current_exe().map_err(storage)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child", "--nocapture"], "timeout_ms": 30_000}),
+        arguments: serde_json::json!({"command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child", "--nocapture"], "timeout_ms": 30_000}),
     };
-    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(79);
-    schedule.scope(async {
+    let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(79);
+    crate::test_support::run_native_schedule(&schedule, boundaries, async {
         let executor = &harness.harness.target(None)?.executor;
         let mut call = executor.execute(invocation, Some(context));
         let mut gate = tokio::select! {
@@ -229,34 +243,33 @@ async fn background_startup_deadline_bounds_volume_admission() -> Result<()> {
         call_id: "background-admission".into(),
         name: "shell".into(),
         arguments: serde_json::json!({
-            "command": [std::env::current_exe().map_err(storage)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child"],
+            "command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child"],
             "timeout_ms": 20,
             "background": true,
         }),
     };
-    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(83);
-    schedule
-        .scope(async {
-            tokio::time::pause();
-            let executor = &harness.harness.target(None)?.executor;
-            let result = executor.execute(invocation, Some(context)).await;
-            assert!(
-                matches!(
-                    result,
-                    Err(Error::Process(crate::ProcessError::Timeout { .. }))
-                ),
-                "{result:?}"
-            );
-            assert!(
-                StateArc::clone(&physical.state).try_lock_owned().is_err(),
-                "worker did not retain its admitted checkout"
-            );
-            drop(held);
-            let published = terminal(&harness, &output_directory).await?;
-            assert!(published.get("error").is_some(), "{published}");
-            Ok::<_, Error>(())
-        })
-        .await?;
+    let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(83);
+    crate::test_support::run_native_schedule(&schedule, boundaries, async {
+        tokio::time::pause();
+        let executor = &harness.harness.target(None)?.executor;
+        let result = executor.execute(invocation, Some(context)).await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::Process(crate::ProcessError::Timeout { .. }))
+            ),
+            "{result:?}"
+        );
+        assert!(
+            StateArc::clone(&physical.state).try_lock_owned().is_err(),
+            "worker did not retain its admitted checkout"
+        );
+        drop(held);
+        let published = terminal(&harness, &output_directory).await?;
+        assert!(published.get("error").is_some(), "{published}");
+        Ok::<_, Error>(())
+    })
+    .await?;
     harness.disconnect().await
 }
 
@@ -289,7 +302,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         },
     )?);
     let executor = &harness.harness.target(None)?.executor;
-    let child = std::env::current_exe().map_err(storage)?;
+    let child = child_executable(&harness)?;
     let selector = "local::checkout_tools::shell::job::tests::shell_job_child";
     let mut jobs = Vec::new();
     let mut gates = Vec::new();

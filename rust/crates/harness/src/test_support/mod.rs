@@ -251,3 +251,20 @@ pub async fn prompt_settled(
         serde_json::from_slice(&bytes).map_err(|error| crate::Error::Invalid(error.to_string()))?;
     Ok(PromptOutcome::Settled(entry, output))
 }
+
+/// Drives the accepted native boundaries while running a scoped regression.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) async fn run_native_schedule<F: std::future::Future>(
+    schedule: &acyclic_native_runtime::testing::Schedule,
+    mut boundaries: tokio::sync::mpsc::UnboundedReceiver<acyclic_native_runtime::testing::Boundary>,
+    work: F,
+) -> F::Output {
+    let work = schedule.scope(work);
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            result = &mut work => return result,
+            boundary = boundaries.recv() => boundary.expect("native boundary driver closed").release(),
+        }
+    }
+}

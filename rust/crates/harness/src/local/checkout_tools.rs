@@ -849,55 +849,59 @@ mod deadline_tests {
     fn admitted_deadline_releases_observation_but_retains_completion() -> Result<()> {
         use acyclic_native_runtime::testing::{Schedule, seeded_runtime};
         let runtime = seeded_runtime(73).map_err(storage)?;
-        let (schedule, _) = Schedule::seeded(73);
-        runtime.block_on(schedule.scope(async {
-            tokio::time::pause();
-            let state = StateArc::new(AsyncMutex::new(()));
-            let clock = acyclic_stream::SystemUnixMillisClock;
-            for late_success in [false, true] {
-                let preparation = StateArc::new(AsyncMutex::new(()));
-                let owner = lock_owned(StateArc::clone(&preparation)).await;
-                let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let deadline = acyclic_stream::UnixMillisClock::now_unix_millis(&clock) + 20;
-                let (finished, completion) = tokio::sync::oneshot::channel();
-                let worker_state = StateArc::clone(&state);
-                let worker_entered = Arc::clone(&entered);
-                let worker_schedule = schedule.clone();
-                let task = acyclic_native_runtime::TaskSpawner::current().spawn(async move {
-                    let result =
-                        serialized_until(&worker_state, Some(deadline), &clock, async |_| {
-                            worker_entered.store(true, std::sync::atomic::Ordering::SeqCst);
-                            if late_success {
-                                worker_schedule.set_unix_millis(deadline);
-                            } else {
-                                let _preparation = lock_owned(preparation).await;
-                            }
-                            Ok(())
-                        })
-                        .await;
-                    let _ = finished.send(());
-                    result
-                });
-                let result = observe_until(Some(deadline), &clock, async {
-                    task.await.map_err(storage)?
-                })
-                .await;
-                assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
-                assert!(
-                    timed_out(&result),
-                    "admitted call did not time out: {result:?}"
-                );
-                if !late_success {
+        let (schedule, boundaries) = Schedule::seeded(73);
+        runtime.block_on(crate::test_support::run_native_schedule(
+            &schedule,
+            boundaries,
+            async {
+                tokio::time::pause();
+                let state = StateArc::new(AsyncMutex::new(()));
+                let clock = acyclic_stream::SystemUnixMillisClock;
+                for late_success in [false, true] {
+                    let preparation = StateArc::new(AsyncMutex::new(()));
+                    let owner = lock_owned(StateArc::clone(&preparation)).await;
+                    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let deadline = acyclic_stream::UnixMillisClock::now_unix_millis(&clock) + 20;
+                    let (finished, completion) = tokio::sync::oneshot::channel();
+                    let worker_state = StateArc::clone(&state);
+                    let worker_entered = Arc::clone(&entered);
+                    let worker_schedule = schedule.clone();
+                    let task = acyclic_native_runtime::TaskSpawner::current().spawn(async move {
+                        let result =
+                            serialized_until(&worker_state, Some(deadline), &clock, async |_| {
+                                worker_entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                                if late_success {
+                                    worker_schedule.set_unix_millis(deadline);
+                                } else {
+                                    let _preparation = lock_owned(preparation).await;
+                                }
+                                Ok(())
+                            })
+                            .await;
+                        let _ = finished.send(());
+                        result
+                    });
+                    let result = observe_until(Some(deadline), &clock, async {
+                        task.await.map_err(storage)?
+                    })
+                    .await;
+                    assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
                     assert!(
-                        StateArc::clone(&state).try_lock_owned().is_err(),
-                        "timeout dropped the completion owner"
+                        timed_out(&result),
+                        "admitted call did not time out: {result:?}"
                     );
+                    if !late_success {
+                        assert!(
+                            StateArc::clone(&state).try_lock_owned().is_err(),
+                            "timeout dropped the completion owner"
+                        );
+                    }
+                    drop(owner);
+                    completion.await.map_err(storage)?;
+                    assert!(StateArc::clone(&state).try_lock_owned().is_ok());
                 }
-                drop(owner);
-                completion.await.map_err(storage)?;
-                assert!(StateArc::clone(&state).try_lock_owned().is_ok());
-            }
-            Ok(())
-        }))
+                Ok(())
+            },
+        ))
     }
 }
