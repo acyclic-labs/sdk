@@ -835,6 +835,7 @@ mod tests {
             assert!(matches!(
                 connection
                     .execute(&AgentCommand::Prompt {
+                        peer: None,
                         agent,
                         id,
                         body: crate::model::ModelContent::Text("closed".into())

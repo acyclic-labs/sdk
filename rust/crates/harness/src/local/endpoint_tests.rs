@@ -11,6 +11,55 @@ use std::sync::atomic::{AtomicBool, Ordering};
 struct Cut(AtomicBool);
 
 #[tokio::test]
+async fn selected_session_delivers_peer_input_back_to_directory_root() -> Result<()> {
+    use crate::local::agent_conversation::{Conversation, Sent, Settlement};
+    let directory = tempfile::tempdir().map_err(exchange)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical),
+        )
+        .await?,
+    );
+    let connection = harness.connect_sessions().await?;
+    let selected = super::super::sessions::create(&connection, "selected-sender", None).await?;
+    let sender = selected.root().clone();
+    let sending = Conversation::open(selected);
+    let receiving = Conversation::open(connection.clone());
+    let mut events = Observer::open(&connection, 0, 0)?;
+    let prepared = sending
+        .prepare_peer_message(
+            connection.root().clone(),
+            "selected-message",
+            "Please report your status.",
+        )
+        .await?;
+    let Sent::Accepted(inbox) = sending.deliver_peer_message(&prepared).await? else {
+        return Err(Error::Invalid(
+            "selected peer delivery was not accepted".into(),
+        ));
+    };
+    assert!(matches!(
+        receiving
+            .settle("selected-message", inbox, &mut events)
+            .await?,
+        Settlement::Reply(crate::agent::Reply::Answered { .. })
+    ));
+    assert_eq!(
+        sending.deliver_peer_message(&prepared).await?,
+        Sent::Accepted(inbox)
+    );
+    assert!(provider.requests().iter().flat_map(|request| &request.messages)
+        .flat_map(|message| message.content.parts()).any(|part|
+            matches!(part, crate::model::ModelContentPart::Notices { notices }
+                if notices.iter().any(|notice| notice.kind == "peer.message" && notice.source == sender.as_str()))));
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     let directory = tempfile::tempdir().map_err(exchange)?;
     let project = volume(directory.path()).await?;

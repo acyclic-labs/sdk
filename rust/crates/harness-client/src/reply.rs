@@ -186,6 +186,12 @@ pub enum AgentReply {
         /// Original consumed-input fence, with no retained work at or before it.
         settled: bool,
     },
+    /// The two enabled roots at one authority cut, or no peer admission.
+    PeerAdmission {
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        /// Retain these publication guards with the exact message on retry.
+        admission: Option<acyclic_harness_core::agent::PeerAdmission>,
+    },
     /// How far an agent has settled, from one committed actor checkpoint.
     Settlement {
         /// Settled turns: the checkpoint's exclusive conversation tail.
@@ -624,6 +630,7 @@ fn validate_reply(
         (AgentReply::Root { .. }, AgentCommand::Root {})
         | (AgentReply::Bound { .. }, AgentCommand::Bind { .. })
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
+        | (AgentReply::PeerAdmission { .. }, AgentCommand::PreparePeer { .. })
         | (AgentReply::Staged {}, AgentCommand::Stage { .. })
         | (
             AgentReply::Delivered { .. },

@@ -151,6 +151,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         }
 
         let prompt = AgentCommand::Prompt {
+            peer: None,
             agent: root.clone(),
             id: IntentId::try_from("prompt")?,
             body: ModelContent::Text("Call the shared tool, then reply".into()),

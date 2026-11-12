@@ -351,6 +351,7 @@ fn ui_reply_roundtrip_with_unknown_kind_and_approval() -> TestResult {
         }
         .command(agent(1), IntentId::try_from("reply-1")?, &blocks)?;
         let AgentCommand::Prompt {
+            peer: None,
             agent: recipient,
             id,
             body: ModelContent::Text(body),

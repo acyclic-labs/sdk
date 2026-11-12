@@ -446,6 +446,10 @@ where
                 | AgentCommand::SelectSession { .. }
                 | AgentCommand::LatestSession {}
         ) || matches!(command, AgentCommand::MergeSession { agent, .. } if agent.parent().is_none())
+            || matches!(command,
+                AgentCommand::PreparePeer { sender, .. }
+                | AgentCommand::Prompt { peer: Some((sender, _)), .. }
+                if !self.root.contains(sender))
             || command
                 .agent()
                 .is_some_and(|agent| !self.root.contains(agent))
@@ -769,6 +773,23 @@ where
                 };
                 Ok(AgentReply::Root { agent })
             }
+            AgentCommand::PreparePeer { agent, sender } => {
+                let agent = self.within_tree(agent)?;
+                let sender = self.within_tree(sender)?;
+                let state = agents.state(sender).await?;
+                let Some(profile) = state.profile else {
+                    return Ok(AgentReply::PeerAdmission { admission: None });
+                };
+                Ok(AgentReply::PeerAdmission {
+                    admission: crate::agent::session_peer_admission(
+                        &**agents.provider(),
+                        &profile.peers,
+                        sender,
+                        agent,
+                    )
+                    .await?,
+                })
+            }
             AgentCommand::Settlement { agent, wait } => {
                 let agent = self.within_tree(agent)?;
                 if *wait {
@@ -999,7 +1020,45 @@ where
                 };
                 Ok(AgentReply::read(&bytes, length))
             }
-            AgentCommand::Prompt { agent, id, body } => {
+            AgentCommand::Prompt {
+                agent,
+                id,
+                body,
+                peer: Some((source, admission)),
+            } => {
+                let agent = self.within_tree(agent)?;
+                let source = self.within_tree(source)?;
+                let state = agents.state(source).await?;
+                if !state
+                    .profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.peers.contains(crate::agent::SEND_PEER))
+                {
+                    return Err(Error::Record("the sender lacks peer message authority"));
+                }
+                let sender = Sender::Agent {
+                    path: source.clone(),
+                };
+                // Peer text is content, never an invocation of user commands,
+                // project skills, attachment expansion, or approval controls.
+                let body = self.bound.stage_prompt(agent, &sender, id, body).await?;
+                let message = Message {
+                    from: sender,
+                    id: id.clone(),
+                    body: Box::new(body),
+                    re: None,
+                    attachments: None,
+                };
+                Ok(AgentReply::Delivered {
+                    delivery: agents.send_peer(agent, source, &message, admission).await?,
+                })
+            }
+            AgentCommand::Prompt {
+                agent,
+                id,
+                body,
+                peer: None,
+            } => {
                 let agent = self.within_tree(agent)?;
                 let (body, attachments) = if let ModelContent::Text(source) = body {
                     // The message's own identity, as the inbox keys it: its
@@ -1811,6 +1870,7 @@ where
                 | AgentCommand::Approvals { .. }
                 | AgentCommand::Reply { .. }
                 | AgentCommand::Settlement { .. }
+                | AgentCommand::PreparePeer { .. }
                 | AgentCommand::Diff { .. }
                 | AgentCommand::Usage { .. }
                 | AgentCommand::Events { .. }

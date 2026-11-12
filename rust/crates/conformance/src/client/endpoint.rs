@@ -164,6 +164,7 @@ pub async fn verify_with_reply_wait(
         Ok(_) => return Err(failure("tree_admission", "endpoint exposed a foreign tree")),
     }
     let command = AgentCommand::Prompt {
+        peer: None,
         agent: agent.clone(),
         id: scenario.id.clone(),
         body: ModelContent::Text(scenario.prompt.clone()),
@@ -192,6 +193,7 @@ pub async fn verify_with_reply_wait(
         return Err(failure("prompt_retry", "exact retry changed its receipt"));
     }
     let changed = AgentCommand::Prompt {
+        peer: None,
         agent: agent.clone(),
         id: scenario.id.clone(),
         body: ModelContent::Text(format!("{} changed", scenario.prompt)),

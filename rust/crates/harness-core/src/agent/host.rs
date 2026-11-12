@@ -706,6 +706,30 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         self.deliver(to, send(to, from, record)?).await
     }
 
+    /// Publish a prepared external peer message through the ordinary inbox
+    /// writer and activation. The authenticated host supplies `from`; neither
+    /// control inputs nor caller-supplied attribution are accepted here.
+    /// Retain `admission` and the exact message for an uncertain retry.
+    pub async fn send_peer(
+        &self,
+        to: &AgentPath,
+        from: &AgentPath,
+        message: &super::Message,
+        admission: &super::PeerAdmission,
+    ) -> Result<Delivered, Error> {
+        let sender = Sender::Agent { path: from.clone() };
+        if message.from != sender {
+            return Err(Error::Record(
+                "peer sender differs from authenticated session",
+            ));
+        }
+        let conditions = admission.conditions(from, to)?;
+        admission.validate(&*self.provider, from, to).await?;
+        let mut request = send(to, &sender, &InboxRecord::Message(message.clone()))?;
+        request.effects[0].conditions.extend(conditions);
+        self.deliver(to, request).await
+    }
+
     /// Change root peer participation through the authenticated user surface.
     /// This writes no inbox input and grants no session-directory authority.
     pub async fn set_peer_membership(

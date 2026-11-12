@@ -86,6 +86,14 @@ pub enum Sent {
     Unknown,
 }
 
+/// An immutable peer message prepared on an authenticated sender connection.
+/// Keep this value until delivery is acknowledged; rebuilding it after an
+/// uncertain result would select different opt-out guards.
+pub struct PreparedPeerMessage {
+    sender: AgentPath,
+    command: AgentCommand,
+}
+
 /// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
 /// closed conversation, is a refusal; any other failure after the request
 /// left may have committed it.
@@ -117,6 +125,67 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// Prepare a message to a named member root, without writing its inbox.
+    /// This uses the connection's existing user authority and grants no new
+    /// directory, file, control or child access.
+    ///
+    /// # Errors
+    /// Invalid roots, disabled participation, or an authenticated query failure.
+    pub async fn prepare_peer_message(
+        &self,
+        recipient: AgentPath,
+        id: &str,
+        prompt: &str,
+    ) -> Result<PreparedPeerMessage> {
+        let sender = self.agent().clone();
+        if sender.depth() != 0 || recipient.depth() != 0 || sender == recipient {
+            return Err(Error::Invalid(
+                "peer messages require distinct session roots".into(),
+            ));
+        }
+        let admission = match self
+            .connection
+            .execute(&AgentCommand::PreparePeer {
+                sender: sender.clone(),
+                agent: recipient.clone(),
+            })
+            .await?
+        {
+            AgentReply::PeerAdmission {
+                admission: Some(admission),
+            } => admission,
+            AgentReply::PeerAdmission { admission: None } => {
+                return Err(Error::Refused(
+                    "the sessions do not admit peer messages".into(),
+                ));
+            }
+            _ => return Err(unexpected()),
+        };
+        Ok(PreparedPeerMessage {
+            sender: sender.clone(),
+            command: AgentCommand::Prompt {
+                agent: recipient,
+                id: intent(id)?,
+                body: ModelContent::Text(prompt.to_owned()),
+                peer: Some((sender, admission)),
+            },
+        })
+    }
+
+    /// Deliver or retry the exact prepared message through the existing inbox
+    /// path. Accepted messages wake the receiver and remain attributed as peers.
+    ///
+    /// # Errors
+    /// A different sender connection, preparation failure, or malformed reply.
+    pub async fn deliver_peer_message(&self, message: &PreparedPeerMessage) -> Result<Sent> {
+        if message.sender != *self.agent() {
+            return Err(Error::Invalid(
+                "the prepared message belongs to another sender".into(),
+            ));
+        }
+        sent(self.connection.exchange(&message.command).await)
+    }
+
     /// Requests one visible diff page through this connection's authenticated
     /// session. The cursor is returned unchanged to the same query owner; no
     /// local filesystem or frontend-specific access bypasses the server.
@@ -295,6 +364,7 @@ impl Conversation {
             Err(error) => return Ok(Sent::Refused(error.to_string())),
         };
         let command = AgentCommand::Prompt {
+            peer: None,
             agent: self.agent().clone(),
             id: intent,
             body: ModelContent::Text(prompt.to_owned()),

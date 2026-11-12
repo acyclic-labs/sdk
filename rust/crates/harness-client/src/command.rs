@@ -302,8 +302,23 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Prepare both root membership guards at one authority cut. This is a
+    /// query, not delivery; the caller retains its result with the prompt.
+    PreparePeer {
+        /// Selected sending root, admitted under this connection's authority.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        sender: AgentPath,
+        /// Exact recipient of the intended message.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+    },
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
+        /// Selected sending root and prepared admission. The host checks the
+        /// connection's authority over that root. Retain on uncertain retry.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        peer: Option<(AgentPath, acyclic_harness_core::agent::PeerAdmission)>,
         /// Exact recipient; selection changes cannot retarget a prepared command.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
@@ -803,6 +818,7 @@ impl AgentCommand {
             | Self::SetPeerMembership { agent, .. }
             | Self::MergeSession { agent, .. }
             | Self::Prompt { agent, .. }
+            | Self::PreparePeer { agent, .. }
             | Self::Cancel { agent, .. }
             | Self::Compact { agent, .. }
             | Self::Rewind { agent, .. }
@@ -857,6 +873,7 @@ impl AgentCommand {
             Self::ClientFiles { .. } => "client_files",
             Self::PublishClientFiles { .. } => "publish_client_files",
             Self::Prompt { .. } => "prompt",
+            Self::PreparePeer { .. } => "prepare_peer",
             Self::Cancel { .. } => "cancel",
             Self::Compact { .. } => "compact",
             Self::Rewind { .. } => "rewind",
@@ -1123,6 +1140,7 @@ mod tests {
         let sample = "line \"quoted\" \u{1} é 🦀\n";
         let text = sample.repeat(MAX_COMMAND_BYTES / sample.len() + 1);
         let command = AgentCommand::Prompt {
+            peer: None,
             agent: agent.clone(),
             id: IntentId::try_from("prompt-1")?,
             body: ModelContent::Text(text.clone()),

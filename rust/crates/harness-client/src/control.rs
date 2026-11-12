@@ -595,6 +595,7 @@ mod tests {
             "harness/agents/00000000000000000000000000000001".to_owned(),
         )?;
         let command = PreparedCommand::new(&AgentCommand::Prompt {
+            peer: None,
             agent,
             id: IntentId::try_from("prompt-1")?,
             body: ModelContent::Text("x".repeat(2 * crate::MAX_AGENT_COMMAND_BYTES)),

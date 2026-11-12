@@ -117,6 +117,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     };
     let call = AgentCall::decode(invocation)?;
     let AgentCommand::Prompt {
+        peer: None,
         agent: target,
         id,
         body,
