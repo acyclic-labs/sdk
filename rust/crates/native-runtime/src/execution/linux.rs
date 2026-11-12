@@ -981,6 +981,8 @@ const ALLOWED_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_getgid,
     libc::SYS_getegid,
     libc::SYS_getgroups,
+    // Capability inspection is read-only; capability changes remain denied.
+    libc::SYS_capget,
     libc::SYS_getrusage,
     #[cfg(target_arch = "x86_64")]
     libc::SYS_getrlimit,
