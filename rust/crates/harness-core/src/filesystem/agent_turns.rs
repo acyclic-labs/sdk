@@ -288,13 +288,14 @@ impl<'v> AdmittedAgent<'v> {
     }
 
     /// Host authority over this agent's journal and retained conversation files.
-    async fn journal_authority(
-        &self,
-        retained: &[FileRef],
-    ) -> Result<(VolumeRef, AgentAuthority<'v>)> {
+    async fn journal_authority<'f, R>(&self, retained: R) -> Result<(VolumeRef, AgentAuthority<'v>)>
+    where
+        R: IntoIterator<Item = &'f FileRef> + Send,
+        R::IntoIter: Send,
+    {
         let content = Capabilities::new(
             retained
-                .iter()
+                .into_iter()
                 .map(|file| file.read_capability(&mut None))
                 .collect::<Result<Vec<_>>>()?,
         );
@@ -884,8 +885,14 @@ where
         Bindings<A, O>,
         Arc<AgentInternalFiles<A, O>>,
     )> {
-        self.journal(self.admit(agent)?, agent.policy.as_slice(), &[], None, None)
-            .await
+        self.journal(
+            self.admit(agent)?,
+            agent.policy.iter().cloned().collect(),
+            &[],
+            None,
+            None,
+        )
+        .await
     }
 
     /// Opens journal queries through this agent's original journal grant.
@@ -894,7 +901,7 @@ where
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let (journal, _, _) = self
-            .journal(self.admit(agent)?, &[], &[], None, None)
+            .journal(self.admit(agent)?, Vec::new(), &[], None, None)
             .await?;
         Ok(journal)
     }
@@ -1025,7 +1032,7 @@ where
     async fn journal(
         &self,
         admitted: AdmittedAgent<'_>,
-        external: &[FileRef],
+        external: Vec<FileRef>,
         retained: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
         stop: Option<acyclic_actors::guest::CancellationToken>,
@@ -1037,7 +1044,14 @@ where
         let local_root = admitted.parent.is_none();
         let storage = crate::core::until_turn_stopped(
             stop.clone(),
-            self.journal_storage(&admitted, retained),
+            self.journal_storage(
+                &admitted,
+                retained.iter().chain(
+                    external
+                        .iter()
+                        .filter(|file| file.volume().is_agent_journal()),
+                ),
+            ),
         )
         .await?;
         let AgentAuthority {
@@ -1046,7 +1060,12 @@ where
             grants: mut capabilities,
             verifier,
             private,
-        } = crate::core::until_turn_stopped(stop.clone(), admitted.authority(external)).await?;
+        } = crate::core::until_turn_stopped(stop.clone(), admitted.authority(&external)).await?;
+        for file in &external {
+            crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)?;
+        }
+        let selected_inputs =
+            super::content_verifier::SelectedInputs::new(Arc::clone(&storage.reader), external);
         // The turn's reader and writer take no content bound of their own:
         // each caller states its bound, and harness-owned records (manifests,
         // settled outputs, policies) are read at their pinned length, so a
@@ -1057,13 +1076,11 @@ where
             &scope,
             crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
-        )?;
+        )?
+        .with_selected_inputs(Arc::clone(&selected_inputs))?;
         // Open only the committed input envelopes under their original grant.
         // Their validated ordered contents become the selection before deriving
         // the exact-file closure, including files on an ancestor's private volume.
-        for file in external {
-            crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)?;
-        }
         if let Some(context) = context {
             context.expand_inputs(reader.as_ref()).await?;
             let mut inherited = Vec::new();
@@ -1093,7 +1110,8 @@ where
                     &scope,
                     crate::conversation::MAX_EXACT_JS_INTEGER,
                     None,
-                )?;
+                )?
+                .with_selected_inputs(Arc::clone(&selected_inputs))?;
             }
         }
         let writer = FilesystemContentPublisher::new(
@@ -1172,11 +1190,15 @@ where
     /// Retained documents are selected by the conversation, independently of
     /// current workspace roots.
     /// This reader and its journal write grant never enter the tool bindings.
-    async fn journal_storage(
+    async fn journal_storage<'f, R>(
         &self,
         admitted: &AdmittedAgent<'_>,
-        retained: &[FileRef],
-    ) -> Result<JournalStorage<A, O>> {
+        retained: R,
+    ) -> Result<JournalStorage<A, O>>
+    where
+        R: IntoIterator<Item = &'f FileRef> + Send,
+        R::IntoIter: Send,
+    {
         let (volume, authority) = admitted.journal_authority(retained).await?;
         let AgentAuthority {
             scope, verifier, ..
@@ -2129,7 +2151,7 @@ where
                 let (journal, bindings, files) = self
                     .journal(
                         admitted,
-                        &external,
+                        external,
                         &retained,
                         Some(&mut context),
                         Some(stop.clone()),

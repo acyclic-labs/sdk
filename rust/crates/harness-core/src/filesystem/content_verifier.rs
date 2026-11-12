@@ -1,11 +1,14 @@
 use super::*;
 use crate::conversation::{PrivateDirectoryEntry, PrivateDirectoryEntryKind};
+mod selected;
+pub(super) use selected::SelectedInputs;
 
 /// Filesystem-backed admission barrier for version-pinned conversation content.
 pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
     pub(in crate::filesystem) exact_file: Option<FileRef>,
+    selected_inputs: Option<Arc<SelectedInputs<A, O>>>,
     pub(in crate::filesystem) maximum_bytes: u64,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_metadata: Option<Arc<acyclic_fs::NativeAllocation>>,
@@ -78,6 +81,7 @@ impl<A, O> FilesystemContentVerifier<A, O> {
                 host,
                 authority: Arc::new(authority),
                 exact_file: None,
+                selected_inputs: None,
                 maximum_bytes,
                 #[cfg(not(target_arch = "wasm32"))]
                 _native_metadata,
@@ -153,6 +157,11 @@ where
                 &owned
             };
             crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
+            if let Some(owner) = self.selected_input(reference, ceiling, io)? {
+                let bytes = owner.read_range(reference, range, None, io)?.await?;
+                crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
+                return Ok(bytes);
+            }
             let bytes = self
                 .host
                 .read_selection_with_access(
@@ -212,6 +221,13 @@ where
             };
             self.verify_exact_file(Some(reference), Some(io))?;
             self.authority.recheck(&mut Some(&mut io.history_io()))?;
+            if let Some(owner) = self.selected_input(reference, None, Some(io))? {
+                owner
+                    .verify_publication(reference, maximum_bytes, Some(io))?
+                    .await?;
+                self.authority.recheck(&mut Some(&mut io.history_io()))?;
+                return Ok(());
+            }
             self.host
                 .read_selection_with_access(
                     self.authority.scope(),
@@ -729,6 +745,13 @@ where
             &unmeasured
         };
         crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
+        if let Some(owner) = self.selected_input(reference, ceiling, io)? {
+            let bytes = owner
+                .read(reference, maximum_bytes.min(self.maximum_bytes), None, io)?
+                .await?;
+            crate::executor::with_history_io(io, |work| self.authority.recheck(work))?;
+            return Ok(bytes);
+        }
         let bytes = self
             .host
             .read_file_with_access(

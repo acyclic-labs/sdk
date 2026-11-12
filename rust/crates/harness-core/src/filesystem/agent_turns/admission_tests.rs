@@ -316,6 +316,92 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .expect_err("guest read host data through the persisted policy");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
+        let selected = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/selected.txt",
+                b"selected input",
+                "text/plain",
+                "selected.txt",
+                4096,
+                &crate::IdempotencyKey::new("selected-input")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let original_owner = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &control_scope,
+            4096,
+            None,
+        )?;
+        let selected_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &guest.scope,
+            4096,
+            None,
+        )?
+        .with_selected_inputs(super::super::content_verifier::SelectedInputs::new(
+            original_owner,
+            vec![selected.clone()],
+        ))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let original_io = crate::filesystem::PreparationIo::from_native_work(&native)?;
+        let empty = Capabilities::default();
+        for io in [
+            None,
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(&original_io),
+        ] {
+            assert_eq!(
+                selected_reader
+                    .read(&selected, 4096, None, io)?
+                    .await?
+                    .as_ref(),
+                b"selected input"
+            );
+            assert_eq!(
+                selected_reader
+                    .read_range(
+                        &selected,
+                        acyclic_fs::ByteRange {
+                            offset: 0,
+                            length: 8
+                        },
+                        None,
+                        io
+                    )?
+                    .await?
+                    .as_ref(),
+                b"selected"
+            );
+            selected_reader
+                .verify_publication(&selected, 4096, io)?
+                .await?;
+            for (candidate, ceiling) in [
+                (&control, None),
+                (&control, Some(parent.capabilities())),
+                (&selected, Some(&empty)),
+            ] {
+                let denied = async { selected_reader.read(candidate, 4096, ceiling, io)?.await }
+                    .await
+                    .expect_err("selection or caller ceiling was widened");
+                assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            }
+            let denied = async { reader.read(&selected, 4096, None, io)?.await }
+                .await
+                .expect_err("selected input became publicly readable");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
         let guest_write = ContentGrant::verify(
             &guest.verifier,
             &guest.scope,
