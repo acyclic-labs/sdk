@@ -97,7 +97,7 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                         Limits {
                             file_bytes: 4096,
                             render_bytes: Some(render_bytes),
-                            attachments: 1,
+                            attachments: std::num::NonZeroUsize::new(1),
                             ..Limits::default()
                         },
                     )?,
@@ -268,7 +268,7 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                 &projection,
                 Limits {
                     render_bytes: Some(credit),
-                    attachments: 1,
+                    attachments: std::num::NonZeroUsize::new(1),
                     ..Limits::default()
                 },
                 None,
@@ -300,7 +300,7 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                         &page,
                         Limits {
                             render_bytes: Some(credit),
-                            attachments: 1,
+                            attachments: std::num::NonZeroUsize::new(1),
                             ..Limits::default()
                         },
                         None,
