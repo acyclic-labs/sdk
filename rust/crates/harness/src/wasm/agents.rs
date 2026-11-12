@@ -725,7 +725,7 @@ impl WasmAgents {
             .tail(path.closed().map_err(agent_error)?)
             .await
         {
-            Err(StreamError::NotFound) => {}
+            Err(error) if error.category() == StreamError::NotFound => {}
             Ok(_) => return to_js(&WasmDelivered::Closed),
             Err(error) => return Err(stream_error(error)),
         }
@@ -816,7 +816,7 @@ impl WasmAgents {
             .await
         {
             Ok(page) => page,
-            Err(StreamError::NotFound) => {
+            Err(error) if error.category() == StreamError::NotFound => {
                 return to_js(&WasmAgentPage {
                     agents: Vec::new(),
                     version: Vec::new(),
@@ -864,7 +864,7 @@ impl WasmAgents {
                 .try_collect::<Vec<_>>()
                 .await
                 .map_err(stream_error)?,
-            Err(StreamError::NotFound) => Vec::new(),
+            Err(error) if error.category() == StreamError::NotFound => Vec::new(),
             Err(error) => return Err(stream_error(error)),
         };
         let records = records

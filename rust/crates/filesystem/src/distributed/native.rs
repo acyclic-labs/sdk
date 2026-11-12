@@ -145,7 +145,9 @@ impl<'a> AuthorityWork<'a> {
         let (value, allocation) = result
             .map_err(|error| self.native_io_failure(error))?
             .map_err(|error| match error {
-                acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
+                error if error.category() == acyclic_stream::StreamError::NotFound => {
+                    AuthorityStoreError::Missing
+                }
                 error => AuthorityStoreError::from(error),
             })?
             .into_parts();

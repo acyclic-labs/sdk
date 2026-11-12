@@ -279,8 +279,30 @@ impl World {
                             Outcome::Capacity => StreamError::Capacity,
                             _ => StreamError::Unavailable,
                         };
-                        if self.settles(&Error::Stream(error)) {
-                            return Err("replaced an uncertain or backpressured publication".into());
+                        let (code, canonical) = match outcome {
+                            Outcome::Capacity => (8, "stream capacity exhausted"),
+                            _ => (14, "stream unavailable"),
+                        };
+                        let retained = acyclic_auth::refusal::Refusal::capture(
+                            code,
+                            "temporary member pressure",
+                            b"retained diagnostics",
+                            &Default::default(),
+                            acyclic_auth::refusal::Canonical {
+                                code,
+                                message: canonical,
+                                details: b"",
+                                owned: &[],
+                            },
+                            None,
+                        )
+                        .ok_or("decorated publication refusal lost its original status")?;
+                        for error in [error, StreamError::Refused(retained)] {
+                            if self.settles(&Error::Stream(error)) {
+                                return Err(
+                                    "replaced an uncertain or backpressured publication".into()
+                                );
+                            }
                         }
                         self.actors[id].settled = start;
                         return Ok(());

@@ -1,0 +1,30 @@
+diff --git a/rust/crates/harness-core/src/agent/machine.rs b/rust/crates/harness-core/src/agent/machine.rs
+index d0bce45688d..9950433c64b 100644
+--- a/rust/crates/harness-core/src/agent/machine.rs
++++ b/rust/crates/harness-core/src/agent/machine.rs
+@@ -1279,7 +1279,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
+ }
+ 
+ /// Whether a driver's effect fits the record that carries it.
+-fn admissible(out: &Out, path: &AgentPath) -> bool {
++fn admissible(out: &Out, _path: &AgentPath) -> bool {
+     match out {
+         Out::Steered(_) | Out::PendingSpawns(_) | Out::PeerGuard { .. } => true,
+         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
+@@ -1291,15 +1291,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
+                     | InboxRecord::WorkspaceChanged(_)
+             ) && record.encode_for(to).is_ok()
+         }
+-        Out::Archive { id, .. } => {
+-            let by = super::Sender::Agent { path: path.clone() };
+-            super::AgentRecord::encode(&InboxRecord::Archive(super::Control {
+-                by: by.clone(),
+-                id: id.clone(),
+-            }))
+-            .is_ok()
+-                && super::AgentRecord::encode(&super::Closed { by, id: id.clone() }).is_ok()
+-        }
++        Out::Archive { .. } => true,
+         Out::Checkpoint | Out::Roster(_) | Out::Notices(_) | Out::GoalCompleted { .. } => true,
+         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
+     }

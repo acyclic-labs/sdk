@@ -84,7 +84,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
             ],
             vec![CommitMutation::Append {
                 path: to.inbox()?,
-                records: vec![record.encode()?.into()],
+                records: vec![record.encode_for(to)?.into()],
             }],
         )],
         idempotency_key: intent_key(kind, &[to.as_str(), &sender_text(sender), &intent])?,
@@ -97,7 +97,8 @@ pub async fn inbox_tail<P: crate::store::JournalProvider + ?Sized>(
     agent: &AgentPath,
 ) -> Result<u64, Error> {
     match provider.tail(agent.inbox()?).await {
-        Ok(0) | Err(StreamError::NotFound) => Err(Error::NoSuchAgent),
+        Ok(0) => Err(Error::NoSuchAgent),
+        Err(error) if error.category() == StreamError::NotFound => Err(Error::NoSuchAgent),
         Ok(tail) => Ok(tail),
         Err(error) => Err(Error::Stream(error)),
     }

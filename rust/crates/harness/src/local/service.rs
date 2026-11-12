@@ -528,13 +528,20 @@ mod tests {
                     verifier,
                     signed.copy(&mut None)?,
                 );
-                let mounts = workspace
-                    .bound_mounts(binding.volume()?, &state.volumes, &authority)
-                    .await?;
                 let view = workspace.spawned_project_view(binding.volume()?).await?;
+                let bound = workspace
+                    .bound_task_view(
+                        view,
+                        binding.volume()?,
+                        &state.volumes,
+                        &super::super::workspace::owner::AgentOwner(root.clone()),
+                        &authority,
+                    )
+                    .await?;
+                let mounts = &bound.mounts;
                 super::super::checkout_tools::access::require_mount_access(
-                    view.workspace(),
-                    &mounts,
+                    bound.view().workspace(),
+                    mounts,
                     &signed,
                     signed.capabilities(),
                     "session shell",

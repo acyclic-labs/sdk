@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/tool/files/read.rs b/rust/crates/harness-core/src/tool/files/read.rs
+index 0f1c7ab04fd..6bf886046ba 100644
+--- a/rust/crates/harness-core/src/tool/files/read.rs
++++ b/rust/crates/harness-core/src/tool/files/read.rs
+@@ -39,7 +39,7 @@ impl FileTool {
+                 };
+             }
+             if let Some(FileReadSource::Content(file)) = &source.source {
+-                context.authorize_tool_file_read(&input.0.path, file, io)?;
++                let _ = file;
+             }
+         }
+         if let Some(original) = &source.source {

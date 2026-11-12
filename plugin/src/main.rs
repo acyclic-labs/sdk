@@ -35,7 +35,14 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run(args: Vec<String>) -> Result<()> {
+fn run(arguments: Vec<String>) -> Result<()> {
+    let (selected, args) = match arguments.as_slice() {
+        [flag, task, rest @ ..] if flag == "--task" && !rest.is_empty() => (Some(task), rest),
+        [flag, ..] if flag == "--task" => {
+            return Err("step=admit native command: --task requires ID COMMAND; recovery: run acyclic --help".into());
+        }
+        _ => (None, arguments.as_slice()),
+    };
     let Some(command) = args.first().cloned() else {
         return help();
     };
@@ -44,23 +51,16 @@ fn run(args: Vec<String>) -> Result<()> {
             .enable_all()
             .build()?
             .block_on(acyclic_plugin_identity::run(
-                &args,
+                args,
                 Some(acyclic_plugin_identity::interrupt_context()),
             ))?;
         return Ok(());
     }
-    if internal(&args)? {
+    if internal(args)? {
         return Ok(());
     }
-    let (selected, arguments) = match args.as_slice() {
-        [flag, task, rest @ ..] if flag == "--task" && !rest.is_empty() => (Some(task), rest),
-        [flag, ..] if flag == "--task" => {
-            return Err("step=admit native command: --task requires ID COMMAND; recovery: run acyclic --help".into());
-        }
-        _ => (None, args.as_slice()),
-    };
     let mut directory = None;
-    let action = acyclic_plugin::input::workspace_action(arguments, || {
+    let action = acyclic_plugin::input::workspace_action(args, || {
         if let Some(task) = selected {
             return parse_task(task);
         }
@@ -99,6 +99,13 @@ fn internal(args: &[String]) -> Result<bool> {
     match args.first().map(String::as_str).unwrap_or_default() {
         "--help" | "-h" => {
             help()?;
+        }
+        "fs" if matches!(args, [_, option] if matches!(option.as_str(), "--help" | "-h" | "help")) =>
+        {
+            let fs = acyclic_harness::tools::catalog()
+                .find(|tool| tool.name == "fs")
+                .ok_or("step=read filesystem help: fs descriptor absent; recovery: reinstall the complete Acyclic package")?;
+            println!("Usage: acyclic fs COMMAND...\n{}", fs.description);
         }
         "--version" | "-V" => {
             println!("acyclic {}", env!("CARGO_PKG_VERSION"));

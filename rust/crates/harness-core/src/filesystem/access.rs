@@ -205,9 +205,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let workspace_ref =
             bounded_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
-        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
-        let workspace_ref = (workspace_ref, workspace_hold);
-        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
+        let workspace = self.open(&workspace_ref, Some(io)).await?;
         let generation = bounded_io::generation_version(reference.version(), Some(io))?;
         let selected = self.select_generation(&workspace, generation, io).await?;
         let compiled = crate::filesystem::access::access_view(

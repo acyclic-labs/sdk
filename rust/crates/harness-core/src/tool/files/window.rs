@@ -5,7 +5,7 @@ pub(super) struct Window {
     pub source: FileReadSource,
     pub bytes: acyclic_stream::OwnedBytes,
     // The source must be dropped before the credit that owns it.
-    _hold: acyclic_fs::NativeCustody,
+    _hold: crate::conversation::FileSelectionCustody,
 }
 
 pub(super) fn custody(
@@ -22,6 +22,14 @@ pub(super) fn custody(
 }
 
 impl Window {
+    /// Transfers the original selection owner while retiring its range bytes.
+    pub fn into_source(self) -> super::source::ReadSource {
+        super::source::ReadSource {
+            source: Some(self.source.into()),
+            custody: self._hold,
+        }
+    }
+
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,
@@ -50,7 +58,7 @@ impl Window {
             super::version::SelectedVersion::Content(_) => None,
         });
         let hold;
-        let (source, bytes, retained) = context
+        let (source, bytes, custody) = context
             .read_tool_path_range(
                 &input.path,
                 expected.map(|file| &file.generation),
@@ -58,7 +66,7 @@ impl Window {
                 io,
             )
             .await?;
-        hold = custody(io, retained)?;
+        hold = custody;
         if expected.is_some_and(|expected| !expected.matches_source(&source)) {
             return Err(executor::rejection(
                 work,
@@ -88,10 +96,10 @@ impl Window {
             }
             FileReadSource::Authored(original) => {
                 let _hold;
-                let (selected, bytes, retained) = context
+                let (selected, bytes, custody) = context
                     .read_tool_path_range(path, Some(&original.generation), range, io)
                     .await?;
-                _hold = custody(io, retained)?;
+                _hold = custody;
                 if selected != *original {
                     return Err(executor::rejection(
                         work,

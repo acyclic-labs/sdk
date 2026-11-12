@@ -112,7 +112,7 @@ pub(super) async fn apply(
         Event::Control { control }
             if session.control == Control::Archive && control != Control::Archive =>
         {
-            return Ok(reject(session, id, "native session is archived"));
+            return Ok(reject(session, id, ARCHIVED));
         }
         Event::Control { control } => {
             session.control = control;
