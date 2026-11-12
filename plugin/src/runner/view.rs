@@ -1721,10 +1721,6 @@ async fn run_current(
                                 view.cancelling = true;
                                 conversation.cancel().await?;
                             }
-                            InputEffect::Interrupt if queries.source().is_some() => {
-                                queries.close(query_future.as_mut());
-                                overlay_top = 0;
-                            }
                             InputEffect::Host(Action::Escape) if overlay.is_some() || queries.source().is_some() => {
                                 match ui.select(&conversation, None).await {
                                     Ok(()) => {
@@ -1743,6 +1739,9 @@ async fn run_current(
                                 if view.busy() {
                                     view.cancelling = true;
                                     conversation.cancel().await?;
+                                } else if matches!(effect, InputEffect::Interrupt) {
+                                    queries.close(query_future.as_mut());
+                                    overlay_top = 0;
                                 }
                             }
                             InputEffect::Quit if matches!(view.prompt, Some(Prompt::StopOrDetach)) => return view.exit().map(|()| Next::Exit),

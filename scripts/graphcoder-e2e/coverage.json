@@ -120,6 +120,7 @@
         "pty-diff-large-restoration",
         "pty-diff-limit",
         "session-detach-reattach-running",
+        "session-attached-cancel-query",
         "session-approval-reattach",
         "session-two-terminals",
         "session-remote-attach",

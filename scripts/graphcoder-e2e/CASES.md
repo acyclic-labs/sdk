@@ -1,5 +1,9 @@
 Cases launch the shipping GraphCoder binary with an ordinary provider catalog and isolated settings. Build GraphCoder and harness-mock-model and install scripts/graphcoder-pty dependencies before timing. Run `node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [CASE ...]`.
 
+`session-attached-cancel-query` keeps one root running across detach/reattach,
+opens History, then requires Ctrl-C to cancel that root without closing the
+panel first. Its idle-query control closes History without cancelling a turn.
+
 A workspace file may use `{ "source": "capture.mjs" }` to seed an asset from
 this support directory. Programs executed by confined tools belong in the
 workspace fixture; the controller's checkout grants no implicit read authority.
