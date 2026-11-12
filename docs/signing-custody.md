@@ -41,7 +41,8 @@ through their existing resource ownership anchor. Shipping-binary fixtures
 explicitly select private-file custody under their own scratch directory.
 
 The agent journal's persisted policy permits read-only consumption of published
-top-level `inputs/` files, pinned `inputs/skills/*/SKILL.md` bodies, conversation
+top-level `inputs/` files, published `inputs/mentions/` manifests and copies,
+pinned `inputs/skills/*/SKILL.md` bodies, conversation
 documents and tool results. Private epoch manifests remain under host custody,
 including for broad journal readers holding their file reference. Reading an input still
 requires its original file grant and the caller's ceiling; an exact reference
