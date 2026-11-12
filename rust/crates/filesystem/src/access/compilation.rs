@@ -1,12 +1,5 @@
 use super::InvalidPolicy;
 
-pub(super) const MAXIMUM_NFA_STATES: usize = 32_768;
-pub(super) const MAXIMUM_STATES: usize = 4_096;
-pub(super) const MAXIMUM_TRANSITIONS: usize = 262_144;
-pub(super) const MAXIMUM_STATE_MEMBERS: usize = 262_144;
-pub(super) const MAXIMUM_TEXT_BYTES: usize = 1_048_576;
-pub(super) const MAXIMUM_WORK: usize = 4_194_304;
-
 pub(super) fn spend(remaining: &mut usize, amount: usize) -> Result<(), InvalidPolicy> {
     *remaining = remaining
         .checked_sub(amount)
@@ -75,8 +68,7 @@ pub(super) fn preparation(
         product(patterns, 2)?,
         product(records, 4)?,
         product(questions, super::glob::folded_question_states())?,
-    ])?
-    .min(MAXIMUM_NFA_STATES);
+    ])?;
     // Per-byte NFA nodes/edges, folding scratch and component vectors; fixed
     // per-record credit covers B-tree nodes, starts, rule/grant maps and ids.
     let bytes = sum([
@@ -95,27 +87,31 @@ pub(super) fn preparation(
     Ok((bytes, work))
 }
 
-pub(super) fn determinization(
+/// Admit closure scratch and the direct Unicode table once. The scalar domain
+/// has 4,352 blocks; this is a representation size, independent of policy size.
+pub(super) fn determinization_scratch(
     nodes: usize,
     symbols: usize,
-    state_bytes: usize,
-    maximum_states: usize,
 ) -> Result<usize, InvalidPolicy> {
-    let states = 1_usize
-        .checked_shl(u32::try_from(nodes).unwrap_or(u32::MAX))
-        .unwrap_or(MAXIMUM_STATES)
-        .min(maximum_states);
-    let members = product(states, nodes)?.min(MAXIMUM_STATE_MEMBERS);
-    let transitions = product(states, sum([symbols, 1])?)?.min(MAXIMUM_TRANSITIONS);
-    // Subset keys and vectors, their growth and current NFA closure scratch;
-    // state/transition vectors; map nodes; the direct Unicode alphabet table.
     sum([
-        product(members, 4 * size_of::<usize>())?,
         product(nodes, product(8, size_of::<usize>())?)?,
-        product(states, sum([product(state_bytes, 2)?, 256])?)?,
-        product(transitions, 2 * size_of::<usize>())?,
-        product(sum([symbols.min(4352), 1])?, 1024)?,
+        product(sum([symbols.min(4352), 1])?, 2048)?,
         4352 * size_of::<u16>(),
         4096,
+    ])
+}
+
+/// Each discovered subset pays before its vectors/map entries are allocated.
+/// This includes vector growth, the lookup key, terminal state and match list.
+pub(super) fn state_storage(
+    members: usize,
+    symbols: usize,
+    state_bytes: usize,
+) -> Result<usize, InvalidPolicy> {
+    sum([
+        product(members, 4 * size_of::<usize>())?,
+        product(state_bytes, 2)?,
+        product(sum([symbols, 1])?, 2 * size_of::<usize>())?,
+        256,
     ])
 }

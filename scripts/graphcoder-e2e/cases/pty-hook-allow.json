@@ -58,7 +58,7 @@
               "Merged into checkout:"
             ]
           },
-          "send": "\u0004"
+          "detach": true
         }
       ]
     }

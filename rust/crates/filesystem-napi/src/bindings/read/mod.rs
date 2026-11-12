@@ -6,7 +6,7 @@ pub struct NativeLookup {
     pub exists: bool,
     pub file_id: Option<Buffer>,
     pub file_kind: Option<FileKind>,
-    pub resolved_components: u32,
+    pub resolved_components: BigInt,
     pub work_json: String,
 }
 
@@ -16,7 +16,7 @@ pub struct NativeBatchLookupEntry {
     pub exists: bool,
     pub file_id: Option<Buffer>,
     pub file_kind: Option<FileKind>,
-    pub resolved_components: u32,
+    pub resolved_components: BigInt,
 }
 
 /// One bounded shared-frontier path lookup receipt.
@@ -46,20 +46,15 @@ impl NativeCheckout {
             exists: record.is_some(),
             file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
             file_kind: record.map(|value| value.kind),
-            resolved_components: u32::from(receipt.value.resolved_components),
+            resolved_components: BigInt::from(receipt.value.resolved_components),
             work_json: work_json(&receipt.work)?,
         })
     }
 
     #[napi]
     pub async fn lookup_batch_no_follow(&self, paths: Vec<String>) -> Result<NativeBatchLookup> {
-        let maximum =
-            usize::try_from(self.config.limits.maximum_paths_per_batch).unwrap_or(usize::MAX);
-        if paths.is_empty() || paths.len() > maximum || paths.capacity() > maximum {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "lookup path batch is empty or excessive",
-            ));
+        if paths.is_empty() {
+            return Err(Error::new(Status::InvalidArg, "lookup path batch is empty"));
         }
         let paths = paths
             .iter()
@@ -77,7 +72,7 @@ impl NativeCheckout {
                     exists: record.is_some(),
                     file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
                     file_kind: record.map(|value| value.kind),
-                    resolved_components: u32::from(entry.resolved_components),
+                    resolved_components: BigInt::from(entry.resolved_components),
                 }
             })
             .collect();
@@ -125,14 +120,7 @@ impl NativeCheckout {
         env: &'env Env,
         paths: Array<'env>,
     ) -> Result<PromiseRaw<'env, NativeResolvedFiles>> {
-        let parsed = (|| {
-            let maximum = self.config.limits.maximum_paths_per_batch;
-            if paths.len() > maximum {
-                return Err(Error::new(
-                    Status::InvalidArg,
-                    "resolved file batch exceeds the configured bound",
-                ));
-            }
+        let parsed: Result<Vec<_>> = (|| {
             let length = usize::try_from(paths.len()).map_err(napi_error)?;
             let mut parsed = Vec::new();
             parsed
@@ -155,11 +143,7 @@ impl NativeCheckout {
                 checkout.pinned_reader().map_err(napi_error)?
             };
             let receipt = reader
-                .resolve_files(
-                    &parsed,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
-                    &cancellation,
-                )
+                .resolve_files(&parsed, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(napi_error)?;
             Ok(NativeResolvedFiles {

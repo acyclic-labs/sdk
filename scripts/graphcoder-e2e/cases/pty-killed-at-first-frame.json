@@ -10,7 +10,7 @@
     ]},
     {"mode": "pty", "actions": [
       {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "second prompt"},
-      {"when": {"contains": ["SECOND_REPLY", "\u25cb"]}, "send": "\u0004\u0004"}
+      {"when": {"contains": ["SECOND_REPLY", "\u25cb"]}, "detach": true}
     ]}
   ],
   "assert": {"requests": 1}

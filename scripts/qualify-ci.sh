@@ -251,9 +251,6 @@ case "$lane" in
     node scripts/qualify-mcp-loom.mjs --gate
     sdk_workspace nextest --all-features --locked
     ;;
-  mount-exclusion)
-    bash scripts/fuzz-mount-exclusion.sh -runs=64 -max_len=4096 -timeout=2
-    ;;
   docs|generation)
     corpus_output=$(mktemp -d "$SDK_TEMP_DIR/rustdoc-corpus.XXXXXX") || {
       echo "STEP_FAILED create-rustdoc-corpus; recovery: bash scripts/qualify-ci.sh $lane" >&2

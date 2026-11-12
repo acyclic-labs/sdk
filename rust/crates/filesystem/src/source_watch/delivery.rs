@@ -3,6 +3,52 @@ use super::*;
 #[cfg(target_os = "linux")]
 struct NativeEventBatch<'a>(&'a Delivery);
 
+#[cfg(windows)]
+pub(super) struct WideDeliveryBatch<'a> {
+    delivery: &'a Delivery,
+    pending: bool,
+}
+
+#[cfg(windows)]
+impl Drop for WideDeliveryBatch<'_> {
+    fn drop(&mut self) {
+        if self.pending {
+            self.delivery
+                .callback(|| self.delivery.sink.delivery_finished());
+        }
+    }
+}
+
+#[cfg(windows)]
+impl WideDeliveryBatch<'_> {
+    pub(super) fn deliver<W: SourceDemandReadWork>(
+        &mut self,
+        changes: &[HostChangeWide<'_>],
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        // Only the batch that owns this callback may notify its completion.
+        // Other packets can return without acquiring the native read lock.
+        let delivery = self.delivery;
+        let result = if let Some(mut native) = work.native_source_work().cloned() {
+            delivery.callback(|| {
+                delivery
+                    .sink
+                    .host_changed_wide_with_native_work(changes, &mut native)
+            })
+        } else {
+            work.with_ordinary_work(|work| {
+                delivery.callback(|| delivery.sink.host_changed_wide(changes, work))
+            })
+            .unwrap_or(Err(DemandError::NativeWorkUnavailable))
+        };
+        self.pending = true;
+        result
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl Drop for NativeEventBatch<'_> {
     fn drop(&mut self) {
@@ -203,14 +249,19 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
-        if let Some(mut native) = work.native_source_work().cloned() {
-            return self.callback(|| {
+        let result = if let Some(mut native) = work.native_source_work().cloned() {
+            self.callback(|| {
                 self.sink
                     .host_changed_with_native_work(changes, &mut native)
-            });
-        }
-        work.with_ordinary_work(|work| self.callback(|| self.sink.host_changed(changes, work)))
-            .unwrap_or(Err(DemandError::NativeWorkUnavailable))
+            })
+        } else {
+            work.with_ordinary_work(|work| self.callback(|| self.sink.host_changed(changes, work)))
+                .unwrap_or(Err(DemandError::NativeWorkUnavailable))
+        };
+        // Reentrant observers may borrow the original ledger. Both the batch
+        // callback and its work scope must have returned before waking them.
+        self.callback(|| self.sink.delivery_finished());
+        result
     }
 
     #[cfg(target_os = "linux")]
@@ -253,22 +304,11 @@ impl Delivery {
     }
 
     #[cfg(windows)]
-    pub(super) fn deliver_wide<W: SourceDemandReadWork>(
-        &self,
-        changes: &[HostChangeWide<'_>],
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        if changes.is_empty() {
-            return Ok(());
+    pub(super) fn wide_delivery_batch(&self) -> WideDeliveryBatch<'_> {
+        WideDeliveryBatch {
+            delivery: self,
+            pending: false,
         }
-        if let Some(mut native) = work.native_source_work().cloned() {
-            return self.callback(|| {
-                self.sink
-                    .host_changed_wide_with_native_work(changes, &mut native)
-            });
-        }
-        work.with_ordinary_work(|work| self.callback(|| self.sink.host_changed_wide(changes, work)))
-            .unwrap_or(Err(DemandError::NativeWorkUnavailable))
     }
 
     /// The host stopped reporting changes exactly: report everything once, after which the watch is inexact for good.

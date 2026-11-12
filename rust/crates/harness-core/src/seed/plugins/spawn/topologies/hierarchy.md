@@ -10,9 +10,9 @@ import { atomically, wait } from "acyclic";
 
 await atomically([
   { spawn: "implementation", template: "worker", budget: null,
-    prompt: "Implement the change in task.md. Delegate independent modules when useful; name file ownership before spawning. Join and verify their results; write .volumes/home/result.md." },
+    prompt: "Implement the change in task.md. Delegate independent modules when useful; name file ownership before spawning. Join and verify their results; write volume:///home/result.md." },
   { spawn: "review", template: "reviewer", budget: null,
-    prompt: "Independently examine task.md and the current code for risks. Write evidence and focused validation suggestions to .volumes/home/findings.md." },
+    prompt: "Independently examine task.md and the current code for risks. Write evidence and focused validation suggestions to volume:///home/findings.md." },
 ]);
 export default wait(["implementation", "review"]);
 ```

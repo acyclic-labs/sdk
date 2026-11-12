@@ -3,13 +3,16 @@ import { Spool } from "./process.mjs";
 import { executionSucceeded, messageReply } from "./assertions.mjs";
 
 export async function waitFor(promise, signal) {
-  signal.throwIfAborted();
   let abort;
   const cancelled = new Promise((_, reject) => {
     abort = () => reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
   });
-  try { return await Promise.race([promise, cancelled]); }
+  // Even an already cancelled caller owns the original producer's rejection.
+  // Attach both handlers before choosing cancellation, rather than throwing
+  // while an eagerly invoked callback's rejected promise is unobserved.
+  try { return await Promise.race([cancelled, promise]); }
   finally { signal.removeEventListener("abort", abort); }
 }
 

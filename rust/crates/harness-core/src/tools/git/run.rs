@@ -24,9 +24,6 @@ pub struct Workspace<
     /// Pin for an ordinary checkout that must receive published changes.
     #[cfg(not(target_arch = "wasm32"))]
     pub checkout: Option<acyclic_fs::NativeRootIdentity>,
-    /// Root-relative paths the host owns inside the view, such as bound
-    /// volume aliases and their mount controls. They are never Git content.
-    pub reserved: &'a [String],
     /// Commit author.
     pub author: &'a str,
     /// Commit timestamp in seconds since the Unix epoch.
@@ -205,9 +202,7 @@ where
     );
     let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
     let (ignore, merge_drivers) = git_policy(workspace.view).await?;
-    let ignore = ignore.reserving(workspace.reserved);
-    let repository =
-        crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
+    let repository = GitIgnorePolicy::default();
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
         before_effect,
@@ -249,35 +244,9 @@ where
     S: CommandStore,
 {
     Ok(Output {
-        command: command.map(|output| without_host_paths(output, &executor.repository)),
+        command,
         switched: executor.switched_workspace()?,
     })
-}
-
-/// Keeps host paths out of listings, including from history captured before
-/// the repository policy reserved them: `ls-files`, `log` and `show` list
-/// only what the repository view holds, without waiting for a new capture.
-fn without_host_paths(output: GitCommandOutput, repository: &GitIgnorePolicy) -> GitCommandOutput {
-    match output {
-        GitCommandOutput::Paths(paths) => GitCommandOutput::Paths(
-            paths
-                .into_iter()
-                .filter(|path| !repository.reserves(path))
-                .collect(),
-        ),
-        GitCommandOutput::Commits(commits) => GitCommandOutput::Commits(
-            commits
-                .into_iter()
-                .map(|mut commit| {
-                    commit
-                        .tracked_paths
-                        .retain(|path| !repository.reserves(path));
-                    commit
-                })
-                .collect(),
-        ),
-        output => output,
-    }
 }
 
 async fn execute<E, P, O, S>(

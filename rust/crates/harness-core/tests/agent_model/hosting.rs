@@ -201,6 +201,7 @@ fn volume(name: &str, agent: AgentId) -> Result<WorkspaceEntry> {
 
 fn root(agent: AgentId, fresh: Vec<WorkspaceEntry>) -> RootRequest {
     RootRequest {
+        peer: true,
         agent,
         fresh,
         retained: Vec::new(),

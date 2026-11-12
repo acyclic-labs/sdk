@@ -209,6 +209,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         .create_root(
             &intent("root"),
             RootRequest {
+                peer: true,
                 agent: id.clone(),
                 fresh: vec![acyclic_harness::agent::WorkspaceEntry::initial_volume(
                     acyclic_harness_core::agent::WorkspaceRole::Private,
@@ -284,6 +285,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 from: user(),
                 id: intent("prepare"),
                 body: Box::new(prepare),
+                re: None,
                 attachments: None,
             }),
         )
@@ -307,6 +309,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 from: user(),
                 id: intent("work"),
                 body: Box::new(body),
+                re: None,
                 attachments: None,
             }),
         )
@@ -409,6 +412,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 from: user(),
                 id: intent("continue"),
                 body: Box::new(body),
+                re: None,
                 attachments: None,
             }),
         )

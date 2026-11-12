@@ -124,7 +124,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         }
         let composer: Option<Arc<dyn Composer>> = match (&volumes, &lifecycle) {
             (None, None) => None,
-            _ => Some(Arc::new(AgentComposer::new(volumes, lifecycle.clone()))),
+            _ => Some(Arc::new(AgentComposer::new(
+                provider.clone(),
+                volumes,
+                lifecycle.clone(),
+            ))),
         };
         let host = Self::hosting(provider, within, Arc::new(handler), clock, composer)?;
         Ok(match lifecycle {
@@ -306,7 +310,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?;
         let (settled, closed, open_children) = if let Some(checkpoint) = state.checkpoint() {
-            let observed = super::checkpoint_state(checkpoint)?;
+            let observed = super::checkpoint_head(checkpoint)?.state;
             if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                 return Err(Error::Record("agent state binding differs"));
             }
@@ -379,7 +383,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 .state()
                 .ok_or(Error::Stream(StreamError::NotFound))?;
             if let Some(checkpoint) = state.checkpoint() {
-                let observed = super::checkpoint_state(checkpoint)?;
+                let observed = super::checkpoint_head(checkpoint)?.state;
                 if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
                     return Err(Error::Record("agent state binding differs"));
                 }
@@ -470,7 +474,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                     .await;
             }
             if let Some(checkpoint) = state.checkpoint()
-                && super::checkpoint_state(checkpoint)?.closed
+                && super::checkpoint_head(checkpoint)?.state.closed
                 && sequence
                     >= self
                         .provider
@@ -533,9 +537,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             Err(StreamError::NotFound) => {}
             Err(error) => return Err(Error::Stream(error)),
         }
-        let mut state = super::checkpoint_state(checkpoint.ok_or(Error::Record(
+        let mut state = super::checkpoint_head(checkpoint.ok_or(Error::Record(
             "the step consuming the spawn has no checkpoint",
-        ))?)?;
+        ))?)?
+        .state;
         state.topology_refusals.bind(Arc::clone(&self.provider));
         let topology_refusal = state.topology_refusals.contains(&child).await?;
         if !state.closed && !topology_refusal {
@@ -586,8 +591,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     pub fn prepare_root(
         &self,
         intent: &IntentId,
+        adopted: ForkAdopted,
+        question_plugin: bool,
+    ) -> Result<Spawn, Error> {
+        self.prepare_root_with_peer(intent, adopted, question_plugin, true)
+    }
+
+    /// Prepare the root with an explicit user launch choice, without a later
+    /// membership update or any transient peer admission.
+    pub fn prepare_root_with_peer(
+        &self,
+        intent: &IntentId,
         mut adopted: ForkAdopted,
         question_plugin: bool,
+        peer: bool,
     ) -> Result<Spawn, Error> {
         if adopted.profile.is_some() {
             return Err(Error::Record(
@@ -605,7 +622,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             profile.question_plugin = question_plugin;
             adopted.profile = Some(profile);
         }
-        self.agents.prepare_root(&self.within, intent, adopted)
+        self.agents
+            .prepare_root_with_peer(&self.within, intent, adopted, peer)
     }
 
     /// Prepare a root branch of an admitted source at its coupled history cut.
@@ -618,6 +636,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         mut adopted: ForkAdopted,
         at: u64,
         saved: &super::HistoryCheckpoint,
+        peer: bool,
     ) -> Result<Spawn, Error> {
         if saved.conversation
             != at
@@ -644,8 +663,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             conversation: saved.conversation,
             checkpoint: saved.checkpoint,
         };
-        self.agents
-            .prepare_root_history(&self.within, intent, adopted, &source.path, &history)
+        self.agents.prepare_root_history(
+            &self.within,
+            intent,
+            adopted,
+            &source.path,
+            &history,
+            peer,
+        )
     }
 
     /// Create root agent `adopted.agent` in one commit, and start hosting it.
@@ -679,6 +704,24 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         record: &InboxRecord,
     ) -> Result<Delivered, Error> {
         self.deliver(to, send(to, from, record)?).await
+    }
+
+    /// Change root peer participation through the authenticated user surface.
+    /// This writes no inbox input and grants no session-directory authority.
+    pub async fn set_peer_membership(
+        &self,
+        root: &AgentPath,
+        by: &Sender,
+        id: &IntentId,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        let request = super::set_peer_membership(root, by, id, enabled)?;
+        match submit(&*self.provider, request).await? {
+            Submitted::Committed(_) => Ok(()),
+            Submitted::RecipientClosed(_) => Err(Error::Record("the peer root is archived")),
+            Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
+            Submitted::Conflict(_) => Err(Error::Record("peer membership changed")),
+        }
     }
 
     /// Close `target` and its open descendants. Closing admission precedes

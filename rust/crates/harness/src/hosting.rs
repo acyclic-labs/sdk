@@ -70,6 +70,11 @@ pub trait Platform: ProviderPlatform + 'static {
         false
     }
 
+    /// Whether this host guarantees unchecked context without compaction.
+    fn compaction_disabled(&self) -> bool {
+        false
+    }
+
     /// Optional source of the new session's independent volume forks. The
     /// host chooses this checkout binding; a client cannot supply volume grants.
     fn session_source(&self) -> Option<AgentPath> {
@@ -539,6 +544,11 @@ where
             AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
+            AgentCommand::SetPeerMembership { agent, id, enabled } => {
+                let agent = self.within_tree(agent)?;
+                agents.set_peer_membership(agent, by, id, *enabled).await?;
+                Ok(AgentReply::PeerMembership { enabled: *enabled })
+            }
             AgentCommand::AgentFilePreviews {
                 agent,
                 paths,
@@ -635,7 +645,8 @@ where
                     agent: self.bound.latest_session().await?,
                 })
             }
-            AgentCommand::NewSession { id, .. } | AgentCommand::ForkSession { id, .. } => {
+            AgentCommand::NewSession { id, peer, .. }
+            | AgentCommand::ForkSession { id, peer, .. } => {
                 if !self.platform.sessions() {
                     return Err(Error::Record("this host serves one tree"));
                 }
@@ -677,7 +688,10 @@ where
                                     }),
                                 _ => provenance.is_none(),
                             };
-                            if !same {
+                            let original_peer =
+                                crate::agent::initial_peer_membership(&**agents.provider(), &path)
+                                    .await?;
+                            if !same || original_peer.enabled != *peer {
                                 return Err(Error::Record(
                                     "session intent already names another creation",
                                 ));
@@ -704,11 +718,12 @@ where
                         prepared
                     }
                     None => {
-                        let root = self
+                        let mut root = self
                             .platform
                             .session_root(identity)
                             .await
                             .map_err(|error| Error::Turn(Box::new(error)))?;
+                        root.peer = *peer;
                         match command {
                             AgentCommand::ForkSession { agent, at, .. } => {
                                 self.bound
@@ -784,6 +799,7 @@ where
                         .and_then(|profile| profile.role())
                         .map(str::to_owned),
                     model: profile.and_then(|profile| profile.model.clone()),
+                    compaction_disabled: self.platform.compaction_disabled(),
                     topology: profile.and_then(|profile| profile.topology.clone()),
                     phase: settlement.phase,
                 })
@@ -1033,6 +1049,7 @@ where
                     from: by.clone(),
                     id: id.clone(),
                     body: Box::new(body),
+                    re: None,
                     attachments: attachments.map(Box::new),
                 });
                 Ok(AgentReply::Delivered {
@@ -1814,6 +1831,7 @@ where
                 | AgentCommand::Pause { .. }
                 | AgentCommand::MergeSession { .. }
                 | AgentCommand::Prompt { .. }
+                | AgentCommand::SetPeerMembership { .. }
                 | AgentCommand::Cancel { .. }
                 | AgentCommand::Compact { .. }
                 | AgentCommand::Rewind { .. }

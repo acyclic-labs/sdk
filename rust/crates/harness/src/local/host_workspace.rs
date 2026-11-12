@@ -66,11 +66,11 @@ impl HostWorkspace {
         }
         let canonical_root = std::fs::canonicalize(&workspace.path).map_err(storage)?;
         let mounts = std::fs::canonicalize(admitted_mount_root.path()).map_err(storage)?;
-        if mounts != canonical_root.join(HOST_VIEW_ROOT)
-            || workspace.mount_directory != canonical_root.join(HOST_VIEW_ROOT)
+        if mounts != std::fs::canonicalize(&workspace.mount_directory).map_err(storage)?
+            || mounts.starts_with(&canonical_root)
         {
             return Err(Error::Invalid(
-                "host mounts require the checkout's .volumes/agents root".into(),
+                "host mounts require the owner's external task-view root".into(),
             ));
         }
         verify_root(&admitted_mount_root)?;
@@ -113,6 +113,11 @@ impl HostWorkspace {
     #[must_use]
     pub fn host_cwd(&self) -> std::borrow::Cow<'_, Path> {
         acyclic_host_platform::paths::strip_verbatim(&self.workspace.path)
+    }
+
+    /// Native discovery for this admitted view, shared with the shell.
+    pub(super) fn environment(&self) -> Result<std::collections::BTreeMap<String, String>> {
+        self.workspace.mounts.environment()
     }
 
     /// The agent this view belongs to.
@@ -356,7 +361,7 @@ impl HostWorkspace {
     }
 
     async fn activate_volumes(&mut self) -> Result<()> {
-        for (relative, mount) in self.workspace.mounts.mounts() {
+        for (_, mount) in self.workspace.mounts.mounts() {
             let Some(source) = &mount.view.source else {
                 continue;
             };
@@ -365,7 +370,6 @@ impl HostWorkspace {
             };
             self.verify().await?;
             source.prepare_command().await?;
-            let root = workspace::volumes::projection_root(&source.destination, relative)?;
             let options = volume_guard::options(
                 options,
                 Arc::clone(&self.owner),
@@ -373,7 +377,7 @@ impl HostWorkspace {
                 mount.mode.read_only(),
             )?;
             self._native_volumes
-                .push(source.enter_with_options(root, relative, options).await?);
+                .push(source.enter_with_options(options).await?);
         }
         self.verify().await
     }

@@ -5,7 +5,7 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 
-/// Reserved mount namespace within an already writable checkout.
+/// Auxiliary task bindings below the owner's external host state.
 pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
 /// The one namespace below [`HOST_VIEW_ROOT`] holding every task binding of
 /// a checkout's tree, one directory per bound project.
@@ -32,6 +32,7 @@ pub(super) use crate::sync::owned::{Arc as StateArc, Mutex as AsyncMutex};
 
 pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
+    pub(super) binding_root: Arc<acyclic_fs::HeldRoot>,
     pub(super) destination: PathBuf,
     pub(super) options: Option<acyclic_fs::MountOptions>,
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
@@ -68,6 +69,7 @@ pub struct LocalWorkspace {
     pub(super) import_source: bool,
     pub(super) view: View,
     pub(super) mount_directory: PathBuf,
+    pub(super) host_state: PathBuf,
     /// Optional sandbox admission shared by the root and all descendants.
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) mounted: Option<Arc<TaskMount>>,
@@ -127,23 +129,7 @@ impl LocalWorkspace {
             .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
     }
     pub(in crate::local) fn held_task_mount_root(&self) -> Result<acyclic_fs::HeldRoot> {
-        let root = self
-            .mount_directory
-            .ancestors()
-            .nth(2)
-            .ok_or_else(|| Error::Invalid("task mount root has no checkout".into()))?;
-        if self.mount_directory != root.join(HOST_VIEW_ROOT) {
-            return Err(Error::Invalid(
-                "task mounts are outside the checkout namespace".into(),
-            ));
-        }
-        acyclic_fs::hold_root(root)
-            .map_err(storage)?
-            .create_directories(
-                Path::new(HOST_VIEW_ROOT),
-                acyclic_fs::NativeDurability::Durable,
-            )
-            .map_err(storage)
+        acyclic_fs::hold_root(&self.mount_directory).map_err(storage)
     }
 
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
@@ -163,45 +149,11 @@ impl LocalWorkspace {
                     )
                 }),
         )?;
-        // A served path can wait for this runtime's FUSE callbacks. Never
-        // occupy an async worker with its synchronous alias syscalls.
-        let path = path.to_path_buf();
-        let bindings = self.mount_directory.join(BINDINGS);
-        let mounted = self.mounted.clone();
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                // A cancelled waiter cannot retire the server while this
-                // submitted syscall still uses its mounted namespace.
-                let _mounted = mounted;
-                volumes::link(&path, &mut mounts, &bindings)?;
-                Ok(Arc::new(mounts))
-            },
-            None,
-        )
-        .map_err(storage)?
-        .offloaded()
-        .await
-        .map_err(storage)?
+        mounts.scratch_root = self.mounts.scratch_root.clone();
+        volumes::bind_roots(&mut mounts)?;
+        Ok(Arc::new(mounts))
     }
 
-    /// Root-relative paths that this view's bound volumes own. A mounted
-    /// child projection authors its volume aliases, so every reader of
-    /// authored history must reserve them rather than rely on capture.
-    pub(super) fn volume_owned_paths(&self) -> Result<Vec<String>> {
-        let mut owned = vec![HOST_VIEW_ROOT.to_owned()];
-        for (relative, mount) in self.mounts.mounts() {
-            if !relative.is_empty()
-                && mount
-                    .view
-                    .source
-                    .as_ref()
-                    .is_some_and(|source| source.options.is_some())
-            {
-                owned.extend(volumes::owned(&self.path, relative)?);
-            }
-        }
-        Ok(owned)
-    }
     /// Bind exactly the selected agent's auxiliary volumes. Reuse an admitted
     /// projection only when it names that same volume.
     pub(super) async fn bound_mounts(
@@ -247,6 +199,7 @@ impl LocalWorkspace {
                     (binding.name.clone(), volume.clone(), source)
                 }),
         )?;
+        mounts.scratch_root = self.mounts.scratch_root.clone();
         volumes::attach(
             &self.filesystem,
             &self.store,
@@ -418,26 +371,20 @@ pub(super) async fn open(
     // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
-    volumes::exclude_state(
-        &root,
-        attach
-            .auxiliary()
-            .filter(|_| native_mounts)
-            .map(|(name, _)| name),
-    )?;
-    let setup = if native_mounts {
-        Some(root.try_clone().map_err(storage)?)
-    } else {
-        None
-    };
+    let host = acyclic_fs::hold_root(attach.directory).map_err(storage)?;
+    let binding_root = volumes::held_directories(&host, Path::new("bindings/root"))?;
+    let mount_directory = volumes::held_directories(&host, Path::new(HOST_VIEW_ROOT))?
+        .path()
+        .to_path_buf();
     #[cfg(target_os = "linux")]
-    if let Some(setup) = &setup {
-        for (name, _) in attach.auxiliary() {
-            volumes::recover_after_crash(setup, &Path::new(".volumes").join(name))?;
+    if native_mounts {
+        for (_, volume) in attach.auxiliary() {
+            let binding = blake3::hash(volume.storage_name(&mut None)?.as_bytes())
+                .to_hex()
+                .to_string();
+            volumes::recover_after_crash(&binding_root, Path::new(&binding))?;
         }
     }
-    volumes::seed::adopt_home(filesystem, attach.scratch, &root).await?;
-    let binding_root = root.try_clone().map_err(storage)?;
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())
@@ -457,6 +404,11 @@ pub(super) async fn open(
             .auxiliary()
             .map(|(name, volume)| (name.into(), volume.clone(), None)),
     )?;
+    mounts.scratch_root = Some(
+        volumes::held_directories(&host, Path::new("scratch"))?
+            .path()
+            .to_path_buf(),
+    );
     let task_view_admission = Arc::new(std::sync::OnceLock::new());
     let mount_authority = attach
         .authority
@@ -472,16 +424,12 @@ pub(super) async fn open(
         native_mounts,
     )
     .await?;
-    if let Some(setup) = &setup {
-        Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
-    }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
     let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
         view.workspace().id(),
         Arc::clone(&mounts),
     )));
-    let mount_directory = path.join(HOST_VIEW_ROOT);
     Ok(LocalWorkspace {
         shutdown: acyclic_fs::CancellationToken::new(),
         native_mount_probe: attach.native_mount_probe.clone(),
@@ -494,6 +442,7 @@ pub(super) async fn open(
         import_source: fresh && !existing,
         view,
         mount_directory,
+        host_state: attach.directory.to_path_buf(),
         task_view_admission,
         mounted: None,
         mounting,
@@ -551,7 +500,6 @@ async fn lazy_view(
         root,
         config,
         original.as_ref().map(|state| state.source),
-        attach,
         &work,
         &cancellation,
     )
@@ -583,17 +531,14 @@ async fn lazy_view(
     Ok((view, fresh))
 }
 
-/// The held root's native source. Auxiliary mounts and the incarnation
-/// namespace are excluded, so capture never records them.
+/// The unmodified held checkout is the source. All harness state is external.
 async fn held_source(
     root: acyclic_fs::HeldRoot,
     config: acyclic_fs::VolumeConfig,
     reference: Option<acyclic_fs::demand::SourceReference>,
-    attach: &Attach<'_>,
     work: &NativeMaterializationWork,
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<Arc<NativeDemandSource>> {
-    let path = root.path().to_path_buf();
     let source = NativeDemandSource::open_held(
         root,
         config.profile,
@@ -605,25 +550,6 @@ async fn held_source(
     )
     .await
     .map_err(storage)?;
-    let mut exclusions = Vec::new();
-    for (name, _) in attach.auxiliary() {
-        exclusions.extend(volumes::excluded(
-            &path,
-            config,
-            &format!(".volumes/{name}"),
-        )?);
-    }
-    exclusions.push(volumes::namespace(
-        &path,
-        config,
-        &path.join(volumes::INCARNATION_PATH),
-    )?);
-    for relative in [HOST_VIEW_ROOT, ".acyclic-sdk"] {
-        exclusions.push(volumes::namespace(&path, config, &path.join(relative))?);
-    }
-    let source = source
-        .exclude(exclusions, &work, cancellation)
-        .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
     Ok(Arc::new(source))
 }
 

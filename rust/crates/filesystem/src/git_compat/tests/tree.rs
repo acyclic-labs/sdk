@@ -30,7 +30,7 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
     )
     .expect("binary file");
     let generation = publish_fixture(transaction).await;
-    let entries = walk_git_tree(&generation, &GitIgnorePolicy::default(), Some("src"), 10)
+    let entries = walk_git_tree(&generation, Some("src"), 10)
         .await
         .expect("walk");
     assert_eq!(
@@ -40,37 +40,64 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
             .collect::<Vec<_>>(),
         vec!["src/a.txt", "src/b.txt", "src/binary.bin", "src/large.txt"]
     );
-    let result = grep_git_generation(
-        &generation,
-        &GitIgnorePolicy::default(),
-        "needle",
-        Some("src"),
-        10,
-        16,
-        10,
-    )
-    .await
-    .expect("grep");
+    let result = grep_git_generation(&generation, "needle", Some("src"), 10, 16, 10)
+        .await
+        .expect("grep");
     assert!(result.truncated);
     assert_eq!(result.matches.len(), 2);
     assert_eq!(result.matches[0].line, 2);
     assert_eq!(result.matches[1].line, 1);
 
-    let single = grep_git_generation(
-        &generation,
-        &GitIgnorePolicy::default(),
-        "needle",
-        Some("src/a.txt"),
-        1,
-        16,
-        10,
-    )
-    .await
-    .expect("grep one file");
+    let single = grep_git_generation(&generation, "needle", Some("src/a.txt"), 1, 16, 10)
+        .await
+        .expect("grep one file");
     assert!(!single.truncated);
     assert_eq!(single.matches.len(), 1);
     assert_eq!(single.matches[0].path, "src/a.txt");
     assert_eq!(single.matches[0].line, 2);
+}
+
+#[tokio::test]
+async fn unbounded_grep_matches_utf8_lines_across_physical_read_chunks() {
+    let workspace = memory_workspace("git-chunked-grep").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    let text = format!(
+        "{}needle\r\nnext éneedle\r\nlast needle\r",
+        "é".repeat(32_766)
+    );
+    transaction.write_text("/text", &text).await.expect("text");
+    let mut binary = b"needle\n".to_vec();
+    binary.extend(vec![b'x'; 65_536]);
+    binary.push(0xff);
+    unbounded!(transaction, write("/binary", bytes::Bytes::from(binary))).expect("binary");
+    let generation = publish_fixture(transaction).await;
+    let found = grep_git_generation(&generation, "needle", None, None, None, None)
+        .await
+        .expect("unbounded grep");
+    let expected: Vec<_> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("needle"))
+        .map(|(index, line)| GitGrepMatch {
+            path: "text".to_owned(),
+            line: index as u64 + 1,
+            text: line.to_owned(),
+        })
+        .collect();
+    assert_eq!(found.matches, expected);
+    assert!(!found.truncated);
+    let bounded = grep_git_generation(&generation, "needle", None, None, None, 1)
+        .await
+        .expect("explicit result bound");
+    assert_eq!(bounded.matches, expected[..1]);
+    assert!(bounded.truncated);
+    assert_eq!(
+        unbounded!(generation, read("/text", None))
+            .expect("whole file")
+            .as_ref(),
+        text.as_bytes()
+    );
+    assert!(unbounded!(generation, read("/text", 16)).is_err());
 }
 
 #[tokio::test]
@@ -171,9 +198,8 @@ fn portable_git_names_decode_canonical_windows_names() {
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    let name =
-        crate::kernel::LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, bytes, 255)
-            .expect("valid Windows name");
+    let name = crate::kernel::LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, bytes)
+        .expect("valid Windows name");
     assert_eq!(
         name.unicode_text(
             crate::WorkBudget::UNBOUNDED,

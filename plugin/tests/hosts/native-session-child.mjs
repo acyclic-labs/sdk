@@ -3,7 +3,7 @@
 // the shipping owner retains every original process, view and socket.
 import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync} from 'node:fs';
-import {join,relative} from 'node:path';
+import {dirname,join,relative} from 'node:path';
 import {createServer} from 'node:net';
 const {hold}=await import(process.env.FIXTURE_SUPPORT);
 const args=process.argv.slice(2),cwd=process.cwd(),env=process.env;
@@ -23,7 +23,7 @@ try{
   const child=args.includes({codex:'exec','claude-code':'-p',pi:'--mode'}[host]);
   if(!child){writeFileSync('root.json',JSON.stringify({task:env.ACYCLIC_TASK,flags:JSON.parse(env.ACYCLIC_HOST_ARGS)}));}
   else{
-   assert.ok(!relative(join(env.FIXTURE_WORKSPACE,'.volumes/agents'),cwd).startsWith('..'));
+   assert.ok(!relative(join(dirname(env.ACYCLIC_HOST_FILES_DIRECTORY),'.volumes/agents'),cwd).startsWith('..'));
    assert.equal(readFileSync('AGENTS.md','utf8'),'shared scale discovery fixture');
    let prompt='';for await(const chunk of process.stdin)prompt+=chunk;
    if(prompt==='exit-before-connect'){process.stderr.write('exited-before-connect');process.exitCode=23;}

@@ -10,6 +10,18 @@ pub enum ReadPathKind {
 }
 
 impl ReadPathKind {
+    /// Checks a tool address after separating its explicit volume qualifier.
+    pub(crate) fn validate_address(
+        self,
+        address: &str,
+        history: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let (_, path) = crate::workspace::split_address(address).map_err(|reason| {
+            crate::store::guarded_boundary(history, crate::wire::ErrorCode::Invalid, reason)
+        })?;
+        self.validate(path, history)
+    }
+
     /// Checks the normalized relative path without treating a directory as a file.
     pub fn validate(
         self,
@@ -58,6 +70,14 @@ pub type ToolPreparationFuture<'a> =
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// A provisional result whose recorded actor effects must commit before
+    /// this invocation can return its original receipt. The stock caller
+    /// publishes nothing, yields through the journal, and reconciles the same
+    /// invocation after the actor's publication barrier.
+    fn requires_effect_commit(&self, _result: &ToolResult) -> bool {
+        false
+    }
+
     /// Commits an admitted copied workspace before its owning turn settles.
     fn settle_workspace(
         &self,

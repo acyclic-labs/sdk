@@ -64,8 +64,7 @@ fn projection_parent(path: &Path) -> Result<(acyclic_fs::HeldRoot, PathBuf)> {
         .ok_or_else(|| Error::Invalid("native projection is outside its workspace".into()))?;
     let workspace = endpoint
         .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| Error::Invalid("native projection workspace absent".into()))?;
+        .ok_or_else(|| Error::Invalid("native projection owner state absent".into()))?;
     let parent = path
         .parent()
         .ok_or_else(|| Error::Invalid("native projection parent absent".into()))?;
@@ -318,9 +317,13 @@ async fn carrier_io_producer_loss_keeps_its_failure_and_releases_its_files() -> 
 
 #[test]
 fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
+    struct EndpointFixture {
+        _endpoint: Arc<LocalEndpoint>,
+        _tree: tempfile::TempDir,
+    }
     fn ownership(workspace: &Path) -> Result<acyclic_native_runtime::FileLock> {
         let directory =
-            acyclic_fs::hold_root(&workspace.join(DIRECTORY)).map_err(native_file_error)?;
+            acyclic_fs::hold_root(&selected_directory(workspace)?).map_err(native_file_error)?;
         acyclic_native_runtime::FileLock::try_acquire(
             directory
                 .open_file(Path::new("owner.lock"), true)
@@ -329,12 +332,19 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         )
         .map_err(storage)
     }
-    fn owner() -> Result<(tempfile::TempDir, PathBuf, acyclic_native_runtime::FileLock)> {
+    fn owner() -> Result<(EndpointFixture, PathBuf, acyclic_native_runtime::FileLock)> {
         let checkout = tempfile::tempdir().map_err(storage)?;
-        let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
-        let directory = workspace.join(DIRECTORY);
+        let workspace = checkout.path().join("workspace");
+        std::fs::create_dir(&workspace).map_err(storage)?;
+        let workspace = std::fs::canonicalize(workspace).map_err(storage)?;
+        let directory = checkout.path().join(DIRECTORY);
         std::fs::create_dir_all(directory.join("requests")).map_err(storage)?;
         std::fs::create_dir(directory.join("status")).map_err(storage)?;
+        let endpoint = LocalEndpoint::register(
+            workspace.clone(),
+            checkout.path().join(workspace::HOST_VIEW_ROOT),
+            directory.clone(),
+        );
         let ownership = ownership(&workspace)?;
         let held = acyclic_fs::hold_root(&directory).map_err(native_file_error)?;
         let requests = held
@@ -353,17 +363,34 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
             ))
             .map_err(storage)?,
         )?;
-        Ok((checkout, workspace, ownership))
+        Ok((
+            EndpointFixture {
+                _endpoint: endpoint,
+                _tree: checkout,
+            },
+            workspace,
+            ownership,
+        ))
     }
     let registry = Arc::new(Mutex::<Registry>::default());
     let (_checkout, cwd, owner_lock) = owner()?;
     let (_other_checkout, other_cwd, other_lock) = owner()?;
     let child = cwd.join("child");
     std::fs::create_dir(&child).map_err(storage)?;
-    let first = Registry::bridge(&registry, &cwd, Bridge::open)?;
-    let alias = Registry::bridge(&registry, &child, Bridge::open)?;
+    let first = Registry::bridge(&registry, &selected_directory(&cwd)?, &cwd, Bridge::open)?;
+    let alias = Registry::bridge(
+        &registry,
+        &selected_directory(&child)?,
+        &child,
+        Bridge::open,
+    )?;
     assert!(Arc::ptr_eq(&first, &alias));
-    let other = Registry::bridge(&registry, &other_cwd, Bridge::open)?;
+    let other = Registry::bridge(
+        &registry,
+        &selected_directory(&other_cwd)?,
+        &other_cwd,
+        Bridge::open,
+    )?;
     let original = lock(&first.shared.waiters).retirement.clone().unwrap();
     let original_connection = original.connection.upgrade().unwrap();
     let first_observer = observer(&first);
@@ -395,29 +422,34 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         );
     }
     assert!(Arc::ptr_eq(
-        &Registry::live(&registry, &other_cwd).unwrap(),
+        &Registry::live(&registry, &selected_directory(&other_cwd)?, &other_cwd).unwrap(),
         &other
     ));
 
     // A new admitted owner at the same path gets its own slot. A delayed old
     // terminal and a borrowed old slot must not remove or reopen that owner.
     let replacement_lock = ownership(&cwd)?;
-    let replacement = Registry::bridge(&registry, &cwd, Bridge::open)?;
-    let replacement_alias = Registry::bridge(&registry, &child, Bridge::open)?;
+    let replacement = Registry::bridge(&registry, &selected_directory(&cwd)?, &cwd, Bridge::open)?;
+    let replacement_alias = Registry::bridge(
+        &registry,
+        &selected_directory(&child)?,
+        &child,
+        Bridge::open,
+    )?;
     assert!(!Arc::ptr_eq(&replacement, &first));
     assert!(Arc::ptr_eq(&replacement, &replacement_alias));
     assert!(lock(&original_connection).retired);
     original.retire();
     assert!(Arc::ptr_eq(
-        &Registry::live(&registry, &cwd).unwrap(),
+        &Registry::live(&registry, &selected_directory(&cwd)?, &cwd).unwrap(),
         &replacement
     ));
     assert!(Arc::ptr_eq(
-        &Registry::live(&registry, &child).unwrap(),
+        &Registry::live(&registry, &selected_directory(&child)?, &child).unwrap(),
         &replacement
     ));
     assert!(Arc::ptr_eq(
-        &Registry::live(&registry, &other_cwd).unwrap(),
+        &Registry::live(&registry, &selected_directory(&other_cwd)?, &other_cwd).unwrap(),
         &other
     ));
     let weak = Arc::downgrade(&first);
@@ -435,33 +467,38 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
 
     // Real owner loss before registration is not allowed to publish an alias
     // with no future producer. Join that same native observer inside setup.
-    let original_directory = cwd.join(DIRECTORY);
+    let original_directory = selected_directory(&cwd)?;
     let retained_directory = original_directory.with_file_name("retained-host-files");
     let mut moved = false;
-    let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
-        // Discovery has admitted the descriptor. Connection must use that
-        // same directory even if its name changes before the owner probe.
-        std::fs::rename(&original_directory, &retained_directory).map_err(storage)?;
-        moved = true;
-        std::fs::create_dir(&original_directory).map_err(storage)?;
-        // Acquire ownership after moving the directory: Windows cannot rename
-        // a directory with open descendants, even with delete sharing. This
-        // still loses the admitted owner before registry publication.
-        let early_lock = acyclic_native_runtime::FileLock::try_acquire(
-            directory
-                .open_file(Path::new("owner.lock"), true)
-                .map_err(native_file_error)?,
-            acyclic_native_runtime::FileLockMode::Exclusive,
-        )
-        .map_err(storage)?;
-        let bridge = Bridge::open(directory, endpoint)
-            .expect("discovery retains its original directory through connection admission");
-        std::fs::remove_dir(&original_directory).map_err(storage)?;
-        let observing = observer(&bridge);
-        drop(early_lock);
-        observing.join().expect("early owner terminal must return");
-        Ok(bridge)
-    });
+    let result = Registry::bridge(
+        &registry,
+        &selected_directory(&cwd)?,
+        &cwd,
+        |directory, endpoint| {
+            // Discovery has admitted the descriptor. Connection must use that
+            // same directory even if its name changes before the owner probe.
+            std::fs::rename(&original_directory, &retained_directory).map_err(storage)?;
+            moved = true;
+            std::fs::create_dir(&original_directory).map_err(storage)?;
+            // Acquire ownership after moving the directory: Windows cannot rename
+            // a directory with open descendants, even with delete sharing. This
+            // still loses the admitted owner before registry publication.
+            let early_lock = acyclic_native_runtime::FileLock::try_acquire(
+                directory
+                    .open_file(Path::new("owner.lock"), true)
+                    .map_err(native_file_error)?,
+                acyclic_native_runtime::FileLockMode::Exclusive,
+            )
+            .map_err(storage)?;
+            let bridge = Bridge::open(directory, endpoint)
+                .expect("discovery retains its original directory through connection admission");
+            std::fs::remove_dir(&original_directory).map_err(storage)?;
+            let observing = observer(&bridge);
+            drop(early_lock);
+            observing.join().expect("early owner terminal must return");
+            Ok(bridge)
+        },
+    );
     let restore = if moved {
         std::fs::rename(&retained_directory, &original_directory).map_err(storage)
     } else {
@@ -476,7 +513,7 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     assert_eq!(lock(&registry).bridges.len(), 1);
     assert_eq!(lock(&registry).located.len(), 1);
     assert!(Arc::ptr_eq(
-        &Registry::live(&registry, &other_cwd).unwrap(),
+        &Registry::live(&registry, &selected_directory(&other_cwd)?, &other_cwd).unwrap(),
         &other
     ));
 
@@ -485,8 +522,18 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     let (_failed_checkout, failed_cwd, failed_lock) = owner()?;
     let failed_child = failed_cwd.join("child");
     std::fs::create_dir(&failed_child).map_err(storage)?;
-    let failed = Registry::bridge(&registry, &failed_cwd, Bridge::open)?;
-    let failed_alias = Registry::bridge(&registry, &failed_child, Bridge::open)?;
+    let failed = Registry::bridge(
+        &registry,
+        &selected_directory(&failed_cwd)?,
+        &failed_cwd,
+        Bridge::open,
+    )?;
+    let failed_alias = Registry::bridge(
+        &registry,
+        &selected_directory(&failed_child)?,
+        &failed_child,
+        Bridge::open,
+    )?;
     let failed_observer = observer(&failed);
     let retired = lock(&failed.shared.waiters).retirement.clone().unwrap();
     let failed_connection = retired.connection.upgrade().unwrap();
@@ -511,13 +558,23 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     drop(waiting);
     assert!(lock(&failed.watching).watches.is_none());
     // This is a new caller's admission, not a retry of the failed operation.
-    let fresh = Registry::bridge(&registry, &failed_cwd, Bridge::open)?;
-    let fresh_alias = Registry::bridge(&registry, &failed_child, Bridge::open)?;
+    let fresh = Registry::bridge(
+        &registry,
+        &selected_directory(&failed_cwd)?,
+        &failed_cwd,
+        Bridge::open,
+    )?;
+    let fresh_alias = Registry::bridge(
+        &registry,
+        &selected_directory(&failed_child)?,
+        &failed_child,
+        Bridge::open,
+    )?;
     assert!(!Arc::ptr_eq(&failed, &fresh));
     assert!(Arc::ptr_eq(&fresh, &fresh_alias));
     retired.retire();
     assert!(Arc::ptr_eq(
-        &Registry::live(&registry, &failed_cwd).unwrap(),
+        &Registry::live(&registry, &selected_directory(&failed_cwd)?, &failed_cwd).unwrap(),
         &fresh
     ));
     let weak = Arc::downgrade(&failed);
@@ -535,28 +592,38 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     // A failure delivered before the registry can attach retirement cannot
     // leave a connection or alias with no original observation producer.
     let early_lock = ownership(&cwd)?;
-    let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
-        let bridge = Bridge::open(directory, endpoint)?;
-        bridge
-            .shared
-            .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
-        drop(early_lock);
-        observer(&bridge)
-            .join()
-            .expect("early native observer ends");
-        Ok(bridge)
-    });
+    let result = Registry::bridge(
+        &registry,
+        &selected_directory(&cwd)?,
+        &cwd,
+        |directory, endpoint| {
+            let bridge = Bridge::open(directory, endpoint)?;
+            bridge
+                .shared
+                .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
+            drop(early_lock);
+            observer(&bridge)
+                .join()
+                .expect("early native observer ends");
+            Ok(bridge)
+        },
+    );
     assert!(matches!(result, Err(Error::Storage(ref error))
         if error.contains("step=observe native workspace owner exit:")));
     assert_eq!(lock(&registry).bridges.len(), 1);
     assert_eq!(lock(&registry).located.len(), 1);
 
     let refused = Arc::new(Mutex::<Registry>::default());
-    let failed = Registry::bridge(&refused, &other_cwd, |_, _| {
-        Err(Error::Unsupported(
-            "original native admission refused".into(),
-        ))
-    });
+    let failed = Registry::bridge(
+        &refused,
+        &selected_directory(&other_cwd)?,
+        &other_cwd,
+        |_, _| {
+            Err(Error::Unsupported(
+                "original native admission refused".into(),
+            ))
+        },
+    );
     assert!(matches!(failed, Err(Error::Unsupported(_))));
     assert!(lock(&refused).bridges.is_empty());
     assert!(lock(&refused).located.is_empty());
@@ -571,8 +638,10 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
 
 fn rejected_requests_end_without_owner_exit() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
-    let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
-    let directory = workspace.join(DIRECTORY);
+    let workspace = checkout.path().join("workspace");
+    std::fs::create_dir(&workspace).map_err(storage)?;
+    let workspace = std::fs::canonicalize(workspace).map_err(storage)?;
+    let directory = checkout.path().join(DIRECTORY);
     let requests = directory.join("requests");
     std::fs::create_dir_all(&requests).map_err(storage)?;
     std::fs::create_dir(directory.join("status")).map_err(storage)?;
@@ -598,7 +667,7 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         &serde_json::to_vec(&endpoint).map_err(storage)?,
     )?;
     assert!(matches!(
-        discover(&endpoint.workspace),
+        discover(&directory, &endpoint.workspace),
         Err(Error::Unsupported(reason)) if reason.contains("requires 4")
     ));
     remove_projection(&descriptor)?;
@@ -607,7 +676,7 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         &descriptor,
         &serde_json::to_vec(&endpoint).map_err(storage)?,
     )?;
-    let (directory, endpoint) = discover(&endpoint.workspace)?;
+    let (directory, endpoint) = discover(&directory, &endpoint.workspace)?;
     let bridge = Arc::new(Bridge::open(directory, endpoint)?);
     let mut served = Served::default();
     for fault in 0..3 {
@@ -704,10 +773,12 @@ fn rejected_requests_end_without_owner_exit() -> Result<()> {
         .map_err(storage)?;
     let registry = Arc::new(Mutex::<Registry>::default());
     let (completed, completion) = mpsc::sync_channel(1);
+    let directory = request_root.path().parent().expect("fixture carrier");
     let result = std::thread::scope(|scope| {
         scope.spawn(|| {
-            let _ = completed.send(request_operation(
+            let _ = completed.send(request_operation_at(
                 &registry,
+                directory,
                 &bridge.workspace,
                 operation,
                 HostAction::Open {
@@ -787,7 +858,7 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
     );
     let mut failures = Vec::new();
     let operation = OperationId::from_bytes([7; 16]);
-    let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
+    let descriptor = super::directory(&local)?.join("owner.json");
     for (ready, shutdown) in [
         (Ok(()), Err(Error::Cancelled)),
         (
@@ -819,7 +890,7 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
                 owned = std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
-                    .open(checkout.path().join(DIRECTORY).join("owner.lock"))
+                    .open(super::directory(&local)?.join("owner.lock"))
                     .and_then(|file| {
                         acyclic_native_runtime::FileLock::try_acquire(
                             file,
@@ -893,15 +964,16 @@ async fn workspace_shutdown_retains_its_cause_when_retirement_refuses() -> Resul
 async fn saved_command_result_follows_its_original_request_directory() -> Result<()> {
     let (checkout, mut files, _probe) = carrier_io()?;
     let state = tempfile::tempdir().map_err(storage)?;
-    std::fs::write(checkout.path().join("source.txt"), b"first").map_err(storage)?;
+    let project = checkout.path().join("workspace");
+    std::fs::create_dir(&project).map_err(storage)?;
+    std::fs::write(project.join("source.txt"), b"first").map_err(storage)?;
     let local = Arc::new(
         LocalHarness::open(
-            LocalHarnessConfig::native_host(checkout.path())
-                .state_directory(state.path().join("owner")),
+            LocalHarnessConfig::native_host(&project).state_directory(state.path().join("owner")),
         )
         .await?,
     );
-    let directory = checkout.path().join(DIRECTORY);
+    let directory = files.requests.path().parent().unwrap().to_path_buf();
     let requests = Arc::clone(&files.requests);
     let owner = HostWorkspaceOwner::new(Arc::clone(&local))?.with_requests(Arc::clone(&requests));
     let opened = owner
@@ -955,7 +1027,7 @@ async fn saved_command_result_follows_its_original_request_directory() -> Result
     std::fs::create_dir(files.requests.path()).map_err(storage)?;
     assert!(retained.join(&leaf).is_file());
     assert!(!files.requests.path().join(&leaf).exists());
-    std::fs::write(checkout.path().join("source.txt"), b"second").map_err(storage)?;
+    std::fs::write(project.join("source.txt"), b"second").map_err(storage)?;
     owner
         .dispatch(OperationId::new(), command("commit -m second"))
         .await?;
@@ -1126,22 +1198,25 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         std::future::pending(),
     )));
     started.await.map_err(storage)?;
+    assert_eq!(
+        std::fs::read_dir(checkout.path()).map_err(storage)?.count(),
+        0,
+        "opening the owner and carrier must not author checkout state"
+    );
+    assert!(!super::directory(&local)?.starts_with(checkout.path()));
     // Follow only coordination files once published, before any native view
     // is admitted. The observer never traverses mounted agent filesystems.
     watcher
-        .watch(&checkout.path().join(DIRECTORY), RecursiveMode::Recursive)
+        .watch(&super::directory(&local)?, RecursiveMode::Recursive)
         .map_err(storage)?;
     assert!(
         serve(Arc::clone(&local)).await.is_err(),
         "a second workspace owner must not dispatch the same requests"
     );
-    let requests = checkout.path().join(DIRECTORY).join("requests");
+    let requests = super::directory(&local)?.join("requests");
     // A stale or untrusted status entry must neither select another reply nor
     // be pruned by publication. Its name sorts after every former sequence.
-    let debris = checkout
-        .path()
-        .join(DIRECTORY)
-        .join("status/18446744073709551615.json");
+    let debris = super::directory(&local)?.join("status/18446744073709551615.json");
     std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
     std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
@@ -1195,18 +1270,23 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             let (release, resume) = mpsc::sync_channel(1);
             let (started, opening) = mpsc::sync_channel(1);
             let first = scope.spawn(move || {
-                Registry::bridge(registry, cwd, |directory, endpoint| {
-                    started.send(()).map_err(storage)?;
-                    resume.recv().map_err(storage)?;
-                    Bridge::open(directory, endpoint)
-                })
+                Registry::bridge(
+                    registry,
+                    &selected_directory(&cwd)?,
+                    cwd,
+                    |directory, endpoint| {
+                        started.send(()).map_err(storage)?;
+                        resume.recv().map_err(storage)?;
+                        Bridge::open(directory, endpoint)
+                    },
+                )
             });
             opening.recv().map_err(storage)?;
             assert!(
                 registry.try_lock().is_ok(),
                 "native connection setup must not hold the registry for unrelated owners"
             );
-            let connection = lock(registry).bridges[&cwd.join(DIRECTORY)].clone();
+            let connection = lock(registry).bridges[&selected_directory(&cwd)?].clone();
             assert!(
                 connection.try_lock().is_err(),
                 "the connecting owner must retain its single initialization slot"
@@ -1214,12 +1294,17 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             let (started, overlapping) = mpsc::sync_channel(1);
             let second = scope.spawn(move || {
                 started.send(()).map_err(storage)?;
-                Registry::bridge(registry, cwd, |_, _| {
+                Registry::bridge(registry, &selected_directory(&cwd)?, cwd, |_, _| {
                     panic!("an overlapping connection must reuse the first native open")
                 })
             });
             overlapping.recv().map_err(storage)?;
-            let other = Registry::bridge(registry, &other_cwd, Bridge::open)?;
+            let other = Registry::bridge(
+                registry,
+                &selected_directory(&other_cwd)?,
+                &other_cwd,
+                Bridge::open,
+            )?;
             assert_eq!(other.workspace, other_cwd);
             release.send(()).map_err(storage)?;
             let first = first.join().expect("the first native open must settle")?;
@@ -1239,7 +1324,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .disconnect()
         .await?;
     assert!(Arc::ptr_eq(
-        &Registry::bridge(&registry, &cwd, |_, _| {
+        &Registry::bridge(&registry, &selected_directory(&cwd)?, &cwd, |_, _| {
             panic!("a warm connection must not repeat native setup")
         })?,
         &connected,
@@ -1247,16 +1332,17 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // A fresh client has no retained handles. The live owner's descriptor
     // must bind admission to the reply directory that owner actually serves.
     // The original request watcher stays live throughout this admission.
-    let directory = cwd.join(DIRECTORY);
+    let directory = selected_directory(&cwd)?;
     let original = directory.join("status");
     let retained = directory.join("retained-status");
     std::fs::rename(&original, &retained).map_err(storage)?;
     std::fs::create_dir(&original).map_err(storage)?;
     let fresh = Arc::new(Mutex::<Registry>::default());
-    let (cold_failure, cold_observer) = match Registry::bridge(&fresh, &cwd, Bridge::open) {
-        Err(error) => (Some(error), None),
-        Ok(bridge) => (None, lock(&bridge.observer).take()),
-    };
+    let (cold_failure, cold_observer) =
+        match Registry::bridge(&fresh, &selected_directory(&cwd)?, &cwd, Bridge::open) {
+            Err(error) => (Some(error), None),
+            Ok(bridge) => (None, lock(&bridge.observer).take()),
+        };
     // Restore before any assertion can fail, then join an incorrectly
     // admitted observer after its original owner ends.
     std::fs::remove_dir(&original).map_err(storage)?;
@@ -1297,8 +1383,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // original directory. Move the actual committed bytes away before
     // arming: neither publication's initial read nor unrelated request
     // events may stand in for the original reply notification.
-    let status = checkout.path().join(DIRECTORY).join("status");
-    let retained_status = checkout.path().join(DIRECTORY).join("retained-status");
+    let status = super::directory(&local)?.join("status");
+    let retained_status = super::directory(&local)?.join("retained-status");
     std::fs::rename(&status, &retained_status).map_err(storage)?;
     std::fs::create_dir(&status).map_err(storage)?;
     let original_reply = reply_path(&retained_status, operation);
@@ -1331,8 +1417,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     // directory even when an unrelated directory takes over the same name.
     // Rename while idle: an active root move can retire notification delivery.
     // The earlier delayed reply checks re-admission's actual event producer.
-    let status = checkout.path().join(DIRECTORY).join("status");
-    let retained_status = checkout.path().join(DIRECTORY).join("retained-status");
+    let status = super::directory(&local)?.join("status");
+    let retained_status = super::directory(&local)?.join("retained-status");
     std::fs::rename(&status, &retained_status).map_err(storage)?;
     std::fs::create_dir(&status).map_err(storage)?;
     let replacement = reply_path(&status, operation);
@@ -1362,7 +1448,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         // The publisher must isolate that conflict and the caller must finish
         // without requiring a new notification for the pre-existing bytes.
         let operation = OperationId::new();
-        let directory = cwd.join(DIRECTORY);
+        let directory = selected_directory(&cwd)?;
         let path = reply_path(&directory.join("status"), operation);
         std::fs::write(&path, b"{conflicting reply").map_err(storage)?;
         let mut served = Served::default();
@@ -1414,7 +1500,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         let child = PathBuf::from(spawned["cwd"].as_str().unwrap());
         assert_eq!(workspace_root(&child)?, cwd);
         assert!(Arc::ptr_eq(
-            &Registry::bridge(&requests_registry, &child, |_, _| {
+            &Registry::bridge(&requests_registry, &selected_directory(&child)?, &child, |_, _| {
                 panic!("another directory of the same owner must reuse its connection")
             })?,
             &connected,
@@ -1570,7 +1656,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         b"outside remains untouched"
     );
     // Every consumed operation's reply is retired, without touching debris.
-    let statuses = checkout.path().join(DIRECTORY).join("status");
+    let statuses = super::directory(&local)?.join("status");
     loop {
         let mut pending = 0;
         for entry in std::fs::read_dir(&statuses).map_err(storage)? {
@@ -1590,7 +1676,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // Every registration retired, and with the last the directory watches.
     let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
-    let bridge = Registry::live(&registry, &cwd)
+    let bridge = Registry::live(&registry, &selected_directory(&cwd)?, &cwd)
         .ok_or_else(|| Error::Conflict("client bridge absent".into()))?;
     assert!(lock(&bridge.shared.waiters).waiting.is_empty());
     assert!(
@@ -1643,7 +1729,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             std::io::ErrorKind::PermissionDenied,
         ))));
     assert!(
-        Arc::ptr_eq(&Registry::bridge(&registry, &cwd, Bridge::open)?, &bridge),
+        Arc::ptr_eq(
+            &Registry::bridge(&registry, &selected_directory(&cwd)?, &cwd, Bridge::open)?,
+            &bridge
+        ),
         "a failed live connection must not reopen its notification source"
     );
     let refused_operation = OperationId::new();
@@ -1663,7 +1752,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // The owner is still alive: failure of its native exit observation must
     // retain that cause rather than falsely declaring the owner gone.
-    let (directory, endpoint) = discover(&cwd)?;
+    let (directory, endpoint) = discover(&selected_directory(&cwd)?, &cwd)?;
     let observed = Arc::new(Bridge::open(directory, endpoint)?);
     let (delivery, response) = mpsc::sync_channel(1);
     let waiting = observed.wait(OperationId::new(), delivery)?;
@@ -1706,7 +1795,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     drop(local);
     // A rejected projection that cannot be unlinked has no withdrawal
     // producer. Its error must retire the original owner and end the call.
-    let (directory, endpoint) = discover(&cwd)?;
+    let (directory, endpoint) = discover(&selected_directory(&cwd)?, &cwd)?;
     let blocked = Arc::new(Bridge::open(directory, endpoint)?);
     let operation = OperationId::new();
     let (delivery, response) = mpsc::sync_channel(1);
@@ -1774,7 +1863,8 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
 fn absent_owner_never_creates_a_service_or_state_directory() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     assert!(matches!(
-        request(
+        request_at(
+            &checkout.path().with_extension("absent-host-files"),
             checkout.path(),
             HostAction::Open {
                 host: "codex".into(),
@@ -1795,9 +1885,9 @@ fn absent_owner_never_creates_a_service_or_state_directory() -> Result<()> {
 fn endpoint_projection_cannot_follow_a_workspace_symlink() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     let outside = tempfile::tempdir().map_err(storage)?;
-    std::os::unix::fs::symlink(outside.path(), checkout.path().join(".acyclic-sdk"))
+    std::os::unix::fs::symlink(outside.path(), checkout.path().join("carrier-alias"))
         .map_err(storage)?;
-    assert!(discover(checkout.path()).is_err());
+    assert!(discover(&checkout.path().join("carrier-alias"), checkout.path()).is_err());
     assert_eq!(
         std::fs::read_dir(outside.path()).map_err(storage)?.count(),
         0

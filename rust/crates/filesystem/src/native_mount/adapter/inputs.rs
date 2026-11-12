@@ -98,7 +98,6 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         &mut self,
         bytes: &[u8],
         profile: FilesystemProfile,
-        limits: VolumeLimits,
     ) -> Result<AttributeName, MountSourceError> {
         if profile != FilesystemProfile::Posix {
             return Err(MountSourceError::Unsupported(
@@ -106,26 +105,20 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             ));
         }
         let owned = self.copy_bytes(bytes)?;
-        AttributeName::new(
-            AttributeClass::PosixXattr,
-            owned,
-            limits.maximum_component_bytes,
-        )
-        .map_err(engine_error)
+        AttributeName::new(AttributeClass::PosixXattr, owned).map_err(engine_error)
     }
 
     fn mutation_attribute_name(
         &mut self,
         bytes: &[u8],
         profile: FilesystemProfile,
-        limits: VolumeLimits,
     ) -> Result<AttributeName, MountSourceError> {
         // Policy records are changed through the policy owner, never through
         // native xattr operations (including handles opened before revocation).
         if bytes == crate::access::POLICY_METADATA_KEY {
             return Err(MountSourceError::AccessDenied);
         }
-        self.attribute_name(bytes, profile, limits)
+        self.attribute_name(bytes, profile)
     }
 
     pub(super) fn admit(&mut self, delta: crate::WorkCounters) -> Result<(), MountSourceError> {

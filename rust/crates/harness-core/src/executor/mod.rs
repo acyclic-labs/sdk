@@ -46,7 +46,6 @@ mod replay;
 pub(crate) use replay::replay_execution;
 mod accounting;
 use accounting::*;
-mod background_compaction;
 mod binding;
 mod compaction;
 mod composition;
@@ -418,7 +417,7 @@ pub enum ExecutionEvent {
         call_id: String,
         /// Stage that failed.
         reason: ToolFailureKind,
-        /// Bounded, sanitized cause the model receives; the raw error stays in the log.
+        /// Bounded, sanitized cause shared by the journal and model-visible result.
         cause: ToolFailureCause,
     },
 }

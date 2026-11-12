@@ -190,7 +190,16 @@ impl HostWorkspaceOwner {
             .workspace_path()
             .ok_or_else(|| Error::Invalid("native fence has no workspace".into()))?;
         let view = self.view(child)?;
-        match super::super::host_process::HostProcessLease::acquire(workspace, child, view.path()) {
+        match super::super::host_process::HostProcessLease::acquire(
+            &self
+                .local
+                .workspace()
+                .ok_or_else(|| Error::Invalid("native process has no workspace".into()))?
+                .host_state,
+            workspace,
+            child,
+            view.path(),
+        ) {
             Ok(lease) => Ok(Some(lease.quiescent())),
             Err(Error::Conflict(_)) => Ok(None),
             Err(error) => Err(error),
@@ -236,8 +245,9 @@ impl HostWorkspaceOwner {
             operation: *claimed,
             turn: session.settled + 1,
         };
+        let view = self.view(child)?;
         Ok(
-            json!({"task":child,"cwd":self.view(child)?.host_cwd(),"turn":claim.turn,
+            json!({"task":child,"cwd":view.host_cwd(),"environment":view.environment()?,"turn":claim.turn,
             "claim":claim,"prompt":prompt,"session":session.native}),
         )
     }
@@ -261,9 +271,17 @@ impl HostWorkspaceOwner {
             .local
             .workspace_path()
             .ok_or_else(|| Error::Invalid("native completion has no workspace".into()))?;
-        let mut quiescence =
-            super::super::host_process::HostProcessLease::acquire(workspace, child, view.path())?
-                .quiescent();
+        let mut quiescence = super::super::host_process::HostProcessLease::acquire(
+            &self
+                .local
+                .workspace()
+                .ok_or_else(|| Error::Invalid("native process has no workspace".into()))?
+                .host_state,
+            workspace,
+            child,
+            view.path(),
+        )?
+        .quiescent();
         quiescence.verify(child, view.path())?;
         let (_, session) = self.native.session(child).await?;
         match session.claimed() {
@@ -334,7 +352,8 @@ impl HostWorkspaceOwner {
     ) -> Result<Value> {
         let (state, session) = self.native.session(child).await?;
         let pending = session.pending(&state);
-        let mut value = json!({"task":child,"cwd":self.view(child)?.host_cwd(),
+        let view = self.view(child)?;
+        let mut value = json!({"task":child,"cwd":view.host_cwd(),"environment":view.environment()?,
             "status":{"settled":session.claimed().is_none(),"turn":session.settled},
             "control":session.control,"events":session.events,"pending":pending});
         if include_result {

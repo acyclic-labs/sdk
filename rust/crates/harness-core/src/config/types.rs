@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// `.volumes/home/agent.ts`: the agent's model and how it is called. You may
+/// `volume:///home/agent.ts`: the agent's model and how it is called. You may
 /// change your own; `model` must be one your permissions allow (sys/models/),
 /// otherwise its `Admission` is "rejected" with the reason.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]

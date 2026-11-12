@@ -31,11 +31,11 @@
       { "when": { "contains": ["API key must be a single line."] }, "send": "E2E_FIRST_RUN_NONSECRET\r" },
       { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "prompt": "first configured prompt" },
       { "when": { "delta": "FIRST_CONFIGURED_ANSWER" }, "send": "\u001b" },
-      { "when": { "contains": ["FIRST_CONFIGURED_ANSWER", "interaction cancelled", "\u25cb"] }, "send": "\u0004\u0004" }
+      { "when": { "contains": ["FIRST_CONFIGURED_ANSWER", "interaction cancelled", "\u25cb"] }, "detach": true }
     ], "exit": 2 },
     { "mode": "pty", "actions": [
       { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "assert": { "absent": ["GraphCoder first run", "API key (hidden)"] }, "prompt": "next configured prompt" },
-      { "when": { "contains": ["NEXT_CONFIGURED_ANSWER", "\u25cb"] }, "send": "\u0004\u0004" }
+      { "when": { "contains": ["NEXT_CONFIGURED_ANSWER", "\u25cb"] }, "detach": true }
     ] }
   ],
   "assert": {

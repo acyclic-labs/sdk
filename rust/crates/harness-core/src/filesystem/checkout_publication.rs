@@ -12,7 +12,6 @@ use std::{
 };
 
 type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
-const EXCLUDED_NAMES: &[&str] = &[".git", ".system", ".volumes"];
 mod approval;
 pub use approval::{AuthorizedCheckout, CheckoutApproval};
 
@@ -72,7 +71,7 @@ impl CheckoutPublication {
             operation_id: self.operation,
             from: from.id(),
             to: to.id(),
-            excluded_names: EXCLUDED_NAMES,
+            excluded_names: &[],
             options,
             budget: work.budget(),
             cancellation: work.cancellation(),
@@ -96,10 +95,7 @@ impl CheckoutPublication {
         )
         .await;
         match prepared {
-            Ok(receipt) => {
-                validate_plan(&receipt.value.plan)?;
-                Ok(receipt.value)
-            }
+            Ok(receipt) => Ok(receipt.value),
             Err((source, _)) => Err(source.into()),
         }
     }
@@ -135,14 +131,10 @@ impl CheckoutPublication {
             Ok(receipt) => receipt.value,
             Err((cause, _)) => return Err(cause.into()),
         };
-        // Fresh transitions need the same validated plan as retained ones.
-        // In particular, native case-insensitive lookup must not turn an
-        // otherwise distinct generation spelling into a protected host name.
         let journal = match journal {
             Some(journal) => journal,
             None => self.prepare(from, to, state, options, work).await?,
         };
-        validate_plan(&journal.plan)?;
         // A logical commit can precede its native acknowledgement. Every host
         // resumes the original transition, even when its current head is `to`.
         let original = if from.id() == to.id()
@@ -220,31 +212,6 @@ impl CheckoutPublication {
         state.remove_materialization_async(operation).await?;
         Ok(())
     }
-}
-
-fn validate_plan(plan: &acyclic_fs::MaterializationPlan) -> Result<()> {
-    use acyclic_fs::MaterializationEdit;
-    let allowed = |path: &str| {
-        let name = path.split('/').next().unwrap_or("");
-        !EXCLUDED_NAMES
-            .iter()
-            .any(|excluded| name.eq_ignore_ascii_case(excluded))
-    };
-    for edit in &plan.edits {
-        let valid = match edit {
-            MaterializationEdit::Install { path, .. }
-            | MaterializationEdit::Remove { path }
-            | MaterializationEdit::SetMetadata { path, .. } => allowed(path),
-            MaterializationEdit::Rename { from, to } => allowed(from) && allowed(to),
-            _ => false,
-        };
-        if !valid {
-            return Err(Error::Unauthorized(
-                "checkout journal targets a reserved host path".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn completed(

@@ -51,106 +51,66 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let mut background = self.background_summary(&context).await?;
-        loop {
-            // Consume at most the one speculative receipt, then the current
-            // capacity kernel. A failed preview is never a committed rewrite.
-            let speculative = background.is_some();
-            let (summary, maximum) = match background.take() {
-                Some(summary) => {
-                    let mandatory = with_history_io(self.io, |work| {
-                        crate::context::mandatory_message_count(
-                            &context,
-                            summary.source_messages as usize,
-                            work,
-                        )
-                    })?;
-                    let maximum = mandatory.checked_add(1).ok_or_else(|| {
-                        stock_boundary(
-                            self.io,
-                            crate::wire::ErrorCode::Invalid,
-                            "compaction message count overflows",
-                        )
-                    })?;
-                    if message_limit.is_some_and(|limit| maximum > limit)
-                        || maximum > context.messages.len()
-                    {
-                        continue;
-                    }
-                    (summary, maximum)
-                }
-                None => {
-                    let (through, maximum) = self
-                        .summary_budget(accounting.capacity, &context, policy, message_limit)
-                        .await?;
-                    let summary = self
-                        .backstop_marker(journal, input.operation_id, step, (&context, through))
-                        .await?;
-                    (summary, maximum)
-                }
-            };
-            let (compacted, reference) =
-                crate::context::compact_projection(&context, maximum, Some(summary), self.io)?;
-            let (compaction, working) = if pre_stage {
-                let (compaction, working) = self
-                    .stage_working_cut(
-                        journal,
-                        working_tail::WorkingCompaction {
-                            input,
-                            step,
-                            prior,
-                            source: &context,
-                            retained: &compacted,
-                            proof: &reference,
-                        },
-                    )
-                    .await?;
-                (compaction, Some(working))
-            } else {
-                let key = with_history_io(self.io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!("context:{step}:compaction"),
-                        work,
-                    )
-                })?;
-                let compaction =
-                    stage_json(journal, input.operation_id, &key, &reference, self.io).await?;
-                (compaction, projection.working.take())
-            };
-            let (compacted, mut request) = self
-                .prepare_compacted_request(input, step, compacted, pre_stage)
-                .await?;
-            let compacted = ResponseProjection {
-                context: compacted,
-                steering: projection.steering.take(),
-                canonical: None,
-                checkpoint: None,
-                working,
-                accounting: None,
-            };
-            if self
-                .finish_compaction(
+        let (through, maximum) = self
+            .summary_budget(accounting.capacity, &context, policy, message_limit)
+            .await?;
+        let summary = self
+            .backstop_marker(journal, input.operation_id, step, (&context, through))
+            .await?;
+        let (compacted, reference) =
+            crate::context::compact_projection(&context, maximum, Some(summary), self.io)?;
+        let (compaction, working) = if pre_stage {
+            let (compaction, working) = self
+                .stage_working_cut(
                     journal,
-                    (input, step),
-                    &compacted,
-                    compaction,
-                    accounting.capacity,
-                    &mut request,
+                    working_tail::WorkingCompaction {
+                        input,
+                        step,
+                        prior,
+                        source: &context,
+                        retained: &compacted,
+                        proof: &reference,
+                    },
                 )
-                .await?
-            {
-                return Ok(request);
-            }
-            if !speculative {
-                return Err(stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    "context backstop: the irreducible set exceeds the model window",
-                ));
-            }
-            projection.steering = compacted.steering;
-            projection.working = compacted.working;
+                .await?;
+            (compaction, Some(working))
+        } else {
+            let key = with_history_io(self.io, |work| {
+                crate::executor::preparation_format(format_args!("context:{step}:compaction"), work)
+            })?;
+            let compaction =
+                stage_json(journal, input.operation_id, &key, &reference, self.io).await?;
+            (compaction, projection.working.take())
+        };
+        let (compacted, mut request) = self
+            .prepare_compacted_request(input, step, compacted, pre_stage)
+            .await?;
+        let compacted = ResponseProjection {
+            context: compacted,
+            steering: projection.steering.take(),
+            canonical: None,
+            checkpoint: None,
+            working,
+            accounting: None,
+        };
+        if self
+            .finish_compaction(
+                journal,
+                (input, step),
+                &compacted,
+                compaction,
+                accounting.capacity,
+                &mut request,
+            )
+            .await?
+        {
+            return Ok(request);
         }
+        Err(stock_boundary(
+            self.io,
+            crate::wire::ErrorCode::Invalid,
+            "context backstop: the irreducible set exceeds the model window",
+        ))
     }
 
     /// The fixed marker standing in for the evicted `[0, through)`, staged

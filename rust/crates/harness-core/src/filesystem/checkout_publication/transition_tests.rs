@@ -91,6 +91,14 @@ enum Adapter {
     Prepared,
 }
 
+const USER_PATHS: [&str; 5] = [
+    ".git/config",
+    ".system/user.txt",
+    ".volumes/home/user.txt",
+    ".home-seed-v1",
+    ".acyclic-sdk/user.txt",
+];
+
 struct Fixture {
     _directory: tempfile::TempDir,
     root: PathBuf,
@@ -99,12 +107,13 @@ struct Fixture {
     to: LocalGeneration,
     work: NativeMaterializationWork,
     identity: NativeRootIdentity,
+    paths: &'static [&'static str],
 }
 impl Fixture {
     async fn new() -> TestResult<Self> {
-        Self::with_alias(None).await
+        Self::with_paths(&[]).await
     }
-    async fn with_alias(alias: Option<&str>) -> TestResult<Self> {
+    async fn with_paths(paths: &'static [&'static str]) -> TestResult<Self> {
         acyclic_native_runtime::initialize_native_io_services()?;
         let directory = tempfile::tempdir()?;
         let filesystem = LocalFs::local(LocalOptions::new(directory.path().join("fs"))).await?;
@@ -121,22 +130,51 @@ impl Fixture {
             .create_workspace("checkout", WorkBudget::UNBOUNDED, &cancellation)
             .await?
             .value;
-        let from = workspace.head(&work, &cancellation).await?;
-        for name in ["note", ".git", ".system", ".volumes"] {
-            workspace
-                .write_text(&format!("/{name}"), "candidate")
+        if !paths.is_empty() {
+            let mut original = workspace
+                .begin_transaction(
+                    acyclic_fs::IdempotencyKey::new(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            for name in paths {
+                if let Some((parent, _)) = name.rsplit_once('/') {
+                    original
+                        .create_dir_all(&format!("/{parent}"), WorkBudget::UNBOUNDED, &cancellation)
+                        .await?;
+                }
+                original.write_text(&format!("/{name}"), "original").await?;
+            }
+            original
+                .commit::<acyclic_fs::WorkspaceError, _, _>(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    |_| {
+                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        }))
+                    },
+                )
                 .await?;
         }
-        if let Some(alias) = alias {
+        let from = workspace.head(&work, &cancellation).await?;
+        for name in std::iter::once("note").chain(paths.iter().copied()) {
             workspace
-                .write_text(&format!("/{alias}"), "candidate")
+                .write_text(&format!("/{name}"), "candidate")
                 .await?;
         }
         let to = workspace.head(&work, &cancellation).await?;
         let root = directory.path().join("checkout");
         std::fs::create_dir(&root)?;
-        for name in [".git", ".system", ".volumes"] {
-            std::fs::write(root.join(name), "host-owned")?;
+        for name in paths {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))?;
+            std::fs::write(path, "original")?;
         }
         let identity = work.root_identity(&root)?;
         let state = LocalCoreStateStore::new(directory.path().join("core"));
@@ -148,6 +186,7 @@ impl Fixture {
             to,
             work,
             identity,
+            paths,
         })
     }
     fn publication(&self, operation: OperationId) -> crate::Result<CheckoutPublication> {
@@ -239,6 +278,11 @@ impl Fixture {
             .await?;
         let other_root = self.root.parent().unwrap().join("other-checkout");
         std::fs::create_dir(&other_root)?;
+        for name in self.paths {
+            let path = other_root.join(name);
+            std::fs::create_dir_all(path.parent().expect("fixture parent"))?;
+            std::fs::write(path, "original")?;
+        }
         let other = CheckoutPublication::new(
             &other_root,
             self.work.root_identity(&other_root)?,
@@ -274,8 +318,12 @@ impl Fixture {
             std::fs::read_to_string(self.root.join("note"))?,
             "candidate"
         );
-        for name in [".git", ".system", ".volumes"] {
-            assert_eq!(std::fs::read_to_string(self.root.join(name))?, "host-owned");
+        for name in self.paths {
+            assert_eq!(
+                std::fs::read_to_string(self.root.join(name))?,
+                "candidate",
+                "{name}"
+            );
         }
         assert!(!publication.directory().exists());
         // Another operation on this root and another root own real Prepared
@@ -332,7 +380,7 @@ impl Fixture {
 
 #[tokio::test]
 async fn git_adapter_resumes_original_checkout_and_preserves_acknowledged_edits() -> TestResult {
-    Fixture::new()
+    Fixture::with_paths(&USER_PATHS)
         .await?
         .assert_resume_and_acknowledgement(Adapter::Git)
         .await
@@ -773,172 +821,6 @@ async fn prepared_adapter_resumes_original_checkout_and_preserves_acknowledged_e
         .await?
         .assert_resume_and_acknowledgement(Adapter::Prepared)
         .await
-}
-
-#[tokio::test]
-async fn every_adapter_refuses_retained_internal_edits_with_old_path_control() -> TestResult {
-    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
-        let fixture = Fixture::new().await?;
-        for name in [".system", ".volumes"] {
-            std::fs::remove_file(fixture.root.join(name))?;
-        }
-        let operation = OperationId::new();
-        let publication = fixture.publication(operation)?;
-        let options = MaterializeOptions::native(publication.directory().join("target"));
-        let old_request = || {
-            let mut request =
-                publication.request(&fixture.from, &fixture.to, &options, &fixture.work);
-            request.excluded_names = &[".git"];
-            request
-        };
-        acyclic_fs::materializer::prepare_native_generation_transition(
-            &fixture.from,
-            &fixture.to,
-            &fixture.state,
-            old_request(),
-            fixture.work.clone(),
-        )
-        .await
-        .map_err(|(cause, _)| cause)?;
-        assert!(
-            fixture
-                .publish(adapter, operation, &fixture.from)
-                .await
-                .is_err()
-        );
-        for name in ["note", ".system", ".volumes"] {
-            assert!(!fixture.root.join(name).exists());
-        }
-        // The former shape accepts the same prepared journal and leaks both
-        // internal names. The shared owner rejects it before any host effect.
-        acyclic_fs::publish_native_generation_transition(
-            &fixture.from,
-            &fixture.to,
-            &fixture.state,
-            old_request(),
-            fixture.work.clone(),
-            || std::future::ready(Ok(())),
-        )
-        .await
-        .map_err(|(cause, _)| cause)?;
-        for name in [".system", ".volumes"] {
-            assert_eq!(
-                std::fs::read_to_string(fixture.root.join(name))?,
-                "candidate"
-            );
-        }
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn every_adapter_refuses_fresh_and_retained_reserved_aliases_before_host_effect() -> TestResult
-{
-    for adapter in [Adapter::Git, Adapter::MultiRoot, Adapter::Prepared] {
-        let fixture = Fixture::with_alias(Some(".GIT")).await?;
-        let operation = OperationId::new();
-        for _ in 0..2 {
-            // The first call prepares a fresh transition; the second follows
-            // the retained journal. Neither may publish even an allowed edit.
-            assert!(
-                fixture
-                    .publish(adapter, operation, &fixture.from)
-                    .await
-                    .is_err()
-            );
-            assert!(!fixture.root.join("note").exists());
-            for name in [".git", ".system", ".volumes"] {
-                assert_eq!(
-                    std::fs::read_to_string(fixture.root.join(name))?,
-                    "host-owned"
-                );
-            }
-        }
-        // The actual former path publishes the forbidden spelling. On Windows
-        // this resolves to the protected .git file through native lookup.
-        let publication = fixture.publication(operation)?;
-        let options = MaterializeOptions::native(publication.directory().join("target"));
-        acyclic_fs::publish_native_generation_transition(
-            &fixture.from,
-            &fixture.to,
-            &fixture.state,
-            publication.request(&fixture.from, &fixture.to, &options, &fixture.work),
-            fixture.work.clone(),
-            || std::future::ready(Ok(())),
-        )
-        .await
-        .map_err(|(cause, _)| cause)?;
-        assert_eq!(
-            std::fs::read_to_string(fixture.root.join(".GIT"))?,
-            "candidate"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn every_reserved_ascii_spelling_is_refused_for_every_plan_edit() {
-    use acyclic_fs::{
-        Digest, GenerationId, MaterializationEdit, MaterializationIntent, MaterializationPlan,
-    };
-    let generation = GenerationId::new(Digest::from_bytes([0; 32]));
-    for reserved in EXCLUDED_NAMES {
-        for mask in 0..(1 << reserved.len()) {
-            let spelling: String = reserved
-                .bytes()
-                .enumerate()
-                .map(|(index, byte)| {
-                    char::from(if mask & (1 << index) == 0 {
-                        byte
-                    } else {
-                        byte.to_ascii_uppercase()
-                    })
-                })
-                .collect();
-            for path in [spelling.clone(), format!("{spelling}/config")] {
-                for edit in [
-                    MaterializationEdit::Install {
-                        path: path.clone(),
-                        image: vec![1],
-                    },
-                    MaterializationEdit::Remove { path: path.clone() },
-                    MaterializationEdit::SetMetadata {
-                        path: path.clone(),
-                        image: vec![1],
-                    },
-                    MaterializationEdit::Rename {
-                        from: path.clone(),
-                        to: "note".into(),
-                    },
-                    MaterializationEdit::Rename {
-                        from: "note".into(),
-                        to: path.clone(),
-                    },
-                ] {
-                    let mut plan = MaterializationPlan {
-                        operation_id: OperationId::from_bytes([1; 16]),
-                        intent: MaterializationIntent::GenerationTransition {
-                            from: generation,
-                            to: generation,
-                        },
-                        edits: vec![edit],
-                    };
-                    assert!(validate_plan(&plan).is_err(), "{path}");
-                    // Exact-byte matching admits case aliases; this is the
-                    // former predicate whose spelling-dependent gap is closed.
-                    if path.split('/').next().unwrap() != *reserved {
-                        assert!(!EXCLUDED_NAMES.contains(&path.split('/').next().unwrap()));
-                    }
-                    plan.edits = vec![MaterializationEdit::Remove {
-                        path: format!("{path}-other"),
-                    }];
-                    if !path.contains('/') {
-                        assert!(validate_plan(&plan).is_ok());
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[tokio::test]

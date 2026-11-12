@@ -60,13 +60,15 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     work: &mut crate::AuthorityWork<'_>,
 ) -> Result<u128, AccountingError> {
     let (volume_id, config) = volume;
-    let evidence_bound = config.limits.maximum_generation_bytes;
+    // Bound the retained source and both canonical representations before decode.
+    let evidence_bound = work.remaining()?.peak_allocation_bytes / 8;
+    let evidence_objects = evidence_bound / ObjectId::ENCODED_LEN as u64;
     let archived = objects
         .historical_generation_evidence(
             authority_id,
             record,
             evidence_bound,
-            config.limits.maximum_objects_per_generation,
+            evidence_objects,
             work,
         )
         .await?;
@@ -78,7 +80,7 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
             authority_id,
             record,
             evidence_bound,
-            config.limits.maximum_objects_per_generation,
+            evidence_objects,
             &mut |step| observed.observe(step).map_err(AccountingError::from),
         );
         let result = decoded.and_then(|original| {
@@ -98,9 +100,6 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     }
     let limits = ClosureLimits {
         decode: DecodeLimits::for_volume(config),
-        maximum_objects: config.limits.maximum_objects_per_generation,
-        maximum_files: config.limits.maximum_files_per_generation,
-        maximum_object_bytes: config.limits.maximum_generation_bytes,
         profile: config.profile,
         symbolic_links: config.symbolic_links,
         hard_links: config.hard_links,

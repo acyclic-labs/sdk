@@ -16,8 +16,7 @@ pub(super) struct Owner {
     pub(super) workspace_incarnation: Option<[u8; 16]>,
 }
 
-/// Evidence retained independently of the checkout token. A token locates state;
-/// it does not prove that a different physical root is the original checkout.
+/// Physical root evidence retained independently of native incarnation selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) enum RootWitness {

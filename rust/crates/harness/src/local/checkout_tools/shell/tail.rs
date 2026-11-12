@@ -1,8 +1,8 @@
-//! Bounded presentation over the existing process stream. Overflow goes to
-//! a visible task volume and is captured by the command's ordinary commit.
+//! Bounded presentation over the existing process stream. The original spill
+//! handle stays held until its bytes are published to the private output volume.
 use std::{
     collections::VecDeque,
-    io::{self, Write},
+    io::{self, Seek as _, Write},
     path::PathBuf,
 };
 
@@ -77,7 +77,7 @@ impl Tail {
     /// cut discovered at settlement can still retain every original byte.
     pub(super) fn ensure_spill(&mut self) -> io::Result<()> {
         if self.spill.is_none() {
-            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&self.path)
+            let mut file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&self.path)
                 .map_err(|error| io::Error::new(error.kind(), format!("shell spill creation failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display())))?;
             let (first, second) = self.bytes.as_slices();
             file.write_all(first).and_then(|()| file.write_all(second)).map_err(|error| {
@@ -92,7 +92,7 @@ impl Tail {
         mut self,
         mut result: crate::tool::ToolResult,
         maximum: u64,
-    ) -> crate::Result<crate::tool::ToolResult> {
+    ) -> crate::Result<(crate::tool::ToolResult, Option<std::fs::File>)> {
         let (stdout, stderr, omitted) = self.text();
         let fields = result.value.as_object_mut().ok_or_else(|| crate::Error::Invalid(
             "shell settlement requires terminal fields; recovery: bind the shared shell executor".into(),
@@ -103,10 +103,13 @@ impl Tail {
         let mut result = crate::tools::shell::bounded_result(result, maximum)?;
         if result.value["omitted_bytes"].as_u64().unwrap_or_default() > 0 {
             self.ensure_spill().map_err(crate::Error::process_io)?;
+            if let Some(file) = &mut self.spill {
+                file.rewind().map_err(crate::Error::process_io)?;
+            }
         } else {
             result.value["spill"] = serde_json::Value::Null;
         }
-        Ok(result)
+        Ok((result, self.spill))
     }
 
     fn text(&mut self) -> (String, String, u64) {
@@ -178,8 +181,8 @@ mod tests {
             let retained_channels = tail.channels.iter().flat_map(|(channel, length)| std::iter::repeat_n(*channel, *length)).collect::<Vec<_>>();
             prop_assert_eq!(retained_channels.as_slice(), &channels[raw..]);
             prop_assert_eq!(tail.spill.is_some(), bytes.len() > maximum);
-            let result = tail.settle(crate::tool::ToolResult {
-                value: serde_json::json!({"exit_code": 0, "spill": ".volumes/home/output"}),
+            let (result, _) = tail.settle(crate::tool::ToolResult {
+                value: serde_json::json!({"exit_code": 0, "spill": "volume:///home/output"}),
             }, render)?;
             let projected = serde_json::json!({"kind":"parts", "parts":[{"kind":"text", "text":result.value["text"]}]}).to_string();
             prop_assert!(projected.len() as u64 <= render);
@@ -190,5 +193,33 @@ mod tests {
                 prop_assert!(!path.exists());
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spill_publication_keeps_original_handle_after_symlink_substitution() -> crate::Result<()> {
+        use std::io::Read as _;
+        let directory = tempfile::tempdir().map_err(crate::Error::process_io)?;
+        let path = directory.path().join("spill");
+        let secret = directory.path().join("outside");
+        std::fs::write(&secret, b"private host bytes").map_err(crate::Error::process_io)?;
+        let mut tail = Tail::new(path.clone(), 1);
+        tail.observe(b"command output", false)
+            .map_err(crate::Error::process_io)?;
+        std::fs::remove_file(&path).map_err(crate::Error::process_io)?;
+        std::os::unix::fs::symlink(&secret, &path).map_err(crate::Error::process_io)?;
+        let (_, spill) = tail.settle(
+            crate::tool::ToolResult {
+                value: serde_json::json!({"exit_code": 0, "spill": "volume:///output/spill"}),
+            },
+            1024,
+        )?;
+        let mut bytes = Vec::new();
+        spill
+            .expect("overflow retains its original handle")
+            .read_to_end(&mut bytes)
+            .map_err(crate::Error::process_io)?;
+        assert_eq!(bytes, b"command output");
+        Ok(())
     }
 }

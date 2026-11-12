@@ -284,11 +284,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let Spawn { child, mut request } = match (at, saved.as_ref()) {
             (Some(at), Some(saved)) => self
                 .agents
-                .prepare_root_history(intent, &source, adopted, at, saved)?,
-            _ => self.agents.prepare_root(
+                .prepare_root_history(intent, &source, adopted, at, saved, root.peer)?,
+            _ => self.agents.prepare_root_with_peer(
                 intent,
                 adopted,
                 questions.unwrap_or(self.turns.question_plugin()),
+                root.peer,
             )?,
         };
         self.index_session(&child, &mut request)?;

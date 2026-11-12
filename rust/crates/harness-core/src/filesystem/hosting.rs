@@ -75,6 +75,8 @@ pub struct VerifiedCaller {
 /// the creation.
 #[derive(Clone, Debug)]
 pub struct RootRequest {
+    /// The user's launch-time peer choice, committed with the root itself.
+    pub peer: bool,
     /// The root agent.
     pub agent: AgentId,
     /// Volumes created, empty, in the root's own commit; the agent's private
@@ -173,7 +175,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     spawns: Arc<FilesystemSpawnVolumes<P, O>>,
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
-    composer: Arc<crate::agent::AgentComposer>,
+    composer: Arc<crate::agent::AgentComposer<P>>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -385,7 +387,11 @@ where
                 .with_spawn_volumes(spawns.clone())
                 .with_close(),
         );
-        let composer = Arc::new(crate::agent::AgentComposer::new(Some(spawns.clone()), None));
+        let composer = Arc::new(crate::agent::AgentComposer::new(
+            stream.clone(),
+            Some(spawns.clone()),
+            None,
+        ));
         let agents = AgentHost::hosting(
             stream,
             within.clone(),
@@ -1263,6 +1269,7 @@ where
             self.volumes.seed_layer().await.map_err(turn)?;
         }
         let RootRequest {
+            peer,
             agent,
             fresh,
             retained,
@@ -1270,7 +1277,7 @@ where
             policy,
         } = request;
         let volumes: Vec<WorkspaceEntry> = fresh.iter().chain(&retained).cloned().collect();
-        let Spawn { child, mut request } = self.agents.prepare_root(
+        let Spawn { child, mut request } = self.agents.prepare_root_with_peer(
             intent,
             ForkAdopted {
                 profile: None,
@@ -1284,6 +1291,7 @@ where
                 policy,
             },
             questions.unwrap_or(self.turns.question_plugin()),
+            peer,
         )?;
         if indexed {
             self.index_session(&child, &mut request)?;

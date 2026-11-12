@@ -514,6 +514,7 @@ impl WasmAgentServer {
     fn root_request(&self, agent: AgentId) -> std::result::Result<RootRequest, JsValue> {
         let volume = private_volume(self.observation.provider.clone(), &agent).map_err(js_error)?;
         Ok(RootRequest {
+            peer: true,
             agent,
             fresh: vec![WorkspaceEntry::initial_volume(
                 crate::agent::WorkspaceRole::Private,

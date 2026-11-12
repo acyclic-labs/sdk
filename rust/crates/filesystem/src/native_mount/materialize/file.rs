@@ -177,8 +177,10 @@ pub(super) fn mark_sparse(
         windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
         &[],
         &mut output,
-        Some((meter, acyclic_native_runtime::NativeOperationKind::Write)),
-    )?;
+        acyclic_native_runtime::NativeOperationKind::Write,
+        Some(meter),
+    )?
+    .into_complete()?;
     Ok(())
 }
 
@@ -304,15 +306,7 @@ where
             .release(plan_bytes as u64)
             .map_err(MaterializeError::from)?;
         if !reads.is_empty() {
-            read_content_spans(
-                reader,
-                reads,
-                options.maximum_extent_spans,
-                cancellation,
-                receipt,
-                &mut writes,
-            )
-            .await?;
+            read_content_spans(reader, reads, cancellation, receipt, &mut writes).await?;
         }
         let write_bytes = vec_bytes(&writes);
         for write in writes {
@@ -339,18 +333,20 @@ where
 pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     reads: Vec<ResolvedFileRangeReadRequest<'_, A, O>>,
-    maximum_extent_spans: u32,
     cancellation: &CancellationToken,
     receipt: &mut GenerationReceipt,
     writes: &mut Vec<GenerationWrite>,
 ) -> Result<(), MaterializeError> {
     let request_bytes = vec_bytes(&reads);
+    // Physical native batch credit delays excess reads without refusing spans.
+    let concurrency = acyclic_native_runtime::NativeSyncBatch::capacity()
+        .map_err(|error| receipt.runtime_error(error))?;
     let read = read_source!(reader, receipt, remaining, value,
         reader.read_resolved_ranges(
-            &reads, usize::try_from(maximum_extent_spans).unwrap_or(usize::MAX), receipt.custody.work(), cancellation,
+            &reads, concurrency, receipt.custody.work(), cancellation,
         ) => receipt.accept_source(value.0, value.1)?,
         reader.read_resolved_ranges(
-            &reads, usize::try_from(maximum_extent_spans).unwrap_or(usize::MAX), remaining, cancellation,
+            &reads, concurrency, remaining, cancellation,
         ) => {
             receipt.adopt(vec_bytes(&value))?;
             for result in &value { receipt.adopt(result.bytes.len())?; }

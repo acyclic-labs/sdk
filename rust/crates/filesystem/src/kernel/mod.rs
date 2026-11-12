@@ -24,6 +24,7 @@ mod extent;
 mod extent_clone;
 mod extent_mutation;
 mod file_read;
+pub(crate) use file_read::CONTENT_READ_CHUNK_BYTES;
 mod file_table;
 mod file_table_mutation;
 mod generation;
@@ -50,6 +51,7 @@ pub(crate) use references::visit_object_references;
 pub(crate) use references::visit_record_references;
 mod mutation;
 mod namespace_path;
+pub(crate) mod ordered_links;
 mod path_access;
 mod persistent_batch;
 mod persistent_btree;
@@ -93,7 +95,9 @@ pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use content_eq::records_match_content;
-pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
+pub(crate) use file_read::{
+    OriginalReadAccounting, read_object_with_accounting, release_standalone_read_bytes,
+};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::apply_generation_mutations_retaining_with_accounting;
 pub(crate) use list::list_tree_entries_async_with_accounting;
@@ -184,8 +188,7 @@ pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, apply_file_table_mutations,
 };
 pub use generation::{
-    GenerationRoot, MAXIMUM_GENERATION_ROOT_BYTES, decode_generation_root, encode_generation_root,
-    generation_root_id,
+    GenerationRoot, decode_generation_root, encode_generation_root, generation_root_id,
 };
 pub(crate) use generation::{
     clone_generation_root_with_accounting, read_generation_root_with_accounting,

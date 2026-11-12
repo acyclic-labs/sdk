@@ -446,6 +446,13 @@ pub enum Out {
     /// The conversation entry just before this is the agent's latest context
     /// checkpoint, indexed in its state with the append.
     Checkpoint,
+    /// Fence the automatic root-peer grant at publication.
+    PeerGuard {
+        /// Message recipient.
+        to: AgentPath,
+        /// Original enabled member versions.
+        admission: super::PeerAdmission,
+    },
     /// Send an inbox record to another agent.
     Send {
         /// Recipient.
@@ -655,20 +662,32 @@ pub(super) struct PreparedStep {
 }
 
 impl PreparedStep {
-    pub(super) async fn persist_children<P: acyclic_stream::StreamProvider + ?Sized>(
+    pub(super) async fn persist_indexes<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         provider: std::sync::Arc<P>,
+        previous: Option<&acyclic_actors::guest::Checkpoint>,
     ) -> Result<(), Error> {
         self.step.state.open_children.bind(provider.clone());
         self.step.state.archive_pending.bind(provider.clone());
         self.step.state.topology_refusals.bind(provider.clone());
         self.step.state.spawned_children.bind(provider.clone());
-        self.step.state.awaiting.bind(provider);
+        self.step.state.awaiting.bind(provider.clone());
         self.step.state.open_children.persist().await?;
         self.step.state.archive_pending.persist().await?;
         self.step.state.topology_refusals.persist().await?;
         self.step.state.spawned_children.persist().await?;
-        self.step.state.awaiting.persist().await
+        self.step.state.awaiting.persist().await?;
+        let table = checkpoint::checkpoint_head(&self.checkpoint)?.table;
+        if previous
+            .map(checkpoint::checkpoint_head)
+            .transpose()?
+            .is_none_or(|head| head.table != table)
+        {
+            table
+                .persist(provider.as_ref(), &self.step.state.volumes)
+                .await?;
+        }
+        Ok(())
     }
 
     pub(super) fn step(&self) -> &Step {
@@ -1071,6 +1090,7 @@ fn finalize_step(
             Out::Roster(digest) => state.roster = Some(*digest),
             Out::Notices(selection) => selection.consume(&mut state)?,
             Out::Send { .. }
+            | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
             | Out::Steered(_)
             | Out::Archive { .. }
@@ -1278,7 +1298,7 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
-        Out::Steered(_) | Out::PendingSpawns(_) => true,
+        Out::Steered(_) | Out::PendingSpawns(_) | Out::PeerGuard { .. } => true,
         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(

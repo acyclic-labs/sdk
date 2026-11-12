@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { Terminal, screenText, styledRun } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory, queryFailure, expectedTaskFailure } from "./frames.mjs";
-import { OutputWatch } from "./process.mjs";
+import { OutputWatch, withCancellation } from "./process.mjs";
 import { screenSnapshot } from "./screen-text.mjs";
 import { executionSucceeded } from "./assertions.mjs";
 
@@ -45,7 +45,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
-    let index = 0, failure, errors;
+    let index = 0, failure, errors, detaching = false;
     // Model requests this case made, the newest one's arrival, and the count
     // when a prompt was sent: a delta's latency runs from its turn's request
     // reaching the mock, which then streams the chunks, to their paint.
@@ -66,11 +66,29 @@ export async function pty(processes, binary, fixture, input, capture) {
           process.stderr.write(`pty-startup: ${JSON.stringify({ case: fixture.id, first_paint_ms: firstPaint })}\n`);
         }
         const action = input.actions[index];
+        // A provider boundary can prove an expected interaction was bypassed
+        // even while the terminal keeps repainting (or the response is held).
+        // Observe that original event, never infer progress from elapsed time.
+        if (action?.before_request && fixture.requested(action.before_request)) {
+          const error = new Error(`step=await terminal action ${index}: model request ${JSON.stringify(action.before_request)} overtook the required interaction\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+          error.code = "terminal_action_overtaken";
+          throw error;
+        }
         const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when, action?.assert, visible);
         if (refusal) {
           const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${refusal}\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_frame_failed";
           throw error;
+        }
+        // Session exit is an interaction, not two blind keystrokes. A single
+        // Ctrl+D may detach directly or ask for confirmation; answer only
+        // after that original dialog has actually been rendered.
+        if (detaching && !settled && frames.available()
+          && matches(screen, raw, { contains: ["Stop or detach?"] }, visible, diagnostic, logical)) {
+          detaching = false;
+          frames.consume();
+          running.child.stdin.write("\u0004");
+          return;
         }
         if (!action || settled || !frames.available()) return;
         if (action.reject && matches(screen, raw, action.reject, visible, diagnostic, logical)) {
@@ -91,7 +109,7 @@ export async function pty(processes, binary, fixture, input, capture) {
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
         failures.accept(diagnostic, action.when, action.assert, visible);
         snapshots.push({ action: index, logical });
-        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
+        if (action.prompt !== undefined || action.send !== undefined || action.kill || action.detach) frames.consume();
         trace({ event: "action", prompt_bytes: Buffer.byteLength(action.prompt ?? ""),
           send: action.send, kill: action.kill, available: frames.available() });
         index++;
@@ -100,7 +118,11 @@ export async function pty(processes, binary, fixture, input, capture) {
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
         }
         if (action.send !== undefined) running.child.stdin.write(action.send);
-        if (action.signal !== undefined) fixture.signal(action.signal);
+        if (action.detach) {
+          detaching = true;
+          running.child.stdin.write("\u0004");
+        }
+        if (action.signal !== undefined) fixture.emitSignal(action.signal);
         if (action.acknowledge !== undefined) {
           fetch(`${fixture.url}/ack`, { method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ chunk: action.acknowledge }) })
@@ -128,8 +150,12 @@ export async function pty(processes, binary, fixture, input, capture) {
       frames.write(bytes);
     });
     let result;
-    try { result = await running.closed; }
-    catch (error) { (errors ??= []).push(error); }
+    try { result = await withCancellation(running, fixture.signal); }
+    catch (error) {
+      (errors ??= []).push(error);
+      try { result = await running.closed; }
+      catch (error) { errors.push(error); }
+    }
     finally {
       unsubscribeSignals?.();
       unsubscribeSignals = undefined;

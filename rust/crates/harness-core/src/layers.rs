@@ -27,18 +27,18 @@ pub use manifest::Manifest;
 pub use manifest::ManifestTree;
 
 /// Tool path of the agent's home volume.
-pub const HOME_PATH: &str = ".volumes/home/";
+pub const HOME_PATH: &str = "volume:///home/";
 /// Read-only tool path of the calling agent's original private output volume.
 /// This is a model read route; it creates no guest mount or per-agent work.
-pub const OUTPUT_PATH: &str = ".volumes/output/";
+pub const OUTPUT_PATH: &str = "volume:///output/";
 /// Tool address of agent-authored private UI files; never a guest mount.
-pub const PRIVATE_PATH: &str = ".volumes/private/";
+pub const PRIVATE_PATH: &str = "volume:///private/";
 /// Tool path of the seed volume.
-pub const SEED_PATH: &str = ".volumes/seed/";
+pub const SEED_PATH: &str = "volume:///seed/";
 /// Tool path of host-published system files.
-pub const SYSTEM_PATH: &str = ".volumes/system/";
+pub const SYSTEM_PATH: &str = "volume:///system/";
 /// Tool path of the effective view over the complete layer stack, read-only.
-pub const EFFECTIVE_PATH: &str = ".volumes/effective/";
+pub const EFFECTIVE_PATH: &str = "volume:///effective/";
 /// Suffix naming a composed file's provenance chain beside it.
 pub const WHY_SUFFIX: &str = ".why.json";
 

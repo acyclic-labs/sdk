@@ -71,6 +71,15 @@ impl LocalUser {
 }
 
 impl crate::hosting::Platform for LocalUser {
+    fn compaction_disabled(&self) -> bool {
+        self.harness().is_ok_and(|local| {
+            matches!(
+                local.compaction.as_ref(),
+                Some(crate::context::CompactionPolicy::Disabled)
+            )
+        })
+    }
+
     fn sessions(&self) -> bool {
         self.sessions
     }
@@ -90,6 +99,7 @@ impl crate::hosting::Platform for LocalUser {
             let local = self.harness()?;
             let policy = local.root_policy(&agent).await?;
             Ok(crate::hosting::RootRequest {
+                peer: true,
                 agent,
                 fresh: Vec::new(),
                 retained: Vec::new(),
@@ -912,6 +922,7 @@ impl LocalHarness {
             }
             Err(crate::agent::Error::NoSuchAgent) => {
                 let request = RootRequest {
+                    peer: true,
                     agent: id,
                     fresh: Vec::new(),
                     retained: std::iter::once(WorkspaceEntry::initial_volume(

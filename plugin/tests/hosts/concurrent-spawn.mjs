@@ -1,7 +1,7 @@
 // Real native-host MCP call schedules, without a model or readiness timer.
 import assert from 'node:assert/strict';
 import {mkdirSync,readFileSync,writeFileSync,appendFileSync,chmodSync,rmSync,openSync,writeSync,closeSync} from 'node:fs';
-import {join,resolve,relative,delimiter} from 'node:path';
+import {dirname,join,resolve,relative,delimiter} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer,connect} from 'node:net';
 import {once} from 'node:events';
@@ -34,7 +34,7 @@ export async function native(){
  if(!process.argv.slice(2).includes({codex:'exec','claude-code':'-p'}[host])){
   writeFileSync('root.json',JSON.stringify({task:env.ACYCLIC_TASK,flags:JSON.parse(env.ACYCLIC_HOST_ARGS)}));return;
  }
- const view=relative(join(env.FIXTURE_WORKSPACE,'.volumes/agents'),cwd);
+ const view=relative(join(dirname(env.ACYCLIC_HOST_FILES_DIRECTORY),'.volumes/agents'),cwd);
  assert.ok(view&&!view.startsWith('..'));
  const started=JSON.parse(await checked(env.FIXTURE_ACYCLIC,['__hook',host,'SessionStart'],{cwd,env},
   JSON.stringify({hook_event_name:'SessionStart',session_id:cwd.split('/').at(-1),cwd})));

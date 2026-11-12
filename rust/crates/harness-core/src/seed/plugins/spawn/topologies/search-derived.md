@@ -16,7 +16,7 @@ export async function activate(plan: File) {
   await atomically([
     { check: plan.path, version: plan.version },
     { spawn: "investigate", template: "worker", budget: null,
-      prompt: "Investigate the admitted plan in .volumes/home/plan.md and report supporting evidence.",
+      prompt: "Investigate the admitted plan in volume:///home/plan.md and report supporting evidence.",
       files: { "plan.md": plan.text() } },
   ]);
 }

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {execFileSync,spawn} from 'node:child_process';
 import {openSync,closeSync} from 'node:fs';
 import {access,readFile,realpath,writeFile} from 'node:fs/promises';
-import {isAbsolute,join,relative,sep} from 'node:path';
+import {dirname,isAbsolute,join,relative,sep} from 'node:path';
 import {assertNativeResume,nativeSessionIdentity} from './native-session-proof.mjs';
 
 const [phase,workspace,host,...extra]=process.argv.slice(2);
@@ -20,7 +20,7 @@ try {
  };
  const parent=()=>assert.equal(cwd,root,'native parent cwd changed');
  const child=()=>{
-  const path=relative(join(root,'.volumes/agents'),cwd);
+  const path=relative(join(dirname(process.env.ACYCLIC_HOST_FILES_DIRECTORY),'.volumes/agents'),cwd);
   assert.ok(path&&path!=='..'&&!path.startsWith('..'+sep)&&!isAbsolute(path),'native child did not run in its separate view');
   assert.ok(process.env.ACYCLIC_TASK,'native child has no original task identity');
  };

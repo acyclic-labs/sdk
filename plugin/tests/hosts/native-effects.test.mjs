@@ -18,6 +18,7 @@ test('native filesystem effects reject parent-only execution and lost resume cus
   await mkdir(workspace);
   const script=fileURLToPath(new URL('./native-effects.mjs',import.meta.url));
   const task=randomUUID();
+  env.ACYCLIC_HOST_FILES_DIRECTORY=join(root,'state/host-files');
   const run=async(phase,cwd,identity=task,binary)=>{
    const result=await processes.run(process.execPath,[script,phase,workspace,'codex'],
     {cwd,env:{...env,ACYCLIC_TASK:identity,E2E_PLUGIN_BINARY:binary}});
@@ -42,7 +43,7 @@ test('native filesystem effects reject parent-only execution and lost resume cus
    assert.notEqual(parentOnly.code,0);
    assert.match(parentOnly.stderr,/separate view/);
    step='exercise the original effect with an isolated real directory';
-   const child=join(workspace,'.volumes/agents/child');
+   const child=join(root,'state/.volumes/agents/child');
    await mkdir(join(child,'.volumes/home'),{recursive:true});
    await copyFile(join(workspace,'parent.txt'),join(child,'parent.txt'));
    const written=await run('child',child);

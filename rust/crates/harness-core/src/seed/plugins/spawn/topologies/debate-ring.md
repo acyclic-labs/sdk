@@ -10,7 +10,7 @@ import { spawn, wait } from "acyclic";
 
 const proposer = await spawn("propose", {
   template: "advisor", budget: null,
-  prompt: "Propose a solution to problem.md in .volumes/shared/debate/1-proposal.md.",
+  prompt: "Propose a solution to problem.md in volume:///shared/debate/1-proposal.md.",
 });
 export default wait(proposer);
 ```

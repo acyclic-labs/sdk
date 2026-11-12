@@ -58,7 +58,7 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     let paths = exact
         .paths_for_file_ids(
             [missing_id, file_id, directory_id, file_id],
-            32,
+            Some(32),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -342,10 +342,9 @@ async fn generation_lookup_paths_keeps_original_work_backing_and_authority()
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = generation
-        .lookup_paths(&paths, budget, &cancelled)
-        .await
-        .unwrap_err();
+    let Err(failure) = generation.lookup_paths(&paths, budget, &cancelled).await else {
+        panic!("cancelled path lookup must fail");
+    };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
 
     for withdraw in [false, true] {
@@ -439,11 +438,16 @@ async fn repeated_lookups_of_absent_identities_answer_empty() -> Result<(), Box<
     let head = unbounded!(workspace, head())?;
     for _ in 0..2 {
         assert!(
-            head.paths_for_file_ids([gone], 32, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await?
-                .value
-                .entries()
-                .is_empty()
+            head.paths_for_file_ids(
+                [gone],
+                Some(32),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await?
+            .value
+            .entries()
+            .is_empty()
         );
     }
     Ok(())

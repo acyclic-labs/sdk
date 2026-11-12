@@ -11,21 +11,21 @@ pub struct GitDiffCounts {
 
 /// Compares exact generations using the ignore policy belonging to each side.
 ///
-/// `repository` is the repository-level policy, Git's `info/exclude`: it
-/// applies beneath every side's own `.gitignore` files, and the host paths it
-/// reserves are never counted.
+/// `repository` is an optional lower-precedence ignore policy applied beneath
+/// each side's own `.gitignore` files.
 pub async fn git_compatible_diff_counts<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
     repository: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<GitDiffCounts, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let maximum_changes = maximum_changes.into();
     let diff = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
@@ -43,9 +43,6 @@ where
     for change in paths {
         cancellation.check().map_err(WorkspaceError::from)?;
         let path = portable_changed_path(&change.path)?;
-        if repository.reserves(&path) {
-            continue;
-        }
         let record = change.after.or(change.before);
         let Some(record) = record else { continue };
         if record.kind == FileKind::Directory {
@@ -91,27 +88,19 @@ where
     })
 }
 
-/// Lists the paths a whole-workspace restore from `to` must rewrite in
-/// `from`: every path whose binding or record differs, except those the
-/// repository policy reserves for the host.
-///
-/// Restoring exactly these paths makes every unreserved path of `from` match
-/// `to`, nested contents included, and leaves the reserved ones as they are,
-/// with the directories that hold them (see
-/// [`git_paths_preserving_reserved`]). Each path is listed after its
-/// ancestors, so a directory that replaces a file is restored before its
-/// children; the restore removes paths deepest first on its own.
+/// Lists every path whose binding or record differs between two generations.
+/// Paths are ordered ancestor-first; removal applies the reverse order.
 pub async fn git_restore_paths<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
-    repository: &GitIgnorePolicy,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let maximum_changes = maximum_changes.into();
     let changes = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
@@ -126,81 +115,11 @@ where
         cancellation.check().map_err(WorkspaceError::from)?;
         paths.push(portable_changed_path(&change.path)?);
     }
-    git_paths_preserving_reserved(from, Some(to), repository, paths, cancellation).await
-}
-
-/// The paths among `paths` that applying `source` over `live` may rewrite
-/// while every path `repository` reserves keeps its place: what a restore,
-/// reset, stash, abort or applied commit writes.
-///
-/// A reserved path is never rewritten. A reserved path that `live` holds
-/// also keeps each directory above it: rewriting one that `source` does not
-/// hold as a directory (absent, a file, or `source` itself absent) would
-/// remove the reserved path beneath it, so that directory stays as `live`
-/// has it, while its other children are still rewritten on their own.
-///
-/// The result is sorted with each path after its ancestors.
-pub async fn git_paths_preserving_reserved<A, O>(
-    live: &Generation<A, O>,
-    source: Option<&Generation<A, O>>,
-    repository: &GitIgnorePolicy,
-    paths: impl IntoIterator<Item = String>,
-    cancellation: &CancellationToken,
-) -> Result<Vec<String>, GitCaptureError>
-where
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    let mut candidates = paths
+    Ok(paths
         .into_iter()
-        .map(|path| path.trim_matches('/').to_owned())
-        .filter(|path| !path.is_empty() && !repository.reserves(path))
-        .collect::<BTreeSet<_>>();
-    let mut holding = BTreeSet::new();
-    for reserved in repository.reserved_paths() {
-        cancellation.check().map_err(WorkspaceError::from)?;
-        let ancestors = reserved
-            .match_indices('/')
-            .filter_map(|(end, _)| reserved.get(..end))
-            .filter(|ancestor| candidates.contains(*ancestor))
-            .collect::<Vec<_>>();
-        if !ancestors.is_empty() && kind_at(live, reserved, cancellation).await?.is_some() {
-            holding.extend(ancestors.into_iter().map(str::to_owned));
-        }
-    }
-    for ancestor in holding {
-        let directory = match source {
-            Some(source) => {
-                kind_at(source, &ancestor, cancellation).await? == Some(FileKind::Directory)
-            }
-            None => false,
-        };
-        if !directory {
-            candidates.remove(&ancestor);
-        }
-    }
-    // A descendant `a/b` always sorts after its ancestor `a`.
-    Ok(candidates.into_iter().collect())
-}
-
-/// The kind of the entry at the portable `path`, if `generation` holds one.
-async fn kind_at<A, O>(
-    generation: &Generation<A, O>,
-    path: &str,
-    cancellation: &CancellationToken,
-) -> Result<Option<FileKind>, GitCaptureError>
-where
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    match generation
-        .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, cancellation)
-        .await
-    {
-        Ok(receipt) => Ok(Some(receipt.value.kind)),
-        Err(failure) if failure.error.is_absent() => Ok(None),
-        Err(failure) => Err(failure.error.into()),
-    }
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect())
 }
 
 /// Returns the Git-visible tracked paths after a workspace transition that
@@ -216,20 +135,21 @@ where
 /// entry. Paths the target writes after the transition, such as an untracked
 /// file edited while resolving a conflict, never become tracked here.
 /// `repository` is the repository-level policy, as in
-/// [`git_compatible_diff_counts`]; a path it reserves is never tracked.
+/// [`git_compatible_diff_counts`].
 pub async fn git_tracked_paths_after<A, O>(
     before: &Generation<A, O>,
     published: &Generation<A, O>,
     current: &Generation<A, O>,
     repository: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<BTreeSet<String>, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let maximum_changes = maximum_changes.into();
     let changes = before
         .diff_to(
             published,
@@ -258,9 +178,6 @@ where
     let mut tracked = BTreeSet::new();
     for path in already_tracked.union(&published_paths) {
         cancellation.check().map_err(WorkspaceError::from)?;
-        if repository.reserves(path) {
-            continue;
-        }
         match current
             .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, cancellation)
             .await
@@ -315,9 +232,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    if root.reserves(path) {
-        return Ok(false);
-    }
     if already_tracked.contains(path) {
         return Ok(true);
     }

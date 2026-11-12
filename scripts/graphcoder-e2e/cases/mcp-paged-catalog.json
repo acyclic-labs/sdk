@@ -50,7 +50,7 @@
             "id": "mcp",
             "name": "code",
             "arguments": {
-              "code": "await tools['mcp.fixture.echo152']({text: 'hello'})"
+              "code": "export default await tools['mcp.fixture.echo152']({text: 'hello'})"
             }
           }
         ]

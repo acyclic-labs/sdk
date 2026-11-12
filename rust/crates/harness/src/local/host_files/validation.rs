@@ -14,8 +14,10 @@ impl WorkspaceInput {
     /// Creates the same canonical descriptor location used by the owner.
     pub fn new() -> Result<Self> {
         let checkout = tempfile::tempdir().map_err(storage)?;
-        let workspace = std::fs::canonicalize(checkout.path()).map_err(storage)?;
-        let directory = workspace.join(DIRECTORY);
+        let workspace = checkout.path().join("workspace");
+        std::fs::create_dir(&workspace).map_err(storage)?;
+        let workspace = std::fs::canonicalize(workspace).map_err(storage)?;
+        let directory = checkout.path().join(DIRECTORY);
         let requests = directory.join("requests");
         std::fs::create_dir_all(&requests).map_err(storage)?;
         let requests = acyclic_fs::hold_root(&requests).map_err(native_file_error)?;
@@ -244,10 +246,11 @@ impl WorkspaceInput {
 
     fn admit(&self, bytes: &[u8]) -> Result<(acyclic_fs::HeldRoot, Endpoint)> {
         std::fs::write(self.directory.join("owner.json"), bytes).map_err(storage)?;
-        let result = discover(&self.workspace).and_then(|(directory, endpoint)| {
-            endpoint.open_roots(&directory)?;
-            Ok((directory, endpoint))
-        });
+        let result =
+            discover(&self.directory, &self.workspace).and_then(|(directory, endpoint)| {
+                endpoint.open_roots(&directory)?;
+                Ok((directory, endpoint))
+            });
         if let Ok((directory, endpoint)) = &result {
             assert_eq!(directory.path(), &self.directory);
             assert_eq!(endpoint.version, 4);

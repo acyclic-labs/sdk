@@ -82,6 +82,8 @@ pub enum CommandAction {
     },
     /// Resolve a configured name, otherwise open the theme picker.
     Theme {},
+    /// User-only membership change; never a settings or request-file write.
+    Peers {},
     /// A typed built-in request or view selection.
     Builtin {
         /// Implementation identifier.
@@ -156,7 +158,8 @@ impl CommandCatalog {
                 | CommandAction::Theme {} => CommandArguments::Text,
                 CommandAction::Builtin {
                     command: BuiltinCommand::Model,
-                } => CommandArguments::Word,
+                }
+                | CommandAction::Peers {} => CommandArguments::Word,
                 CommandAction::Builtin { .. }
                 | CommandAction::Request { .. }
                 | CommandAction::Select { .. } => CommandArguments::None,
@@ -280,6 +283,15 @@ impl CommandCatalog {
                     },
                 },
             },
+            CommandAction::Peers {} => CommandResolution::Submit {
+                request: CommandRequest::Peers {
+                    enabled: match arguments {
+                        "on" => true,
+                        "off" => false,
+                        _ => return Err(Error::Invalid("/peers expects on or off".into())),
+                    },
+                },
+            },
             CommandAction::Builtin { command } => resolve_builtin(*command, arguments),
         }))
     }
@@ -345,6 +357,33 @@ fn resolve_builtin(command: BuiltinCommand, arguments: &str) -> CommandResolutio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peers_are_user_controls_never_prompt_or_file_requests() -> Result<()> {
+        let catalog = CommandCatalog::builtins()?;
+        for (input, enabled) in [("/peers off", false), ("/peers on", true)] {
+            let resolution = catalog
+                .resolve(input, 64)?
+                .ok_or_else(|| Error::Invalid("missing peer command".into()))?;
+            assert_eq!(
+                resolution,
+                CommandResolution::Submit {
+                    request: CommandRequest::Peers { enabled }
+                }
+            );
+            assert!(resolution.file_inputs().is_empty());
+            assert!(
+                resolution
+                    .file_changes(&Default::default(), crate::OperationId::new())
+                    .is_err()
+            );
+            assert!(resolution.into_model_input().is_err());
+        }
+        for input in ["/peers", "/peers yes", "/peers off on"] {
+            assert!(catalog.resolve(input, 64).is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn builtins_resolve_and_prompts_pass_through() -> Result<()> {

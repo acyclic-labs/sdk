@@ -49,7 +49,11 @@
               "E2E approval policy"
             ]
           },
-          "send": "n\r"
+          "send": "n\r",
+          "before_request": {
+            "path": "messages",
+            "step": 1
+          }
         },
         {
           "when": {
@@ -58,7 +62,7 @@
               "○"
             ]
           },
-          "send": "\u0004\u0004"
+          "detach": true
         }
       ]
     }

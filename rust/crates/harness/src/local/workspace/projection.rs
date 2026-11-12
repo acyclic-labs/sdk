@@ -142,12 +142,7 @@ impl MountedVolume {
         lock_owned(StateArc::clone(&self.native)).await
     }
 
-    pub(super) async fn enter(
-        &self,
-        root: &Path,
-        relative: &str,
-        read_only: bool,
-    ) -> Result<Entered> {
+    pub(super) async fn enter(&self, read_only: bool) -> Result<Entered> {
         let options = self
             .options
             .clone()
@@ -157,17 +152,15 @@ impl MountedVolume {
         } else {
             options
         };
-        self.enter_with_options(root, relative, options).await
+        self.enter_with_options(options).await
     }
 
     pub(in crate::local) async fn enter_with_options(
         &self,
-        root: &Path,
-        relative: &str,
         options: acyclic_fs::MountOptions,
     ) -> Result<Entered> {
         enter(&self.native, &self.users, async || {
-            if root.join(relative) != self.destination {
+            if self.destination.parent() != Some(self.binding_root.path()) {
                 return Err(Error::Invalid(
                     "projection differs from its volume binding".into(),
                 ));
@@ -187,8 +180,7 @@ impl MountedVolume {
                 discard: false,
                 binding: None,
             };
-            // This is the binding's reserved alias, not authored project
-            // content. On restart it can still name the preceding process's
+            // This alias lives in host state. On restart it can still name the preceding process's
             // retired root. Replace only the link itself; never follow it or
             // write its old target. A regular file/nonempty directory fails.
             let previous = volumes::alias_target(&self.destination)?;

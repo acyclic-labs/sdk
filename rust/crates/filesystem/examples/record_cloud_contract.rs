@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })),
         }],
         operation: operation(2),
-        maximum_conflicts: 16,
+        maximum_conflicts: Some(16),
     };
     let response = service
         .apply_transaction(Request::new(request.clone()))
@@ -180,7 +180,7 @@ async fn remove_and_delete(
             })),
         }],
         operation: operation(3),
-        maximum_conflicts: 16,
+        maximum_conflicts: Some(16),
     };
     let response = service
         .apply_transaction(Request::new(request.clone()))

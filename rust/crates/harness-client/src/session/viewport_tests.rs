@@ -7,6 +7,7 @@ use acyclic_stream::{
     AppendRecord, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamProvider,
     StreamProviderExt as _, runtime::Executor, session::transport,
 };
+use futures::StreamExt as _;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -49,7 +50,8 @@ fn client() -> (WireSession, Arc<Scheduler>) {
     (
         WireSession::with_view_policy(
             pool,
-            DemandPolicy::default(),
+            // This fixture proves finite reservation refusal and residency.
+            DemandPolicy::new(Some(16), Some(8)).unwrap(),
             StreamViewPolicy::new(4, 8192).unwrap(),
         ),
         scheduler,
@@ -200,7 +202,7 @@ fn restricted_filter() -> Option<wire::SessionFilter> {
 #[tokio::test]
 async fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let (mut admission, admission_scheduler) = client();
-    admission.policy = DemandPolicy::new(1, 1).unwrap();
+    admission.policy = DemandPolicy::new(Some(1), Some(1)).unwrap();
     let request = follow("fs:/volume/admission".into());
     admission.begin_resource(request.clone()).unwrap();
     for (request, expected) in [
@@ -386,8 +388,20 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                 Vec::new()
             };
             let follow = Subscription {
+                id: if resource {
+                    session.resources[&name]
+                } else {
+                    session.follows[&path]
+                },
+                interest: if resource {
+                    Interest::Resource(name.as_str().into())
+                } else {
+                    Interest::Stream(path.clone())
+                },
                 state: SubscriptionState::Open(Box::pin(futures::stream::iter(terminal))),
+                report_open: false,
             };
+            session.register(follow);
             let mut context = Context::from_waker(std::task::Waker::noop());
             if resource {
                 fill(
@@ -395,12 +409,10 @@ async fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                     None,
                 )
                 .await;
-                session.resources.insert(name.clone(), follow);
                 assert!(session.poll_resource(&name, &mut context).is_ready());
                 assert!(!session.is_resource_following(&name));
             } else {
                 fill(&mut session.views.get_mut(&path).unwrap().view, Some(&path)).await;
-                session.follows.insert(path.clone(), follow);
                 assert!(session.poll_stream(&path, &mut context).is_ready());
                 assert!(!session.is_following(&path));
             }

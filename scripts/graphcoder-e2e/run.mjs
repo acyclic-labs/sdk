@@ -19,8 +19,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
-import { Processes, Spool, schedule } from "./process.mjs";
-import { executionSucceeded, requests, subset, recordedRequests, jsonlReply } from "./assertions.mjs";
+import { Processes, Spool, schedule, withCancellation } from "./process.mjs";
+import { executionSucceeded, requests, subset, recordedRequests, jsonlReply, CommittedRequests, isGeneration, toolResults, toolOutcome } from "./assertions.mjs";
 import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { fenced } from "./orphan-check.mjs";
@@ -66,12 +66,14 @@ const cancellation = commandCancellation();
 mkdirSync(join(output, "transcripts"), { recursive: true });
 const contexts = new Map();
 const evidence = new Map();
-let server, events, port;
+let server, events, port, committed;
+const caseFailures = new Map();
 // Private to the original runner/server/native host chain. It is never part
 // of a case file, report, request body or retained provider configuration.
 const nativeCases = new Set(cases.filter(test => test.inputs.some(input => input.format === "installed-host" && input.host === "pi"))
   .map(test => test.id));
 const nativeCapability = nativeCases.size ? randomBytes(32).toString("hex") : undefined;
+const declaredCases = new Map(cases.map(test => [test.id, test]));
 const started = 0; // Process start: suite time includes module load, as the envelope does.
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
@@ -104,7 +106,10 @@ async function checkTree(test) {
 }
 async function prepare(test, gitOrigin) {
   const begin = performance.now();
-  const fixture = { id: test.id, signal: cancellation.signal, workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
+  const failure = new AbortController();
+  caseFailures.set(test.id, failure);
+  const fixture = { id: test.id, signal: AbortSignal.any([cancellation.signal, failure.signal]),
+    fail: error => failure.abort(error), workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
   fixture.url = `http://127.0.0.1:${port}/${test.id}/v1`;
   fixture.binary = binary;
@@ -203,10 +208,11 @@ async function execute(test, prepared) {
         const { pty } = await import("./pty.mjs");
         const seen = new Set(), listeners = new Set();
         const signal = name => { seen.add(name); for (const listener of listeners) listener(); };
-        const shared = { ...inputFixture, signal, signalled: name => seen.has(name),
+        const shared = { ...inputFixture, emitSignal: signal, signalled: name => seen.has(name),
           onSignal: listener => { listeners.add(listener); return () => listeners.delete(listener); } };
         const results = await Promise.allSettled(input.terminals.map(terminal =>
           pty(processes, binary, shared, terminal, capture => captures.push(capture))
+            .catch(error => { fixture.fail(error); throw error; })
             .finally(() => signal(`${terminal.name}:closed`))));
         for (const result of results) if (result.status === "rejected") throw result.reason;
         continue;
@@ -218,7 +224,7 @@ async function execute(test, prepared) {
           .map(argument => argument === "{{file_source}}" ? path : argument);
         const running = await processes.startReported(binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
         if (input.kill_on) {
-          await Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
+          await withCancellation(running, fixture.signal, Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]));
           running.child.kill("SIGKILL");
           const result = await running.exited;
           assert.ok(result.signal || result.code !== 0);
@@ -228,7 +234,10 @@ async function execute(test, prepared) {
           // Message `<operation>:e2e`: rerunning the operation replays its answer.
           running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
         } else running.child.stdin.end();
-        const result = await closed(running); captures.push(result);
+        let result;
+        try { result = await withCancellation(running, fixture.signal, closed(running)); }
+        catch (error) { captures.push(await running.closed); throw error; }
+        captures.push(result);
         if (input.capture_root) {
           executionSucceeded(result);
           const root = JSON.parse(result.stdout);
@@ -308,7 +317,7 @@ function verify(result, records) {
       const rows = readFileSync(join(fixture.workspace, expected.path), "utf8").trim().split("\n").map(JSON.parse);
       const agents = new Map();
       for (const row of rows) {
-        assert.equal(row.version, 2);
+        assert.equal(row.version, 3);
         assert.equal(typeof row.usage.agent_path, "string");
         const calls = agents.get(row.usage.agent_path) ?? [];
         calls.push(row); agents.set(row.usage.agent_path, calls);
@@ -354,6 +363,19 @@ try { execution = await withOwnedCase({ processes, signal: cancellation.signal, 
     key: event => event.event === "ready" ? ["ready"]
       : event.event === "request" ? [requestKey(event.case, { step: event.step }), requestKey(event.case, event)] : [] });
   port = (await events.keyed("ready")).port;
+  committed = await CommittedRequests.open(join(output, "requests.jsonl"));
+  events.subscribe(event => {
+    if (event.event !== "request") return;
+    committed.next(event).then(record => {
+      const test = declaredCases.get(record.case);
+      if (!test || !isGeneration(record)) return;
+      for (const output of toolResults([record])) {
+        let value;
+        try { value = JSON.parse(output); } catch { value = output; }
+        toolOutcome(value, test.assert.tool_errors, recovery.join(" "), test.id);
+      }
+    }).catch(error => caseFailures.get(event.case)?.abort(error));
+  });
   let origin;
   if (cases.some(test => test.workspace?.kind === "git")) {
     origin = join(roots[0], "origin"); await mkdir(origin);
@@ -375,7 +397,7 @@ catch (error) {
     failure, failedPhase ?? currentPhase ?? "setup", recovery));
   execution = { preparation_seconds: phases.preparation?.seconds };
 }
-finally { cancellation.dispose(); }
+finally { cancellation.dispose(); await committed?.close(); }
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
 const verified = await verifyReport(results,

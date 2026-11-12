@@ -95,6 +95,7 @@ fn canonical_name_key(
     Ok(key)
 }
 
+#[cfg(test)]
 pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, WorkspaceError> {
     if path.is_root() {
         return Ok("/".to_owned());
@@ -119,10 +120,7 @@ pub(super) fn namespace_path_text_with_cancellation(
         })
 }
 
-pub(super) fn kernel_conflict(
-    key: &ConflictKey,
-    maximum_component_bytes: u32,
-) -> Result<MergeConflict, DrivenJoinError> {
+pub(super) fn kernel_conflict(key: &ConflictKey) -> Result<MergeConflict, DrivenJoinError> {
     match key {
         ConflictKey::File(file_id)
         | ConflictKey::Metadata(file_id)
@@ -135,7 +133,7 @@ pub(super) fn kernel_conflict(
             let (&tag, bytes) = name.split_first().ok_or(DrivenJoinError::StaleCandidate)?;
             let encoding = crate::kernel::NameEncoding::from_tag(tag)
                 .map_err(|_| DrivenJoinError::StaleCandidate)?;
-            let name = LogicalName::new(encoding, bytes.to_vec(), maximum_component_bytes)
+            let name = LogicalName::new(encoding, bytes.to_vec())
                 .map_err(|_| DrivenJoinError::StaleCandidate)?;
             Ok(MergeConflict::Binding {
                 directory_id: *directory_id,

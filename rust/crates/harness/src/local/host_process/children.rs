@@ -228,10 +228,10 @@ impl NativeChildren {
     fn own(host: &str, cwd: &Path, parent: AgentPath, flags: Vec<String>) -> Result<Self> {
         launch::validate(host, &flags)?;
         let cwd = cwd.canonicalize().map_err(storage)?;
-        let root = acyclic_fs::hold_root(&host_files::workspace_root(&cwd)?)
+        let root = acyclic_fs::hold_root(&host_files::state_root(&cwd)?)
             .map_err(storage)?
             .create_directories(
-                &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
+                &PathBuf::from("host-processes").join(parent.id().as_str()),
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;

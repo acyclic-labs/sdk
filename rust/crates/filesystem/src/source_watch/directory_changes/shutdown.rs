@@ -1,10 +1,10 @@
+use super::super::check_wait;
 use super::ERROR_NOT_FOUND;
 use super::{
     CancelIoEx, DemandError, DemandWork, ERROR_OPERATION_ABORTED, GetOverlappedResult, HANDLE,
     NativeSourceWatch, Ordering, PoisonError, READ, Reads, ReadsGuard, Shared,
     SourceDemandReadWork, WRITE, WorkCounters, close, hub, io, io_work, is_open,
 };
-use crate::source_watch::check_wait;
 
 impl NativeSourceWatch {
     pub(in crate::source_watch) fn stop_driver<W: SourceDemandReadWork>(

@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import {parseArgs} from 'node:util';
 import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,symlinkSync,writeFileSync} from 'node:fs';
-import {join,resolve,dirname,relative,delimiter} from 'node:path';
+import {dirname,join,resolve,relative,delimiter} from 'node:path';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 import {fixtureEnvironment,workspaceOwner,checked,run,start} from './native-fixture.mjs';
 import {Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 
-export function codexSandbox(binary,workspace){
+export function codexSandbox(binary,workspace,environment=process.env){
+ const state=dirname(environment.ACYCLIC_HOST_FILES_DIRECTORY);
  return [binary,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','-c',
-  'sandbox_workspace_write.writable_roots='+JSON.stringify([workspace]),'--'];
+  'sandbox_workspace_write.writable_roots='+JSON.stringify([workspace,...['host-files','host-processes','.volumes/agents'].map(path=>join(state,path))]),'--'];
 }
 export async function piCommand(binary,command,{cwd,env,prefix=[]}){
  const [executable,...args]=[...prefix,binary,'--mode','rpc','--no-session','--no-skills','--no-prompt-templates','--no-themes'];
@@ -23,12 +24,12 @@ export async function piCommand(binary,command,{cwd,env,prefix=[]}){
 }
 async function inside(config){
  const cfg=JSON.parse(readFileSync(config,'utf8')),{workspace,view,binary,parent,child}=cfg;
- assert.equal(process.cwd(),workspace);assert.ok(!relative(join(workspace,'.volumes/agents'),view).startsWith('..'));
+ assert.equal(process.cwd(),workspace);assert.ok(!relative(join(dirname(process.env.ACYCLIC_HOST_FILES_DIRECTORY),'.volumes/agents'),view).startsWith('..'));
  assert.equal(readFileSync(join(view,'parent.txt'),'utf8'),'parent');writeFileSync(join(view,'child.txt'),'sandbox-child');
  let blocked=false;try{writeFileSync(cfg.outside,'must be refused by the host');}catch{blocked=true;}
  assert.equal(blocked,cfg.outside_write_blocked,'host sandbox boundary changed');
  const cli=async(args,cwd=workspace,payload='')=>{
-  const env={...process.env};delete env.ACYCLIC_TASK;return await checked(binary,args,{cwd,env},payload);
+  const env={...process.env,...(cwd===cfg.negative?{ACYCLIC_HOST_FILES_DIRECTORY:cfg.negative_carrier}:{})};delete env.ACYCLIC_TASK;return await checked(binary,args,{cwd,env},payload);
  };
  await cli(['agents'],view);
  assert.notEqual(JSON.parse(await cli(['__hook',cfg.host,'Stop'],view,JSON.stringify({cwd:view,task:child}))).continue,false);
@@ -36,9 +37,9 @@ async function inside(config){
  assert.equal(readFileSync(join(workspace,'child.txt'),'utf8'),'sandbox-child');
  await cli(['--task',parent,'agents']);await cli(['--task',parent,'log']);await cli(['--task',parent,'discard','agents/sandbox-child']);
  assert.equal(readFileSync(join(workspace,'child.txt'),'utf8'),'sandbox-child');
- assert.deepEqual(JSON.parse(await cli(['doctor',cfg.host])).additional_sandbox_roots,[]);
+ assert.deepEqual(JSON.parse(await cli(['doctor',cfg.host])).additional_sandbox_roots,[process.env.ACYCLIC_HOST_FILES_DIRECTORY,...['host-processes','.volumes/agents'].map(path=>join(dirname(process.env.ACYCLIC_HOST_FILES_DIRECTORY),path))]);
  for(const args of [['agents'],['log'],['discard','agents/sandbox-child'],['fs','merge','agents/sandbox-child'],['capture']]){
-  assert.notEqual((await run(binary,['--task',parent,...args],{cwd:cfg.negative})).code,0,'external data endpoint admitted');
+  assert.notEqual((await run(binary,['--task',parent,...args],{cwd:cfg.negative,env:{...process.env,ACYCLIC_HOST_FILES_DIRECTORY:cfg.negative_carrier}})).code,0,'external data endpoint admitted');
  }
  assert.equal(JSON.parse(await cli(['__hook',cfg.host,'Stop'],cfg.negative,JSON.stringify({cwd:cfg.negative,task:parent}))).continue,false);
  assert.deepEqual(readdirSync(join(cfg.external_data,'requests')),[]);assert.ok(!existsSync(join(cfg.external_data,'status')));
@@ -62,27 +63,28 @@ async function main(){
  let stop;
  try{
   stop=await workspaceOwner(resolve(args.graphcoder),workspace,state,root,ownerEnv);
+  env.ACYCLIC_HOST_FILES_DIRECTORY=ownerEnv.ACYCLIC_HOST_FILES_DIRECTORY;
   const action=async value=>JSON.parse(await checked(resolve(args.binary),['__workspace'],{cwd:workspace,env},JSON.stringify(value)));
   const parent=await action({kind:'open',host:args.host,session:'sandbox-commands'});
   const child=await action({kind:'session',parent:parent.task,reference:'sandbox-child',action:{kind:'spawn',prompt:'sandbox'}});
   env.ACYCLIC_TASK=parent.task;
-  const negative=join(workspace,'.acyclic-sdk/sandbox-negative'),external=join(root,'legacy-data');
+  const negative=join(workspace,'sandbox-negative'),external=join(root,'forged-carrier');
   mkdirSync(negative);mkdirSync(external);mkdirSync(join(external,'requests'));
-  const endpoint=JSON.parse(readFileSync(join(workspace,'.acyclic-sdk/host-files/owner.json'),'utf8'));endpoint.workspace=negative;
-  writeFileSync(join(external,'owner.json'),JSON.stringify(endpoint));mkdirSync(join(negative,'.acyclic-sdk'));
-  symlinkSync(external,join(negative,'.acyclic-sdk/host-files'),'dir');
+  const endpoint=JSON.parse(readFileSync(join(env.ACYCLIC_HOST_FILES_DIRECTORY,'owner.json'),'utf8'));endpoint.workspace=negative;
+  writeFileSync(join(external,'owner.json'),JSON.stringify(endpoint));
+  const negativeCarrier=join(workspace,'carrier-alias');symlinkSync(external,negativeCarrier,'dir');
   const config=join(workspace,'sandbox-config.json');
   writeFileSync(config,JSON.stringify({host:args.host,workspace,view:child.cwd,binary:resolve(args.binary),parent:parent.task,child:child.task,
-   negative,external_data:external,outside:join(state,'forbidden'),outside_write_blocked:args.host!=='pi'||Boolean(args['pi-sandbox-codex'])}));
+   negative,negative_carrier:negativeCarrier,external_data:external,outside:join(state,'forbidden'),outside_write_blocked:args.host!=='pi'||Boolean(args['pi-sandbox-codex'])}));
   // Keep the module at its original immutable source location, so all native
   // probes use the same shared fixture/MCP implementation.
   const invocation=[process.execPath,fileURLToPath(import.meta.url),'--inside',config];
   if(args.host==='codex'){
-   const [program,...nativeArgs]=codexSandbox(resolve(args.native),workspace);
+   const [program,...nativeArgs]=codexSandbox(resolve(args.native),workspace,env);
    await checked(program,[...nativeArgs,...invocation],{cwd:workspace,env});
   }else{
    let prefix=[];
-   if(args['pi-sandbox-codex']){env.PI_CODING_AGENT_DIR=join(workspace,'.acyclic-sdk/pi-fixture');mkdirSync(env.PI_CODING_AGENT_DIR);prefix=codexSandbox(resolve(args['pi-sandbox-codex']),workspace);}
+   if(args['pi-sandbox-codex']){env.PI_CODING_AGENT_DIR=join(workspace,'pi-fixture');mkdirSync(env.PI_CODING_AGENT_DIR);prefix=codexSandbox(resolve(args['pi-sandbox-codex']),workspace,env);}
    await checked(resolve(args.binary),['install','pi','--plugin-root',resolve(args.package),'--settings',join(env.PI_CODING_AGENT_DIR,'extensions/acyclic.ts')],{cwd:workspace,env});
    const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
    await piCommand(resolve(args.native),invocation.map(quote).join(' '),{cwd:workspace,env,prefix});

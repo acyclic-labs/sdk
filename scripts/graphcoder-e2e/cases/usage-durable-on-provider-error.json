@@ -7,8 +7,8 @@
     {"when":{"user":"fail priced usage"},"status":400,"json":{"error":{"message":"priced scripted refusal","type":"invalid_request_error"}}}
   ]},
   "inputs":[
-    {"mode":"headless","args":["--usage-jsonl","{{workspace}}/usage.jsonl","-p","warm priced usage"],"answer":"WARM_PRICED_DONE"},
-    {"mode":"headless","args":["--resume","--usage-jsonl","{{workspace}}/usage.jsonl","-p","fail priced usage"],"exit":1,"stderr_contains":["priced scripted refusal"]}
+    {"mode":"headless","args":["--new-session","--usage-jsonl","{{workspace}}/usage.jsonl","-p","warm priced usage"],"answer":"WARM_PRICED_DONE"},
+    {"mode":"headless","args":["--continue","--usage-jsonl","{{workspace}}/usage.jsonl","-p","fail priced usage"],"exit":1,"stderr_contains":["priced scripted refusal"]}
   ],
   "assert":{"requests":2,"usage_rollup":{"path":"usage.jsonl","agents":1,
     "root":{"calls":2,"completed":1,"currency":"USD","price_revision":"chosen-1","token_nano_units":null,"known_nano_units":2},

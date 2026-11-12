@@ -55,14 +55,12 @@ fn walk_host_tree<E: From<CaptureError>>(
                     let name = crate::native_name::host_name_bytes_with_source_work(
                         &entry.0.name,
                         profile,
-                        limits.maximum_component_bytes,
                         work,
                     );
                     #[cfg(windows)]
                     let name = crate::native_name::host_wide_name_bytes_with_source_work(
                         &entry.0.name,
                         profile,
-                        limits.maximum_component_bytes,
                         work,
                     );
                     name.map(|(name, _allocation)| name)
@@ -73,8 +71,7 @@ fn walk_host_tree<E: From<CaptureError>>(
                 })?;
             let stat = entry.0.stat.take();
             drop(entry);
-            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-                .map_err(CaptureError::from)?;
+            let name = LogicalName::new(encoding, bytes).map_err(CaptureError::from)?;
             let child = append_path_measured(&parent, name, limits, meter)?;
             if capture_excludes(policy, &child, meter)? {
                 capture_drop_path(child, meter)?;
@@ -199,30 +196,10 @@ pub(super) fn classify_host_observation(
     }
 }
 
-pub(super) fn insert_host_observation(
-    observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
-    path: NamespacePath,
-    metadata: HostStat,
-    maximum: usize,
-    meter: &NativeMaterializationWork,
-) -> Result<(), CaptureError> {
-    if capture_position(observed, &path, meter)?.is_err() && observed.len() >= maximum {
-        return Err(CaptureError::InvalidOptions);
-    }
-    capture_charge(
-        meter,
-        WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        },
-    )?;
-    capture_replace(observed, path, Some(metadata), meter)
-}
-
 pub(super) fn collect_host_subtree_roots(
     source_root: &HostRoot,
     volume: (FilesystemProfile, crate::model::VolumeLimits),
-    maximum: usize,
+    maximum: Option<usize>,
     roots: &[NamespacePath],
     policy: &CapturePolicy,
     observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
@@ -235,11 +212,10 @@ pub(super) fn collect_host_subtree_roots(
         capture_drop_host_path(host_root, meter)?;
         if let Some(observation) = observation {
             let recurse = observation.file_type() == crate::demand::SourceNodeKind::Directory;
-            insert_host_observation(
+            capture_push_entry(
                 observed,
                 clone_capture_path(root, meter)?,
-                observation,
-                maximum,
+                Some(observation),
                 meter,
             )?;
             if recurse {
@@ -250,12 +226,10 @@ pub(super) fn collect_host_subtree_roots(
                     clone_capture_path(root, meter)?,
                     policy,
                     meter,
-                    |path, stat, meter| {
-                        insert_host_observation(observed, path, stat, maximum, meter)
-                    },
+                    |path, stat, meter| capture_push_entry(observed, path, Some(stat), meter),
                 )?;
             }
         }
     }
-    Ok(())
+    capture_order_entries(observed, maximum, meter)
 }

@@ -51,8 +51,8 @@ export async function localSessionAuthority(resources = [{ name: "streams:/", pr
   return { authority, credential };
 }
 
-export async function bindLocalSession(stream: WasmStream): Promise<void> {
-  const { authority, credential } = await localSessionAuthority();
+export async function bindLocalSession(stream: WasmStream, resources?: Parameters<typeof localSessionAuthority>[0]): Promise<void> {
+  const { authority, credential } = await localSessionAuthority(resources);
   try { stream.bindSession(authority); stream.registerCredential(0, credential); }
   finally { credential.fill(0); authority.free(); }
 }

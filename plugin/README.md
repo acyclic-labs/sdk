@@ -223,32 +223,31 @@ acyclic fs log
 acyclic --task TASK_ID fs merge agents/CHILD_REF
 ```
 
-All sandboxed coordination and custody writes stay within the existing workspace:
+Native coordination and custody files live in the external owner state directory:
 
-| Path | Use |
+| Path relative to owner state | Use |
 | --- | --- |
-| `.acyclic-sdk/host-files/owner.json` | Discover the running GraphCoder owner |
-| `.acyclic-sdk/host-files/requests/` | Drop request records, withdrawn once answered |
-| `.acyclic-sdk/host-files/status/` | Await immutable replies keyed by operation; withdrawn input without a reply is indeterminate |
-| `.acyclic-sdk/host-processes/` | Native process custody and exclusive ownership |
+| `host-files/owner.json` | Identify the running GraphCoder owner |
+| `host-files/requests/` | Drop request records, withdrawn once answered |
+| `host-files/status/` | Await immutable replies keyed by operation; withdrawn input without a reply is indeterminate |
+| `host-processes/` | Native process custody and exclusive ownership |
 | `.volumes/agents/` | Admitted native child working views |
 
-The workspace carrier uses protocol v4. Run the matching owner and plugin in a
-fresh workspace; older coordination projections are refused and are not migrated.
+The owner announces its absolute carrier directory in the
+`workspace-owner-ready` JSONL event. Set `ACYCLIC_HOST_FILES_DIRECTORY` to
+that directory for native clients. Commands never search the checkout for
+coordination files or start an owner. `acyclic host` grants native hosts the
+three specific directories above for coordination, custody and child views;
+owner identities and signing custody stay outside those grants. When launching
+a sandboxed host directly, admit those same three directories through its
+native writable-root configuration. Keep native sandbox and permissions enabled.
 
-Install declares workspace access without adding sandbox roots. Commands never
-start a service or write state-directory identities or lifecycle locks. Keep the
-host sandbox and permissions enabled. GraphCoder must already be running.
-
-Codex exports [`PLUGIN_DATA`](https://developers.openai.com/plugins/build/plugins)
-to plugin hooks, and Claude exports
-[`CLAUDE_PLUGIN_DATA`](https://code.claude.com/docs/en/plugins-reference)
-to hooks and MCP servers. These are persistent plugin
-directories, not a grant for commands run by the model's sandboxed shell. The
-coordination client derives every mutable path from the admitted workspace,
-regardless of either variable or `XDG_STATE_HOME`. External or symlinked mailbox
-directories are rejected before publishing a request. Installation changes native
-configuration outside the sandbox; ordinary coordination commands never do.
+The carrier uses protocol v4. Run matching owner and plugin versions with fresh
+external state; old coordination projections are refused and are not migrated.
+External symlinked carriers are rejected before publishing a request.
+`PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA` and `XDG_STATE_HOME` do not select the
+carrier. Installation changes native configuration; coordination commands use
+only the explicitly admitted external owner directories.
 
 Pi 1.1 has [no built-in sandbox or permission layer](https://github.com/agentic-labs/pi-mono).
 It inherits the launching

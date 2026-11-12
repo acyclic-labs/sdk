@@ -313,7 +313,7 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
     let (auxiliary, _) = publisher
         .stage_once(
             OperationId::new(),
-            ".volumes/home/note",
+            "volume:///home/note",
             b"original",
             "text/plain",
             "note",
@@ -322,7 +322,13 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
         .await?;
     let mounts = &publisher.tools.workspace.mounts;
     crate::local::workspace::volumes::native_scope(mounts, async |claims| {
-        let path = directory.path().join(".volumes/home/note");
+        let path = mounts
+            .named(Some("home"))?
+            .1
+            .native_root
+            .override_path()
+            .expect("bound home")
+            .join("note");
         assert_eq!(std::fs::read(&path).map_err(storage)?, b"original");
         publisher
             .stage_at(
@@ -353,7 +359,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     let (file, _) = publisher
         .stage_once(
             operation,
-            ".volumes/home/note",
+            "volume:///home/note",
             b"first",
             "text/plain",
             "note",
@@ -428,7 +434,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         let projected = tool.projection.project(&invocation, &result, None)?.0;
         Ok::<_, Error>((result, projected))
     };
-    let path = ".volumes/home/note";
+    let path = "volume:///home/note";
     let token = serde_json::to_string(&file).map_err(storage)?;
     for version in [serde_json::Value::Null, serde_json::json!(token)] {
         let (result, projected) = run(
@@ -460,7 +466,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     let wrong_path = run(
         read_context.clone(),
         read,
-        serde_json::json!({"path": ".volumes/home/other", "version": token}),
+        serde_json::json!({"path": "volume:///home/other", "version": token}),
     )
     .await;
     assert!(wrong_path.is_err());
@@ -554,7 +560,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         publisher
             .stage_once(
                 OperationId::new(),
-                ".volumes/home/denied",
+                "volume:///home/denied",
                 b"denied",
                 "text/plain",
                 "denied",
@@ -585,7 +591,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         publisher
             .stage_once(
                 operation,
-                ".volumes/home/note",
+                "volume:///home/note",
                 b"first",
                 "text/plain",
                 "note",
@@ -609,7 +615,16 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     assert!(!directory.path().join(".volumes/home").exists());
     crate::local::workspace::volumes::native_scope(mounts, async |claims| {
         assert_eq!(
-            std::fs::read(directory.path().join(".volumes/home/note")).map_err(storage)?,
+            std::fs::read(
+                mounts
+                    .named(Some("home"))?
+                    .1
+                    .native_root
+                    .override_path()
+                    .expect("bound home")
+                    .join("note")
+            )
+            .map_err(storage)?,
             b"edited"
         );
         Ok(((), claims))
@@ -661,7 +676,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     assert!(
         publisher
             .destination(Some(&harness.project), ".volumes/home/note", None)
-            .is_err()
+            .is_ok()
     );
     Ok(())
 }

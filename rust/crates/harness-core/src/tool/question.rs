@@ -1,4 +1,4 @@
-//! The optional question plugin: one file-backed ask surface, selected at session start.
+//! Shared file-backed question admission and settlement on every host.
 use crate::{
     tool::{
         files::{FileProjection, FileResult, FileTool, WriteFileInput},
@@ -34,7 +34,8 @@ pub(crate) fn valid_path(arguments: &serde_json::Value) -> bool {
     arguments
         .get("path")
         .and_then(serde_json::Value::as_str)
-        .and_then(|path| path.strip_prefix(".volumes/private/ui/"))
+        .and_then(|path| path.strip_prefix(crate::layers::PRIVATE_PATH))
+        .and_then(|path| path.strip_prefix("ui/"))
         .is_some_and(|path| {
             !path.is_empty()
                 && path
@@ -46,7 +47,7 @@ pub(crate) fn valid_path(arguments: &serde_json::Value) -> bool {
 pub(crate) static SPEC: ToolSpec = ToolSpec {
     name: "ask_question",
     revision: "1",
-    description: "Ask the human directly by publishing a private UI file. Set path to .volumes/private/ui/<name>.md and content to CommonMark containing input fences. End your turn to wait; replies preserve the file generation and asking agent identity.",
+    description: "Ask the human directly by publishing a private UI file. Set path to volume:///private/ui/<name>.md and content to CommonMark containing input fences. End your turn to wait; replies preserve the file generation and asking agent identity.",
     hook_names: &["Write", "write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,
@@ -59,7 +60,7 @@ pub(crate) static SPEC: ToolSpec = ToolSpec {
 /// Conservative byte scan: no markdown parse, no reads beyond committed writes.
 /// Inspect fence runs anywhere on a line, including list/blockquote containers.
 /// This deliberately overapproximates markdown: settlement never parses it.
-pub fn input_fence(bytes: &[u8]) -> bool {
+pub(crate) fn input_fence(bytes: &[u8]) -> bool {
     bytes.split(|b| *b == b'\n').any(|line| {
         let mut rest = line;
         while let Some((&marker, tail)) = rest.split_first() {

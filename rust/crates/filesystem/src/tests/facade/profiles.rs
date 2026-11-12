@@ -431,7 +431,7 @@ async fn nested_alias_listing_preserves_directory_observations() -> TestResult {
         .await?;
     commit(&mut writer, &cancel).await?;
     assert!(matches!(
-        reader.rebase_head(8, B, &cancel).await?.value,
+        reader.rebase_head(Some(8), B, &cancel).await?.value,
         RebaseDecision::Conflicted { conflicts, .. }
         if conflicts.iter().any(|conflict|
             matches!(conflict.region, DependencyRegion::DirectoryRange { .. }))

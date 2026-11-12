@@ -38,6 +38,26 @@ fn exchange(error: impl std::fmt::Display) -> Error {
 }
 
 impl Connection {
+    /// Refuse explicit launch requirements before creating a session or sending input.
+    /// With no explicit requirement this performs no control request.
+    pub async fn require_execution(&self, model: Option<&str>, no_compaction: bool) -> Result<()> {
+        if model.is_none() && !no_compaction {
+            return Ok(());
+        }
+        match self.execute(&AgentCommand::Settlement {
+            agent: self.root.clone(),
+            wait: false,
+        }).await? {
+            AgentReply::Settlement { model: actual, compaction_disabled, .. }
+                if model.is_none_or(|expected| actual.as_deref() == Some(expected))
+                    && (!no_compaction || compaction_disabled) => Ok(()),
+            AgentReply::Settlement { .. } => Err(Error::Invalid(
+                "selected owner or session does not meet the requested model or --no-compaction policy; start with a fresh --host-state-directory".into(),
+            )),
+            _ => Err(Error::Storage("execution policy query returned another reply".into())),
+        }
+    }
+
     /// Refuses an existing owner or selected session whose immutable policy
     /// differs from the run requested by this client, before any model work.
     pub async fn require_topology(&self, expected: &crate::topology::Topology) -> Result<()> {

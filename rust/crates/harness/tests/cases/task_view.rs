@@ -123,7 +123,12 @@ fn expose_native_projections(table: &mut MountTable<()>) {
     let root = table.root.clone();
     for (relative, mount) in table.mounts_mut() {
         if !relative.is_empty() {
-            mount.native_root = NativeRoot::Path(root.join(relative));
+            let name = relative
+                .strip_prefix("volume:///")
+                .or_else(|| relative.strip_prefix("volume://"))
+                .expect("explicit volume address");
+            mount.native_root =
+                NativeRoot::Path(root.with_file_name(format!("native-{}", name.replace('/', "-"))));
         }
     }
 }
@@ -149,7 +154,10 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
         ],
     )?;
     assert_eq!(table.mounts().count(), 2);
-    assert_eq!(table.context_line(), "Volumes: . (rw), .volumes/data (rw)");
+    assert_eq!(
+        table.context_line(),
+        "Volumes: . (rw), volume:///data (logical, rw)"
+    );
     assert!(!table.environment()?.contains_key("ACYCLIC_VOLUME_DATA"));
     expose_native_projections(&mut table);
     let hints = table.environment()?;
@@ -159,9 +167,9 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
     );
     assert_eq!(
         hints.get("ACYCLIC_VOLUME_DATA").map(PathBuf::from),
-        Some(root().join(".volumes/data"))
+        Some(root().with_file_name("native-data"))
     );
-    let (data, path) = table.resolve(Path::new(".volumes/data/x"))?;
+    let (data, path) = table.resolve(Path::new("volume:///data/x"))?;
     assert_eq!(data.view.volume.id(), "B-data");
     assert_eq!(path, "x");
     assert!(data.mode.allows(Action::Write));
@@ -171,7 +179,7 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
         .0
         .check(Action::Write, "src/x", 100)?;
     assert!(matches!(
-        table.resolve(Path::new(".volumes/agents/A/x")),
+        table.resolve(Path::new("volume://A/project/x")),
         Err(Error::NotFound(_))
     ));
     assert!(matches!(
@@ -204,15 +212,15 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
     assert!(
         !table
             .environment()?
-            .contains_key("ACYCLIC_VOLUME_AGENTS_A_MODE")
+            .contains_key("ACYCLIC_VOLUME_A_PROJECT_MODE")
     );
     expose_native_projections(&mut table);
-    let (foreign, path) = table.resolve(Path::new(".volumes/agents/A/x"))?;
+    let (foreign, path) = table.resolve(Path::new("volume://A/project/x"))?;
     assert!(foreign.mode.read_only());
     assert_eq!(
         table
             .environment()?
-            .get("ACYCLIC_VOLUME_AGENTS_A_MODE")
+            .get("ACYCLIC_VOLUME_A_PROJECT_MODE")
             .map(String::as_str),
         Some("ro")
     );
@@ -221,11 +229,11 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
         foreign.check(Action::Write, &path, 100),
         Err(Error::Unauthorized(_))
     ));
-    assert!(!table.mounts().any(|(path, _)| path == ".volumes/agents/C"));
+    assert!(!table.mounts().any(|(path, _)| path == "volume://C/project"));
     assert!(
         build(true)?
             .mounts()
-            .any(|(path, _)| path == ".volumes/agents/C")
+            .any(|(path, _)| path == "volume://C/project")
     );
     let mut stale = volume("A", "project", policy.clone())?;
     stale.generation -= 1;
@@ -289,11 +297,15 @@ fn hidden_stale_views_do_not_block_or_hide_primary_user_directories() -> Result<
     assert_eq!(path, ".volumes/user.txt");
     primary.check(Action::Write, &path, 100)?;
     assert!(matches!(
-        table.resolve(Path::new(".volumes/agents/A/file")),
+        table.resolve(Path::new("volume://A/project/file")),
         Err(Error::NotFound(_))
     ));
     assert_eq!(table.context_line(), "Volumes: . (rw)");
-    assert!(!table.environment()?.contains_key("ACYCLIC_VOLUME_AGENTS_A"));
+    assert!(
+        !table
+            .environment()?
+            .contains_key("ACYCLIC_VOLUME_A_PROJECT")
+    );
     Ok(())
 }
 
@@ -332,7 +344,7 @@ proptest! {
         for agent in ["A", "B"] {
             let lineage = vec!["root".into(), agent.into()];
             let id = format!("{agent}-project");
-            let selected = if agent == "B" { path.to_owned() } else { format!(".volumes/agents/A/{path}") };
+            let selected = if agent == "B" { path.to_owned() } else { format!("volume://A/project/{path}") };
             for action in [Action::Read, Action::Write, Action::Create] {
                 let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, generation: 10, head: 10, path, config: volume_config() }, CONTEXT, &capability).allowed;
                 let mounted = table.resolve(Path::new(&selected)).is_ok_and(|(mount, relative)| mount.check(action, &relative, 100).is_ok());

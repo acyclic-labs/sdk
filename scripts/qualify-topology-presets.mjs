@@ -55,8 +55,8 @@ for (const role of nestedOnly ? ["nested"] : ["blackboard", "hierarchy", "nested
           tool.arguments.mode = "all";
           changed++;
         }
-        if (phase === "private-volume-control" && tool.arguments.path === ".volumes/shared/board.md") {
-          tool.arguments.path = ".volumes/home/board.md";
+        if (phase === "private-volume-control" && tool.arguments.path === "volume:///shared/board.md") {
+          tool.arguments.path = "volume:///home/board.md";
           changed++;
         }
         if (phase === "unconditional-edit-control" && tool.id === "stale-board") {

@@ -197,11 +197,11 @@ impl HostWorkspaceOwner {
             HostAction::Open { host, session } => {
                 let agent = self.open(&host, &session).await?;
                 let view = self.attach(&agent).await?;
-                Ok(json!({"task":agent,"cwd":view.host_cwd()}))
+                Ok(json!({"task":agent,"cwd":view.host_cwd(),"environment":view.environment()?}))
             }
             HostAction::Reopen { task } => {
                 let view = self.attach(&task).await?;
-                Ok(json!({"task":task,"cwd":view.host_cwd()}))
+                Ok(json!({"task":task,"cwd":view.host_cwd(),"environment":view.environment()?}))
             }
             HostAction::Capture { task } => {
                 let _lock = self.locks.hold(vec![task.clone()]).await;
@@ -505,13 +505,7 @@ impl HostWorkspaceOwner {
                 .local
                 .workspace()
                 .ok_or_else(|| Error::Unsupported("native hosts require a checkout".into()))?;
-            let root = acyclic_fs::hold_root(&workspace.path)
-                .map_err(storage)?
-                .create_directories(
-                    Path::new(host_workspace::HOST_VIEW_ROOT),
-                    acyclic_fs::NativeDurability::Durable,
-                )
-                .map_err(storage)?;
+            let root = workspace.held_task_mount_root()?;
             host_workspace::HostWorkspace::attach(
                 Arc::clone(workspace),
                 agent.clone(),
@@ -529,6 +523,11 @@ impl HostWorkspaceOwner {
         let _quiescence = if task.depth() != 0 {
             Some(
                 super::host_process::HostProcessLease::acquire(
+                    &self
+                        .local
+                        .workspace()
+                        .ok_or_else(|| Error::Invalid("native owner workspace absent".into()))?
+                        .host_state,
                     self.local.workspace_path().ok_or_else(|| {
                         Error::Invalid(
                             "step=capture native agent: workspace absent; recovery: acyclic agents"

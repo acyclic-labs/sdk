@@ -34,7 +34,7 @@ try {
   await hooks["tool.execute.before"]({ tool: "read", sessionID: info.id });
   // Withdraw the actual immutable owner announcement, retaining its original
   // bytes. A fresh shipping client now observes an owner that is not ready.
-  announcement = join(directory, ".acyclic-sdk", "host-files", "owner.json");
+  announcement = join(process.env.ACYCLIC_HOST_FILES_DIRECTORY, "owner.json");
   const original = join(directory, "retained-owner-announcement.json");
   await rename(announcement, original); retained = original;
   let refusal;

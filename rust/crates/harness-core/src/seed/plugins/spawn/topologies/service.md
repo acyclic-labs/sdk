@@ -11,7 +11,7 @@ import type { PluginManifest } from "acyclic";
 
 export default {
   name: "receipt", description: "Records accepted request positions.",
-  after: { requests: { path: ".volumes/shared/service/requests.jsonl", from: "start" } },
+  after: { requests: { path: "volume:///shared/service/requests.jsonl", from: "start" } },
 } satisfies PluginManifest;
 ```
 
@@ -23,7 +23,7 @@ import type { AfterHook } from "acyclic";
 export default (({ delivery, key }) => {
   if (delivery.kind !== "log") return [];
   return delivery.added.map((_request, index) => ({
-    append: ".volumes/shared/service/accepted.jsonl",
+    append: "volume:///shared/service/accepted.jsonl",
     record: { version: 1, delivery: key, index },
   }));
 }) satisfies AfterHook;

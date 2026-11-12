@@ -43,7 +43,6 @@ impl StockExecution<'_> {
             )),
             single_request: false,
             journal_writes: self.journal_writes.borrowed(),
-            background: Default::default(),
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_tail: tokio::sync::Mutex::new(Default::default()),
@@ -94,6 +93,17 @@ impl StockExecution<'_> {
                 phase,
             )?
             .await?;
+        if events.iter().any(|event| {
+            matches!(event, ModelEvent::Completed { metadata } if metadata["finish_reason"] == "length")
+        }) {
+            // The original usage stays in the journal, but an incomplete
+            // summary cannot authorize replacing its source history.
+            for event in stock_into_iter(events, self.io)? {
+                stock_retire_event(event, self.io)?;
+            }
+            return Err(stock_boundary(self.io, crate::wire::ErrorCode::Invalid,
+                "summary reached its output-token limit; request a shorter summary"));
+        }
         let text = self.collect_summary_text(events)?;
         let output_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("summary:{step}:output"), work)

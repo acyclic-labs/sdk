@@ -1,20 +1,21 @@
 use acyclic_stream::StreamPath;
 use std::collections::BTreeSet;
 
-/// Finite view demand, independent of the number of agents in storage.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Optional caller-selected view capacity, independent of storage population.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DemandPolicy {
-    selected: usize,
-    expanded: usize,
+    selected: Option<usize>,
+    expanded: Option<usize>,
 }
 
 impl DemandPolicy {
-    /// Set the combined visible/focused cap and the expanded-node cap.
+    /// Set optional visible/focused and expanded-node capacities.
+    /// Absent capacities admit every explicit interest.
     ///
     /// # Errors
-    /// Refuses zero budgets or values above the client hard ceilings.
-    pub fn new(selected: usize, expanded: usize) -> Result<Self, DemandError> {
-        if selected == 0 || selected > 256 || expanded == 0 || expanded > 64 {
+    /// Refuses explicitly selected zero capacities.
+    pub fn new(selected: Option<usize>, expanded: Option<usize>) -> Result<Self, DemandError> {
+        if selected == Some(0) || expanded == Some(0) {
             return Err(DemandError::InvalidPolicy);
         }
         Ok(Self { selected, expanded })
@@ -22,30 +23,21 @@ impl DemandPolicy {
 
     /// Maximum distinct agents with full record follows.
     #[must_use]
-    pub fn selected_capacity(self) -> usize {
+    pub fn selected_capacity(self) -> Option<usize> {
         self.selected
     }
 
     /// Maximum nodes with retained child-page windows.
     #[must_use]
-    pub fn expanded_capacity(self) -> usize {
+    pub fn expanded_capacity(self) -> Option<usize> {
         self.expanded
-    }
-}
-
-impl Default for DemandPolicy {
-    fn default() -> Self {
-        Self {
-            selected: 16,
-            expanded: 8,
-        }
     }
 }
 
 /// A rejected demand never replaces the caller's previously admitted view.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemandError {
-    /// Policy exceeds the finite client ceilings or has a zero budget.
+    /// Policy selects a zero capacity.
     InvalidPolicy,
     /// Distinct visible/focused keys exceed the selected-agent cap.
     SelectedCapacity,
@@ -152,11 +144,11 @@ impl ViewDemand {
 fn extend(
     target: &mut BTreeSet<StreamPath>,
     input: impl IntoIterator<Item = StreamPath>,
-    limit: usize,
+    limit: Option<usize>,
     error: DemandError,
 ) -> Result<(), DemandError> {
     for key in input {
-        if target.len() == limit {
+        if limit == Some(target.len()) {
             if !target.contains(&key) {
                 return Err(error);
             }

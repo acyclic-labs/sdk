@@ -121,7 +121,7 @@ async fn device_directory_preserves_home_path_reads_and_edits() -> Result {
         assert!(
             targets
                 .read_path(
-                    ".volumes/scratch/file.txt",
+                    "volume:///scratch/file.txt",
                     acyclic_harness_core::tool::ReadPathKind::File,
                     None
                 )

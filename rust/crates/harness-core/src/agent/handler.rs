@@ -10,7 +10,7 @@
 use super::checkpoint::{checkpoint_state, codec};
 use super::{
     AgentId, AgentPath, AgentRecord, AgentState, Alarm, Error, ForkAdopted, InboxRecord, IntentId,
-    Out, Spawn, TurnDriver, Wake, create_root, delivery_key, lower,
+    Out, Spawn, TurnDriver, Wake, delivery_key, lower,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -174,7 +174,17 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         intent: &IntentId,
         adopted: ForkAdopted,
     ) -> Result<Spawn, Error> {
-        let created = create_root(intent, adopted)?;
+        self.prepare_root_with_peer(within, intent, adopted, true)
+    }
+
+    pub(super) fn prepare_root_with_peer(
+        &self,
+        within: &ActorReference,
+        intent: &IntentId,
+        adopted: ForkAdopted,
+        peer: bool,
+    ) -> Result<Spawn, Error> {
+        let created = super::create_root_with_peer(intent, adopted, peer)?;
         self.root_actor(within, created, false)
     }
 
@@ -185,8 +195,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         adopted: ForkAdopted,
         source: &AgentPath,
         history: &super::HistorySelection,
+        peer: bool,
     ) -> Result<Spawn, Error> {
-        let created = super::commit::create_root_at(intent, adopted, Some((source, history)))?;
+        let created =
+            super::commit::create_root_at(intent, adopted, Some((source, history)), peer)?;
         self.root_actor(within, created, true)
     }
 
@@ -247,7 +259,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .ok_or(Error::Record("agent inbox subscription differs"))?
             .cursor;
         let mut observed = if let Some(checkpoint) = state.checkpoint() {
-            checkpoint_state(checkpoint)?
+            checkpoint_state(self.store.provider().as_ref(), checkpoint).await?
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
             // Its own adoption is at the cursor installed by the spawn commit.
@@ -324,7 +336,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         cancellation: acyclic_actors::guest::CancellationToken,
         failure: Option<&str>,
     ) -> Result<Transition, Error> {
-        let saved = checkpoint.map(checkpoint_state).transpose()?;
+        let saved = match checkpoint {
+            Some(checkpoint) => {
+                Some(checkpoint_state(self.agents.store.provider().as_ref(), checkpoint).await?)
+            }
+            None => None,
+        };
         let cut = delivery
             .subscriptions
             .get(INBOX)
@@ -424,7 +441,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .await?
         };
         prepared
-            .persist_children(Arc::clone(self.agents.store.provider()))
+            .persist_indexes(Arc::clone(self.agents.store.provider()), checkpoint)
             .await?;
         let participant = match &self.volumes {
             Some(volumes) => {

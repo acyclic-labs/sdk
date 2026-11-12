@@ -68,7 +68,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     let mut completed = None;
     for cut in 1..=512 {
         control.arm(cut);
-        match (rebasing.rebase_head(8, B, &cancellation)).await {
+        match (rebasing.rebase_head(Some(8), B, &cancellation)).await {
             Ok(receipt) => {
                 completed = Some(receipt);
                 break;
@@ -208,7 +208,10 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
     let manifest = sweep_read_only!(ours.export_manifest(B, &cancellation));
     assert_eq!(manifest.value.volume_id, volume.id());
     assert_eq!(manifest.value.generation_root, ours_generation.object_id());
-    let prepared = sweep_read_only!(ours.prepare_merge(theirs_generation, 8, 8, B, &cancellation,));
+    let prepared =
+        sweep_read_only!(
+            ours.prepare_merge(theirs_generation, Some(8), Some(8), B, &cancellation,)
+        );
     assert!(matches!(prepared.value, MergePreparation::Prepared { .. }));
     assert!(ours.has_pending_mutations());
     for expected in ["ours", "theirs"] {
@@ -261,7 +264,6 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
         &AttributeName::new(
             crate::kernel::AttributeClass::PosixXattr,
             b"user.publication".to_vec(),
-            config().limits.maximum_component_bytes,
         )?,
         Some((
             &bytes::Bytes::from(vec![b'a'; 4_096]),

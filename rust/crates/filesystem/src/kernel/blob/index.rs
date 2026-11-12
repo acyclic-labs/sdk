@@ -18,10 +18,10 @@ impl BlobIndexBuilder {
     }
 
     fn capacity(&self, level: usize) -> usize {
-        let mut references = self
-            .options
-            .maximum_blob_bytes
-            .div_ceil(u64::from(self.options.chunk_bytes));
+        let Some(maximum) = self.options.maximum_blob_bytes else {
+            return self.width;
+        };
+        let mut references = maximum.div_ceil(u64::from(self.options.chunk_bytes));
         for _ in 0..level {
             references = references.div_ceil(self.width as u64);
         }

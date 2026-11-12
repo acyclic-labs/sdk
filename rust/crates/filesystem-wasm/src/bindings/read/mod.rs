@@ -16,18 +16,19 @@ pub struct BrowserLookupResult {
     #[tsify(type = "Uint8Array | undefined")]
     pub(in crate::bindings) file_id: Option<serde_bytes::ByteBuf>,
     pub(in crate::bindings) file_kind: Option<FileKind>,
-    pub(in crate::bindings) resolved_components: u16,
+    pub(in crate::bindings) resolved_components: u64,
     pub(in crate::bindings) work: BrowserWorkCounters,
 }
 
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+#[tsify(large_number_types_as_bigints)]
 pub struct BrowserBatchLookupEntryResult {
     pub(in crate::bindings) exists: bool,
     #[tsify(type = "Uint8Array | undefined")]
     pub(in crate::bindings) file_id: Option<serde_bytes::ByteBuf>,
     pub(in crate::bindings) file_kind: Option<FileKind>,
-    pub(in crate::bindings) resolved_components: u16,
+    pub(in crate::bindings) resolved_components: u64,
 }
 
 #[derive(Serialize, Tsify)]
@@ -73,17 +74,9 @@ impl BrowserCheckout {
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
     ) -> Result<Ts<BrowserBatchLookupResult>, JsValue> {
-        let maximum = self.engine.volume_config().limits.maximum_paths_per_batch;
-        let paths_array = paths
-            .dyn_ref::<js_sys::Array>()
-            .ok_or_else(|| js_error("lookup paths must be an array"))?;
-        if paths_array.length() > maximum {
-            return Err(js_error("lookup path batch exceeds the configured bound"));
-        }
         let decoded: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
-        if decoded.is_empty() || decoded.capacity() > usize::try_from(maximum).unwrap_or(usize::MAX)
-        {
-            return Err(js_error("lookup path batch is empty or excessive"));
+        if decoded.is_empty() {
+            return Err(js_error("lookup path batch is empty"));
         }
         let paths = decoded
             .iter()
@@ -153,17 +146,7 @@ impl BrowserCheckout {
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
     ) -> Result<BrowserResolvedFiles, JsValue> {
-        let maximum = self.engine.volume_config().limits.maximum_paths_per_batch;
-        let paths_array = paths
-            .dyn_ref::<js_sys::Array>()
-            .ok_or_else(|| js_error("resolved file paths must be an array"))?;
-        if paths_array.length() > maximum {
-            return Err(js_error("resolved file batch exceeds the configured bound"));
-        }
         let paths: Vec<String> = serde_wasm_bindgen::from_value(paths).map_err(js_error)?;
-        if paths.capacity() > usize::try_from(maximum).unwrap_or(usize::MAX) {
-            return Err(js_error("resolved file batch exceeds the configured bound"));
-        }
         let mut parsed = Vec::new();
         parsed
             .try_reserve_exact(paths.len())
@@ -176,11 +159,7 @@ impl BrowserCheckout {
             let checkout = &mut self.engine;
             let reader = checkout.pinned_reader().map_err(js_error)?;
             let receipt = reader
-                .resolve_files(
-                    &parsed,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
-                    &cancellation,
-                )
+                .resolve_files(&parsed, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(js_error)?;
             (

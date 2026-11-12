@@ -64,9 +64,14 @@ impl Cancelled<'_> {
         if self.token.is_cancelled() {
             return Ok(());
         }
-        let bytes =
-            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationWaiter>())
-                .map_err(|_| crate::WorkError::Overflow)? as u64;
+        let bytes = const {
+            match crate::arc_layout::allocation_bytes(
+                std::alloc::Layout::new::<CancellationWaiter>(),
+            ) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("cancellation waiter Arc layout overflow"),
+            }
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let (native_allocation, cleanup) = if let Some(original) = original {
             original.admit(crate::WorkCounters {
@@ -156,6 +161,25 @@ impl Cancelled<'_> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Cancelled<'static> {
+    /// Arms a blocking primitive's event without allocating another waker.
+    /// Notifications may be coalesced or repeated, like ordinary task wakeups.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn notify(&mut self, notify: fn()) {
+        let previous = self.waiter.as_ref().and_then(|waiter| {
+            waiter
+                .waker
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .replace(CancellationWake::Notification(notify))
+        });
+        // Neither arbitrary waker destruction nor notification spans a lock.
+        drop(previous);
+        // Cancellation may have detached this node before it was armed.
+        if self.token.is_cancelled() {
+            notify();
+        }
+    }
+
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn cleanup_items(&self) -> u64 {
         u64::from(self.waiter.is_some())
@@ -226,7 +250,7 @@ impl Future for Cancelled<'_> {
                 .waker
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .replace(replacement);
+                .replace(CancellationWake::Future(replacement));
             drop(previous);
         }
         if this.token.is_cancelled() {

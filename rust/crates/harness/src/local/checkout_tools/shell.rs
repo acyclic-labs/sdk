@@ -61,31 +61,18 @@ impl CheckoutTools {
         let capture_control = control.clone();
         let shutdown = workspace.shutdown.clone();
         let spill_name = format!("shell-{operation}.log");
-        let (scratch, relative) = state
+        let spill_root = state
             .mounts
-            .resolve(std::path::Path::new(workspace::volumes::HOME_PATH))?;
-        // An absent home binding resolves inside the primary volume. Keep
-        // overflow there so ordinary command capture commits the visible file.
-        let spill_directory = if relative.is_empty() {
-            workspace::volumes::HOME_PATH
-        } else {
-            ""
-        };
-        let spill_path = if spill_directory.is_empty() {
-            spill_name.clone()
-        } else {
-            format!("{spill_directory}/{spill_name}")
-        };
-        scratch.check(
-            acyclic_fs::access::Action::Write,
-            &spill_name,
-            self.clock.now_unix_millis() / 1000,
-        )?;
-        let spill_root = scratch
-            .native_root
-            .override_path()
-            .cloned()
-            .unwrap_or_else(|| state.mounts.root.join(spill_directory));
+            .scratch_root
+            .clone()
+            .ok_or_else(|| Error::Invalid("shell requires host scratch".into()))?;
+        let native_spill = spill_root
+            .join(&spill_name)
+            .to_str()
+            .ok_or_else(|| Error::Invalid("shell scratch path is not UTF-8".into()))?
+            .to_owned();
+        let spill_file = format!("tools/{}/{operation}/spill.log", context.turn_id());
+        let spill_path = format!("{}{spill_file}", crate::layers::OUTPUT_PATH);
         let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
         let cancellation = background
             .then(|| job::Cancellation::open(&spill_root, operation))
@@ -137,7 +124,7 @@ impl CheckoutTools {
         .await?;
         if let Some(started) = started {
             let directory = format!("tools/{}/{}", context.turn_id(), operation);
-            let cancel = spill_path.trim_end_matches(".log").to_owned() + ".cancel";
+            let cancel = native_spill.trim_end_matches(".log").to_owned() + ".cancel";
             let mut result = ToolResult {
                 value: serde_json::json!({
                     "background": true, "output_directory": directory, "cancel": cancel,
@@ -200,6 +187,26 @@ impl CheckoutTools {
                     maximum_output as u64,
                 )
             });
+        let result = match result {
+            Ok((result, Some(file))) if result.value["spill"].is_string() => {
+                let published = async {
+                    let mut source = futures::io::AllowStdIo::new(file);
+                    context
+                        .stage_file_stream_once(
+                            output::writer::operation(context, "spill.log"),
+                            &spill_file,
+                            &mut source,
+                            ("application/octet-stream", "spill.log"),
+                        )
+                        .await?;
+                    std::fs::remove_file(&native_spill).map_err(storage)?;
+                    Ok(result)
+                }
+                .await;
+                published
+            }
+            result => result.map(|(result, _)| result),
+        };
         let result = match control_error {
             Some(error) => Error::after_cleanup(Err(error), result.map(|_| ())),
             None => result,

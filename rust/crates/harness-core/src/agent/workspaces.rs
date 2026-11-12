@@ -274,7 +274,8 @@ impl WorkspaceChanged {
     }
 }
 
-/// Folded version-one table, retained directly by an actor checkpoint in O(W).
+/// Ordered version-one table. Actor checkpoints retain its immutable snapshot
+/// identity; source chunks are durable before that checkpoint publishes.
 /// The first user entry is primary, falling back to home when there is none.
 /// There is no configured workspace-count limit.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -310,8 +311,8 @@ impl Serialize for WorkspaceTable {
 }
 
 impl WorkspaceTable {
-    /// The single fold over checkpoint-owned table storage. The actor carries
-    /// this ordered vector directly, so restoration never reads inbox history.
+    /// The single fold over the actor's admitted table view. Restoration loads
+    /// its committed snapshot and never reads inbox history.
     pub(crate) fn apply_entries(
         entries: &mut Vec<WorkspaceEntry>,
         change: &WorkspaceChanged,

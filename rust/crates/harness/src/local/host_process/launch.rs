@@ -462,7 +462,18 @@ fn invocation(args: &[String]) -> Result<(&str, Option<&str>, &[String])> {
 pub fn launch(args: &[String]) -> Result<()> {
     let (host, prompt, flags) = invocation(args)?;
     let cwd = std::env::current_dir().map_err(storage)?;
-    let flags = parent_flags(host, flags, &cwd)?;
+    let mut flags = parent_flags(host, flags, &cwd)?;
+    if matches!(host, "codex" | "claude-code" | "agy") {
+        for directory in super::super::host_files::native_roots(&cwd)? {
+            flags.extend([
+                "--add-dir".into(),
+                directory
+                    .to_str()
+                    .ok_or_else(|| invalid("non-Unicode native owner path"))?
+                    .into(),
+            ]);
+        }
+    }
     let status = run_root_session(&cwd, host, OsStr::new(program(host)?), &flags, prompt)?;
     if !status.success() {
         return Err(invalid(format!("native {host} exited {status}")));

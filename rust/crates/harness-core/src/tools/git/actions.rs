@@ -255,18 +255,12 @@ where
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
         // A whole-tree restore rewrites every changed path, nested ones
-        // included, except the host's namespaces, whose state never rewinds.
-        let paths = git_restore_paths(
-            &current,
-            &source,
-            &self.ignore,
-            u32::MAX,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(Error::from)?;
+        // included.
+        let paths = git_restore_paths(&current, &source, u32::MAX, &CancellationToken::new())
+            .await
+            .map_err(Error::from)?;
         if paths.is_empty() {
-            // The workspace already matches outside the host's namespaces.
+            // The workspace already matches.
             return Ok(GitFilesystemResult::Applied {
                 tree: Some(GitTreeRef::exact(self.current.id(), current.id())),
                 tracked_paths: None,
@@ -302,17 +296,7 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
-        // An applied commit, like a restore, never writes over a reserved
-        // path or a directory holding one.
-        let paths = git_paths_preserving_reserved(
-            &current,
-            source.as_ref(),
-            &self.ignore,
-            paths.iter().cloned(),
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map_err(Error::from)?;
+        let paths: Vec<_> = paths.iter().cloned().collect();
         let outcome = self
             .current
             .apply_paths_from(
@@ -368,7 +352,7 @@ where
     /// Lists a tree's Git-visible entries.
     pub(super) async fn archive(&self, tree: &GitTreeRef) -> Result<GitFilesystemResult, Error> {
         let generation = self.generation(*tree).await?;
-        let entries = walk_git_tree(&generation, &self.ignore, None, 100_000)
+        let entries = walk_git_tree(&generation, None, 100_000)
             .await
             .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
@@ -391,7 +375,6 @@ where
         let generation = self.generation(*tree).await?;
         let result = grep_git_generation(
             &generation,
-            &self.ignore,
             pattern,
             path,
             100_000,
@@ -417,7 +400,7 @@ where
             let generation = self.generation(commit.tree).await?;
             history.push((commit.clone(), generation));
         }
-        let lines = blame_git_generations(&history, &self.ignore, path, 16 * 1024 * 1024)
+        let lines = blame_git_generations(&history, path, 16 * 1024 * 1024)
             .await
             .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
@@ -440,7 +423,7 @@ where
                 "Git clean generation is not the live workspace",
             ));
         }
-        let entries = walk_git_tree(&generation, &self.ignore, None, 100_000)
+        let entries = walk_git_tree(&generation, None, 100_000)
             .await
             .map_err(Error::from)?;
         let candidates: Vec<_> = entries
@@ -546,11 +529,6 @@ where
         tree: &GitTreeRef,
         path: &str,
     ) -> Result<GitFilesystemResult, Error> {
-        // Host namespaces are never part of a commit, even one captured
-        // before they were kept out of the repository view.
-        if self.ignore.reserves(path) {
-            return Err(Error::NotFound(path.to_owned()));
-        }
         let generation = self.generation(*tree).await?;
         let shown = format!("/{path}");
         let cancellation = acyclic_fs::CancellationToken::new();

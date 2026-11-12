@@ -19,9 +19,7 @@ impl StockExecution<'_> {
         {
             let (input, step, prior) = turn;
             let (_, base, _) = self.response_base(journal, input, step, prior).await?;
-            // Keep a prepared immutable base cut even when only stage output
-            // causes overflow. Its preview is still re-staged and counted.
-            if selected_base || self.background_source_matches(&base).await? {
+            if selected_base {
                 return Ok(CompactionSource::Base { context: base });
             }
             let request = crate::model::PreparedModelRequest::prepare(

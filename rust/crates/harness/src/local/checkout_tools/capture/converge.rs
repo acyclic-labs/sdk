@@ -8,11 +8,14 @@ type Candidate = Checkout<LocalAuthorityBackend, LocalObjectBackend>;
 // candidate or allowing an actively changing source to spin forever.
 pub(super) const MAXIMUM_RESCANS: usize = 4;
 
+// Chunk native hints without imposing a total capture-path ceiling.
+const WATCH_PAGE_PATHS: u32 = 1024;
+
 impl Cursor {
     fn poll(&mut self, cancellation: &CancellationToken) -> Result<WatchBatch> {
         Ok(self
             .watcher
-            .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, cancellation)
+            .poll(WATCH_PAGE_PATHS, WorkBudget::UNBOUNDED, cancellation)
             .map_err(storage)?
             .value)
     }
@@ -37,7 +40,7 @@ impl Cursor {
             };
             #[cfg(all(test, not(loom)))]
             self.inject("begin")?;
-            self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
+            self.watcher.watch_tree(&[]).map_err(storage)?;
             #[cfg(all(test, not(loom)))]
             self.inject("watch-tree")?;
             let captured = capture_baseline(
@@ -165,7 +168,6 @@ fn drain<'a>(
     cancellation: &'a CancellationToken,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
     crate::conversation::BoundedContentFuture::new(None, || async move {
-        let mut remaining = MAXIMUM_PATHS as usize;
         let mut pending = None;
         loop {
             // The batch retains its producer-owned vector through replay.
@@ -175,15 +177,7 @@ fn drain<'a>(
             };
             #[cfg(all(test, not(loom)))]
             cursor.inject("poll")?;
-            let empty = match &batch {
-                WatchBatch::Changes { changes, .. } => {
-                    remaining = remaining.checked_sub(changes.len()).ok_or_else(|| {
-                        Error::Conflict("checkout change batch exceeds capture bound".into())
-                    })?;
-                    changes.is_empty()
-                }
-                WatchBatch::RescanRequired { .. } => false,
-            };
+            let empty = matches!(&batch, WatchBatch::Changes { changes, .. } if changes.is_empty());
             if !replay(
                 cursor,
                 checkout,
@@ -225,7 +219,7 @@ pub(super) fn replay<'a>(
         }
         cursor
             .watcher
-            .watch_arrivals(&batch, policy, MAXIMUM_PATHS)
+            .watch_arrivals(&batch, policy, options.maximum_paths)
             .map_err(storage)?;
         #[cfg(all(test, not(loom)))]
         cursor.inject("register")?;

@@ -156,6 +156,9 @@ const REPLAY_PAGE: u32 = 1_024;
 const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
+/// Filesystem resource index prefix width. Complete paths remain in metadata
+/// and are authorized after coarse indexed selection.
+pub const RESOURCE_INDEX_PREFIX_BYTES: usize = 1024;
 /// Maximum caller retry-identity width.
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
 /// Maximum canonical path text accepted by the single-command wire format.
@@ -201,8 +204,7 @@ pub use changes::{
     decode_changes, is_changes,
 };
 pub use record_headers::{
-    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordAttribute,
-    RecordAttributeIter, RecordAttributes, RecordHeaders,
+    MAX_RECORD_KEY_BYTES, RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders,
 };
 
 include!("lib/provider_context.rs");
@@ -232,7 +234,7 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
-    PreparedNativeCommit,
+    PreparedNativeCommit, PreparedRecordCapacity,
 };
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

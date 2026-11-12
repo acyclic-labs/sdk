@@ -262,6 +262,10 @@ impl<'io> StockExecution<'io> {
                     .map(|content| ToolInvocationOutcome::Settled(content, None));
             }
         };
+        if tool.executor.requires_effect_commit(&result) {
+            journal.commit_tool_effects(self.io)?;
+            return Ok(ToolInvocationOutcome::Pending(invocation.operation_id));
+        }
         self.finish_tool_result(
             journal,
             identity,

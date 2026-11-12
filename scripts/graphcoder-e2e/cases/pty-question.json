@@ -15,7 +15,7 @@
             "id": "ask-color",
             "name": "ask_question",
             "arguments": {
-              "path": ".volumes/private/ui/color.md",
+              "path": "volume:///private/ui/color.md",
               "content": "QUESTION_COLOR\n```input choose id=color\n- blue\n- green\n```\n"
             }
           }

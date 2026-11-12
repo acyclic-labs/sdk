@@ -10,8 +10,8 @@ use acyclic_fs::{
     OperationWindowCoordinator, OperationWindowLease, PublicationPermit, TransactionCommit,
     WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
     apply_git_patch, blame_git_generations, capture_git_compatible_generation,
-    capture_git_compatible_generation_incremental, git_compatible_diff_counts,
-    git_paths_preserving_reserved, git_restore_paths, grep_git_generation, walk_git_tree,
+    capture_git_compatible_generation_incremental, git_compatible_diff_counts, git_restore_paths,
+    grep_git_generation, walk_git_tree,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend};
@@ -114,8 +114,7 @@ pub(crate) struct WorkspaceGitExecutor<
     pub repository_id: acyclic_fs::WorkspaceId,
     /// Current ignore policy.
     pub ignore: GitIgnorePolicy,
-    /// Repository-level policy, Git's `info/exclude`: SDK metadata rules and
-    /// host-reserved paths, beneath whichever tree's own `.gitignore` applies.
+    /// Optional repository policy beneath each tree's own `.gitignore`.
     pub repository: GitIgnorePolicy,
     /// Publication permit for this command.
     pub permit: PublicationPermit,

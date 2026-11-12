@@ -9,9 +9,9 @@ pub(crate) struct WorkspaceCommonAncestor {
 pub(crate) struct WorkspaceRebaseRequest<'a, A: 'static, O: 'static> {
     pub target: &'a Volume<A, O>,
     pub operation_id: OperationId,
-    pub maximum_generations: u32,
-    pub maximum_changes: u32,
-    pub maximum_conflicts: u32,
+    pub maximum_generations: Option<u32>,
+    pub maximum_changes: Option<u32>,
+    pub maximum_conflicts: Option<u32>,
 }
 
 /// Where a fork stands against the parent it was forked from.
@@ -33,11 +33,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         source: &crate::Generation<A, O>,
         target: &crate::Generation<A, O>,
-        maximum_generations: u32,
+        maximum_generations: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceCommonAncestor, WorkspaceError> {
-        if maximum_generations == 0
+        if maximum_generations == Some(0)
             || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
         {
@@ -129,7 +129,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(super) async fn rebase_lineage(
         &self,
         target: &Volume<A, O>,
-        maximum_generations: u32,
+        maximum_generations: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<RebaseLineage<A, O>, WorkspaceError> {
@@ -156,7 +156,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut cursor_root = None;
         let mut adopted = None;
         let mut filtered_baseline = None;
-        for depth in 0..maximum_generations {
+        for depth in 0_u64.. {
+            if maximum_generations.is_some_and(|maximum| depth >= u64::from(maximum)) {
+                break;
+            }
             if depth != 0 {
                 cursor_root = Some(
                     self.read_generation_owned_with_accounting(
@@ -237,7 +240,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(crate) async fn parent_advance<W: FsWork>(
         &self,
         target: &Volume<A, O>,
-        maximum_generations: u32,
+        maximum_generations: Option<u32>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Option<GenerationId>, WorkspaceError> {
@@ -299,7 +302,7 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
     objects: &O,
     start: GenerationId,
     config: VolumeConfig,
-    maximum_generations: u32,
+    maximum_generations: Option<u32>,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
@@ -309,7 +312,7 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
     ),
     crate::workspace::WorkspaceError,
 > {
-    let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
+    let maximum = maximum_generations.map_or(usize::MAX, |maximum| maximum as usize);
     let mut visited =
         crate::kernel::Owned::<Vec<(GenerationId, Option<VolumeId>)>>::allocate(0, accounting)?;
     let mut pending = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
@@ -390,13 +393,13 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
     objects: &O,
     start: GenerationId,
     config: VolumeConfig,
-    maximum_generations: u32,
+    maximum_generations: Option<u32>,
     candidates: (&[(GenerationId, Option<VolumeId>)], bool),
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
     let (candidates, candidates_truncated) = candidates;
-    let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
+    let maximum = maximum_generations.map_or(usize::MAX, |maximum| maximum as usize);
     let mut visited = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
     let mut pending =
         crate::kernel::Owned::<Vec<(GenerationId, Option<WorkspaceCommonAncestor>)>>::allocate(

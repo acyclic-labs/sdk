@@ -115,7 +115,7 @@ and verifies complete spill beyond the preview boundary. The spill oracle reject
 those original bytes with one byte deleted; the terminal oracle rejects the
 original successful result changed to a failed exit. Gate waits end on caller
 cancellation or conversation exit. Both workspace variants use this case.
-The shared read route `.volumes/output/` selects the calling agent's original
+The shared read route `volume:///output/` selects the calling agent's original
 private output volume before workspace routing, retaining its directory grants
 and version-pinned pagination. It adds no guest mount. File mutations refuse
 this route before reading or publishing; the case includes an edit refusal.

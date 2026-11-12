@@ -17,7 +17,6 @@
 //! admission names the hook; an enabled hook is never silently skipped.
 //! The authoring types are generated
 //! from these decode shapes by [`crate::config::typescript`].
-pub mod question;
 
 use crate::{
     Error, Result,
@@ -28,7 +27,7 @@ use crate::{
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// The one manifest: `.volumes/home/plugins.ts`.
+/// The one manifest: `volume:///home/plugins.ts`.
 pub const MANIFEST: &str = "plugins.ts";
 
 pub use crate::config::{

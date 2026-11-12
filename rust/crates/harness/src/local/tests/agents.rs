@@ -2339,7 +2339,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
     let provider = super::scripted([
         call(
             "write",
-            serde_json::json!({"path":".volumes/shared/board.txt", "content":"shared-board-sentinel-73dae"}),
+            serde_json::json!({"path":"volume:///shared/board.txt", "content":"shared-board-sentinel-73dae"}),
         ),
         ScriptedTurn::Text("writer settled".into()),
         call(
@@ -2348,7 +2348,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         ),
         call(
             "read",
-            serde_json::json!({"path":".volumes/shared/board.txt"}),
+            serde_json::json!({"path":"volume:///shared/board.txt"}),
         ),
         ScriptedTurn::Text("reader settled".into()),
     ]);
@@ -4125,6 +4125,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     assert_eq!(source.len(), 2);
     let connection = harness.connect_sessions().await?;
     let request = AgentCommand::ForkSession {
+        peer: true,
         agent: root.clone(),
         id: crate::agent::IntentId::try_from("rewind").map_err(agent)?,
         at: 0,
@@ -4267,6 +4268,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     );
     let AgentReply::Root { agent: repeated } = connection
         .execute(&AgentCommand::ForkSession {
+            peer: true,
             agent: branch,
             id: crate::agent::IntentId::try_from("repeated-rewind").map_err(agent)?,
             at: 0,

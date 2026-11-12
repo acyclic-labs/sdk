@@ -116,15 +116,15 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         test_support::{ScriptedEvent, ScriptedTurn},
     };
     let calls = [
-        ("ui-title", ".volumes/private/ui/title", "Authored title"),
+        ("ui-title", "volume:///private/ui/title", "Authored title"),
         (
             "managed-output",
-            ".volumes/private/tools/forged.json",
+            "volume:///private/tools/forged.json",
             "forged",
         ),
         (
             "escape-output",
-            ".volumes/private/ui/../tools/forged.json",
+            "volume:///private/ui/../tools/forged.json",
             "forged",
         ),
     ]

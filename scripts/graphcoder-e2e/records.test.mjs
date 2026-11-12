@@ -3,7 +3,7 @@ import test, { after } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordedRequests, requests, subset, toolResults } from "./assertions.mjs";
+import { CommittedRequests, recordedRequests, requests, subset, toolOutcome, toolResults } from "./assertions.mjs";
 import { requireTools } from "./live.mjs";
 import { fuzz } from "./tool-outcome.fuzz.mjs";
 
@@ -36,6 +36,45 @@ test("captured argument refusal cannot qualify a successful child conversation",
 const directory = mkdtempSync(join(tmpdir(), "e2e-records-"));
 after(() => rmSync(directory, { recursive: true }));
 let files = 0;
+test("committed request notifications consume paged Unicode records in order", async () => {
+  const path = join(directory, `${files++}.jsonl`);
+  const records = [0, 1].map(step => ({ sequence: step + 1, case: "live", step,
+    body: { text: "原".repeat(30000) } }));
+  writeFileSync(path, records.map(JSON.stringify).join("\n") + "\n{");
+  const reader = await CommittedRequests.open(path);
+  try {
+    assert.deepEqual(await Promise.all(records.map(record => reader.next(record))), records);
+    await assert.rejects(reader.next({ sequence: 3, case: "live", step: 2 }), /complete JSONL/);
+  } finally { await reader.close(); }
+});
+
+test("captured shell exit headers fail admission before scripted success", () => {
+  const failure = "Exit code: 126\nPermission denied";
+  assert.throws(() => toolOutcome(failure), /unexpected tool error/);
+  toolOutcome(failure, ["Permission denied"]);
+  toolOutcome("Exit code: 0\nexample output: Exit code: 126");
+});
+
+test("Gemini's output envelope preserves captured native shell failures", async () => {
+  const corpus = JSON.parse(readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url))).cases;
+  const fixture = { id: "gemini-shell", model: { steps: [{}] }, assert: { requests: 1 } };
+  const record = output => ({ path: "models/tiny:streamGenerateContent", step: 0, status: 200,
+    body: { contents: [{ parts: [{ functionResponse: { response: { output } } }] }] } });
+  const check = implementation => {
+    for (const sample of corpus) for (const output of [sample.event.tool_response.text, JSON.stringify(sample.event.tool_response)]) {
+      if (sample.status === "pass") implementation.requests(fixture, [record(output)]);
+      else assert.throws(() => implementation.requests(fixture, [record(output)]), /unexpected tool error/);
+    }
+  };
+  check({ requests });
+  const source = readFileSync(new URL("./assertions.mjs", import.meta.url), "utf8");
+  const projection = 'typeof response?.output === "string" ? response.output : JSON.stringify(response)';
+  assert.equal(source.split(projection).length, 2);
+  const former = await import("data:text/javascript;base64," +
+    Buffer.from(source.replace(projection, "JSON.stringify(response)")).toString("base64"));
+  assert.throws(() => check(former), { code: "ERR_ASSERTION" });
+});
+
 // The records file appears only while the history is read, as when the mock
 // appends a record and then publishes its event: reading the file before the
 // history fails every test here.

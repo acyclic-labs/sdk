@@ -1,4 +1,4 @@
-// The default agent settings. Override them in .volumes/home/agent.ts by exporting
+// The default agent settings. Override them in volume:///home/agent.ts by exporting
 // a value, which replaces these, or a function of them, which keeps every default
 // you do not change (and improved ones, when the harness updates):
 //

@@ -21,17 +21,19 @@ fn check(bytes: &[u8]) -> Result<(), String> {
         bytes,
         false,
     );
-    let limits =
-        tonic_web_wasm_client::limits::UnaryResponseLimits::new(bytes.len()).ok_or_else(|| {
-            format!(
-                "allocated input exceeds unary framing capacity: {} bytes",
-                bytes.len()
-            )
-        })?;
+    let limits = tonic_web_wasm_client::limits::UnaryResponseLimits::new(bytes.len());
+    let explicit = limits.with_metadata_limits(16_384, 16_384).ok_or_else(|| {
+        format!(
+            "allocated input exceeds unary framing capacity: {} bytes",
+            bytes.len()
+        )
+    })?;
     for text in [false, true] {
         assert_eq!(limits.body_bytes(true, text), None);
+        assert_eq!(limits.body_bytes(false, text), None);
+        assert_eq!(explicit.body_bytes(true, text), None);
         assert_eq!(
-            limits.body_bytes(false, text),
+            explicit.body_bytes(false, text),
             Some((bytes.len() + 16_384 + 10) * if text { 4 } else { 1 })
         );
         assert_eq!(limits.message_bytes(), bytes.len());

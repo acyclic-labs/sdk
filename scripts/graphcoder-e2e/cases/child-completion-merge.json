@@ -103,21 +103,7 @@
     "files": {
       "child.txt": "CHILD_COMPLETION_CONTENT\n",
       "root.txt": "ROOT_KEPT\n"
-    },
-    "git_ignored": [
-      {
-        "path": ".acyclic-sdk/control",
-        "ignored": true
-      },
-      {
-        "path": ".volumes/agents/probe",
-        "ignored": true
-      },
-      {
-        "path": "root.txt",
-        "ignored": false
-      }
-    ]
+    }
   },
   "physical": true,
   "adapter": "responses"

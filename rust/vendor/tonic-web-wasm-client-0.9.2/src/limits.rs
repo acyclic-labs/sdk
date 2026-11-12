@@ -1,102 +1,111 @@
-//! Shared unary response limits for native HTTP/2 and browser gRPC-Web clients.
-/// Weighted metadata bytes, including 32 bytes per field value.
+//! Caller-selected response policies for native and browser gRPC clients.
+/// Current native HTTP/2 metadata ceiling; transport streaming remains separate.
 pub const HEADER_LIST_BYTES: u32 = 16 * 1024;
-/// Raw gRPC-Web trailer bytes, before whitespace normalization.
-pub const TRAILER_BYTES: usize = 16 * 1024;
 
-/// Checked payload, metadata and encoded unary body budgets.
+/// A protobuf payload policy with independently selected metadata policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnaryResponseLimits {
     message_bytes: usize,
-    binary_body_bytes: usize,
-    text_body_bytes: usize,
+    trailer_bytes: Option<usize>,
+    header_list_bytes: Option<u32>,
 }
 impl UnaryResponseLimits {
-    /// Construct a policy for the caller-selected protobuf payload ceiling.
-    /// Return `None` if either framed binary or padded text budget overflows `usize`.
-    pub const fn new(message_bytes: usize) -> Option<Self> {
-        let body = match message_bytes.checked_add(TRAILER_BYTES) {
-            Some(n) => n,
-            None => return None,
-        };
-        let body = match body.checked_add(10) {
-            Some(n) => n,
-            None => return None,
-        };
-        let text = match body.checked_mul(4) {
-            Some(n) => n,
-            None => return None,
-        };
-        Some(Self {
+    /// Select a protobuf payload ceiling without imposing metadata ceilings.
+    pub const fn new(message_bytes: usize) -> Self {
+        Self {
             message_bytes,
-            binary_body_bytes: body,
-            text_body_bytes: text,
-        })
+            trailer_bytes: None,
+            header_list_bytes: None,
+        }
     }
-    /// Aggregate body budget applies only to unary responses. Streaming responses
-    /// retain the independent protobuf message, trailer and metadata bounds.
+    /// Select metadata policies and a checked aggregate unary body budget.
+    /// Return `None` if framing or independently padded base64 can overflow.
+    pub const fn with_metadata_limits(
+        mut self,
+        header_list_bytes: u32,
+        trailer_bytes: usize,
+    ) -> Option<Self> {
+        let Some(body) = self.message_bytes.checked_add(trailer_bytes) else {
+            return None;
+        };
+        let Some(body) = body.checked_add(10) else {
+            return None;
+        };
+        if body.checked_mul(4).is_none() {
+            return None;
+        }
+        self.trailer_bytes = Some(trailer_bytes);
+        self.header_list_bytes = Some(header_list_bytes);
+        Some(self)
+    }
+    /// Streaming responses have no aggregate body policy. Unary aggregation
+    /// requires an explicit trailer policy as well as the payload policy.
     pub const fn body_bytes(self, streaming: bool, text: bool) -> Option<usize> {
         if streaming {
-            None
-        } else if text {
-            Some(self.text_body_bytes)
+            return None;
+        }
+        if text {
+            self.text_body_bytes()
         } else {
-            Some(self.binary_body_bytes)
+            self.binary_body_bytes()
         }
     }
     /// Maximum decoded protobuf message bytes.
     pub const fn message_bytes(self) -> usize {
         self.message_bytes
     }
-    /// Maximum raw gRPC-Web trailer frame bytes.
-    pub const fn trailer_bytes(self) -> usize {
-        TRAILER_BYTES
+    /// Optional maximum raw gRPC-Web trailer frame bytes.
+    pub const fn trailer_bytes(self) -> Option<usize> {
+        self.trailer_bytes
     }
-    /// Maximum metadata weight, including 32 bytes per field value.
-    pub const fn header_list_bytes(self) -> u32 {
-        HEADER_LIST_BYTES
+    /// Optional metadata weight, including 32 bytes per field value.
+    pub const fn header_list_bytes(self) -> Option<u32> {
+        self.header_list_bytes
     }
-    /// Payload and trailer ceilings plus their two five-byte frame headers.
-    pub const fn binary_body_bytes(self) -> usize {
-        self.binary_body_bytes
+    /// Payload and explicit trailer ceilings plus their frame headers.
+    pub const fn binary_body_bytes(self) -> Option<usize> {
+        let Some(trailer) = self.trailer_bytes else {
+            return None;
+        };
+        let Some(body) = self.message_bytes.checked_add(trailer) else {
+            return None;
+        };
+        body.checked_add(10)
     }
-    /// Text body ceiling allowing independently padded one-byte base64 segments.
-    pub const fn text_body_bytes(self) -> usize {
-        self.text_body_bytes
+    /// Explicit text body policy allowing independently padded base64 segments.
+    pub const fn text_body_bytes(self) -> Option<usize> {
+        let Some(body) = self.binary_body_bytes() else {
+            return None;
+        };
+        body.checked_mul(4)
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn unary_budget_includes_both_frames_and_one_byte_padded_segments() {
-        for payload in [0, 1, 2, 3, 8 * 1024 * 1024, 16 * 1024 * 1024] {
-            let limits = UnaryResponseLimits::new(payload).unwrap();
-            assert_eq!(limits.message_bytes(), payload);
-            assert_eq!(limits.trailer_bytes(), TRAILER_BYTES);
-            assert_eq!(limits.header_list_bytes(), HEADER_LIST_BYTES);
-            assert_eq!(limits.binary_body_bytes(), payload + TRAILER_BYTES + 10);
-            assert_eq!(limits.text_body_bytes(), 4 * limits.binary_body_bytes());
-            assert!(limits.text_body_bytes() <= u32::MAX as usize);
-        }
+    fn explicit_encoded_body_policies_fail_closed_on_overflow() {
         assert_eq!(
-            UnaryResponseLimits::new(16 * 1024 * 1024)
+            UnaryResponseLimits::new(usize::MAX).with_metadata_limits(128, 0),
+            None
+        );
+        assert_eq!(
+            UnaryResponseLimits::new(usize::MAX / 4).with_metadata_limits(128, 32),
+            None
+        );
+        let maximum = usize::MAX / 4 - 32 - 10;
+        assert_eq!(
+            UnaryResponseLimits::new(maximum)
+                .with_metadata_limits(128, 32)
                 .unwrap()
                 .text_body_bytes(),
-            67_174_440
+            Some(usize::MAX / 4 * 4)
         );
-    }
-    #[test]
-    fn every_overflow_stage_fails_closed() {
-        assert_eq!(UnaryResponseLimits::new(usize::MAX), None);
-        assert_eq!(UnaryResponseLimits::new(usize::MAX - TRAILER_BYTES), None);
-        assert_eq!(UnaryResponseLimits::new(usize::MAX / 4), None);
-        let maximum = usize::MAX / 4 - TRAILER_BYTES - 10;
         assert_eq!(
-            UnaryResponseLimits::new(maximum).unwrap().text_body_bytes(),
-            usize::MAX / 4 * 4
+            UnaryResponseLimits::new(maximum + 1).with_metadata_limits(128, 32),
+            None
         );
-        assert_eq!(UnaryResponseLimits::new(maximum + 1), None);
     }
 }
 
@@ -107,19 +116,21 @@ mod streaming_tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
         #[test]
-        fn streaming_preserves_each_bound_without_a_unary_aggregate(payload in 0_usize..(1<<20), text in any::<bool>()) {
-            let limits = UnaryResponseLimits::new(payload).unwrap();
+        fn streaming_preserves_selected_policies_without_an_aggregate(payload in 0_usize..(1<<20), trailer in 0_usize..(1<<16), text in any::<bool>()) {
+            let limits = UnaryResponseLimits::new(payload).with_metadata_limits(128, trailer).unwrap();
             prop_assert_eq!(limits.body_bytes(true, text), None);
-            prop_assert_eq!(limits.body_bytes(false, text), Some((payload + TRAILER_BYTES + 10) * if text { 4 } else { 1 }));
+            prop_assert_eq!(limits.body_bytes(false, text), Some((payload + trailer + 10) * if text { 4 } else { 1 }));
             prop_assert_eq!(limits.message_bytes(), payload);
-            prop_assert_eq!(limits.trailer_bytes(), TRAILER_BYTES);
-            prop_assert_eq!(limits.header_list_bytes(), HEADER_LIST_BYTES);
+            prop_assert_eq!(limits.trailer_bytes(), Some(trailer));
+            prop_assert_eq!(limits.header_list_bytes(), Some(128));
         }
     }
     #[test]
-    fn negative_control_unary_budget_rejects_an_otherwise_valid_stream() {
-        let limits = UnaryResponseLimits::new(8).unwrap();
-        let body = limits.binary_body_bytes() + 1;
+    fn negative_control_unary_policy_rejects_an_otherwise_valid_stream() {
+        let limits = UnaryResponseLimits::new(8)
+            .with_metadata_limits(128, 32)
+            .unwrap();
+        let body = limits.binary_body_bytes().unwrap() + 1;
         assert!(
             limits
                 .body_bytes(true, false)

@@ -229,6 +229,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         .create_root(
             &vectors::intent("root")?,
             RootRequest {
+                peer: true,
                 agent,
                 fresh: vec![private],
                 retained: Vec::new(),
@@ -261,6 +262,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
             &InboxRecord::Message(Message {
                 from: human.clone(),
                 id,
+                re: None,
                 body: Box::new(body),
                 attachments: None,
             }),

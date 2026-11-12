@@ -25,6 +25,8 @@ thread_local! { pub(crate) static WRAP_BYTES: std::cell::Cell<usize> = const { s
 pub enum BlockKind {
     /// A prompt: bold, as typed, after the accent marker.
     Prompt,
+    /// Attributed input from another agent, displayed literally with a peer marker.
+    Peer,
     /// An answer or notice: rendered markdown.
     Answer,
     /// A collapsed tool card: one muted row, the call's first line clipped
@@ -392,7 +394,7 @@ struct Wrapped {
 
 fn wrap(kind: BlockKind, text: &str, width: usize, theme: &ThemeStyles) -> Wrapped {
     let prompt = match kind {
-        BlockKind::Prompt => true,
+        BlockKind::Prompt | BlockKind::Peer => true,
         BlockKind::Answer => false,
         BlockKind::Tool { failed } => {
             return Wrapped {
@@ -453,6 +455,8 @@ fn wrap_rendered(
             "›"
         } else if matches!(kind, BlockKind::Tool { .. }) {
             " "
+        } else if kind == BlockKind::Peer && index == 0 {
+            "↔"
         } else if index == 0 {
             "●"
         } else {

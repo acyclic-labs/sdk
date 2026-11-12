@@ -43,7 +43,7 @@ async fn waiting_reads_cover_media_and_effective_paths_and_can_be_dropped() -> R
             .build()?
             .agent_context(&Capabilities::default(), content)?;
             let path = if effective {
-                ".volumes/effective/pending"
+                "volume:///effective/pending"
             } else {
                 "pending"
             };

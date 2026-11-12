@@ -178,6 +178,7 @@ pub async fn open<B: Backend + ?Sized>(
         Arc::new(Owner),
         &IntentId::try_from("root")?,
         RootRequest {
+            peer: true,
             agent: crate::conformance::fixtures::adopted().agent,
             fresh: vec![crate::conformance::roots::volume(
                 acyclic_harness_core::agent::WorkspaceRole::Private,

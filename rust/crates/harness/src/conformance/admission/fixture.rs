@@ -87,6 +87,7 @@ impl Fixture {
             .create_root(
                 &vectors::intent("create")?,
                 RootRequest {
+                    peer: true,
                     agent,
                     fresh: vec![binding.clone()],
                     retained: Vec::new(),
@@ -111,6 +112,7 @@ impl Fixture {
                 &InboxRecord::Message(Message {
                     from: sender.clone(),
                     id,
+                    re: None,
                     body: Box::new(body),
                     attachments: None,
                 }),

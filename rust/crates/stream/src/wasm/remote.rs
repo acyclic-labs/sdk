@@ -17,8 +17,7 @@ impl Remote {
     }
     pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
         let response_limits =
-            tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
-                .ok_or(StreamError::InvalidArgument)?;
+            tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES);
         let endpoint = socket::Endpoint::new(
             url,
             acyclic_auth::credential::javascript::provider(credential),
@@ -200,7 +199,6 @@ impl StreamProvider for Remote {
                         tonic_web_wasm_client::limits::UnaryResponseLimits::new(
                             wire_codec::requests::accepted_response_limit(&body)?,
                         )
-                        .ok_or(StreamError::LimitExceeded)?
                     } else {
                         self.response_limits
                     };

@@ -115,8 +115,6 @@ pub use entry::{
     HeldRoot, SearchRoot, capture_baseline, capture_held_paths, capture_paths,
     capture_root_identity, capture_subtree, file_identity, hold_root, hold_search_root,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
 pub(crate) use model::NativeViewBaseline;
 pub use model::{CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt};
 pub(crate) use names::namespace_to_host_path_with_work;

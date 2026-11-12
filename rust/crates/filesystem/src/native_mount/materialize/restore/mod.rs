@@ -17,6 +17,26 @@ pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     task.await.map_err(|error| original.runtime_error(error))
 }
 
+pub(super) async fn prepare_restore_io(
+    destination_root: (PathBuf, crate::NativeAllocation),
+    relative: (PathBuf, crate::NativeAllocation),
+    expected_root_identity: Option<crate::NativeRootIdentity>,
+    replacement: HostPathReplacement,
+    work: crate::NativeMaterializationWork,
+) -> Result<PreparedRestore, MaterializeError> {
+    host_io(None, work, move |work| {
+        prepare_restore(
+            destination_root,
+            relative,
+            expected_root_identity,
+            replacement,
+            work,
+        )
+    })
+    .await
+    .map_err(MaterializeError::from)?
+}
+
 pub(super) struct PreparedRestore {
     pub(super) root: HostRoot,
     pub(super) destination_parent: HostRoot,

@@ -13,7 +13,7 @@
             "id": "write",
             "name": "ask_question",
             "arguments": {
-              "path": ".volumes/private/ui/denied.md",
+              "path": "volume:///private/ui/denied.md",
               "content": "```input text id=x\nChoose\n```"
             }
           }

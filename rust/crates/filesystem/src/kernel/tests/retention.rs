@@ -41,6 +41,17 @@ fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::
         retention_authority_id(volume_id, RetentionKind::Pin, "release"),
         retention_authority_id(volume_id, RetentionKind::ForkBase, "release")
     );
+    // Old/unknown headers refuse before the removed configuration fields.
+    for version in [0_u16, 1, u16::MAX] {
+        let mut obsolete = encoded[..DOMAIN.len() + 2].to_vec();
+        obsolete[DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
+        assert!(matches!(
+            decode_retention_created(&obsolete, u64::MAX),
+            Err(RetentionCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion {
+                found, expected: 2
+            })) if found == version
+        ));
+    }
     let _ = GenerationId::from_root(value.generation_root);
     Ok(())
 }

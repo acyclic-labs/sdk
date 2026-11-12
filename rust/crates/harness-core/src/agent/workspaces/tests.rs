@@ -15,6 +15,45 @@ impl crate::agent::TurnDriver for NoTurn {
     }
 }
 
+async fn commit_change(
+    provider: &impl acyclic_stream::StreamProvider,
+    path: &AgentPath,
+    change: WorkspaceChanged,
+) -> Result<(), Error> {
+    use crate::agent::AgentRecord as _;
+    use acyclic_stream::{
+        CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
+        StreamProviderExt as _,
+    };
+    let bytes = crate::agent::InboxRecord::WorkspaceChanged(Box::new(change)).encode()?;
+    let request = CommitRequest {
+        idempotency_key: crate::agent::intent_key(
+            "workspace-test",
+            &[path.as_str(), &blake3::hash(&bytes).to_hex()],
+        )?,
+        deadline_unix_millis: None,
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Present {
+                    path: path.inbox()?,
+                },
+                CommitCondition::Absent {
+                    path: path.closed()?,
+                },
+            ],
+            vec![CommitMutation::Append {
+                path: path.inbox()?,
+                records: vec![bytes.into()],
+            }],
+        )],
+    };
+    assert!(matches!(
+        provider.commit(request).await.map_err(Error::Stream)?,
+        CommitOutcome::Committed(_)
+    ));
+    Ok(())
+}
+
 fn entry(id: u8, name: String, root: String) -> WorkspaceEntry {
     WorkspaceEntry {
         id: EntryId::from_bytes([id; 16]),
@@ -57,6 +96,7 @@ proptest! {
         let path = AgentPath::root(&AgentId::from_bytes([17; 16]));
         let adopted = crate::agent::ForkAdopted { agent: path.id(), parent: None, profile: None, forked_at: 0, conversation_tail: 0, checkpoint: None, volumes: Vec::new(), brief: None, policy: None };
         let mut state = crate::agent::AgentState::adopted(path.clone(), &adopted).unwrap();
+        let stream = acyclic_stream::MemoryStream::default();
         for (sequence, (op, id, label)) in operations.into_iter().enumerate() {
             let source = entry(id, format!("w{label}"), String::new());
             let position = reference.iter().position(|prior| prior.id == source.id);
@@ -97,7 +137,11 @@ proptest! {
                     acyclic_actors::guest::CancellationToken::new(),
                 )).unwrap();
                 let checkpoint = crate::agent::checkpoint::encode(&step.state).unwrap();
-                state = crate::agent::checkpoint::decode(&checkpoint).unwrap();
+                state = futures::executor::block_on(async {
+                    let head = crate::agent::checkpoint::decode(&checkpoint).unwrap();
+                    head.table.persist(&stream, &step.state.volumes).await.unwrap();
+                    head.load(&stream).await.unwrap()
+                });
                 prop_assert_eq!(&state.volumes, &reference);
             }
             prop_assert_eq!(table.entries(), reference.as_slice());
@@ -121,6 +165,106 @@ proptest! {
         wrong["version"] = 0.into();
         prop_assert!(serde_json::from_value::<WorkspaceTable>(wrong).is_err());
     }
+}
+
+/// A growing table crosses several stream frames without shedding the agent.
+/// Crash cuts may leave immutable prefixes, but they publish no partial table;
+/// resuming preparation verifies that prefix and restores the exact fold.
+#[tokio::test]
+async fn workspace_snapshot_survives_growth_and_every_chunk_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::agent::{AgentHost, IntentId};
+    use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
+    use std::sync::Arc;
+    let provider = Arc::new(crate::test_stream::LostSessionAck::<
+        acyclic_stream::MemoryStream,
+    >::default());
+    let within = ActorReference::new(b"account", b"agents", b"owner")?;
+    let open = || {
+        AgentHost::new(
+            provider.clone(),
+            NoTurn,
+            within.clone(),
+            ActorLimits::new(10_000, 1 << 20, 1 << 16).unwrap(),
+            Arc::new(SystemClock),
+        )
+    };
+    let host = open()?;
+    let path = AgentPath::root(&AgentId::from_bytes([19; 16]));
+    let adopted = crate::agent::ForkAdopted {
+        agent: path.id(),
+        parent: None,
+        profile: None,
+        forked_at: 0,
+        conversation_tail: 0,
+        checkpoint: None,
+        volumes: Vec::new(),
+        brief: None,
+        policy: None,
+    };
+    assert_eq!(
+        host.create(&IntentId::try_from("snapshot-growth")?, adopted)
+            .await?,
+        path
+    );
+    host.drain(&path).await?;
+    let mut expected = Vec::new();
+    for n in 0_u64..512 {
+        let mut entry = entry(n as u8, format!("w{n}"), String::new());
+        entry.id = EntryId::from_bytes(u128::from(n).to_be_bytes());
+        expected.push(entry.clone());
+        commit_change(
+            provider.as_ref(),
+            &path,
+            WorkspaceChanged {
+                version: 1,
+                op: WorkspaceOp::Add,
+                entry,
+            },
+        )
+        .await?;
+        host.drain(&path).await?;
+        // A fresh host must load the published checkpoint, with no cached fold.
+        let reopened = open()?;
+        let state = reopened.state(&path).await?;
+        assert_eq!(state.phase, crate::agent::Phase::Idle);
+        assert_eq!(state.volumes, expected);
+    }
+    let state = open()?.state(&path).await?;
+    let bytes = crate::agent::checkpoint::encode(&state)?;
+    assert!(bytes.len() < crate::agent::MAX_CHECKPOINT_BYTES);
+    let table_bytes = crate::contract::canonical_json_bytes(&state.volumes)
+        .map_err(|_| Error::Record("test table does not encode"))?;
+    assert!(table_bytes.len() > crate::agent::MAX_CHECKPOINT_BYTES * 2);
+    crate::agent::workspace_checkpoint::check_cuts(&bytes, &state).await?;
+    commit_change(
+        provider.as_ref(),
+        &path,
+        WorkspaceChanged {
+            version: 1,
+            op: WorkspaceOp::Rename,
+            entry: expected[0].clone(),
+        },
+    )
+    .await?;
+    provider.reset_io();
+    host.drain(&path).await?;
+    assert!(
+        provider.io.writes.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "the unchanged-table input must still publish its actor checkpoint"
+    );
+    assert!(
+        provider
+            .io
+            .append_paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| !path.as_str().starts_with("harness/workspace-snapshots/")),
+        "an unchanged table must issue no snapshot writes, including idempotent ones"
+    );
+    assert_eq!(open()?.state(&path).await?.volumes, expected);
+    Ok(())
 }
 
 #[test]

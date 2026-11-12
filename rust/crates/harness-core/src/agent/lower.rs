@@ -89,6 +89,13 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
     let path = &state.path;
     let sender = Sender::Agent { path: path.clone() };
     let mut builder = Builder::default();
+    let mut peer_guards = BTreeMap::new();
+    for out in &step.outs {
+        if let Out::PeerGuard { to, admission } = out {
+            let conditions = admission.conditions(path, to)?;
+            peer_guards.entry(to.inbox()?).or_insert(conditions);
+        }
+    }
     let conversation = path.conversation()?;
     let conversation_count = step
         .outs
@@ -179,7 +186,8 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             | Out::Roster(_)
             | Out::Steered(_)
             | Out::Notices(_)
-            | Out::PendingSpawns(_) => {}
+            | Out::PendingSpawns(_)
+            | Out::PeerGuard { .. } => {}
             Out::Send { to, record } => {
                 if matches!(
                     record,
@@ -192,6 +200,22 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     ));
                 }
                 builder.recipient(to)?;
+                if let InboxRecord::Message(message) | InboxRecord::FollowUp(message) = record
+                    && message.from == sender
+                {
+                    let marker = path.sent_message(&message.id)?;
+                    builder.condition(CommitCondition::Absent {
+                        path: marker.clone(),
+                    });
+                    builder.append(
+                        marker,
+                        super::sent::SentRecord {
+                            to: to.clone(),
+                            id: message.id.clone(),
+                        }
+                        .encode()?,
+                    );
+                }
                 if matches!(record, InboxRecord::Message(_) | InboxRecord::FollowUp(_))
                     && to != path
                 {
@@ -254,6 +278,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 },
                 CommitCondition::Absent { path: closed },
             ];
+            conditions.extend(peer_guards.remove(&inbox).unwrap_or_default());
             conditions.sort_by(|left, right| {
                 CommitCondition::path(left).cmp(CommitCondition::path(right))
             });

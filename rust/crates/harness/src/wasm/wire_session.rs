@@ -1,5 +1,6 @@
 //! Browser access to the same selected-stream owner used by native clients.
 
+use super::optional_from_js;
 use acyclic_harness_client::{DemandPolicy, StreamView, ViewDemand, WireSession, WireSessionError};
 use acyclic_stream::{StreamPath, WasmStream, wire};
 use js_sys::{Array, JsString, Uint8Array};
@@ -94,11 +95,8 @@ fn path(value: JsString) -> Result<StreamPath, JsValue> {
     StreamPath::new(value).map_err(stream_error)
 }
 
-fn paths(input: &Array, maximum: usize) -> Result<Vec<StreamPath>, JsValue> {
+fn paths(input: &Array) -> Result<Vec<StreamPath>, JsValue> {
     let length = input.length();
-    if length as usize > maximum {
-        return Err(error("CLIENT_DEMAND_CAPACITY"));
-    }
     (0..length)
         .map(|index| input.get(index))
         .map(|value| {
@@ -134,8 +132,14 @@ pub struct WasmWireSession {
 impl WasmWireSession {
     /// Share the platform's existing pool; refuse providers with no session I/O.
     #[wasm_bindgen(constructor)]
-    pub fn new(stream: &WasmStream, selected: usize, expanded: usize) -> Result<Self, JsValue> {
-        let policy = DemandPolicy::new(selected, expanded)
+    pub fn new(
+        stream: &WasmStream,
+        #[wasm_bindgen(unchecked_param_type = "number | bigint | null | undefined")]
+        selected: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | bigint | null | undefined")]
+        expanded: JsValue,
+    ) -> Result<Self, JsValue> {
+        let policy = DemandPolicy::new(optional_from_js(selected)?, optional_from_js(expanded)?)
             .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
         let client = stream
             .session_client()
@@ -153,9 +157,9 @@ impl WasmWireSession {
     pub fn set_view(&self, visible: Array, focused: Array, expanded: Array) -> Result<(), JsValue> {
         let demand = ViewDemand::new(
             self.policy,
-            paths(&visible, self.policy.selected_capacity())?,
-            paths(&focused, self.policy.selected_capacity())?,
-            paths(&expanded, self.policy.expanded_capacity())?,
+            paths(&visible)?,
+            paths(&focused)?,
+            paths(&expanded)?,
         )
         .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
         self.session
@@ -248,7 +252,11 @@ impl WasmWireSession {
             if readers.contains_key(&key) {
                 return Err(error("CLIENT_READ_BUSY"));
             }
-            if readers.len() >= self.policy.selected_capacity() {
+            if self
+                .policy
+                .selected_capacity()
+                .is_some_and(|limit| readers.len() >= limit)
+            {
                 return Err(error("CLIENT_READ_CAPACITY"));
             }
             readers.insert(

@@ -195,12 +195,14 @@ pub(super) fn check(bytes: &[u8]) {
             CommandRequest::Model {
                 model: "caller".into(),
             },
+            CommandRequest::Peers { enabled: false },
+            CommandRequest::Peers { enabled: true },
         ];
         for scope in [CommandTaskScope::Subtree, CommandTaskScope::All] {
             requests.push(CommandRequest::Pause { scope });
             requests.push(CommandRequest::Resume { scope });
         }
-        let mut actions = vec![CommandAction::Theme {}];
+        let mut actions = vec![CommandAction::Theme {}, CommandAction::Peers {}];
         for request in requests {
             for confirmation in [false, true] {
                 actions.push(CommandAction::Request {

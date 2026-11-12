@@ -16,7 +16,6 @@ pub async fn lookup_attributes<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     names: &[AttributeName],
-    maximum_queries: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -25,7 +24,6 @@ pub async fn lookup_attributes<S: AsyncObjectStore>(
         store,
         root,
         names,
-        maximum_queries,
         limits,
         budget,
         cancellation,
@@ -42,7 +40,6 @@ fn map_batch_error(error: persistent_batch::Error) -> AttributeLookupError {
     match error {
         persistent_batch::Error::Cancelled => AttributeLookupError::Cancelled,
         persistent_batch::Error::Empty => AttributeLookupError::EmptyBatch,
-        persistent_batch::Error::TooManyQueries => AttributeLookupError::TooManyQueries,
         persistent_batch::Error::WrongRootKind => AttributeLookupError::WrongRootKind,
         persistent_batch::Error::InvalidLimits => AttributeLookupError::InvalidLimits,
         persistent_batch::Error::HeightExceeded => AttributeLookupError::HeightExceeded,
@@ -162,9 +159,6 @@ pub enum AttributeLookupError {
     /// Batch lookup requires at least one name.
     #[error("attribute lookup batch is empty")]
     EmptyBatch,
-    /// Batch lookup exceeds its explicit query limit.
-    #[error("attribute lookup batch exceeds its admitted query bound")]
-    TooManyQueries,
     /// Root is not an attribute page.
     #[error("attribute lookup root is not an attribute page")]
     WrongRootKind,

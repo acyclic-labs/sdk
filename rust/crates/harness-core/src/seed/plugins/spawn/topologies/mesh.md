@@ -10,7 +10,7 @@ import { atomically, send, wait } from "acyclic";
 
 await atomically(["correctness", "performance", "usability"].map((name) => ({
   spawn: `review/${name}`, template: "reviewer", budget: null,
-  prompt: `Review design.md for ${name}. Append evidence to .volumes/shared/review/observations.jsonl; read peers' original observations when useful. Write your conclusions to .volumes/home/findings.md.`,
+  prompt: `Review design.md for ${name}. Append evidence to volume:///shared/review/observations.jsonl; read peers' original observations when useful. Write your conclusions to volume:///home/findings.md.`,
 })));
 await send("review", "Conclude with your strongest finding and its evidence.", "idle");
 export default wait("review");

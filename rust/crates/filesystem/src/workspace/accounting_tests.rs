@@ -229,7 +229,7 @@ async fn generation_diff_keeps_original_backing_on_success_refusal_and_withdrawa
             assert!(live > baseline, "diff backing left the original ledger");
             assert!(spent.peak_allocation_bytes > baseline);
             let paths = changes
-                .changed_paths(64, budget, &cancellation)
+                .changed_paths(Some(64), budget, &cancellation)
                 .await?
                 .value
                 .0;
@@ -377,7 +377,9 @@ async fn generation_parents_keep_original_work_and_result_custody()
     assert_eq!(live, baseline);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = selected.parents(budget, &cancelled).await.unwrap_err();
+    let Err(failure) = selected.parents(budget, &cancelled).await else {
+        panic!("cancelled parent read must fail");
+    };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failure.work.backend_read_operations, 0);
 
@@ -983,10 +985,12 @@ async fn workspace_extent_projection_keeps_original_work_and_single_output_backi
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = generation
+    let Err(failure) = generation
         .plan_extents("/regular", 0, 1, 8, budget, &cancelled)
         .await
-        .unwrap_err();
+    else {
+        panic!("cancelled extent planning must fail");
+    };
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failure.work.backend_read_operations, 0);
 
@@ -1121,7 +1125,9 @@ async fn workspace_metadata_and_directory_pages_retire_only_their_own_scratch()
                 .list_directory("/", None, 1, budget, &cancelled)
                 .await
         };
-        let failure = result.unwrap_err();
+        let Err(failure) = result else {
+            panic!("cancelled directory listing must fail");
+        };
         assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
         assert_eq!(failure.work.backend_read_operations, 0);
     }
@@ -1345,7 +1351,7 @@ async fn workspace_byte_reads_retire_namespace_scratch_and_keep_original_output(
                             &workspace,
                             selector,
                             "/inline",
-                            5,
+                            Some(5),
                             &source,
                             &cancellation,
                         )

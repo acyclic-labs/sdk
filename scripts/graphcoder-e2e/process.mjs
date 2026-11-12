@@ -340,6 +340,28 @@ export class Processes {
   }
 }
 
+// The original failure event stops just this invocation, then joins its native
+// completion. Redraws and elapsed time never participate in the decision.
+export async function withCancellation(running, signal, completion = running.closed) {
+  const abort = () => running.killExecutable();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  try {
+    const result = await completion;
+    signal?.throwIfAborted();
+    return result;
+  } catch (error) {
+    if (signal?.aborted) {
+      try { await running.closed; }
+      catch (retirement) {
+        throw new AggregateError([signal.reason, retirement], signal.reason.message, { cause: signal.reason });
+      }
+      throw signal.reason;
+    }
+    throw error;
+  } finally { signal?.removeEventListener("abort", abort); }
+}
+
 export function terminalChild(stderr) {
   return new Promise((resolve, reject) => {
     const detach = () => { stderr.off("data", consume); cleanup(); };

@@ -12,7 +12,7 @@ import { spawn, wait } from "acyclic";
 
 const extract = await spawn("extract", {
   template: "worker", budget: null,
-  prompt: "Extract claims from source.md into .volumes/shared/claims.md.",
+  prompt: "Extract claims from source.md into volume:///shared/claims.md.",
 });
 export default wait(extract);
 ```

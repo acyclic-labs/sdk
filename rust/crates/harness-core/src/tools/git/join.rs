@@ -20,7 +20,7 @@ where
         let plan = self
             .plan_join_at(&source, source_generation, rebase)
             .await?;
-        let plan = self.without_reserved(plan, operation, rebase).await?;
+
         let options = ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
@@ -172,40 +172,6 @@ where
         )
         .await?;
         Ok((candidate, unresolved))
-    }
-
-    /// `plan` re-planned from a fork without any reserved host path that
-    /// either side holds.
-    async fn without_reserved(
-        &self,
-        plan: acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
-        operation: OperationId,
-        rebase: bool,
-    ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
-        // A mounted child projection authors its host-owned volume aliases.
-        // Join from a fork that holds the target's own entries there, so a
-        // merge never publishes them into the target's tree.
-        let reserved = self.reserved_in(&plan).await?;
-        if reserved.is_empty() {
-            return Ok(plan);
-        }
-        let filtered = acyclic_fs::git_generation_with_paths_from(
-            &self
-                .join_generation(plan.source(), plan.source_head())
-                .await?,
-            &self
-                .join_generation(&self.current, plan.target_head())
-                .await?,
-            &reserved,
-            reserved_source_operation(operation),
-        )
-        .await
-        .map_err(Error::from)?;
-        let filtered = self.plan_join(&filtered.workspace(), rebase).await?;
-        if filtered.target_head() != plan.target_head() {
-            return Err(Self::error("Git join raced with another workspace writer"));
-        }
-        Ok(filtered)
     }
 
     /// Applies `plan`, re-applying once against the exact fork cut when the
@@ -443,41 +409,6 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| Error::from(failure.error))
     }
-
-    /// Reserved host paths present in either side of a planned join.
-    async fn reserved_in(
-        &self,
-        plan: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
-    ) -> crate::Result<Vec<String>> {
-        let sides = [
-            self.join_generation(plan.source(), plan.source_head())
-                .await?,
-            self.join_generation(&self.current, plan.target_head())
-                .await?,
-        ];
-        let mut present = Vec::new();
-        for path in self.repository.reserved_paths() {
-            for side in &sides {
-                match side
-                    .stat(
-                        &format!("/{path}"),
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        present.push(path.to_owned());
-                        break;
-                    }
-                    Err(failure)
-                        if matches!(failure.error, acyclic_fs::WorkspaceError::NotFound) => {}
-                    Err(failure) => return Err(Error::from(failure.error)),
-                }
-            }
-        }
-        Ok(present)
-    }
 }
 
 /// The path and identity of every described conflict, which a continued
@@ -506,14 +437,4 @@ fn conflict_paths(
             Ok((path, identity))
         })
         .collect()
-}
-
-/// The fork that drops reserved source entries has its own retry identity.
-fn reserved_source_operation(operation: OperationId) -> OperationId {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.git.join-reserved-source/v1\0");
-    hash.update(&operation.into_bytes());
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(bytes)
 }

@@ -38,7 +38,7 @@
               "**test answer**"
             ]
           },
-          "send": "\u0004\u0004"
+          "detach": true
         }
       ]
     }

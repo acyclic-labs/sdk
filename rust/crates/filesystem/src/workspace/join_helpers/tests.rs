@@ -77,16 +77,12 @@ fn check(path: &NamespacePath) {
             name: encoded.value.clone(),
         };
         assert_eq!(
-            kernel_conflict(&key, u32::MAX).unwrap(),
+            kernel_conflict(&key).unwrap(),
             MergeConflict::Binding {
                 directory_id,
                 name: name.clone(),
             }
         );
-        assert!(matches!(
-            kernel_conflict(&key, name.as_bytes().len() as u32 - 1),
-            Err(DrivenJoinError::StaleCandidate)
-        ));
         for tag in [0, 4, 255] {
             let mut invalid = expected.clone();
             invalid[0] = tag;
@@ -95,7 +91,7 @@ fn check(path: &NamespacePath) {
                 name: invalid,
             };
             assert!(matches!(
-                kernel_conflict(&key, u32::MAX),
+                kernel_conflict(&key),
                 Err(DrivenJoinError::StaleCandidate)
             ));
         }
@@ -145,7 +141,7 @@ proptest! {
                     (NameEncoding::WindowsUtf16Le, bytes)
                 }
             };
-            LogicalName::new(encoding, bytes, u32::MAX).unwrap()
+            LogicalName::new(encoding, bytes).unwrap()
         }).collect();
         check(&NamespacePath::new(components, VolumeLimits::default()).unwrap());
         let unicode = NamespacePath::from_text_in_profile("/é/𝄞", crate::model::FilesystemProfile::Windows,

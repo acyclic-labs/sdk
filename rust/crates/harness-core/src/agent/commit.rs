@@ -133,7 +133,7 @@ pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitR
         id: id.clone(),
     };
     let closed = target.closed()?;
-    Ok(CommitRequest {
+    let mut request = CommitRequest {
         deadline_unix_millis: None,
         effects: vec![CommitEffect::hard(
             vec![
@@ -163,6 +163,54 @@ pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitR
             ],
         )],
         idempotency_key: intent_key("archive", &[target.as_str(), &sender_text(by), id.as_str()])?,
+    };
+    if target.depth() == 0 {
+        let path = target.peer_membership()?;
+        request.effects.push(CommitEffect {
+            conditions: vec![CommitCondition::Present { path: path.clone() }],
+            mutations: vec![CommitMutation::Append {
+                path,
+                records: vec![super::PeerMembership { enabled: false }.encode()?.into()],
+            }],
+            soft: true,
+        });
+    }
+    Ok(request)
+}
+
+/// A user-only membership update, fenced by the root's open inbox. A model
+/// effect cannot request this operation, and archive cannot race a rejoin.
+pub fn set_peer_membership(
+    root: &AgentPath,
+    by: &Sender,
+    id: &IntentId,
+    enabled: bool,
+) -> Result<CommitRequest, Error> {
+    if !matches!(by, Sender::User { .. }) {
+        return Err(Error::Record("only the user may change peer membership"));
+    }
+    let path = root.peer_membership()?;
+    Ok(CommitRequest {
+        deadline_unix_millis: None,
+        effects: vec![CommitEffect::hard(
+            vec![
+                CommitCondition::Present {
+                    path: root.inbox()?,
+                },
+                CommitCondition::Absent {
+                    path: root.closed()?,
+                },
+                CommitCondition::Present { path: path.clone() },
+            ],
+            vec![CommitMutation::Append {
+                path,
+                records: vec![super::PeerMembership { enabled }.encode()?.into()],
+            }],
+        )],
+        idempotency_key: intent_key(
+            "peer-membership",
+            &[root.as_str(), &sender_text(by), id.as_str()],
+        )?,
     })
 }
 
@@ -325,19 +373,38 @@ fn membership(path: &StreamPath, agent: &AgentPath) -> Result<CommitMutation, Er
 }
 
 /// Creates a root agent. Its volumes and actor state join the same request.
-pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn, Error> {
+pub fn create_root(intent: &IntentId, adopted: ForkAdopted) -> Result<Spawn, Error> {
+    create_root_with_peer(intent, adopted, true)
+}
+
+/// Root creation with the user's launch-time peer choice in the same commit.
+/// An opted-out root is never transiently visible as a peer.
+pub fn create_root_with_peer(
+    intent: &IntentId,
+    mut adopted: ForkAdopted,
+    peer: bool,
+) -> Result<Spawn, Error> {
     adopted.conversation_tail = 0;
-    create_root_at(intent, adopted, None)
+    create_root_at(intent, adopted, None, peer)
 }
 
 pub(super) fn create_root_at(
     intent: &IntentId,
     mut adopted: ForkAdopted,
     history: Option<(&AgentPath, &super::HistorySelection)>,
+    peer: bool,
 ) -> Result<Spawn, Error> {
     let child = AgentPath::root(&adopted.agent);
     adopted.parent = None;
     adopted.forked_at = 0;
+    if let Some(profile) = &mut adopted.profile {
+        profile.peers = crate::Capabilities::new(
+            profile
+                .peers
+                .iter()
+                .chain(std::iter::once(super::SEND_PEER)),
+        );
+    }
     let conversation = adopted.conversation_tail;
     let inbox = child.inbox()?;
     let mut conditions = vec![
@@ -350,6 +417,9 @@ pub(super) fn create_root_at(
         CommitCondition::Absent {
             path: child.membership()?,
         },
+        CommitCondition::Absent {
+            path: child.peer_membership()?,
+        },
     ];
     let mut mutations = vec![
         CommitMutation::Append {
@@ -358,6 +428,10 @@ pub(super) fn create_root_at(
         },
         first_status(&child, 0, conversation)?,
         membership(&child.membership()?, &child)?,
+        CommitMutation::Append {
+            path: child.peer_membership()?,
+            records: vec![super::PeerMembership { enabled: peer }.encode()?.into()],
+        },
     ];
     if let Some((source, history)) = history {
         select_history(source, &child, history, &mut conditions, &mut mutations)?;

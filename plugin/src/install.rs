@@ -72,9 +72,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         "agy" => extensions::install_agy(args, &package, &executable, install)?,
         _ => unreachable!(),
     }
-    println!(
-        "{command} {host}: workspace-local files only; native permissions and sandbox retained"
-    );
+    println!("{command} {host}: external owner files; native permissions and sandbox retained");
     Ok(())
 }
 
@@ -110,9 +108,24 @@ fn doctor(host: &str) -> Result<()> {
     } else {
         None
     };
+    let additional_sandbox_roots = if acyclic_harness::native_environment::variable(
+        acyclic_harness::local::host_files::DIRECTORY_ENV,
+    )
+    .is_some()
+    {
+        match acyclic_harness::local::host_files::native_roots(&std::env::current_dir()?) {
+            Ok(roots) => roots,
+            Err(error) => {
+                refusals.push(error.to_string());
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
     println!(
         "{}",
-        json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"workspace files","writable_paths":[".acyclic-sdk/host-files/requests",".acyclic-sdk/host-files/status",".acyclic-sdk/host-processes",".volumes/agents"],"additional_sandbox_roots":[],"native_plugins":plugins,"refusals":refusals})
+        json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"external host files","directory_environment":acyclic_harness::local::host_files::DIRECTORY_ENV,"writable_paths":additional_sandbox_roots,"additional_sandbox_roots":additional_sandbox_roots,"native_plugins":plugins,"refusals":refusals})
     );
     if !refusals.is_empty() {
         return Err(format!(

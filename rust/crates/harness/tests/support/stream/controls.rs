@@ -10,6 +10,7 @@ pub enum ExecutionFaultMode {
 }
 #[derive(Default)]
 pub struct StreamIo {
+    pub append_paths: std::sync::Mutex<Vec<acyclic_stream::StreamPath>>,
     pub reads: std::sync::atomic::AtomicU64,
     pub writes: std::sync::atomic::AtomicU64,
     pub records: std::sync::atomic::AtomicU64,
@@ -67,6 +68,7 @@ pub struct LostSessionAck<P = MemoryStream> {
 
 impl<P> LostSessionAck<P> {
     pub fn reset_io(&self) {
+        self.io.append_paths.lock().unwrap().clear();
         use std::sync::atomic::Ordering;
         for counter in [
             &self.io.reads,

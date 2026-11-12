@@ -93,9 +93,6 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
                     .checked_add(name.len())
                     .and_then(|n| n.checked_add(1))
                     .ok_or(WorkError::Overflow)?;
-                if next > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES {
-                    return Err(driver_errno(libc::E2BIG));
-                }
                 if length != 0 {
                     if next > length {
                         return Err(driver_errno(libc::ERANGE));

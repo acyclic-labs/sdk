@@ -37,6 +37,17 @@ fn volume_creation_is_canonical_bounded_and_catalog_free() -> Result<(), Box<dyn
         volume_authority_id(value.volume_id).into_bytes(),
         value.volume_id.into_bytes()
     );
+    // Old/unknown headers refuse before the removed configuration fields.
+    for version in [0_u16, 1, u16::MAX] {
+        let mut obsolete = encoded[..DOMAIN.len() + 2].to_vec();
+        obsolete[DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
+        assert!(matches!(
+            decode_volume_created(&obsolete, u64::MAX, &mut |_| Ok::<_, VolumeCreatedError>(())),
+            Err(VolumeCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion {
+                found, expected: 2
+            })) if found == version
+        ));
+    }
     let maximum = u64::try_from(encoded.len().saturating_sub(1)).unwrap_or(0);
     assert!(
         decode_volume_created(&encoded, maximum, &mut |_| Ok::<
@@ -60,7 +71,7 @@ fn volume_creation_is_canonical_bounded_and_catalog_free() -> Result<(), Box<dyn
 #[test]
 fn invalid_config_and_object_kind_fail_closed() {
     let mut invalid = config();
-    invalid.limits.maximum_path_bytes = 0;
+    invalid.limits.maximum_directory_page_entries = 0;
     assert!(matches!(
         encode_volume_created(
             VolumeCreated {
@@ -154,17 +165,6 @@ fn every_volume_semantic_variant_roundtrips_and_unknown_tags_fail_closed()
             .is_err()
         );
     }
-
-    let mut depth_overflow = encoded.clone();
-    let depth_offset = config_offset + 8 + 4 + 4;
-    depth_overflow[depth_offset..depth_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(
-        decode_volume_created(&depth_overflow, u64::MAX, &mut |_| Ok::<
-            _,
-            crate::kernel::VolumeCreatedError,
-        >(()))
-        .is_err()
-    );
 
     let mut wrong_kind = encoded;
     let kind_offset = wrong_kind.len() - 33;

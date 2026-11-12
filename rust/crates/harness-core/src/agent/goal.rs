@@ -178,6 +178,7 @@ pub(super) async fn settle(
                     path: agent.path.clone(),
                 },
                 id,
+                re: None,
                 body: Box::new(view.source),
                 attachments: None,
             }),

@@ -114,7 +114,7 @@ async fn three_way_merge_combines_bindings_and_hard_links() -> TestResult {
     commit(&mut theirs, &cancel).await?;
     let generation = theirs.generation_id();
     assert!(matches!(
-        ours.prepare_merge(generation, 32, 8, B, &cancel)
+        ours.prepare_merge(generation, Some(32), Some(8), B, &cancel)
             .await?
             .value,
         MergePreparation::Prepared { .. }
@@ -124,11 +124,11 @@ async fn three_way_merge_combines_bindings_and_hard_links() -> TestResult {
         FsError::PreparedMergePending
     ));
     assert!(
-        ours.prepare_merge(generation, 32, 8, B, &cancel)
+        ours.prepare_merge(generation, Some(32), Some(8), B, &cancel)
             .await
             .is_err()
     );
-    assert!(ours.rebase_head(8, B, &cancel).await.is_err());
+    assert!(ours.rebase_head(Some(8), B, &cancel).await.is_err());
     commit(&mut ours, &cancel).await?;
     let mut merged = volume
         .checkout(
@@ -166,7 +166,7 @@ async fn three_way_merge_combines_bindings_and_hard_links() -> TestResult {
     }
     commit(&mut right, &cancel).await?;
     assert!(matches!(
-        left.prepare_merge(right.generation_id(), 32, 8, B, &cancel)
+        left.prepare_merge(right.generation_id(), Some(32), Some(8), B, &cancel)
             .await?
             .value,
         MergePreparation::Prepared { .. }
@@ -221,13 +221,13 @@ async fn three_way_merge_rejects_guards_and_bounds_file_conflicts() -> TestResul
     let mut readonly = open_checkout(&volume, pinned(), &cancel).await?;
     assert!(
         readonly
-            .prepare_merge(base, 8, 8, B, &cancel)
+            .prepare_merge(base, Some(8), Some(8), B, &cancel)
             .await
             .is_err()
     );
     for (changes, conflicts) in [(0, 8), (8, 0)] {
         assert!(
-            ours.prepare_merge(base, changes, conflicts, B, &cancel)
+            ours.prepare_merge(base, Some(changes), Some(conflicts), B, &cancel)
                 .await
                 .is_err()
         );
@@ -256,17 +256,21 @@ async fn three_way_merge_rejects_guards_and_bounds_file_conflicts() -> TestResul
         }
     }
     commit(&mut theirs, &cancel).await?;
-    assert!(ours.prepare_merge(base, 8, 8, B, &cancel).await.is_err());
+    assert!(
+        ours.prepare_merge(base, Some(8), Some(8), B, &cancel)
+            .await
+            .is_err()
+    );
     let generation = theirs.generation_id();
     let failure = ours
-        .prepare_merge(generation, 1, 8, B, &cancel)
+        .prepare_merge(generation, Some(1), Some(8), B, &cancel)
         .await
         .unwrap_err();
     assert!(matches!(failure.error, FsError::MergeChangeLimit));
     assert!(failure.work.backend_read_operations > 0);
     for maximum in [1, 8] {
         let prepared = ours
-            .prepare_merge(generation, 8, maximum, B, &cancel)
+            .prepare_merge(generation, Some(8), Some(maximum), B, &cancel)
             .await?
             .value;
         let MergePreparation::Conflicted {
@@ -351,7 +355,7 @@ async fn three_way_merge_pairs_a_replaced_file_with_the_identity_it_replaced() -
             .await?;
         commit(&mut theirs, &cancel).await?;
         let prepared = ours
-            .prepare_merge(theirs.generation_id(), 32, 8, B, &cancel)
+            .prepare_merge(theirs.generation_id(), Some(32), Some(8), B, &cancel)
             .await?
             .value;
         assert!(
@@ -511,7 +515,7 @@ async fn checkout_rebase_merges_an_edit_onto_the_file_the_head_saved_over_it() -
         write_doc(&mut local, 0, b"ONE".as_slice(), &cancel).await?;
         commit(&mut remote, &cancel).await?;
         let before = checkout_state(&local);
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         if overlapping {
             assert!(conflicts_on(&decision, original), "{decision:?}");
             assert_eq!(checkout_state(&local), before);
@@ -524,7 +528,7 @@ async fn checkout_rebase_merges_an_edit_onto_the_file_the_head_saved_over_it() -
         assert_eq!(read_doc(&mut local, 13, &cancel).await?, b"ONE two THREE");
         write_doc(&mut remote, 4, b"TWO".as_slice(), &cancel).await?;
         commit(&mut remote, &cancel).await?;
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         assert!(
             matches!(decision, RebaseDecision::Safe { .. }),
             "{decision:?}"
@@ -560,7 +564,7 @@ async fn checkout_rebase_conflicts_on_a_later_head_rewrite_of_bytes_merged_onto_
     atomic_save(&mut remote, original, saved, &cancel).await?;
     write_doc(&mut local, 0, b"ONE".as_slice(), &cancel).await?;
     commit(&mut remote, &cancel).await?;
-    let decision = local.rebase_head(8, B, &cancel).await?.value;
+    let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
     assert!(
         matches!(decision, RebaseDecision::Safe { .. }),
         "{decision:?}"
@@ -568,7 +572,7 @@ async fn checkout_rebase_conflicts_on_a_later_head_rewrite_of_bytes_merged_onto_
     write_doc(&mut remote, 0, b"uno".as_slice(), &cancel).await?;
     commit(&mut remote, &cancel).await?;
     let before = checkout_state(&local);
-    let decision = local.rebase_head(8, B, &cancel).await?.value;
+    let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
     assert!(
         matches!(decision, RebaseDecision::Conflicted { .. }),
         "{decision:?}"
@@ -618,7 +622,7 @@ async fn checkout_rebase_merges_a_head_edit_into_the_file_the_checkout_saved_ove
         write_doc(&mut remote, 0, b"ONE".as_slice(), &cancel).await?;
         commit(&mut remote, &cancel).await?;
         let before = checkout_state(&local);
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         if overlapping {
             assert!(conflicts_on(&decision, original), "{decision:?}");
             assert_eq!(checkout_state(&local), before);
@@ -637,7 +641,7 @@ async fn checkout_rebase_merges_a_head_edit_into_the_file_the_checkout_saved_ove
         )
         .await?;
         commit(&mut remote, &cancel).await?;
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         assert!(
             matches!(decision, RebaseDecision::Safe { .. }),
             "{decision:?}"
@@ -646,7 +650,7 @@ async fn checkout_rebase_merges_a_head_edit_into_the_file_the_checkout_saved_ove
         write_doc(&mut remote, 4, b"TWO".as_slice(), &cancel).await?;
         commit(&mut remote, &cancel).await?;
         let before = checkout_state(&local);
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         assert!(conflicts_on(&decision, original), "{decision:?}");
         assert_eq!(checkout_state(&local), before);
     }
@@ -700,7 +704,7 @@ async fn checkout_rebase_merges_the_bytes_of_a_saved_rewrite() -> TestResult {
             write_doc(editing, (length - 3) as u64, b"XXX".to_vec(), &cancel).await?;
             commit(&mut remote, &cancel).await?;
             let before = checkout_state(&local);
-            let decision = local.rebase_head(8, B, &cancel).await?.value;
+            let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
             let case = format!("length={length} local_saves={local_saves}");
             if overlapping {
                 assert!(conflicts_on(&decision, original), "{case}: {decision:?}");
@@ -771,7 +775,7 @@ async fn checkout_rebase_merges_a_save_that_appended_or_cut_a_suffix() -> TestRe
             }
             commit(&mut remote, &cancel).await?;
             let before = checkout_state(&local);
-            let decision = local.rebase_head(8, B, &cancel).await?.value;
+            let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
             let case = format!("length={length} {local_saves}/{appends}/{edits_tail}/{in_place}");
             if edits_tail && !appends {
                 assert!(conflicts_on(&decision, original), "{case}: {decision:?}");
@@ -842,7 +846,7 @@ async fn checkout_rebase_checks_a_read_against_the_file_the_head_saved_over_it()
         .await?;
         commit(&mut remote, &cancel).await?;
         let before = checkout_state(&local);
-        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        let decision = local.rebase_head(Some(8), B, &cancel).await?.value;
         if changed {
             assert!(conflicts_on(&decision, original), "{decision:?}");
             assert_eq!(checkout_state(&local), before);
@@ -914,7 +918,7 @@ async fn replacement_pairing_charges_each_directory_once() -> TestResult {
     commit(&mut theirs, &cancel).await?;
     let limit = u32::try_from(FILES * 16)?;
     let prepared = ours
-        .prepare_merge(theirs.generation_id(), limit, 8, B, &cancel)
+        .prepare_merge(theirs.generation_id(), Some(limit), Some(8), B, &cancel)
         .await?
         .value;
     assert!(
@@ -1012,7 +1016,7 @@ async fn prepares_within(replace: bool, additions: usize, limit: u32) -> TestRes
     }
     commit(&mut theirs, &cancel).await?;
     match ours
-        .prepare_merge(theirs.generation_id(), limit, 8, B, &cancel)
+        .prepare_merge(theirs.generation_id(), Some(limit), Some(8), B, &cancel)
         .await
     {
         Ok(receipt) => {

@@ -18,16 +18,10 @@ where
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    // A capture that still holds host-owned paths is rebuilt from the live
-    // tree, so no later commit inherits them.
-    if policy.tracks_reserved(already_tracked) {
-        return capture_git_compatible_generation(workspace, policy, already_tracked, operation_id)
-            .await;
-    }
     let changes = previous_live
         .diff_to(
             &live,
-            u32::MAX,
+            None,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
@@ -35,7 +29,7 @@ where
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
     let changed = changes
-        .changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .changed_paths(None, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;

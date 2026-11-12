@@ -190,7 +190,6 @@ impl CheckoutPublication {
             ));
         }
         completed(journal, self.identity, from.id(), to.id())?;
-        validate_plan(&journal.plan)?;
         require_selected_edits(&journal.plan.edits, paths)?;
         Ok(CheckoutApproval {
             publication: self,

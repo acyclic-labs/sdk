@@ -196,6 +196,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 Arc::new(User),
                 &IntentId::try_from("root")?,
                 RootRequest {
+                    peer: true,
                     agent: id,
                     fresh: vec![WorkspaceEntry::initial_volume(acyclic_harness_core::agent::WorkspaceRole::Private, PRIVATE_VOLUME.into(), private)],
                     retained: Vec::new(),
