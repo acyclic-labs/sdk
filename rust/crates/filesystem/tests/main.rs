@@ -135,8 +135,6 @@ mod mount_qualification;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_binding_model;
 #[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
-mod native_stage_loom;
-#[cfg(all(loom, not(target_arch = "wasm32"), feature = "model-checking"))]
 mod native_view_table_loom;
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod package_install;

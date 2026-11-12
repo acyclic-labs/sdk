@@ -81,7 +81,6 @@ impl<S: MaterializationJournalStore>
         }
         let failure = NativeStageUncertainty::new(work)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
-        let state = super::stage_state::StageState::<_, S::ActionCompletion<'_>>::new(journal);
         let reader = generation
             .workspace()
             .checkout(
@@ -97,52 +96,34 @@ impl<S: MaterializationJournalStore>
                     .map_err(crate::WorkspaceError::from)
             })
             .map_err(E::from)?;
+        // One journaled action spans the whole staging. Staging writes only
+        // the private target that publication reset, and a Preparing journal
+        // without preimages restages from a reset target, so a revision per
+        // entry bought no recovery guarantee. It rewrote the whole plan per
+        // entry: O(k^2) for k entries, hours for a large checkout. The record
+        // lock held across the span excludes every other journal writer, and
+        // every entry still passes the caller's effect authorization.
+        before_effect().await?;
+        self.check_plan(&journal.plan).map_err(E::from)?;
+        self.check_custody(&journal).map_err(E::from)?;
+        self.verify_allocation(&journal).await.map_err(E::from)?;
+        let completion = self
+            .store
+            .prepare_action(journal)
+            .await
+            .map_err(|error| E::from(MaterializationError::Store(error)))?;
         let mut control = |phase| {
-            use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};
-            let authorized = if phase == Before {
-                Some(before_effect())
-            } else {
-                None
-            };
-            let state = &state;
-            let invalid = &invalid;
+            let authorized = (phase
+                == crate::native_mount::NativeMaterializationActionPhase::Before)
+                .then(|| before_effect());
             async move {
-                match phase {
-                    Before => {
-                        state
-                            .before(
-                                authorized.expect("effect authorization"),
-                                |journal| async {
-                                    self.check_plan(&journal.plan).map_err(E::from)?;
-                                    self.check_custody(&journal).map_err(E::from)?;
-                                    // Acceptance checks both live tails; the backend
-                                    // separately checks the physical allocation.
-                                    self.verify_allocation(&journal).await.map_err(E::from)?;
-                                    self.store.prepare_action(journal).await.map_err(|error| {
-                                        E::from(MaterializationError::Store(error))
-                                    })
-                                },
-                                invalid,
-                            )
-                            .await?;
-                    }
-                    Completed => {
-                        state
-                            .completed(
-                                |completion| async {
-                                    completion.await.map_err(|error| {
-                                        E::from(MaterializationError::Store(error))
-                                    })
-                                },
-                                invalid,
-                            )
-                            .await?;
-                    }
+                if let Some(authorized) = authorized {
+                    authorized.await?;
                 }
                 Ok(())
             }
         };
-        let result = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
+        let staged = crate::native_mount::materialize_checkout_host_paths_with_work_guarded(
             &reader,
             selections,
             options,
@@ -150,13 +131,15 @@ impl<S: MaterializationJournalStore>
             &mut control,
         )
         .await;
-        let (journal, completion, last) = state.into_inner();
-        drop(completion);
-        match (result, journal, last) {
-            (Ok(_), Some(journal), false) => Ok(journal),
-            (Err(error), _, true) => Err(E::from(failure.fail(error))),
-            (Err(error), _, false) => Err(error),
-            _ => Err(invalid()),
+        // Any failure inside the span leaves an accepted, unacknowledged action.
+        match staged {
+            Ok(_) => completion.await.map_err(|error| {
+                E::from(failure.fail(E::from(MaterializationError::Store(error))))
+            }),
+            Err(error) => {
+                drop(completion);
+                Err(E::from(failure.fail(error)))
+            }
         }
     }
 }

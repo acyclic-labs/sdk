@@ -3,7 +3,7 @@ pub(super) use super::super::workspace::git::reconciliation_generation;
 use super::*;
 
 impl CheckoutTools {
-    fn commands(&self) -> workspace::git::Commands<'_> {
+    pub(super) fn commands(&self) -> workspace::git::Commands<'_> {
         workspace::git::Commands {
             workspace: &self.workspace,
             signed: &self.signed,

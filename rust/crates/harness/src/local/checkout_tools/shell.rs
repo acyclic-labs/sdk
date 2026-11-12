@@ -7,11 +7,12 @@ mod tail;
 impl CheckoutTools {
     pub(super) async fn shell(
         &self,
-        (input, operation, execution_grant, started): (
+        (input, operation, execution_grant, started, admitted): (
             crate::tools::ShellInput,
             crate::OperationId,
             Option<acyclic_native_runtime::execution::ExecutionGrant>,
             Option<tokio::sync::oneshot::Sender<ToolResult>>,
+            std::time::Instant,
         ),
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
@@ -47,6 +48,7 @@ impl CheckoutTools {
             &state.mounts,
             invocation,
             self.clock.now_unix_millis() / 1000,
+            admitted,
         )?;
         let control =
             acyclic_native_runtime::ProcessControl::open(self.expiry_unix_ms).map_err(storage)?;
