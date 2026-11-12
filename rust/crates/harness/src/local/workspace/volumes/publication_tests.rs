@@ -109,7 +109,8 @@ async fn lost_caller_discards_its_whole_view_and_keeps_the_acknowledged_head() -
         let prepared = crate::filesystem::native_process::shell::prepare(
             crate::tools::ShellInput {
                 command: crate::tools::ShellCommand::Source("echo root".into()),
-                cwd: Some(HOME_PATH.into()),
+                // The volume address names this command's own view.
+                cwd: Some(format!("volume:///{HOME_PATH}")),
                 timeout_ms: None,
                 background: false,
                 target: None,

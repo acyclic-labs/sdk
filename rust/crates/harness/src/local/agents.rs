@@ -416,10 +416,7 @@ impl TurnContext for LocalContext {
                                 crate::workspace::NativeRoot::Composed => {
                                     Some(workspace.mounts.root.join(relative))
                                 }
-                                crate::workspace::NativeRoot::Path(path)
-                                | crate::workspace::NativeRoot::View { view: path, .. } => {
-                                    Some(path.clone())
-                                }
+                                crate::workspace::NativeRoot::Path(path) => Some(path.clone()),
                             }
                         })
                         .map(|path| path.to_string_lossy().into_owned());
