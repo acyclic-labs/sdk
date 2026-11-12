@@ -1586,10 +1586,8 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
 #[tokio::test]
 async fn lost_ack_and_unreadable_receipt_preserve_the_original_publication()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::{
-        GitCompatState, GitCompatStore, StreamGitCompatStore, StreamGitCompatStoreError,
-        WorkspaceId,
-    };
+    use crate::git_compat::{StreamGitCompatStore, StreamGitCompatStoreError};
+    use crate::{GitCompatState, GitCompatStore, WorkspaceId};
     let provider = Arc::new(MemoryStream::default());
     let id = WorkspaceId::from_bytes([4; 16]);
     let path = StreamPath::new(format!(

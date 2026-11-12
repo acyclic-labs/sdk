@@ -41,7 +41,8 @@ macro_rules! cargo_binary {
 ///
 /// Cross-built test executables run against an explicitly supplied source
 /// snapshot: set `ACYCLIC_TEST_SOURCE_ROOT` to its absolute repository root.
-/// Ordinary Cargo tests use the source tree they were compiled from.
+/// Bazel tests use their declared runfiles; ordinary Cargo tests use the source
+/// tree they were compiled from.
 ///
 /// # Panics
 ///
@@ -49,6 +50,11 @@ macro_rules! cargo_binary {
 pub fn source_path(relative: impl AsRef<Path>) -> PathBuf {
     let root = std::env::var_os("ACYCLIC_TEST_SOURCE_ROOT")
         .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("TEST_SRCDIR")
+                .zip(std::env::var_os("TEST_WORKSPACE"))
+                .map(|(directory, workspace)| PathBuf::from(directory).join(workspace))
+        })
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
     let relative = relative.as_ref();
     assert!(

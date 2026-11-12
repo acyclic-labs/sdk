@@ -1,0 +1,22 @@
+# Shared policy; endpoints and credentials belong to user/CI configuration.
+build --remote_download_minimal
+build --remote_cache_compression
+build --experimental_remote_cache_compression_threshold=0
+# Use the same target graph from every client OS; Windows cross-builds opt in below.
+build --platforms=//:linux_x86_64
+# Freeze wall time without rewriting explicitly requested filesystem timestamps.
+test --test_env=NO_FAKE_STAT=1
+test --test_env=PROPTEST_RNG_SEED=0
+# Anonymous and fork clients must not publish results. The server enforces this too.
+build --remote_upload_local_results=false
+build:trusted --remote_upload_local_results=true
+# Match the workspace Cargo configuration for Tokio and deterministic tests.
+build --@rules_rust//rust/settings:extra_rustc_flags=--cfg=tokio_unstable
+build --@rules_rust//rust/settings:extra_exec_rustc_flags=--cfg=tokio_unstable
+# Endpoint settings can be placed in this untracked file or passed on the CLI.
+try-import %workspace%/Cargo.Bazel.rc
+try-import %workspace%/.bazelrc.local
+build:windows-gnu --platforms=//:windows_gnu
+build:windows-gnu --@rules_rust//rust/settings:extra_rustc_flag=-Cdlltool=/usr/bin/x86_64-w64-mingw32-dlltool
+# Preserve packaged native link inputs when cargo_build_script closes its manifest tree.
+build --@rules_rust//cargo/settings:cargo_manifest_dir_filename_suffixes_to_retain=.a,.lib,.so,.dylib,.dll,.o,.obj

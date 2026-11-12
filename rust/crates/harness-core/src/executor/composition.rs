@@ -122,12 +122,7 @@ impl StockExecutor {
                 "executor already has a context manifest".into(),
             ));
         }
-        let bytes = reader
-            .read(&reference, self.limits.render_bytes, None, None)?
-            .await?;
-        let manifest = crate::context::ContextManifest::decode(&bytes, self.limits)?;
-        self.epoch_tools = Some(Arc::new(manifest.tools));
-        let (tools, stage) = crate::context::ContextManifest::bind_observed(
+        let (tools, stage, definitions) = crate::context::ContextManifest::bind_observed(
             reference,
             reader.as_ref(),
             self.tools,
@@ -136,6 +131,7 @@ impl StockExecutor {
             false,
         )
         .await?;
+        self.epoch_tools = Some(Arc::new(definitions));
         self.tools = tools;
         self.with_context_stage(stage)
     }

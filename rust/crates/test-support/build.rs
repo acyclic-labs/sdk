@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
     let compiler = std::env::var_os("RUSTC").expect("Cargo compiler");
+    let target = std::env::var_os("TARGET").expect("Cargo target");
     let mut reached = Vec::new();
     for (index, (declaration, child, leaf)) in module_cases::CASES.into_iter().enumerate() {
         let root = output.join("module-oracle").join(index.to_string());
@@ -26,7 +27,7 @@ fn main() {
                 .expect("fixture directory");
             std::fs::write(file, text).expect("module fixture");
         }
-        // This is a host compiler proof. The cross-built test executable only
+        // The build-host compiler uses its declared target sysroot. The test only
         // scans the same fixtures with its target platform's path implementation.
         let compiled = std::process::Command::new(&compiler)
             .args([
@@ -36,6 +37,8 @@ fn main() {
                 "--cfg",
                 "feature=\"test-support\"",
             ])
+            .arg("--target")
+            .arg(&target)
             .arg(root.join("lib.rs"))
             .arg("-o")
             .arg(root.join("proof.rmeta"))

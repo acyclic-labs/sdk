@@ -4,6 +4,35 @@ use super::*;
 use crate::WorkCounters;
 use crate::kernel::allocation::KernelAccounting;
 
+// Compare the same authored file identities, not different random tree shapes.
+async fn seed_files<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    workspace: &crate::Workspace<A, O>,
+    files: u8,
+    cancellation: &CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for file in 0..files {
+        let mut identity = [0x80; 16];
+        identity[0] = file;
+        let mut transaction = workspace
+            .begin_transaction(crate::IdempotencyKey::from_bytes(identity), B, cancellation)
+            .await?
+            .value;
+        transaction
+            .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
+            .await?;
+        transaction
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                B,
+                cancellation,
+                allow::<crate::WorkspaceError>,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum ForkSource {
     Head,
@@ -30,11 +59,7 @@ async fn fork_proof_work(
     let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs.create_workspace("fork-proof", B, &cancel).await?.value;
-    for file in 0..files {
-        workspace
-            .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
-            .await?;
-    }
+    seed_files(&workspace, files, &cancel).await?;
     #[cfg(not(target_arch = "wasm32"))]
     let original = matches!(
         source_kind,
@@ -331,11 +356,7 @@ async fn first_publication_work(
         .create_workspace("first-publish-source", B, &cancel)
         .await?
         .value;
-    for file in 0..files {
-        workspace
-            .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
-            .await?;
-    }
+    seed_files(&workspace, files, &cancel).await?;
     let source = workspace.head(B, &cancel).await?.value;
     let child = workspace
         .fork::<_, _, crate::WorkspaceError>(
@@ -435,17 +456,13 @@ async fn composed_publication_work(
         .create_workspace("composed-proof", B, &cancel)
         .await?
         .value;
-    for file in 0..files {
-        workspace
-            .write_text(&format!("/{file}"), &"x".repeat(5_000 + usize::from(file)))
-            .await?;
-    }
+    seed_files(&workspace, files, &cancel).await?;
     let source = workspace.head(B, &cancel).await?.value;
     let forks = [crate::ForkSpec {
         destination: crate::WorkspaceName::new("composed-child", &B, &cancel)?.value,
         source: &source,
         paths: None,
-        idempotency_key: crate::IdempotencyKey::new(),
+        idempotency_key: crate::IdempotencyKey::from_bytes([0xfe; 16]),
     }];
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
@@ -483,7 +500,8 @@ async fn composed_publication_work(
         "workspace open embeds {opening_bytes} bytes"
     );
     let child = opening.await?.value;
-    let beginning = child.begin_transaction(crate::IdempotencyKey::new(), B, &cancel);
+    let beginning =
+        child.begin_transaction(crate::IdempotencyKey::from_bytes([0xff; 16]), B, &cancel);
     let beginning_bytes = std::mem::size_of_val(&beginning);
     assert!(
         beginning_bytes <= bound,

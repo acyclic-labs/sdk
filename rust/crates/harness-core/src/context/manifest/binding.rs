@@ -16,7 +16,11 @@ impl ContextManifest {
         limits: Limits,
         io: Option<&PreparationIo>,
         pin_tools: bool,
-    ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
+    ) -> Result<(
+        ToolRegistry,
+        Arc<dyn ContextStage>,
+        Vec<crate::tool::ToolDefinition>,
+    )> {
         crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;
         if reference.descriptor().media_type() != "application/json"
             || reference.descriptor().byte_length() > limits.render_bytes
@@ -143,6 +147,7 @@ impl ContextManifest {
                 context,
                 sources: manifest.sources,
             }),
+            manifest.tools,
         ))
     }
 }

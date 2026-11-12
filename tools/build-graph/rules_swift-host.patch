@@ -1,0 +1,10 @@
+diff --git a/swift/internal/swift_autoconfiguration.bzl b/swift/internal/swift_autoconfiguration.bzl
+--- a/swift/internal/swift_autoconfiguration.bzl
++++ b/swift/internal/swift_autoconfiguration.bzl
+@@ -315,3 +315,6 @@
+     """
++    if not repository_ctx.os.name.lower().startswith("windows"):
++        return ""
++
+     path_to_swiftc = repository_ctx.which("swiftc.exe")
+     if not path_to_swiftc:

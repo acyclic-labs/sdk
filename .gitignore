@@ -32,3 +32,14 @@ node_modules/
 /typescript/packages/harness/src/private-directory-page-contract.ts
 /typescript/packages/harness/src/limits-contract.ts
 /rust/crates/*/src/generated/
+
+# Phase 0 Cargo-derived Bazel artifacts and local endpoint configuration.
+**/BUILD.bazel
+/MODULE.bazel
+/MODULE.bazel.lock
+/.bazelrc.local
+/bazel-*
+/Cargo.Bazel.lock
+/Cargo.Bazel.inputs
+/Cargo.Bazel.config.toml
+/Cargo.Bazel.rc
