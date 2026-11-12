@@ -9,6 +9,86 @@ use futures::{FutureExt, TryStreamExt};
 use std::io::{Read, Write};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+fn child_executable(harness: &LocalHarness) -> Result<std::path::PathBuf> {
+    let scratch = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .mounts
+        .scratch_root
+        .as_ref()
+        .unwrap();
+    let child = scratch.join(format!("shell-job-child{}", std::env::consts::EXE_SUFFIX));
+    // The command's grant includes scratch, while the host test image is outside it.
+    std::fs::copy(std::env::current_exe().map_err(storage)?, &child).map_err(storage)?;
+    Ok(child)
+}
+async fn listener_executor(
+    harness: &LocalHarness,
+    ports: Vec<u16>,
+) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
+    use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant, ExecutionNetwork};
+    let workspace = harness.workspace.as_ref().unwrap();
+    // Select the fixture's held temporary home through MountOptions::view_root,
+    // as native-host admission does; never use the ambient shared-view home.
+    let view_home = Arc::new(workspace.held_task_mount_root()?);
+    let view_home = workspace.task_view_admission.get_or_init(|| view_home);
+    let mut read = vec![executable()?.parent().unwrap().to_path_buf()];
+    #[cfg(target_os = "linux")]
+    read.extend(
+        ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]
+            .map(std::path::PathBuf::from)
+            .into_iter()
+            .filter(|path| path.exists()),
+    );
+    #[cfg(target_os = "macos")]
+    read.extend(
+        ["/System/Library", "/usr", "/bin", "/lib"]
+            .map(std::path::PathBuf::from)
+            .into_iter()
+            .filter(|path| path.exists()),
+    );
+    #[cfg(windows)]
+    read.push(
+        std::env::var_os("SystemRoot")
+            .ok_or_else(|| Error::Invalid("SystemRoot is absent".into()))?
+            .into(),
+    );
+    let write = workspace
+        .mounts
+        .native_mounts()
+        .filter_map(|(_, root, mount)| {
+            (!mount.mode.read_only()).then(|| {
+                // These fixture-owned parents survive projection retirement;
+                // their volume directories are created only during execution.
+                mount.view.source.as_ref().map_or_else(
+                    || root.to_path_buf(),
+                    |source| source.binding_root.path().to_path_buf(),
+                )
+            })
+        })
+        .chain(workspace.mounts.scratch_root.iter().cloned())
+        .chain(std::iter::once(view_home.path().to_path_buf()))
+        .collect::<Vec<_>>();
+    let grant = ExecutionGrant::composed(
+        &workspace.path,
+        ExecutionAccess::WorkspaceWrite,
+        write,
+        read,
+        ExecutionNetwork::TcpPorts(ports.into_iter().collect()),
+    )
+    .map_err(storage)?;
+    Ok(workspace
+        .executor(
+            (&harness.project, &harness.files, 1 << 20),
+            harness.clock.clone(),
+            &harness.signed,
+            &harness.verifier,
+            Some(grant),
+        )
+        .await?
+        .0)
+}
 #[test]
 fn shell_job_child() {
     if let Ok(address) = std::fs::read_to_string("shell-job.exit") {
@@ -21,6 +101,14 @@ fn shell_job_child() {
     let Ok(address) = std::fs::read_to_string("shell-job.addr") else {
         return;
     };
+    if let Ok(home) = std::fs::read_to_string("shell-job.timeout") {
+        std::fs::write("retained", b"before-stop").unwrap();
+        std::fs::write(
+            std::path::PathBuf::from(home).join("timeout-retained"),
+            b"before-stop",
+        )
+        .unwrap();
+    }
     let mut gate = std::net::TcpStream::connect(address).unwrap();
     println!("JOB_READY");
     std::io::stdout().flush().unwrap();
@@ -96,6 +184,194 @@ async fn ready_connection(
 }
 
 #[tokio::test]
+async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
+        directory.path(),
+        (
+            model,
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ),
+    )?)
+    .await?;
+    let writer = crate::filesystem::FilesystemContentPublisher::new(
+        harness.files.clone(),
+        &harness.scratch,
+        &harness.verifier,
+        &harness.signed,
+        1 << 20,
+        None,
+    )?;
+    let task = Arc::new(harness.harness.agent_context(
+        &crate::Capabilities::new(Vec::<String>::new()),
+        ContentBindings {
+            volume: harness.scratch.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(writer),
+        },
+    )?);
+    let context = ToolContext::new(task, crate::OperationId::new(), "foreground-cancellation")?;
+    let output_directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(storage)?;
+    std::fs::write(
+        directory.path().join("shell-job.addr"),
+        listener.local_addr().map_err(storage)?.to_string(),
+    )
+    .map_err(storage)?;
+    let physical = harness.workspace.as_ref().unwrap();
+    let (_, home) = physical.mounts.named(Some("home"))?;
+    let home_volume = home.view.volume.clone();
+    let home_root = physical
+        .mounts
+        .native_root_for(home)
+        .ok_or_else(|| Error::Invalid("home has no native root".into()))?;
+    std::fs::write(
+        directory.path().join("shell-job.timeout"),
+        home_root.to_str().unwrap(),
+    )
+    .map_err(storage)?;
+    let invocation = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: "foreground-cancellation".into(),
+        name: "shell".into(),
+        arguments: serde_json::json!({"command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child", "--nocapture"]}),
+    };
+    let executor = listener_executor(
+        &harness,
+        vec![listener.local_addr().map_err(storage)?.port()],
+    )
+    .await?;
+    let mut call = executor.execute(invocation, Some(context));
+    let mut gate = tokio::select! {
+        connection = listener.accept() => connection.map(|(socket, _)| socket).map_err(storage)?,
+        result = &mut call => panic!("shell returned before its writes: {result:?}"),
+    };
+    let mut byte = [0];
+    gate.read_exact(&mut byte).await.map_err(storage)?;
+    assert_eq!(byte, [b'R']);
+    drop(call);
+    let published = terminal(&harness, &output_directory).await?;
+    assert_eq!(published["stop"]["cleanup_completed"], true, "{published}");
+    let physical = harness.workspace.as_ref().unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let head = physical
+        .view()
+        .workspace()
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    let retained = head
+        .read(
+            "/retained",
+            64,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    assert_eq!(retained.as_ref(), b"before-stop");
+    let grant = ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &harness.signed,
+        &home_volume,
+        "",
+        &mut None,
+    )?;
+    let (_, retained) = harness
+        .files
+        .read_private_path(
+            &home_volume,
+            &grant,
+            "timeout-retained",
+            None,
+            64,
+            Default::default(),
+        )
+        .await?;
+    assert_eq!(retained.as_ref(), b"before-stop");
+    assert_eq!(gate.read(&mut byte).await.map_err(storage)?, 0);
+
+    harness.disconnect().await
+}
+
+#[tokio::test]
+async fn background_startup_deadline_bounds_volume_admission() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
+        directory.path(),
+        (
+            model,
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ),
+    )?)
+    .await?;
+    let writer = crate::filesystem::FilesystemContentPublisher::new(
+        harness.files.clone(),
+        &harness.scratch,
+        &harness.verifier,
+        &harness.signed,
+        1 << 20,
+        None,
+    )?;
+    let task = Arc::new(harness.harness.agent_context(
+        &crate::Capabilities::new(Vec::<String>::new()),
+        ContentBindings {
+            volume: harness.scratch.clone(),
+            reader: harness.client_reader()?,
+            writer: Some(writer),
+        },
+    )?);
+    let context = ToolContext::new(task, crate::OperationId::new(), "background-admission")?;
+    let output_directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
+    let physical = harness.workspace.as_ref().unwrap();
+    let (_, home) = physical.mounts.named(Some("home"))?;
+    let source = home.view.source.as_ref().unwrap();
+    let held = crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
+    let invocation = ToolInvocation {
+        operation_id: context.operation_id(),
+        call_id: "background-admission".into(),
+        name: "shell".into(),
+        arguments: serde_json::json!({
+            "command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child"],
+            "timeout_ms": 20,
+            "background": true,
+        }),
+    };
+    let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(83);
+    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
+        &acyclic_stream::SystemUnixMillisClock,
+    ));
+    crate::test_support::run_native_schedule(&schedule, boundaries, async {
+        tokio::time::pause();
+        let executor = &harness.harness.target(None)?.executor;
+        let result = executor.execute(invocation, Some(context)).await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::Process(crate::ProcessError::Timeout { .. }))
+            ),
+            "{result:?}"
+        );
+        assert!(
+            StateArc::clone(&physical.state).try_lock_owned().is_err(),
+            "worker did not retain its admitted checkout"
+        );
+        drop(held);
+        let published = terminal(&harness, &output_directory).await?;
+        assert!(published.get("error").is_some(), "{published}");
+        Ok::<_, Error>(())
+    })
+    .await?;
+    harness.disconnect().await
+}
+
+#[tokio::test]
 async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
@@ -124,23 +400,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         },
     )?);
     let executor = &harness.harness.target(None)?.executor;
-    let child = std::env::current_exe().map_err(storage)?;
-    // This fixture executes its own image and connects to host-owned event
-    // listeners. Neither authority is part of an ordinary isolated shell.
-    let reads: Vec<_> = [
-        "/usr",
-        "/bin",
-        "/lib",
-        "/lib64",
-        "/System/Library",
-        "/etc/ld.so.cache",
-    ]
-    .into_iter()
-    .map(std::path::PathBuf::from)
-    .chain(std::env::var_os("SystemRoot").map(std::path::PathBuf::from))
-    .filter(|path| path.exists())
-    .chain(std::iter::once(child.clone()))
-    .collect();
+    let child = child_executable(&harness)?;
     let selector = "local::checkout_tools::shell::job::tests::shell_job_child";
     let mut jobs = Vec::new();
     let mut gates = Vec::new();
@@ -173,42 +433,19 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             Some(exit)
         };
         let context = ToolContext::new(task.clone(), crate::OperationId::new(), name)?;
-        let ports = std::iter::once(listener.local_addr().map_err(storage)?.port())
-            .chain(
-                exit.as_ref()
-                    .map(|exit| exit.local_addr().map(|address| address.port()))
-                    .transpose()
-                    .map_err(storage)?,
-            )
-            .collect();
-        let workspace = harness
-            .workspace
-            .as_ref()
-            .ok_or_else(|| Error::NotFound("workspace".into()))?;
-        let grant = acyclic_native_runtime::execution::ExecutionGrant::new(
-            &workspace.path,
-            acyclic_native_runtime::execution::ExecutionAccess::WorkspaceWrite,
-            reads.clone(),
-            acyclic_native_runtime::execution::ExecutionNetwork::TcpPorts(ports),
-        )
-        .map_err(storage)?;
-        let (job_executor, _) = workspace
-            .executor(
-                (&harness.project, &harness.files, 1 << 20),
-                Arc::new(acyclic_stream::SystemUnixMillisClock),
-                &harness.signed,
-                &harness.verifier,
-                Some(grant),
-            )
-            .await?;
         let invocation = ToolInvocation {
             operation_id: context.operation_id(),
             call_id: name.into(),
             name: "shell".into(),
             arguments: serde_json::json!({"command": [child, "--exact", selector, "--nocapture"], "cwd": name, "background": true}),
         };
+        let mut ports = vec![listener.local_addr().map_err(storage)?.port()];
+        if let Some(exit) = &exit {
+            ports.push(exit.local_addr().map_err(storage)?.port());
+        }
+        let executor = listener_executor(&harness, ports).await?;
         eprintln!("shell job {name}: executing");
-        let result = job_executor
+        let result = executor
             .execute(invocation.clone(), Some(context.clone()))
             .await?;
         assert_eq!(result.value["background"], true, "{result:?}");
@@ -248,7 +485,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         // Reconciliation recovers the original durable admission, without
         // restarting the command or waiting for its lifetime to end.
         assert_eq!(
-            job_executor
+            executor
                 .reconcile(invocation, Some(context.clone()))
                 .await?
                 .unwrap()

@@ -3,9 +3,9 @@ use super::*;
 #[tokio::test]
 async fn restart_completes_from_every_forward_journal_boundary() {
     let expected = target_tree();
-    // Preparing, one preimage record per edit, Prepared, Applying, one
-    // progress record per edit, Applied: the production persist boundaries.
-    let boundary_count = 2 * plan(0).edits.len() + 4;
+    // Preparing, Prepared with every preimage, Applying, one progress record
+    // per edit, Applied: the production persist boundaries.
+    let boundary_count = plan(0).edits.len() + 4;
     for after_write in [false, true] {
         for boundary in 1..=boundary_count {
             let store = CrashJournalStore::default();
@@ -71,7 +71,7 @@ async fn restart_completes_from_every_forward_journal_boundary() {
 async fn restart_rolls_back_every_partial_forward_boundary() {
     let expected = source_tree();
     // All forward boundaries except terminal Applied, covered below.
-    let boundary_count = 2 * plan(0).edits.len() + 3;
+    let boundary_count = plan(0).edits.len() + 3;
     for after_write in [false, true] {
         for boundary in 1..=boundary_count {
             let store = CrashJournalStore::default();
