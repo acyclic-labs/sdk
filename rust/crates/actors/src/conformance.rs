@@ -23,6 +23,8 @@ use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Routing records over the same provider and transaction contract.
+pub mod routing;
 /// The actor socket suite, over the same store surface.
 pub mod sockets;
 
@@ -667,6 +669,11 @@ fn idempotency(value: &str) -> Result<IdempotencyKey, Error> {
 
 /// Run every case against the backend's fresh disposable resources.
 pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
+    routing::storage(
+        target.store().provider().as_ref(),
+        StreamPath::new(format!("{}/routing", target.store().root())).map_err(Error::from)?,
+    )
+    .await?;
     fork_uniform(
         target.store().provider().clone(),
         StreamPath::new(format!("{}/fork-uniform", target.store().root())).map_err(Error::from)?,

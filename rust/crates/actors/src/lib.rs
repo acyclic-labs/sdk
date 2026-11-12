@@ -52,6 +52,8 @@ pub mod local;
 pub mod namespace;
 /// Reusable fenced reservations over the actor's original checkpoint/alarm.
 pub mod reservation;
+/// Immutable actor placement and durable location-transparent delivery.
+pub mod route;
 /// Actor sockets v1: session channel frames and inbox socket events.
 pub mod sockets;
 
