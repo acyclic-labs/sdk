@@ -333,20 +333,27 @@ fn held_host_io_never_delays_process_control() -> io::Result<()> {
         }))?;
         holders.push(holder);
     }
-    let Blocked {
-        tree,
-        release: input,
-    } = blocked()?;
-    drop(input);
+    #[cfg(unix)]
+    let command = ProcessCommand::new("cat");
+    #[cfg(windows)]
+    let command = ProcessCommand::new(
+        std::path::Path::new(&std::env::var_os("SystemRoot").ok_or(io::ErrorKind::NotFound)?)
+            .join("System32")
+            .join("sort.exe"),
+    );
+    let request = CaptureRequest {
+        command,
+        custody: None,
+        execution_grant: None,
+        input: Some(OwnedCaptureInput::Literal(b"independent\n".to_vec())),
+        schedule: CaptureSchedule::Unbounded,
+        maximum_output_bytes: None,
+    };
     let outcome = runtime.block_on(async move {
-        tree.capture(
-            &crate::TaskSpawner::current(),
-            CaptureSchedule::Unbounded,
-            0,
-            None,
-            Quiet,
-        )
-        .await
+        let Ok(capture) = request.capture(Quiet).await else {
+            return Err(io::Error::other("independent launch failed"));
+        };
+        capture.await
     })?;
     assert!(outcome.result.is_ok_and(|output| output.status.success()));
     drop(release);

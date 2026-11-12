@@ -94,7 +94,7 @@ pub(crate) static OUTPUT_WORKERS: LazyLock<io::Result<NativeWorkers>> =
 // so an unrelated command never queues behind them. Created on first use,
 // never per process or agent.
 pub(crate) static PROCESS_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-process-io", |parallelism| parallelism.max(2)));
+    LazyLock::new(|| start_workers("acyclic-process-io", |parallelism| parallelism.clamp(2, 4)));
 
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
