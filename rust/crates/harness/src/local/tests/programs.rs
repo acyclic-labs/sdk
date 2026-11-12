@@ -114,7 +114,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                     entry: {sh: 'main.sh', ps1: 'main.ps1'}
                 }, 'absent');
                 await write('volume:///home/tools/echo/main.sh', 'cat', 'absent');
-                await write('volume:///home/tools/echo/main.ps1', '[Console]::Out.Write([Console]::In.ReadToEnd())', 'absent');
+                await write('volume:///home/tools/echo/main.ps1', "param(); $value = [Console]::In.ReadToEnd() | ConvertFrom-Json; if (!$value.text.EndsWith('🦀')) { throw 'UTF-8 input changed' }; [Console]::Out.Write(($value | ConvertTo-Json -Compress))", 'absent');
                 await write('volume:///home/tools/unselected/program.ts', "throw new Error('unselected program was evaluated');", 'absent');
                 export default 'authored';
             "#),
@@ -157,9 +157,9 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         let forked_first = provider.request_count();
         provider.extend([
             program_code("inherited-call", if denied {
-                "export default await (async () => { try { await tools.echo({text: 'child-value'}); throw new Error('unexpected execution'); } catch (error) { if (error.class !== 'denied') throw error; return 'denied-child-program'; } })();"
+                "export default await (async () => { try { await tools.echo({text: 'child-value-🦀'}); throw new Error('unexpected execution'); } catch (error) { if (error.class !== 'denied') throw error; return 'denied-child-program'; } })();"
             } else {
-                "export default await tools.echo({text: 'child-value'});"
+                "export default await tools.echo({text: 'child-value-🦀'});"
             }),
             ScriptedTurn::Text("child done".into()),
         ]);
@@ -190,7 +190,11 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                 "denied-child-program"
             );
         } else {
-            echoed(&requests[forked_first + 1], "inherited-call", "child-value")?;
+            echoed(
+                &requests[forked_first + 1],
+                "inherited-call",
+                "child-value-🦀",
+            )?;
         }
         if !denied {
             provider.extend([
@@ -212,7 +216,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
             provider.extend([
                 program_code(
                     "call-frozen-program",
-                    "export default await tools.echo({text: 'frozen-child-value'});",
+                    "export default await tools.echo({text: 'frozen-child-value-🦀'});",
                 ),
                 ScriptedTurn::Text("child still isolated".into()),
             ]);
@@ -229,7 +233,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                 .requests()
                 .pop()
                 .ok_or_else(|| Error::Invalid("child request is absent".into()))?;
-            echoed(&last, "call-frozen-program", "frozen-child-value")?;
+            echoed(&last, "call-frozen-program", "frozen-child-value-🦀")?;
         }
     }
     Ok(())
