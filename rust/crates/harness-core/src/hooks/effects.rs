@@ -2,6 +2,39 @@
 use super::*;
 use crate::OperationId;
 
+/// Stable delivery identity for one registered hook and one original record.
+/// The record must come from the host's authorized read, including its original
+/// account and selected stream. This identity grants no source or execution
+/// authority. Program revisions are deliberately excluded: editing a program
+/// cannot make an already delivered event execute again.
+/// This is an identity, not a claim: the host serializes delivery through its
+/// existing actor, and the ordinary hook outcome journal owns execution.
+pub fn record_operation(
+    account: &acyclic_auth::addressing::AccountId,
+    selected: &acyclic_stream::StreamPath,
+    record: &acyclic_stream::Record,
+    instance: &str,
+) -> OperationId {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.hooks.record/v1");
+    for bytes in [
+        account.as_bytes(),
+        selected.as_str().as_bytes(),
+        record.origin.as_str().as_bytes(),
+        instance.as_bytes(),
+    ] {
+        hash.update(&(bytes.len() as u64).to_be_bytes());
+        hash.update(bytes);
+    }
+    hash.update(&record.sequence.to_be_bytes());
+    hash.update(record.commit_id.as_bytes());
+    let mut operation = [0; 16];
+    hash.finalize_xof().fill(&mut operation);
+    OperationId::from_bytes(operation)
+}
+
+#[cfg(test)]
+mod tests;
+
 pub(crate) fn phase_operation(tool: OperationId, event: HookEvent) -> OperationId {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"harness:tool-hook:v1\0");
