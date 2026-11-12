@@ -57,7 +57,7 @@ pub fn prepare<T>(
     };
     input.validate()?;
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
-    let (mount, path) = mounts.resolve_native(relative)?;
+    let (mount, path) = mounts.resolve(relative)?;
     mount.check(Action::List, &path, now)?;
     if matches!(mount.native_root, crate::workspace::NativeRoot::Logical) {
         return Err(Error::Unsupported(
