@@ -137,7 +137,9 @@ impl TurnAdmission {
 /// An agent's admission, verified before any of its IO: its private volume
 /// is its own, and under [`TurnAdmission::Admitted`] the admitted scope is
 /// authentic, live, bound to this audience and agent, and grants the private
-/// volume's write. Attestation is deferred until execution needs a signed scope. Every
+/// volume binding. Structured filesystem permissions are checked at the real
+/// filesystem selection; fresh allocations have a separate creation check.
+/// Attestation is deferred until execution needs a signed scope. Every
 /// read of a turn and its [`AgentAuthority`] require one.
 pub(super) struct AdmittedAgent<'v> {
     issuer: RuntimeAuthority,
@@ -195,15 +197,6 @@ impl<'v> AdmittedAgent<'v> {
                 VolumeOperation::Write,
                 &mut None,
             )?;
-            require_structured_access(
-                scope,
-                owner,
-                private.volume()?,
-                &[
-                    acyclic_fs::access::Action::Create,
-                    acyclic_fs::access::Action::Write,
-                ],
-            )?;
         }
         if issuer.native().is_none() {
             let scope = parent
@@ -227,16 +220,6 @@ impl<'v> AdmittedAgent<'v> {
                     &mut None,
                 )?;
             }
-            require_structured_access(
-                scope,
-                owner,
-                &journal,
-                &[
-                    acyclic_fs::access::Action::Read,
-                    acyclic_fs::access::Action::Create,
-                    acyclic_fs::access::Action::Write,
-                ],
-            )?;
         }
         Ok(Self {
             issuer,
@@ -437,7 +420,8 @@ impl<'v> AdmittedAgent<'v> {
         }
     }
 
-    /// Pure admission for a proposed volume. Local enrollment already owns
+    /// Authenticates a proposed volume binding. Its filesystem permissions are
+    /// checked at selection or before fresh allocation. Local enrollment already owns
     /// its root; an admitted caller must grant the exact persisted owner.
     pub(super) fn authorize_volume(&self, volume: &crate::conversation::VolumeRef) -> Result<()> {
         if let Some(scope) = self.parent {
@@ -448,15 +432,6 @@ impl<'v> AdmittedAgent<'v> {
                 volume,
                 VolumeOperation::Write,
                 &mut None,
-            )?;
-            require_structured_access(
-                scope,
-                self.owner,
-                volume,
-                &[
-                    acyclic_fs::access::Action::Create,
-                    acyclic_fs::access::Action::Write,
-                ],
             )?;
         } else {
             volume.require_writer(Some(self.owner), &None)?;
@@ -484,74 +459,6 @@ pub(super) fn journal_grants(journal: &VolumeRef, content: &Capabilities) -> Res
             journal.capability(VolumeOperation::Write, &mut None)?,
         ],
     )))
-}
-
-/// The filesystem's decision over `scope`'s structured grant, if it has one:
-/// it creates and writes every path of `volume`. It performs no IO; the
-/// writer still applies the volume's persisted policy.
-pub(super) fn require_structured_access(
-    scope: &Scope,
-    owner: crate::AgentId,
-    volume: &crate::conversation::VolumeRef,
-    actions: &[acyclic_fs::access::Action],
-) -> Result<()> {
-    let Some(view) = structured_scope_view(scope, owner, volume)? else {
-        return Ok(());
-    };
-    if view.allows_every_path(actions, super::access::access_now()?) {
-        Ok(())
-    } else {
-        Err(Error::Unauthorized(
-            "admission does not grant the complete volume access".into(),
-        ))
-    }
-}
-
-fn structured_scope_view(
-    scope: &Scope,
-    owner: crate::AgentId,
-    volume: &crate::conversation::VolumeRef,
-) -> Result<Option<acyclic_fs::access::PathTrie>> {
-    use acyclic_fs::access::{
-        Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind, Resource,
-    };
-    let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
-        return Ok(None);
-    };
-    let denied =
-        || Error::Unauthorized("admission does not grant the complete volume access".into());
-    let capability = Capability::from_scope_label(label)
-        .ok()
-        .flatten()
-        .ok_or_else(denied)?;
-    let policy: Policy = serde_json::from_slice(INITIAL_POLICY)
-        .map_err(|_| Error::FilesystemAccessConfiguration("initial policy is invalid"))?;
-    let principal = Principal {
-        kind: PrincipalKind::Agent,
-        id: owner.to_string(),
-        lineage: Vec::new(),
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
-    };
-    let now = super::access::access_now()?;
-    let view = PathTrie::compile(
-        &policy,
-        &principal,
-        Resource {
-            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-            lineage: &[],
-            volume: volume.id(),
-            generation: 0,
-            head: 0,
-            path: "",
-        },
-        Context { now, approvals: 0 },
-        &capability,
-    )
-    .map_err(|_| denied())?;
-    Ok(Some(view))
 }
 
 /// A local root agent's grants: routing, tools, the visible entries' read/write

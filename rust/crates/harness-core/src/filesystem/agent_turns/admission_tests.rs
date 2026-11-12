@@ -797,6 +797,14 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             Some(owner),
             &mut None,
         )?;
+        if structured {
+            host.authorize_volume_creation(&read_only, &private)?;
+            host.authorize_volume_creation(&read_only, &foreign)
+                .expect_err("read-only source admission allocated a fresh source volume");
+            host.authorize_retained_writer(&read_only, &foreign)
+                .await
+                .expect_err("read-only source admission acquired an existing writer");
+        }
         let (_source_producer, source_stopped) = futures::channel::oneshot::channel::<()>();
         let source_context = acyclic_auth::operation::Context::from_stopped(
             root.verifier(&mut None)?
@@ -885,6 +893,10 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 Some(owner),
                 &mut None,
             )?;
+            host.authorize_volume_creation(&administrator_scope, &foreign)
+                .expect_err("a later-generation grant authorized initial storage creation");
+            host.authorize_retained_writer(&administrator_scope, &foreign)
+                .await?;
             let (_administrator_producer, administrator_stopped) =
                 futures::channel::oneshot::channel::<()>();
             let administrator_context = acyclic_auth::operation::Context::from_stopped(
