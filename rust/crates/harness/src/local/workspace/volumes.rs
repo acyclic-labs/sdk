@@ -87,10 +87,10 @@ pub(super) async fn attach(
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let binding = blake3::hash(mount.view.volume.storage_name(&mut None)?.as_bytes())
+        let directory = blake3::hash(mount.view.volume.storage_name(&mut None)?.as_bytes())
             .to_hex()
             .to_string();
-        let destination = root.path().join(&binding);
+        let destination = root.path().join(&directory);
         let options = if native {
             Some(
                 authority
@@ -109,7 +109,11 @@ pub(super) async fn attach(
         };
         #[cfg(windows)]
         if native {
-            recover_volume_after_crash(root.path(), Path::new(&binding), source.id().volume_id())?;
+            recover_volume_after_crash(
+                root.path(),
+                Path::new(&directory),
+                source.id().volume_id(),
+            )?;
         }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source, &work, &cancellation)
