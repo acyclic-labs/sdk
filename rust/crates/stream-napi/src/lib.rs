@@ -168,6 +168,7 @@ fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
         grpc::ConnectError::Endpoint(_) | grpc::ConnectError::PlatformVerifier(_) => "transport",
         grpc::ConnectError::InsecureEndpoint
         | grpc::ConnectError::InvalidCredential
+        | grpc::ConnectError::InvalidMetadata
         | grpc::ConnectError::InvalidCaCertificate => "configuration",
     };
     NativeStreamErrorMetadata {
