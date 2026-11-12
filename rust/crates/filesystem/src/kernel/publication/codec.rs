@@ -28,13 +28,14 @@ pub fn decode_published_generation<E: From<CanonicalDecodeError>>(
     maximum_payload_bytes: u64,
     observe: impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublishedGeneration, E> {
-    decode_publication_evidence(bytes, maximum_payload_bytes, observe)
+    decode_publication_evidence(bytes, maximum_payload_bytes, None, observe)
         .map(|decoded| decoded.publication)
 }
 
 pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     bytes: &'a [u8],
     maximum_payload_bytes: u64,
+    maximum_evidence_bytes: Option<u64>,
     mut observe: impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<BorrowedPublicationEvidence<'a>, E> {
     let mut decoder = Decoder::new(
@@ -81,8 +82,12 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
                 4 + 32 + origin.map_or(0, |origin| 48 + origin.generation_root.encoded_len()),
             ))
             .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    let maximum =
-        u32::try_from(maximum_payload_bytes.saturating_sub(envelope_bytes)).unwrap_or(u32::MAX);
+    let maximum = u32::try_from(
+        maximum_payload_bytes
+            .saturating_sub(envelope_bytes)
+            .min(maximum_evidence_bytes.unwrap_or(u64::MAX)),
+    )
+    .unwrap_or(u32::MAX);
     if length > maximum {
         return Err(E::from(CanonicalDecodeError::FieldTooLarge {
             observed: length,
@@ -135,10 +140,16 @@ fn read_origin<E: From<CanonicalDecodeError>>(
 pub(crate) fn decode_publication_evidence_with_accounting<'a>(
     bytes: &'a [u8],
     maximum_payload_bytes: u64,
+    maximum_evidence_bytes: Option<u64>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
     crate::kernel::file_read::decode_owned(accounting, |observe| {
-        decode_publication_evidence(bytes, maximum_payload_bytes, observe)
+        decode_publication_evidence(
+            bytes,
+            maximum_payload_bytes,
+            maximum_evidence_bytes,
+            observe,
+        )
     })
     .map(|(value, _guard)| value)
 }

@@ -225,6 +225,7 @@ async fn replay_facts<A: AsyncAuthorityStore>(
                 let decoded = super::decode_publication_evidence_with_accounting(
                     &record.payload,
                     acyclic_stream::MAX_RECORD_BYTES as u64,
+                    None,
                     accounting,
                 )?;
                 if decoded.publication.volume_id != request.volume {

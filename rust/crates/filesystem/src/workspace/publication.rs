@@ -37,10 +37,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     /// Bound handles recheck current access before returning evidence; unbound
     /// owner handles need only the indexed lookup. Publications without caller
     /// evidence, including workspace creation, return a generation with no evidence. Missing
-    /// operations return `None`.
+    /// operations return `None`. `maximum_evidence_bytes` bounds the original
+    /// evidence before decoding its contents or hashing it; `None` leaves it unbounded.
     pub async fn operation_publication<W: crate::facade::FsWork>(
         &self,
         key: IdempotencyKey,
+        maximum_evidence_bytes: Option<u64>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Option<OperationPublication<A, O>>, WorkspaceError> {
@@ -53,6 +55,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                     &self.volume,
                     key.operation_id(),
                     None,
+                    maximum_evidence_bytes,
                     &mut accounting,
                     cancellation,
                 )
@@ -223,6 +226,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .workspace_operation_generation(
                 &self.volume,
                 key.operation_id(),
+                None,
                 None,
                 &mut accounting,
                 cancellation,

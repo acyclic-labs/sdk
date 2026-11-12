@@ -61,7 +61,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let Some(publication) = io.sdk(
             workspace
-                .operation_publication(operation, io, io.cancellation())
+                .operation_publication(operation, None, io, io.cancellation())
                 .await,
         )?
         else {

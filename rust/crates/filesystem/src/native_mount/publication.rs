@@ -619,6 +619,7 @@ mod tests {
         let decoded = crate::kernel::decode_publication_evidence_with_accounting(
             &durable.payload,
             u64::MAX,
+            None,
             &mut accounting,
         )?;
         assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
