@@ -10,6 +10,50 @@ use acyclic_stream::{
     search::{Matcher, Step, contains},
 };
 use serde::{Deserialize, Serialize};
+mod files;
+pub use files::{FileCursor, FileMatch, FilePage, FileRootKind};
+
+fn source_window(offset: u64, pattern: &[u8]) -> acyclic_fs::ByteRange {
+    let start = offset.saturating_sub(pattern.len().saturating_sub(1) as u64);
+    acyclic_fs::ByteRange {
+        offset: start,
+        length: if pattern.is_empty() {
+            0
+        } else {
+            offset - start + 64 * 1024
+        },
+    }
+}
+
+enum Window {
+    Match(u64),
+    More(u64),
+    Done,
+}
+
+fn inspect_window(length: u64, offset: u64, pattern: &[u8], bytes: &[u8]) -> Result<Window> {
+    if offset > length {
+        return Err(Error::Invalid("search cursor exceeds its source".into()));
+    }
+    if pattern.is_empty() {
+        return Ok(Window::Match(0));
+    }
+    let range = source_window(offset, pattern);
+    let end = offset.saturating_add(64 * 1024).min(length);
+    if bytes.len() as u64 != end - range.offset {
+        return Err(Error::Storage(
+            "search range ended before its source cut".into(),
+        ));
+    }
+    if let Some(found) = acyclic_stream::search::find(bytes, pattern) {
+        return Ok(Window::Match(range.offset + found as u64));
+    }
+    Ok(if end == length {
+        Window::Done
+    } else {
+        Window::More(end)
+    })
+}
 
 /// Match record values and exact file references in canonical agent or JSON records.
 pub struct ContentMatcher<'a> {
@@ -135,21 +179,11 @@ impl Matcher for ContentMatcher<'_> {
             }
             // Overlap comes from the original file, never from cursor-supplied
             // bytes. A forged continuation cannot manufacture a matching span.
-            let start = position
-                .offset
-                .saturating_sub(pattern.len().saturating_sub(1) as u64);
-            let end = position.offset.saturating_add(64 * 1024).min(length);
+            let mut range = source_window(position.offset, pattern);
+            range.length = range.length.min(length - range.offset);
             let bytes = match self
                 .reader
-                .read_range(
-                    file,
-                    acyclic_fs::ByteRange {
-                        offset: start,
-                        length: end - start,
-                    },
-                    self.ceiling,
-                    None,
-                )?
+                .read_range(file, range, self.ceiling, None)?
                 .await
             {
                 Ok(bytes) => bytes,
@@ -164,32 +198,24 @@ impl Matcher for ContentMatcher<'_> {
                 }
                 Err(error) => return Err(error),
             };
-            if bytes.len() as u64 != end - start {
-                return Err(Error::Storage(
-                    "search range ended before its source cut".into(),
-                ));
-            }
-            if contains(bytes.as_slice(), pattern) {
-                return Ok(Step {
-                    matched: true,
-                    source: Some(file.clone()),
-                    next: None,
-                });
-            }
-            progress(
-                if end == length {
-                    Position {
-                        file: position.file + 1,
-                        offset: 0,
-                    }
-                } else {
-                    Position {
-                        file: position.file,
-                        offset: end,
-                    }
+            let next = match inspect_window(length, position.offset, pattern, bytes.as_slice())? {
+                Window::Match(_) => {
+                    return Ok(Step {
+                        matched: true,
+                        source: Some(file.clone()),
+                        next: None,
+                    });
+                }
+                Window::More(offset) => Position {
+                    file: position.file,
+                    offset,
                 },
-                files.len(),
-            )
+                Window::Done => Position {
+                    file: position.file + 1,
+                    offset: 0,
+                },
+            };
+            progress(next, files.len())
         }
     }
 }

@@ -40,4 +40,17 @@ authenticated provider, which checks current grants on every observation; a
 serialized continuation confers no authority. A provider that cannot retain the
 selected cut refuses rather than silently switching to current state.
 
-File grep continues to use the selected mounted volume through `--volume`.
+Mounted files use the same literal query and work budget:
+
+```text
+fs grep 'accepted patch' --volume private --directory decisions --page-size 64
+fs grep 'accepted patch' --volume private --file decisions/body.txt --cursor TOKEN
+```
+
+Without a path option the selected mounted directory is searched. File and
+directory kinds are explicit; no filename spelling selects a different operation.
+Paths are relative to the declared mount root. The existing content reader checks
+current read grants on every directory page and range, including read-only mounts.
+The first observation pins the original generation. Matches return the existing
+`FilePathSelection` and first matching byte offset; no whole-file hash or copy is
+needed. A cursor is bound to volume, mount root, path kind, path and literal.
