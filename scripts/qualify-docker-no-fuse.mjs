@@ -56,7 +56,8 @@ async function inside(binary, mock, output, ...requested) {
   confinement(status, existsSync("/dev/fuse"), helpers, mountinfo);
   const directory = join(root, "scripts/graphcoder-e2e");
   const selected = inventory(directory).filter(test => cases.includes(test.id));
-  const environment = { ...nativeEnvironment(), HOME: "/tmp", E2E_PRIMARY_MOUNTING: "auto" };
+  const environment = { ...nativeEnvironment(), HOME: "/tmp", E2E_PRIMARY_MOUNTING: "auto",
+    E2E_FILESYSTEM_BINARY: "/harness-filesystem-fixture" };
   const binding = await acceptanceBinding(directory, binary, mock, selected, environment);
   binding.source["qualify-docker-no-fuse.mjs"] = await sha256File(fileURLToPath(import.meta.url));
   const processes = new Processes();
@@ -89,6 +90,10 @@ async function inside(binary, mock, output, ...requested) {
 async function outside(image, binary, mock, output, ...requested) {
   const cases = selectedCases(requested);
   assert.ok(image && [binary, mock, output].every(path => path && isAbsolute(path)), recovery);
+  const filesystem = process.env.E2E_FILESYSTEM_BINARY;
+  assert.ok(filesystem && isAbsolute(filesystem), "E2E_FILESYSTEM_BINARY must name the built harness-filesystem-fixture");
+  const ptyModules = join(root, "scripts/graphcoder-pty/node_modules");
+  assert.ok(existsSync(ptyModules), "install the locked scripts/graphcoder-pty dependencies before qualification");
   await mkdir(output); // Evidence is fresh; an earlier PASS can never qualify this run.
   await mkdir(join(output, "transcripts"));
   const processes = new Processes({ transcripts: join(output, "transcripts") });
@@ -148,6 +153,8 @@ async function outside(image, binary, mock, output, ...requested) {
       // Preserve the caller's executable ownership, including owner-only modes.
       await docker(["cp", "--archive", "--follow-link", binary, `${name}:/graphcoder`]);
       await docker(["cp", "--archive", "--follow-link", mock, `${name}:/harness-mock-model`]);
+      await docker(["cp", "--archive", "--follow-link", filesystem, `${name}:/harness-filesystem-fixture`]);
+      await docker(["cp", "--archive", "--follow-link", ptyModules, `${name}:/sdk/scripts/graphcoder-pty/node_modules`]);
       // Inspect only the contract's fields: unrelated daemon configuration
       // (for example logging-driver credentials) must not enter evidence.
       const format = '{"Privileged":{{json .HostConfig.Privileged}},"CapAdd":{{json .HostConfig.CapAdd}},'

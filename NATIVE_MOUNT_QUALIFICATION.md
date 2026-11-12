@@ -90,7 +90,7 @@ variants alone do not prove execution without FUSE or mount privileges.
 
 ### Stock Docker acceptance (R27)
 
-Build `graphcoder` and `harness-mock-model` on Linux, then supply a locally
+Build `graphcoder`, `harness-mock-model` and `harness-filesystem-fixture` on Linux, then supply a locally
 installed Node image with Git and a compatible glibc (for example
 `node:24-trixie`). Node and Git support the acceptance fixtures; GraphCoder
 itself needs only the platform shell. Run from a committed checkout with Git
@@ -100,6 +100,8 @@ does not need access to client filesystem paths.
 
 ```sh
 docker pull node:24-trixie
+bun install --cwd scripts/graphcoder-pty --frozen-lockfile
+E2E_FILESYSTEM_BINARY=/absolute/path/to/harness-filesystem-fixture \
 node scripts/qualify-docker-no-fuse.mjs node:24-trixie \
   /absolute/graphcoder /absolute/harness-mock-model /fresh/absolute/evidence
 ```

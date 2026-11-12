@@ -176,7 +176,8 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   }
   await sources(directory,'graphcoder-e2e/');
   await sources(join(directory,'../../plugin/tests/hosts'),'plugin/tests/hosts/');
-  await sources(join(directory,'../graphcoder-pty'),'graphcoder-pty/');
+  const pty = join(directory,'../graphcoder-pty');
+  await sources(pty,'graphcoder-pty/',pty);
   source['file-digest.mjs'] = await sha256File(new URL('../file-digest.mjs', import.meta.url));
   const executables={ NODE: await executable(process.execPath) };
   for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST','E2E_GIT_BINARY',
