@@ -260,7 +260,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
                     result,
                     key("failure/guest-write")?
                 ),
-                Err(Error::Invalid("effect changes the host's failures"))
+                Err(Error::Invalid("effect changes the host's control records"))
             ));
             let mut publication = store.prepare_failed_input(
                 &snapshot,
@@ -273,7 +273,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             let original = publication.request().clone();
             assert!(matches!(
                 publication.join(effect.clone()),
-                Err(Error::Invalid("effect changes the host's failures"))
+                Err(Error::Invalid("effect changes the host's control records"))
             ));
             assert_eq!(
                 publication.request(),

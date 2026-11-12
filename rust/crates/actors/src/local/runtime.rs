@@ -153,16 +153,15 @@ enum Event {
 /// parties' commits.
 pub struct Runtime<P: StreamProvider + ?Sized> {
     store: Store<P>,
-    /// The one account and namespace whose actors this runtime claims, when
-    /// several hosts share the root; `None` claims every actor.
+    /// Discovery scope only. Per-actor placement, not this filter, grants
+    /// ownership when several hosts share the same state root.
     scope: Option<(AccountId, NamespaceId)>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
     actors: [SyncMutex<HashMap<ActorReference, Arc<Slot>>>; 64],
     shards: RandomState,
-    /// Identity of this runtime's placement attempts: two hosts claiming the
-    /// same cut never share an idempotency key, so only one claim commits.
+    /// Host node incarnation retained in explicit placement commands.
     instance: uuid::Uuid,
     limits: RuntimeLimits,
     admission: Option<tokio::sync::Semaphore>,
@@ -657,10 +656,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             steps += 1;
             match event {
                 Event::Created(record) => {
-                    // Another host's actors are not discovered here. Tracking wakes an
-                    // already resident actor: this is its producer's wake.
+                    // Activation is a wake hint, not a placement command.
+                    // Do not discover or register another node's actors.
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
                         && self.includes(&actor)
+                        && self.slot(&actor).is_some()
                     {
                         self.track(actor)?;
                     }
@@ -835,7 +835,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .release(actor);
                 return Ok(true);
             };
-            if inner.epoch == 0 || state.epoch() != inner.epoch {
+            if inner.epoch == 0 {
+                inner.epoch = self.admitted_epoch(&snapshot).await?;
+            }
+            if state.epoch() != inner.epoch {
                 return Err(Error::Conflict);
             }
             if state.paused() {
