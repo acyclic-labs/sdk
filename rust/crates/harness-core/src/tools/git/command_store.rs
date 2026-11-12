@@ -9,7 +9,7 @@ pub trait CommandStore:
     GitCompatStore<Error = Self::StoreError> + WorkspaceLineageStore<Error = Self::StoreError> + Clone
 {
     /// Original storage failure.
-    type StoreError: std::error::Error + Send + Sync + 'static;
+    type StoreError: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Carries an adapter failure into the tool result.
     fn error(error: Self::StoreError) -> Error;
