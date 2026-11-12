@@ -174,10 +174,7 @@ export function toolResults(records) {
 // Evidence names a provider body, never an observer's path or diagnostic.
 // Each selected body is encoded once for all presence/absence queries.
 export function modelInputs(expected, generations) {
-  const contains = expected.default_conventions
-    ? [...(expected.model_contains ?? []), ...JSON.parse(readFileSync(
-      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8")).map(text => JSON.stringify(text).slice(1, -1))]
-    : expected.model_contains;
+  const contains = expected.model_contains;
   const all = contains?.length || expected.model_absent?.length
     || expected.each_model_contains?.length || expected.each_model_absent?.length;
   if (!all && !expected.last_model_contains?.length && !expected.last_model_absent?.length) return;
