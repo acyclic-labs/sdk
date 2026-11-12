@@ -6,9 +6,7 @@ use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, OperationId, VolumeId};
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
-use crate::storage::{
-    ObjectFailure, ObjectId, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError,
-};
+use crate::storage::{ObjectFailure, ObjectId, ObjectReadRequest, ObjectResult, ObjectStoreError};
 use std::collections::VecDeque;
 use std::future::Future;
 use thiserror::Error;
@@ -589,10 +587,7 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
                 .await;
             work.receipt(result)
         }?;
-        let live_bytes = match read.value.retention {
-            ObjectReadRetention::Shared => 0,
-            ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        };
+        let live_bytes = read.value.retention.owned_bytes();
         let mut remaining = read
             .work
             .remaining(budget)

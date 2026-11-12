@@ -178,10 +178,7 @@ impl<'a> ProofMeter<'a> {
                     .read(object, maximum, &mut work)
                     .await
                     .map_err(crate::kernel::file_read::read_store_error)?;
-                let bytes = match read.retention {
-                    crate::storage::ObjectReadRetention::Shared => 0,
-                    crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-                };
+                let bytes = read.retention.owned_bytes();
                 let retained = crate::kernel::allocation::retained::Retained::from_owned(
                     crate::kernel::Owned::new(
                         read,
