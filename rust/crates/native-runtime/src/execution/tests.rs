@@ -186,8 +186,7 @@ fn sandbox_policy_probe() {
     #[cfg(target_os = "linux")]
     {
         std::fs::metadata("..").unwrap();
-        // Numeric ownership keeps this read/stat proof independent of host NSS IPC.
-        let listing = shell("ls -lan && rg --files");
+        let listing = shell("ls -la && rg --files");
         assert!(
             listing.status.success(),
             "workspace browsing failed: {listing:?}"
