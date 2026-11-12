@@ -173,7 +173,11 @@ impl Client {
             if key == "authorization" {
                 return Err(ConnectError::InvalidMetadata);
             }
-            let value = MetadataValue::<Ascii>::try_from(value.as_ref())
+            let value = value.as_ref();
+            if !value.is_ascii() {
+                return Err(ConnectError::InvalidMetadata);
+            }
+            let value = MetadataValue::<Ascii>::try_from(value)
                 .map_err(|_| ConnectError::InvalidMetadata)?;
             metadata.append(key, value);
         }
