@@ -382,6 +382,13 @@ impl<K> Registration<K> {
         Ok(due)
     }
 
+    /// Reinstall the committed, still pending alarm to wake at host time
+    /// t_unix_ms instead of its deadline: the authority refused its
+    /// consumption because its own clock had not yet reached the deadline.
+    pub fn defer_alarm(&self, alarm: &super::Alarm, at_unix_ms: u64) -> Result<(), super::Error> {
+        self.observe_alarm(alarm, alarm.pending().map(|_| at_unix_ms))
+    }
+
     fn observe_alarm(
         &self,
         alarm: &super::Alarm,

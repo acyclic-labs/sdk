@@ -193,6 +193,15 @@ impl LocalStream {
         }
     }
 
+    /// Installs this provider's authority-side commit time rule; see
+    /// [`MemoryStream::install_commit_admission`]. Journal replay never runs it.
+    pub fn install_commit_admission(
+        &self,
+        admission: Arc<dyn crate::CommitAdmission>,
+    ) -> Result<(), StreamError> {
+        self.inner.provider.install_commit_admission(admission)
+    }
+
     /// The first terminal cause retained by this provider incarnation.
     /// Reading it does not observe or resolve any individual commit outcome.
     #[must_use]

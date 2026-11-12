@@ -468,14 +468,94 @@ async fn a_replacement_host_fires_alarms_armed_before_the_checkpoint() -> TestRe
         records(&*provider, "out/bucket-armed").await?,
         vec![Bytes::from_static(b"a1")]
     );
-    // The delivered bucket moves the watermark, so a later restart pages
-    // past it instead of waking the actor again.
+    // The delivered, closed window moves the watermark, so a later restart
+    // pages past it instead of waking the actor again.
     observe_while_running(
         serving.as_mut(),
         state_after(&checkpoint, &dispatcher, |state| {
-            state.cursor("deadline") == Some(151)
+            state.cursor("deadline") == Some(1)
         }),
     )
     .await?;
+    Ok(())
+}
+
+struct Authority(AtomicU64);
+
+impl acyclic_stream::UnixMillisClock for Authority {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Reports each alarm consumption the authority decides, with its time.
+struct Decisions(
+    futures::channel::mpsc::UnboundedSender<(u64, u64)>,
+    Arc<Authority>,
+);
+
+impl acyclic_stream::CommitAdmission for Decisions {
+    fn not_before(&self, request: &CommitRequest) -> Option<u64> {
+        let deadline = crate::local::alarm_admission().not_before(request)?;
+        let _ = self
+            .0
+            .unbounded_send((deadline, self.1.0.load(Ordering::SeqCst)));
+        Some(deadline)
+    }
+}
+
+/// A host clock ahead of the authority cannot consume an alarm early: the
+/// authority refuses at its own commit time, and the host waits out exactly
+/// the remaining authority time on its own clock before the next attempt.
+#[tokio::test]
+async fn the_authority_refuses_early_alarm_consumption_and_the_host_rearms() -> TestResult {
+    let authority = Arc::new(Authority(AtomicU64::new(100)));
+    let provider = Arc::new(MemoryStream::new_with_clock(
+        Default::default(),
+        Arc::clone(&authority) as _,
+    ));
+    let (decided, mut decisions) = futures::channel::mpsc::unbounded();
+    provider.install_commit_admission(Arc::new(Decisions(decided, Arc::clone(&authority))))?;
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let early = spawn_with(&store, "authority-early", &[b"set 50"]).await?;
+    let (clock, mut control) = ControlledClock::new(100);
+    let clock = Arc::new(clock);
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
+    let armed = observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &early, |state| state.cursor("inbox") == Some(1)),
+    )
+    .await?;
+    assert_eq!(armed.alarm().pending(), Some(150));
+    // The host clock passes the deadline; the authority's is 30 ms short.
+    authority.0.store(120, Ordering::SeqCst);
+    control.advance_to(160)?;
+    let refused = observe_while_running(serving.as_mut(), async {
+        decisions.next().await.ok_or_else(|| "no decision".into())
+    })
+    .await?;
+    assert_eq!(refused, (150, 120));
+    assert!(records(&*provider, "out/authority-early").await?.is_empty());
+    // The authority's time now suffices, but the host waits its own 30 ms.
+    authority.0.store(150, Ordering::SeqCst);
+    control.advance_to(190)?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &early, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    // No attempt between the refusal and the host's re-armed time.
+    assert_eq!(decisions.try_recv()?, (150, 150));
+    assert_eq!(
+        records(&*provider, "out/authority-early").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
     Ok(())
 }
