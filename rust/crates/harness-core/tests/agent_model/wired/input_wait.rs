@@ -212,12 +212,18 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         host.drain(&path).await?;
         assert_eq!(host.state(&path).await?.phase, second.phase);
         assert_eq!(model.requests().len(), 3);
-        if answer {
-            host.send(&path, &super::super::user(), &message("second-reply"))
-                .await?;
+        let second_inbox = if answer {
+            let Delivered::Committed { inbox } = host
+                .send(&path, &super::super::user(), &message("second-reply"))
+                .await?
+            else {
+                return Err("second reply was not committed".into());
+            };
+            Some(inbox)
         } else {
             control.advance_to(120)?;
-        }
+            None
+        };
         host.drain(&path).await?;
         let mut settled = host.state(&path).await?;
         assert!(matches!(
@@ -262,10 +268,21 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 .expect("released wait result");
             assert_eq!(
                 value["reason"]["kind"],
-                if answer { "input" } else { "deadline" }
+                if call == "first-input" || answer {
+                    "input"
+                } else {
+                    "deadline"
+                }
             );
-            if answer {
-                assert!(value["reason"]["inbox"].as_u64().is_some());
+            if call == "first-input" || answer {
+                assert_eq!(
+                    value["reason"]["inbox"],
+                    if call == "first-input" {
+                        inbox
+                    } else {
+                        second_inbox.expect("second reply")
+                    }
+                );
             }
         }
     }
