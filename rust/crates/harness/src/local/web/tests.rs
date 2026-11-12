@@ -221,7 +221,7 @@ async fn model_consumer_receives_real_search_result_not_a_tool_name_or_echo() ->
     let config = config(directory.path(), provider.clone())
         .await?
         .search_provider(search.clone());
-    let local = Arc::new(LocalHarness::open(config).await?);
+    let local = Arc::new(crate::local::tests::open_scripted(config).await?);
     assert_eq!(
         run(&local, "consult the configured source").await?,
         "complete"
@@ -323,7 +323,7 @@ async fn expected_fetch_refusals_continue_the_model_turn() -> Result<()> {
     let config = config(directory.path(), provider.clone())
         .await?
         .web_tools();
-    let local = Arc::new(LocalHarness::open(config).await?);
+    let local = Arc::new(crate::local::tests::open_scripted(config).await?);
     for (index, (_, reason, server)) in cases.iter_mut().enumerate() {
         assert_eq!(
             run(&local, "consult the source, or adapt to its refusal").await?,
@@ -414,7 +414,7 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
     let config = config(directory.path(), provider.clone())
         .await?
         .web_tools();
-    let local = Arc::new(LocalHarness::open(config).await?);
+    let local = Arc::new(crate::local::tests::open_scripted(config).await?);
     for (index, (url, final_url, server, status)) in cases.iter_mut().enumerate() {
         assert_eq!(run(&local, "read the exact source").await?, "source read");
         assert_eq!(provider.request_count(), (index + 1) * 2);
@@ -470,7 +470,7 @@ async fn search_provider_http_failure_is_a_schema_valid_refusal_for_the_next_mod
     let config = config(directory.path(), provider.clone())
         .await?
         .search_provider(search);
-    let local = Arc::new(LocalHarness::open(config).await?);
+    let local = Arc::new(crate::local::tests::open_scripted(config).await?);
     assert_eq!(
         run(&local, "consult the configured search provider").await?,
         "adapted after search refusal"

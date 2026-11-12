@@ -302,7 +302,7 @@ pub async fn usage_page(
     let mut tools = ToolUsage::default();
     let mut context = None;
     for record in records {
-        tools.observe(operation, &record)?;
+        tools.observe(journal, operation, &record).await?;
         if let ExecutionEvent::ContextPrepared { projection, .. }
         | ExecutionEvent::ContextCompacted { projection, .. } = &record.event
         {

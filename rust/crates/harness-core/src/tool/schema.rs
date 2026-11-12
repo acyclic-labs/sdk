@@ -362,6 +362,35 @@ mod tests {
                 assert!(!validator.is_valid(&changed));
             }
         }
+        let record_invocation = ToolInvocation {
+            name: "write".into(),
+            arguments: json!({"path": crate::live::feedback::PATH}),
+            ..invocation.clone()
+        };
+        let record = ToolResult {
+            value: json!({"report": {
+                "version": 1, "kind": "slow", "what": "Waited for a result",
+                "evidence": "shell step 3"
+            }}),
+        };
+        for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
+            let projection = FileProjection::Publication(mode)
+                .project(&record_invocation, &record, None)?
+                .0;
+            let validator = compile_json_schema(
+                &FileProjection::model_schema(mode)?,
+                "record projection",
+                &mut None,
+            )?;
+            assert!(validator.is_valid(&projection));
+            assert_eq!(
+                projection,
+                json!({"kind":"json", "value": {
+                    "path": crate::live::feedback::PATH,
+                    "version": record_invocation.operation_id
+                }})
+            );
+        }
         assert!(
             FileProjection::Read(ProjectionMode::Reference)
                 .project(

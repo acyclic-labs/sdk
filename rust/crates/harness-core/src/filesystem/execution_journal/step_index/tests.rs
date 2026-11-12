@@ -220,6 +220,7 @@ async fn cold_tool_admission_uses_the_step_chain_without_a_duplicate_state_tree(
             call_id: "call".into(),
             result: payload.clone(),
             projection: payload,
+            record_kind: Some(crate::executor::ToolRecordKind::Feedback),
         };
         // Without the recovered false state a completion has no dispatch.
         if compare {

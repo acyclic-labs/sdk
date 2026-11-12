@@ -143,9 +143,6 @@ impl TurnContext for Grants {
                     .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
             );
             let scope = RuntimeScope::new(grants, limits)?;
-            if authority.workspace_tools.is_none() {
-                return executor.with_tool_authority(scope, authority.approval.clone());
-            }
             let harness = crate::runtime::Bindings {
                 filesystem: authority.workspace_tools.clone(),
                 scope,
@@ -173,12 +170,22 @@ pub struct StockExecutors {
     agent_tools: Vec<String>,
     templates: bool,
     question_plugin: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    plugins: Option<Arc<crate::plugins::Enabled>>,
     /// Settings sampling (`agent.ts`) for every model call.
     sampling: Option<crate::config::Sampling>,
     context: Arc<dyn TurnContext>,
 }
 
 impl StockExecutors {
+    /// Use the session's admitted plugin set for every role and turn.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Arc<crate::plugins::Enabled>) -> Self {
+        self.plugins = Some(plugins);
+        self
+    }
+
     /// Binds child and resumed selections through the same protected catalog.
     #[must_use]
     pub fn with_models(mut self, models: Arc<crate::model::ModelResolver>) -> Self {
@@ -232,6 +239,8 @@ impl StockExecutors {
             agent_tools: Vec::new(),
             templates: false,
             question_plugin: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugins: None,
             sampling: None,
             context,
         }
@@ -398,6 +407,14 @@ impl TurnExecutors for StockExecutors {
                 .context
                 .prepare((executor, self.limits), agent, turn, input, authority)
                 .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let executor = {
+                let plugins = match &self.plugins {
+                    Some(plugins) => Arc::clone(plugins),
+                    None => crate::plugins::seed().await?,
+                };
+                executor.with_plugins(&plugins)?
+            };
             // Context preparation may set the final output bound or an explicit
             // policy. Derive automatic budgets only after both are known.
             let executor = executor.with_automatic_compaction()?;

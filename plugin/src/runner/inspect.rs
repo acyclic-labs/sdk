@@ -1,6 +1,10 @@
 //! Rendering only: selection and inspection are shared harness queries.
 use super::{Connection, OperationId, args, headless};
-use acyclic_harness::{agent::AgentPath, local::agent_conversation::Conversation};
+use acyclic_harness::{
+    agent::AgentPath,
+    local::agent_conversation::{Conversation, InspectQuery},
+};
+use futures::TryStreamExt as _;
 
 pub(super) async fn run(
     connection: Connection,
@@ -29,11 +33,16 @@ pub(super) async fn run(
         headless::write_event(&mut output, task, &conversation.children_page(page).await?).await?;
         return Ok(());
     }
-    let mut query = conversation.inspect().await?;
-    while !query.snapshot().synchronized {
-        query.advance().await?;
+    if options.tree {
+        let queries = conversation.inspect_tree();
+        futures::pin_mut!(queries);
+        while let Some(mut query) = queries.try_next().await? {
+            write_initial(&mut query, &mut output, task).await?;
+        }
+        return Ok(());
     }
-    headless::write_event(&mut output, task, &query.snapshot()).await?;
+    let mut query = conversation.inspect().await?;
+    write_initial(&mut query, &mut output, task).await?;
     if options.follow {
         loop {
             if query.advance().await? {
@@ -41,5 +50,17 @@ pub(super) async fn run(
             }
         }
     }
+    Ok(())
+}
+
+async fn write_initial(
+    query: &mut InspectQuery,
+    output: &mut headless::Output,
+    task: OperationId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while !query.snapshot().synchronized {
+        query.advance().await?;
+    }
+    headless::write_event(output, task, &query.snapshot()).await?;
     Ok(())
 }

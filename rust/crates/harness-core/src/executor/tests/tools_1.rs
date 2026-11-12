@@ -1054,6 +1054,7 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
                     call_id: invocation.call_id.clone(),
                     result,
                     projection,
+                    record_kind: None,
                 },
                 None,
             )?

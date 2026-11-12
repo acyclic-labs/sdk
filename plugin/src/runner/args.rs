@@ -550,6 +550,9 @@ pub struct Inspect {
     /// Follow committed changes, without periodic reads.
     #[arg(long, conflicts_with = "children")]
     pub follow: bool,
+    /// Enumerate the tree lazily and emit each agent's current inspection.
+    #[arg(long, conflicts_with_all = ["children", "follow"])]
+    pub tree: bool,
     /// Read one direct-child page rather than the selected agent's measurements.
     #[arg(long)]
     pub children: bool,

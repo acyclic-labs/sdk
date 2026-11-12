@@ -127,10 +127,10 @@ pub struct LocalHarness {
     skill_cache: context::skills::Cache,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
-    /// The before-hook rules of the plugins `plugins.ts` enabled at session
-    /// start, judged after the imported host hooks.
+    /// Plugins admitted at session start, including descriptions, after-hooks
+    /// and before-hook rules ranked after the imported host hooks.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    plugin_hooks: crate::hooks::Hooks,
+    plugin_set: Arc<crate::plugins::Enabled>,
     #[cfg(test)]
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,

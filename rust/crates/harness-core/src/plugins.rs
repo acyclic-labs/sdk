@@ -17,8 +17,11 @@
 //! admission names the hook; an enabled hook is never silently skipped.
 //! The authoring types are generated
 //! from these decode shapes by [`crate::config::typescript`].
-
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
+#[cfg(not(target_arch = "wasm32"))]
+mod after;
+#[cfg(not(target_arch = "wasm32"))]
+pub use after::{AfterHook, seed};

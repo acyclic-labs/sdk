@@ -5,6 +5,8 @@ export {
   encodeAgentAppend,
   WasmAgentCommand as PreparedAgentCommand,
   WasmAgentControls as AgentControls,
+  WasmUsageQuery as UsageQuery,
+  type WasmFeedbackSnapshot as FeedbackSnapshot,
   WasmAgentInvocation as PreparedAgentInvocation,
   type ModelContent,
   type ModelContentPart,

@@ -289,6 +289,16 @@ impl ModelPurpose {
     }
 }
 
+/// Trusted classification attached by the admitted tool executor, never by
+/// arbitrary result JSON. The original result reference remains the payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum ToolRecordKind {
+    /// An authored productivity report in its original tool completion.
+    Feedback,
+}
+
 /// Canonical executor observation suitable for a durable journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -413,6 +423,9 @@ pub enum ExecutionEvent {
         /// Pinned private JSON file containing the model-visible projection.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         projection: FileRef,
+        /// Trusted record classification; absent for ordinary tool outputs.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        record_kind: Option<ToolRecordKind>,
     },
     /// A settled tool failure, returned to the model as the call's result; recorded without
     /// exception bodies or secrets.
@@ -640,6 +653,8 @@ pub struct StockExecutor {
     epoch_tools: Option<Arc<Vec<crate::tool::ToolDefinition>>>,
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    after_hooks: Vec<crate::plugins::AfterHook>,
     /// A prompt hook's block: the turn fails with it before any model request.
     #[cfg(not(target_arch = "wasm32"))]
     prompt_block: Option<String>,

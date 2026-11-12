@@ -86,88 +86,68 @@ impl StockExecution<'_> {
         let mut unfinished = String::new();
         #[cfg(not(target_arch = "wasm32"))]
         let mut stop_active = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut after_answer = None;
         let mut steps = 0_u32;
-        while input.max_steps.is_none_or(|maximum| steps < maximum) {
-            let step = steps;
-            steps = steps.checked_add(1).ok_or_else(|| {
-                stock_boundary(
-                    self.io,
-                    crate::wire::ErrorCode::Invalid,
-                    "model step identity exhausted",
-                )
-            })?;
-            let model_events = self
-                .run_model_step(
-                    journal,
-                    input,
-                    step,
-                    request::ModelStepRequest {
-                        history: request::ModelStepHistory::Turn(
-                            &mut prior_messages,
-                            &mut steering,
-                        ),
-                        prepared: None,
-                    },
-                    ModelPurpose::Response,
-                    phase,
-                )?
-                .await?;
-            self.retire_working_history(&mut prior_messages, Some(&mut steering))
-                .await?;
-            let CollectedStep {
-                calls,
-                text,
-                metadata,
-                completion,
-                parts,
-            } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
-            if completion == StepCompletion::Incomplete {
-                // A provider page boundary is not the end of the actor's turn.
-                // Keep its original assistant parts; no synthetic instruction
-                // or new user turn is needed to request the next page.
-                // Retain the assistant boundary even when its output page
-                // contains only reasoning. Stateless protocols pair that
-                // reasoning with the step's (possibly empty) visible output.
-                if !parts {
-                    self.append_assistant_part(
-                        &mut prior_messages,
-                        ModelContentPart::text(stock_string_copy(&text, self.io)?),
+        let progress = async {
+            while input.max_steps.is_none_or(|maximum| steps < maximum) {
+                let step = steps;
+                steps = steps.checked_add(1).ok_or_else(|| {
+                    stock_boundary(
                         self.io,
-                    )?;
+                        crate::wire::ErrorCode::Invalid,
+                        "model step identity exhausted",
+                    )
+                })?;
+                let model_events = async {
+                    self.run_model_step(
+                        journal,
+                        input,
+                        step,
+                        request::ModelStepRequest {
+                            history: request::ModelStepHistory::Turn(
+                                &mut prior_messages,
+                                &mut steering,
+                            ),
+                            prepared: None,
+                        },
+                        ModelPurpose::Response,
+                        phase,
+                    )?
+                    .await
                 }
-                stock_string_push(
-                    &mut unfinished,
-                    &text,
-                    self.stock.limits.file_bytes,
-                    "assistant output exceeds file limit",
-                    self.io,
-                )?;
-                stock_retire_text(text, self.io)?;
-                stock_retire_event(ModelEvent::Completed { metadata }, self.io)?;
-                continue;
-            }
-            if calls.is_empty() {
-                // A Stop block continues the same journaled turn.
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(reason) =
-                    Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
-                {
-                    // Every denial continues on the original model producer.
-                    // The superseded answer moves into history; the turn's
-                    // output is the answer given after the hook's reason.
-                    let answer = if parts { "" } else { text.as_str() };
-                    self.continue_after_stop(&mut prior_messages, answer, reason)?;
-                    stock_retire_text(text, self.io)?;
-                    stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
-                    stop_active = true;
-                    continue;
-                }
-                let transcript =
-                    self.settled_transcript(steering.into_retired(), prior_messages, parts, &text)?;
-                let text = if unfinished.is_empty() {
-                    stock_retire_text(unfinished, self.io)?;
-                    text
-                } else {
+                .await;
+                let model_events = match model_events {
+                    Ok(events) => events,
+                    Err(error) => {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if after_answer.is_some() {
+                            return Ok(ExecutionProgress::Ready((
+                                String::new(),
+                                Value::Null,
+                                true,
+                            )));
+                        }
+                        return Err(error);
+                    }
+                };
+                self.retire_working_history(&mut prior_messages, Some(&mut steering))
+                    .await?;
+                let CollectedStep {
+                    calls,
+                    text,
+                    metadata,
+                    completion,
+                    parts,
+                } = self.collect_step_events(input, step, model_events, &mut prior_messages)?;
+                if completion == StepCompletion::Incomplete {
+                    if !parts {
+                        self.append_assistant_part(
+                            &mut prior_messages,
+                            ModelContentPart::text(stock_string_copy(&text, self.io)?),
+                            self.io,
+                        )?;
+                    }
                     stock_string_push(
                         &mut unfinished,
                         &text,
@@ -176,9 +156,108 @@ impl StockExecution<'_> {
                         self.io,
                     )?;
                     stock_retire_text(text, self.io)?;
-                    unfinished
+                    stock_retire_event(ModelEvent::Completed { metadata }, self.io)?;
+                    continue;
+                }
+                if calls.is_empty() {
+                    // An explicit Stop denial supersedes the candidate answer.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if after_answer.is_none()
+                        && let Some(reason) =
+                            Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
+                    {
+                        let answer = if parts { "" } else { text.as_str() };
+                        self.continue_after_stop(&mut prior_messages, answer, reason)?;
+                        stock_retire_text(text, self.io)?;
+                        stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
+                        stop_active = true;
+                        continue;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if after_answer.is_none() {
+                        let mut notices = Vec::new();
+                        for hook in &self.stock.after_hooks {
+                            for text in hook.settlement() {
+                                let text = stock_string_copy(text, self.io)?;
+                                stock_vec_push(&mut notices, text, self.io)?;
+                            }
+                        }
+                        if !notices.is_empty() {
+                            let answer = if parts { "" } else { text.as_str() };
+                            self.continue_after_stop(
+                                &mut prior_messages,
+                                answer,
+                                crate::hooks::HookOutput {
+                                    additional_context: notices,
+                                    ..Default::default()
+                                },
+                            )?;
+                            // Audit replies such as "none" do not replace the
+                            // already accepted task answer. Its original text is
+                            // retained while audit tools and model replies drain.
+                            after_answer = Some((
+                                self.finish_assistant_output(&mut unfinished, text)?,
+                                metadata,
+                            ));
+                            continue;
+                        }
+                    }
+                    return Ok(ExecutionProgress::Ready((text, metadata, parts)));
+                }
+                stock_retire_text(text, self.io)?;
+                stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
+                for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
+                    match self
+                        .resolve_tool_call(
+                            journal,
+                            input.operation_id,
+                            step,
+                            invocation,
+                            invocation_index,
+                            &mut prior_messages,
+                            &mut hook_context,
+                        )
+                        .await?
+                    {
+                        ExecutionProgress::Ready(()) => {}
+                        ExecutionProgress::Pending(wait) => {
+                            return Ok(ExecutionProgress::Pending(wait));
+                        }
+                        ExecutionProgress::Failed(reason) => {
+                            return Ok(ExecutionProgress::Failed(reason));
+                        }
+                        ExecutionProgress::PreDispatchFailed(failure) => {
+                            return Err(failure.into_error());
+                        }
+                    }
+                }
+                append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if after_answer.is_some() {
+                return Ok(ExecutionProgress::Ready((String::new(), Value::Null, true)));
+            }
+            Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Conflict,
+                "executor step limit reached",
+            ))
+        }
+        .await?;
+        match progress {
+            ExecutionProgress::Ready((text, metadata, parts)) => {
+                let transcript =
+                    self.settled_transcript(steering.into_retired(), prior_messages, parts, &text)?;
+                let text = self.finish_assistant_output(&mut unfinished, text)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let (text, metadata) = match after_answer {
+                    Some(answer) => {
+                        stock_retire_text(text, self.io)?;
+                        answer
+                    }
+                    None => (text, metadata),
                 };
-                return Ok(ExecutionProgress::Ready(TurnOutput {
+                Ok(ExecutionProgress::Ready(TurnOutput {
                     #[cfg(feature = "research")]
                     journal_cut: phase.1.take(),
                     text,
@@ -186,42 +265,28 @@ impl StockExecution<'_> {
                     metadata,
                     steps,
                     transcript,
-                }));
+                }))
             }
-            stock_retire_text(text, self.io)?;
-            stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
-            for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
-                match self
-                    .resolve_tool_call(
-                        journal,
-                        input.operation_id,
-                        step,
-                        invocation,
-                        invocation_index,
-                        &mut prior_messages,
-                        &mut hook_context,
-                    )
-                    .await?
-                {
-                    ExecutionProgress::Ready(()) => {}
-                    ExecutionProgress::Pending(wait) => {
-                        return Ok(ExecutionProgress::Pending(wait));
-                    }
-                    ExecutionProgress::Failed(reason) => {
-                        return Ok(ExecutionProgress::Failed(reason));
-                    }
-                    ExecutionProgress::PreDispatchFailed(failure) => {
-                        return Err(failure.into_error());
-                    }
-                }
-            }
-            append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
+            ExecutionProgress::Pending(wait) => Ok(ExecutionProgress::Pending(wait)),
+            ExecutionProgress::Failed(reason) => Ok(ExecutionProgress::Failed(reason)),
+            ExecutionProgress::PreDispatchFailed(failure) => Err(failure.into_error()),
         }
-        Err(stock_boundary(
+    }
+
+    fn finish_assistant_output(&self, unfinished: &mut String, text: String) -> Result<String> {
+        if unfinished.is_empty() {
+            stock_retire_text(std::mem::take(unfinished), self.io)?;
+            return Ok(text);
+        }
+        stock_string_push(
+            unfinished,
+            &text,
+            self.stock.limits.file_bytes,
+            "assistant output exceeds file limit",
             self.io,
-            crate::wire::ErrorCode::Conflict,
-            "executor step limit reached",
-        ))
+        )?;
+        stock_retire_text(text, self.io)?;
+        Ok(std::mem::take(unfinished))
     }
 
     pub(super) fn has_completed_message(&self, events: &[ModelEvent]) -> Result<bool> {

@@ -1,7 +1,7 @@
 //! Reopen an actual native transition after its selected project head changes.
 use super::{agents::settled, scripted, volume, volume_config};
 use crate::{
-    Error, LocalHarness, Result,
+    Error, Result,
     agent::{AgentPath, HistoryCheckpoint, SpawnVolumes},
 };
 use acyclic_actors::guest::Composer;
@@ -90,7 +90,7 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
         (0..2).map(|index| crate::test_support::ScriptedTurn::Text(format!("answer {index}"))),
     );
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider)?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )

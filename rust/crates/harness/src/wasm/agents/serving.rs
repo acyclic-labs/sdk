@@ -380,7 +380,7 @@ impl WasmAgentServer {
             let result = operation.call1(&JsValue::UNDEFINED, &cancel.signal)?;
             wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result)).await
         }));
-        let _listening = guest::Listening::abort(&signal, move || handle.abort())?;
+        let _listening = crate::wasm::cancel::Listening::abort(&signal, move || handle.abort())?;
         operation
             .await
             .map_err(|_| stream_error(StreamError::Unavailable))?

@@ -1,7 +1,7 @@
 //! Replay from a recording through the provider seam.
 use super::{ObservedConversation, volume, volume_config};
 use crate::{
-    Error, LocalHarness, Result,
+    Error, Result,
     model::{
         Divergence, DivergenceSink, ModelDelivery, ModelDispatch, ModelEvent, ModelProvider,
         ModelRequest, PreparedModelRequest, ReasoningBlock, ReasoningKind, ReasoningOrigin,
@@ -64,7 +64,7 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider)?
                 .compaction(crate::context::CompactionPolicy::Disabled)
                 .tool(tool),

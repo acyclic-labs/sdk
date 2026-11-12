@@ -91,6 +91,33 @@ fn anthropic_calls_map_to_canonical_inputs() -> Result<()> {
         json!({"file_path":"a.txt","content":"hi"}),
     )?;
     assert_eq!(decodes::<WriteFileInput>(&write).path, "a.txt");
+    let mut registry = crate::tools::registry(&["write".into()], |_| true, Vec::new())?;
+    NativeTools::new(anthropic)?.bind(&mut registry)?;
+    let write = registry.get("Write", None, None)?.expect("native write");
+    let result = crate::tool::ToolResult {
+        value: json!({"report": {
+            "version": 1, "kind": "slow", "what": "Waited for a result",
+            "evidence": "shell step 3"
+        }}),
+    };
+    for (path, expected) in [
+        (
+            crate::live::feedback::PATH,
+            Some(crate::executor::ToolRecordKind::Feedback),
+        ),
+        ("a.txt", None),
+    ] {
+        let invocation = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "write-report".into(),
+            name: "Write".into(),
+            arguments: json!({"file_path": path, "content": "{}"}),
+        };
+        assert_eq!(
+            write.executor.record_kind(&invocation, &result, None)?,
+            expected
+        );
+    }
     let shell = adapt(
         anthropic,
         "shell",

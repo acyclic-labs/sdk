@@ -74,3 +74,7 @@ pub use stream_view::{StreamView, StreamViewPolicy};
 
 #[cfg(test)]
 mod tests;
+
+/// Bounded accumulated usage shared by native and browser clients.
+pub mod usage;
+pub use usage::{UsageQuery, UsageQueryError};

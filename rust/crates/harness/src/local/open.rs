@@ -539,7 +539,7 @@ impl Opening {
         let settings_tree = agent_settings::Tree::new(&volumes).await?;
         // `plugins.ts` selects the plugin hooks as the session starts.
         #[cfg(any(test, not(target_arch = "wasm32")))]
-        let plugin_hooks = agent_settings::plugins(
+        let plugin_set = agent_settings::plugins(
             self.config.question,
             &settings_tree,
             owner.agent,
@@ -614,7 +614,7 @@ impl Opening {
             #[cfg(any(test, not(target_arch = "wasm32")))]
             settings: self.settings,
             #[cfg(any(test, not(target_arch = "wasm32")))]
-            plugin_hooks,
+            plugin_set: Arc::new(plugin_set),
             limits: self.config.limits,
             compaction: self.compaction_choice,
             #[cfg(not(target_arch = "wasm32"))]

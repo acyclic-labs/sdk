@@ -10,7 +10,7 @@ use super::{
     WasmBrowserAgentOptions, from_js, js_error,
 };
 use crate::Error;
-use crate::wasm::cancel::Cancel;
+use crate::wasm::cancel::{Cancel, Listening};
 use acyclic_actors::guest::{
     CancellationToken, GUEST_ABI_VERSION, GuestError, GuestFuture, Handler as _, wire,
 };
@@ -88,50 +88,6 @@ impl AgentGuest {
             .map_err(|_| guest_error(GuestError::Handler("delivery was aborted".into())))?
             .map_err(guest_error)?;
         wire::encode_transition(&transition).map_err(guest_error)
-    }
-}
-
-/// An `abort` listener on a host's signal, removed when dropped.
-pub(super) struct Listening {
-    signal: JsValue,
-    listener: Closure<dyn FnMut()>,
-}
-
-impl Listening {
-    pub(super) fn abort(
-        signal: &JsValue,
-        mut abort: impl FnMut() + 'static,
-    ) -> Result<Option<Self>, JsValue> {
-        if signal.is_undefined() {
-            return Ok(None);
-        }
-        if js_sys::Reflect::get(signal, &JsValue::from_str("aborted"))?.is_truthy() {
-            abort();
-            return Ok(None);
-        }
-        let listening = Self {
-            signal: signal.clone(),
-            listener: Closure::new(abort),
-        };
-        listening.method("addEventListener")?;
-        Ok(Some(listening))
-    }
-
-    fn method(&self, name: &str) -> Result<(), JsValue> {
-        js_sys::Reflect::get(&self.signal, &JsValue::from_str(name))?
-            .dyn_into::<Function>()?
-            .call2(
-                &self.signal,
-                &JsValue::from_str("abort"),
-                self.listener.as_ref(),
-            )
-            .map(drop)
-    }
-}
-
-impl Drop for Listening {
-    fn drop(&mut self) {
-        let _ = self.method("removeEventListener");
     }
 }
 

@@ -34,7 +34,7 @@ async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
         super::ScriptedTurn::Text("after add".into()),
     ]);
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -215,7 +215,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled)
                 .approval_policy(crate::approvals::ApprovalPolicy::default()),
@@ -476,7 +476,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         }),
     );
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -812,7 +812,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let project = volume(directory.path()).await?;
     let provider = text();
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -1270,7 +1270,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         })
     });
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, Arc::new(provider))?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -1471,7 +1471,7 @@ async fn idle_usage_follows_child_lifecycle_without_a_parent_model_call() -> Res
     let directory = tempfile::tempdir().map_err(agent)?;
     let provider = super::scripted([super::ScriptedTurn::Text("child done".into())]);
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(
                 directory.path(),
                 volume(directory.path()).await?,
@@ -1626,7 +1626,7 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
     ]);
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), volume(directory.path()).await?, provider)?
                 .without_default_tools()
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical)
@@ -1785,7 +1785,7 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     ]);
     let mut config = super::checkout_config(directory.path(), (super::model()?, provider))?;
     config.served = Some(admission.clone());
-    let harness = Arc::new(LocalHarness::open(config).await?);
+    let harness = Arc::new(super::open_scripted(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let completion = harness.agents.get().unwrap().runtime.completion();
@@ -2006,7 +2006,7 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
                     crate::native_settings::SettingsConfig::new(&workspace, &home)
                         .codex_home(home.join(".codex")),
                 );
-            Ok::<_, Error>(Arc::new(LocalHarness::open(config).await?))
+            Ok::<_, Error>(Arc::new(super::open_scripted(config).await?))
         }
     };
     let (dispatched, mut requests) = tokio::sync::mpsc::channel(1);
@@ -2151,7 +2151,7 @@ async fn checkout_scripted(
     let directory = tempfile::tempdir().map_err(agent)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
     let harness = Arc::new(
-        LocalHarness::open(super::checkout_config(
+        super::open_scripted(super::checkout_config(
             directory.path(),
             (super::model()?, provider.clone()),
         )?)
@@ -2184,7 +2184,7 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
         ["first", "second"].map(|text| crate::test_support::ScriptedTurn::Text(text.into())),
     );
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             super::checkout_config(directory.path(), (super::model()?, provider))?
                 // This control exercises physical ownership, without invoking tools.
                 .without_default_tools()
@@ -2518,7 +2518,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
     ]);
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             super::checkout_config(directory.path(), (super::model()?, provider.clone()))?
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical)
                 .compaction(crate::context::CompactionPolicy::Disabled),
@@ -2764,7 +2764,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -3238,7 +3238,7 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
         super::ScriptedTurn::Text("done".into()),
     ]);
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -3380,7 +3380,7 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
         crate::test_support::ScriptedTurn::Text("done".into()),
     ]);
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled)
                 .limits(crate::conversation::Limits {
@@ -3494,7 +3494,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         .map_err(agent)?;
     let provider = text();
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider.clone())?
                 .without_default_tools()
                 .compaction(crate::context::CompactionPolicy::default()),
@@ -3884,7 +3884,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
         (0..4).map(|index| crate::test_support::ScriptedTurn::Text(format!("answer {index}"))),
     );
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -4042,7 +4042,7 @@ async fn tool_free_checkout_sessions_read_their_own_logical_context_without_moun
     .map_err(agent)?;
     let provider = super::scripted([super::ScriptedTurn::Text("own context".into())]);
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             crate::test_support::local_harness_config(
                 checkout.path(),
                 (
@@ -4300,7 +4300,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         ["at cut", "later", "branch answer"].map(|text| super::ScriptedTurn::Text(text.into())),
     );
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .without_default_tools()
                 .compaction(crate::context::CompactionPolicy::Disabled),
@@ -4779,7 +4779,7 @@ async fn archive_reactivates_paused_roots_and_open_descendants_for_closing() -> 
     let project = volume(directory.path()).await?;
     let provider = super::scripted(std::iter::empty::<super::ScriptedTurn>());
     let harness = Arc::new(
-        LocalHarness::open(
+        super::open_scripted(
             volume_config(directory.path(), project, provider.clone())?.without_default_tools(),
         )
         .await?,
@@ -4865,7 +4865,7 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     let workspace = directory.path().join("work");
     std::fs::create_dir_all(workspace.join(".git")).map_err(agent)?;
     let open = || {
-        Ok::<_, Error>(LocalHarness::open(
+        Ok::<_, Error>(super::open_scripted(
             super::checkout_config(&workspace, (super::model()?, provider.clone()))?
                 .state_directory(directory.path().join("state")),
         ))

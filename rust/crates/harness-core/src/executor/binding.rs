@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+fn slice_is_empty<T>(slice: &&[T]) -> bool {
+    slice.is_empty()
+}
+
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         self.verify_summary_destination()?;
@@ -82,6 +87,9 @@ impl StockExecution<'_> {
             #[cfg(not(target_arch = "wasm32"))]
             #[serde(skip_serializing_if = "Option::is_none")]
             tool_hooks: Option<(&'static str, &'a [u8; 32])>,
+            #[cfg(not(target_arch = "wasm32"))]
+            #[serde(skip_serializing_if = "slice_is_empty")]
+            after_hooks: &'a [crate::plugins::AfterHook],
             inherited_prefix: Option<&'a FileRef>,
             compaction: &'a crate::context::CompactionPolicy,
             model_capacity: Option<crate::context::ModelContextCapacity>,
@@ -141,6 +149,8 @@ impl StockExecution<'_> {
                     .as_ref()
                     .map(|hooks| ("1", &hooks.manifest)),
                 inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
+                #[cfg(not(target_arch = "wasm32"))]
+                after_hooks: &self.stock.after_hooks,
                 compaction: self.compaction_policy()?,
                 model_capacity: if self.unchecked()? {
                     None

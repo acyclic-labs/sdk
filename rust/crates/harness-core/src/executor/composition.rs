@@ -1,6 +1,30 @@
 use super::*;
 
 impl StockExecutor {
+    /// Install admitted plugin descriptions and pure after-hooks. Descriptions
+    /// are a stable prefix; settlement notices append to the journaled turn.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_plugins(mut self, plugins: &crate::plugins::Enabled) -> Result<Self> {
+        self.after_hooks = plugins.after.clone();
+        if plugins.descriptions.is_empty() {
+            return Ok(self);
+        }
+        let text = plugins.descriptions.join("\n");
+        let digest = blake3::hash(text.as_bytes()).to_hex().to_string();
+        self.with_context_stage(Arc::new(crate::context::SourceStage::new(
+            "plugins",
+            digest,
+            Arc::new(crate::context::Context {
+                messages: vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(text),
+                }],
+                ..Default::default()
+            }),
+            crate::context::ContextPlacement::Prepend,
+        )))
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
@@ -26,6 +50,8 @@ impl StockExecutor {
             epoch_tools: None,
             #[cfg(not(target_arch = "wasm32"))]
             hooks: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            after_hooks: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             prompt_block: None,
             limits: Limits::default(),

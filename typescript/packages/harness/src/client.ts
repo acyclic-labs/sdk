@@ -6,3 +6,5 @@ export { prepareAgentInvocation } from "./client-command.js";
 export { initializeClientConnection, resolveConnectionOptions, type ClientConnectionError, type ClientConnectionOptions, type ClientEnvironment } from "./client-connection.js";
 export { verifyClientControls, verifyClientToolOutput, verifyClientObservation, type ClientControlFixture, type ClientControlVector,
   type ClientObservationFixture, type ClientToolOutputFixture } from "./client-conformance.js";
+
+export { mountFeedbackCounts } from "./feedback.js";

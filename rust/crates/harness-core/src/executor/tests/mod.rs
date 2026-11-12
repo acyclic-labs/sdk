@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod code_mode;
+#[cfg(not(target_arch = "wasm32"))]
+mod feedback;
 mod pre_dispatch;
 mod saved_admission;
 

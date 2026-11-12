@@ -66,6 +66,18 @@ impl Adapter {
 }
 
 impl ToolExecutor for Adapter {
+    fn record_kind(
+        &self,
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<Option<crate::executor::ToolRecordKind>> {
+        let adapted = self.adapt(invocation, work)?;
+        self.original
+            .executor
+            .record_kind(&adapted.invocation, result, work)
+    }
+
     fn capability(&self) -> Option<&Tool> {
         Some(&self.capability)
     }

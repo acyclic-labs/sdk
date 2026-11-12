@@ -1,6 +1,5 @@
 //! Finish during a real payload read must drain the newly committed suffix.
 use super::*;
-use crate::LocalHarness;
 use crate::local::tests::{volume, volume_config};
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 use std::{io::Write, sync::Mutex};
@@ -58,7 +57,7 @@ async fn finish_during_payload_read_drains_committed_records() -> Result<()> {
     let directory = tempfile::tempdir().map_err(failed)?;
     let project = volume(directory.path()).await?;
     let harness = Arc::new(
-        LocalHarness::open(volume_config(
+        crate::local::tests::open_scripted(volume_config(
             directory.path(),
             project,
             Arc::new(provider),

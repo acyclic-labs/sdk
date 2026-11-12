@@ -1,5 +1,8 @@
 //! Compact tool views from the original journal, never a second fact store.
-use super::{ExecutionEvent, ExecutionRecord, OperationId, ToolErrorClass};
+use super::{
+    ExecutionEvent, ExecutionJournal, ExecutionRecord, OperationId, ToolErrorClass, ToolRecordKind,
+};
+use crate::live::feedback::Kind as FeedbackKind;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,28 +20,30 @@ pub struct ToolUsage {
     pub completed: u64,
     /// Original settled failures grouped by their credential-free cause class.
     pub failures: BTreeMap<ToolErrorClass, u64>,
+    /// Authored report categories from the same successful completions. These
+    /// are agent reports, not measured failures or estimates of actual usage.
+    pub feedback: BTreeMap<FeedbackKind, u64>,
 }
 
 impl ToolUsage {
     /// Whether this source page contains no tool observations.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.started == 0 && self.completed == 0 && self.failures.is_empty()
+        self.started == 0
+            && self.completed == 0
+            && self.failures.is_empty()
+            && self.feedback.is_empty()
     }
 
     /// Number of disjoint original source records, or unknown on overflow or a
     /// noncanonical zero-count failure entry. Used to validate source-page bounds.
     pub fn observations(&self) -> Option<u64> {
-        self.failures.values().try_fold(
-            self.started.checked_add(self.completed)?,
-            |total, count| {
-                if *count == 0 {
-                    None
-                } else {
-                    total.checked_add(*count)
-                }
-            },
-        )
+        if category_total(self.feedback.values())? > self.completed {
+            return None;
+        }
+        self.started
+            .checked_add(self.completed)?
+            .checked_add(category_total(self.failures.values())?)
     }
 
     /// Project the next view from a disjoint page without changing this view.
@@ -52,15 +57,14 @@ impl ToolUsage {
             .completed
             .checked_add(page.completed)
             .ok_or_else(overflow)?;
-        for (class, count) in &page.failures {
-            let prior = next.failures.entry(*class).or_default();
-            *prior = prior.checked_add(*count).ok_or_else(overflow)?;
-        }
+        merge_categories(&mut next.failures, &page.failures)?;
+        merge_categories(&mut next.feedback, &page.feedback)?;
         Ok(next)
     }
 
-    pub(super) fn observe(
+    pub(super) async fn observe(
         &mut self,
+        journal: &dyn ExecutionJournal,
         operation: OperationId,
         record: &ExecutionRecord,
     ) -> Result<()> {
@@ -79,8 +83,31 @@ impl ToolUsage {
             ExecutionEvent::ToolStarted { .. } => {
                 self.started = self.started.checked_add(1).ok_or_else(overflow)?;
             }
-            ExecutionEvent::ToolCompleted { .. } => {
+            ExecutionEvent::ToolCompleted {
+                result,
+                record_kind,
+                ..
+            } => {
                 self.completed = self.completed.checked_add(1).ok_or_else(overflow)?;
+                if *record_kind == Some(ToolRecordKind::Feedback) {
+                    // Classification comes from the trusted completion producer.
+                    // Unrelated outputs never cause a payload or invocation read.
+                    let bytes = journal.load(result, None)?.await?;
+                    let result: crate::tool::ToolResult = crate::contract::json_from_slice(&bytes)
+                        .map_err(|_| {
+                            Error::Storage("invalid original feedback tool result".into())
+                        })?;
+                    let report: crate::tool::files::RecordResult =
+                        serde_json::from_value(result.value).map_err(|_| {
+                            Error::Storage("invalid original feedback result".into())
+                        })?;
+                    report
+                        .report
+                        .validate()
+                        .map_err(|_| Error::Storage("invalid original feedback report".into()))?;
+                    let count = self.feedback.entry(report.report.kind).or_default();
+                    *count = count.checked_add(1).ok_or_else(overflow)?;
+                }
             }
             ExecutionEvent::ToolFailed { cause, .. } => {
                 let count = self.failures.entry(cause.class).or_default();
@@ -90,6 +117,27 @@ impl ToolUsage {
         }
         Ok(())
     }
+}
+
+fn category_total<'a>(mut counts: impl Iterator<Item = &'a u64>) -> Option<u64> {
+    counts.try_fold(0u64, |total, count| {
+        if *count == 0 {
+            None
+        } else {
+            total.checked_add(*count)
+        }
+    })
+}
+
+fn merge_categories<K: Copy + Ord>(
+    target: &mut BTreeMap<K, u64>,
+    page: &BTreeMap<K, u64>,
+) -> Result<()> {
+    for (kind, count) in page {
+        let prior = target.entry(*kind).or_default();
+        *prior = prior.checked_add(*count).ok_or_else(overflow)?;
+    }
+    Ok(())
 }
 
 fn overflow() -> Error {

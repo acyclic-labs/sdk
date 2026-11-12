@@ -1,3 +1,4 @@
+use super::after::{self, AfterHook};
 use crate::{
     Error, Result,
     config::{self, Surface, Tree},
@@ -31,6 +32,10 @@ pub struct Enabled {
     pub names: Vec<String>,
     /// Before-hook rules, in authority order.
     pub rules: Hooks,
+    /// Minimal model-visible descriptions of the admitted plugin set.
+    pub descriptions: Vec<String>,
+    /// Pure after-hooks bound to the original admitted module cut.
+    pub after: Vec<AfterHook>,
 }
 
 /// Loads the plugins `plugins.ts` enables over `layers` (lowest first), as
@@ -211,18 +216,33 @@ async fn load_enabled(
         {
             return Err(invalid(format!("{name} requires {missing}, which is not enabled")).into());
         }
-        if let Some(after) = manifest.after.keys().next() {
-            return Err(invalid(format!(
-                "{root}hooks/after-{after}: after-hooks do not run on this host yet"
-            ))
-            .into());
-        }
         let empty = Value::Object(Default::default());
         let settings = entry
             .config
             .as_ref()
             .or(manifest.defaults.as_ref())
             .unwrap_or(&empty);
+        for (name, source) in &manifest.after {
+            if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+                return Err(invalid("after-hooks require one canonical hook name".into()).into());
+            }
+            if source.path != "live/agents/self/status.json" || source.from != Start::Now {
+                return Err(invalid(format!("{root}hooks/after-{name}: after-hooks require a supported original publication source")).into());
+            }
+            let hook = format!("{root}hooks/after-{name}.ts");
+            let (hook, code) = read_hook(tree, identity.as_deref_mut(), hook.clone())
+                .await?
+                .ok_or_else(|| invalid(format!("after-hooks module {hook} does not exist")))?;
+            let prepared = config::prepare(&hook, code.as_bytes(), tree)
+                .await
+                .map_err(LoadFailure::Operational)?;
+            let evaluation = after::evaluate(&prepared, settings)?;
+            if let Some(identity) = identity.as_deref_mut() {
+                identity.update(&evaluation.identity());
+            }
+            loaded.after.push(AfterHook::new(evaluation)?);
+        }
+        loaded.descriptions.push(manifest.description);
         let settings = String::from_utf8(crate::contract::canonical_json_bytes(settings)?)
             .map_err(|error| invalid(error.to_string()))?;
         for event in Event::ALL {

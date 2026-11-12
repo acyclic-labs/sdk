@@ -37,6 +37,16 @@ Each completion replaces its matching admission. Status and usage retain their
 individual source frontiers, rather than claiming an atomic cross-stream cut.
 `synchronized` describes initial usage replay reaching the live frontier.
 
+Trusted feedback completions contribute category counts under `tools.feedback`
+in the same inspection snapshot. Agent-authored cost estimates remain reports;
+they do not change measured failure, token or latency totals. The query loads
+only results carrying the producer's trusted feedback marker. It retains five
+category counters, not report bodies or call history, and writes no counter
+stream. Ordinary tool results cause no payload or invocation read. Full reports
+use the existing execution page and payload query: select the original marked
+`ToolCompleted` record and its `result` field. Agent, operation, step, sequence
+and publication time come from that original record, not authored JSON.
+
 Provider token counters retain their original billing conventions. Cache rates
 must account for inclusive/exclusive cache units; a raw division cannot establish
 that contract. A running phase alone is not evidence that an agent is stuck.
