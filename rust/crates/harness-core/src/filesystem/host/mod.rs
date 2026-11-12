@@ -183,7 +183,9 @@ impl<A, O> FilesystemHost<A, O> {
 
 mod content;
 mod publication;
-pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
+pub(in crate::filesystem) use publication::{
+    PublicationLookup, PublicationPurpose, original_upload_receipt,
+};
 mod content_selection;
 mod diff;
 mod directory;

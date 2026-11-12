@@ -405,6 +405,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 staged = prepared.1;
                 prepared.0
             };
+            if let Some(prior) = prior {
+                let recorded = host::original_upload_receipt(
+                    &prior,
+                    volume,
+                    idempotency_key,
+                    Some(path),
+                    internal_class.is_some(),
+                    active_io,
+                )
+                .await?;
+                if recorded.0.0 != provisional || recorded.0.1.as_ref() != expected_generation {
+                    return Err(stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Conflict,
+                        "upload identity belongs to a different request",
+                    ));
+                }
+                let prior = prior.into_generation();
+                let generation = (self).generation_ref_id(prior.id(), io)?;
+                bounded_io::retain(&prior, io).await?;
+                let version = bounded_io::hex_key(generation.as_resource().key(), io)?;
+                crate::executor::with_history_io(io, |work| {
+                    provisional.pin_version(version, work)
+                })?;
+                grant.recheck(io)?;
+                return self.seal_publication(provisional, io);
+            }
             let metadata_path = content_metadata_path_io(volume, provisional.path(), true, io)?;
             let receipt_bytes = match io {
                 Some(io) => io.encode(
@@ -416,34 +443,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &(1_u8, (&provisional, expected_generation)),
                 )?),
             };
-            if let Some(prior) = prior {
-                if prior.evidence() != Some(receipt_bytes.as_ref()) {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload identity belongs to a different request",
-                    ));
-                }
-                let prior = prior.into_generation();
-                let generation = (self).generation_ref_id(prior.id(), io)?;
-                bounded_io::retain(&prior, io).await?;
-                let version = bounded_io::hex_key(generation.as_resource().key(), io)?;
-                let indexed =
-                    read_generation(&prior, &metadata_path, Some(receipt_bytes.len() as u64), io)
-                        .await?;
-                if indexed.as_ref() != receipt_bytes.as_ref() {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload metadata index does not match",
-                    ));
-                }
-                crate::executor::with_history_io(io, |work| {
-                    provisional.pin_version(version, work)
-                })?;
-                grant.recheck(io)?;
-                return self.seal_publication(provisional, io);
-            }
             let absolute = crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
             })?;
