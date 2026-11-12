@@ -580,6 +580,13 @@ const fn compile_filter<const N: usize>(network: FilterNetwork) -> Filter<N> {
         libc::SYS_clone3,
         0x0005_0000 | libc::ENOSYS as u32,
     );
+    // io_uring bypasses syscall mediation. Advertise its absence so runtimes
+    // use ordinary mediated I/O, without creating a ring or continuing a request.
+    verdict(
+        &mut code,
+        libc::SYS_io_uring_setup,
+        0x0005_0000 | libc::ENOSYS as u32,
+    );
     code.extend(&[
         instruction(EQUAL, 0, 4, number(libc::SYS_clone)),
         instruction(LOAD, 0, 0, 16),
