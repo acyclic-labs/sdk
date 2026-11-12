@@ -200,6 +200,17 @@ pub fn guard(channel: Channel) -> CredentialChannel {
     }
 }
 
+/// Constructs a native endpoint with the protocol-wide metadata allowance.
+/// Callers can select a smaller header allowance on the returned builder.
+///
+/// # Errors
+/// When the endpoint URI is invalid.
+pub fn endpoint(uri: impl AsRef<str>) -> Result<Endpoint, tonic::transport::Error> {
+    // tonic requires the HTTP/2 setting's u32 width; smaller budgets stay explicit.
+    Endpoint::from_shared(uri.as_ref().to_owned())
+        .map(|endpoint| endpoint.http2_max_header_list_size(u32::MAX))
+}
+
 /// Establish one reusable native channel. Configure the original connection
 /// deadline, HTTP/2 credit and transport settings on `endpoint` before calling.
 /// `identity` enables mutual TLS and stays inside the native TLS custodian.

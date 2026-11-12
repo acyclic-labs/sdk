@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tonic::{
     Request,
     metadata::{Binary, MetadataMap, MetadataValue},
-    transport::{Channel, Endpoint, Identity},
+    transport::{Channel, Identity},
 };
 
 mod availability;
@@ -139,7 +139,7 @@ impl GrpcObjects {
                 Ok(Identity::from_pem(certificate, key))
             })
             .transpose()?;
-        let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
+        let endpoint = acyclic_auth::channel::endpoint(endpoint)?;
         if endpoint.uri().scheme_str() != Some("https")
             || endpoint
                 .uri()

@@ -168,6 +168,7 @@ impl Service<http::Request<Body>> for TlsService {
         ]);
         std::future::ready(Ok(http::Response::builder()
             .header("content-type", "application/grpc")
+            .header("x-response-padding", "m".repeat(32_768))
             .body(Body::new(Data(frames)))
             .unwrap()))
     }
@@ -212,9 +213,25 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
             .err()
             .ok_or("unrelated supplied CA unexpectedly trusted")?;
         assert!(std::error::Error::source(&error).is_some());
+        let bundle = pem.repeat(65_536 / pem.len() + 1);
+        let limited =
+            acyclic_auth::channel::endpoint(&endpoint)?.http2_max_header_list_size(16_384);
+        let limited = acyclic_auth::channel::connect(
+            limited,
+            acyclic_auth::channel::PeerTrust::PrivateCa(bundle.as_bytes()),
+            None,
+        )
+        .await?;
+        let mut limited =
+            crate::grpc::over(limited, crate::grpc::BearerAuth::new("private-token")?);
+        assert!(
+            limited
+                .inspect_actor(wire::InspectActorRequest::default())
+                .await
+                .is_err()
+        );
         let _guard =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
-        let bundle = pem.repeat(65_536 / pem.len() + 1);
         let mut client = connect(&endpoint, "private-token", Some(bundle.as_bytes())).await?;
         client
             .inspect_actor(wire::InspectActorRequest::default())

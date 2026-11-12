@@ -72,7 +72,7 @@ pub(super) fn session_endpoint(
         )
         .map_err(|_| ConnectError)?,
     );
-    let mut transport = Endpoint::from_shared(endpoint.to_string())
+    let mut transport = acyclic_auth::channel::endpoint(endpoint.as_str())
         .map_err(|_| ConnectError)?
         .tcp_nodelay(true);
     if endpoint.scheme() == "https" {

@@ -208,7 +208,7 @@ impl Client {
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token.as_ref())?;
-        let endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
+        let endpoint = acyclic_auth::channel::endpoint(endpoint.as_ref())?;
         let uri = endpoint.uri();
         let loopback = uri.host().is_some_and(|host| {
             let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -398,7 +398,7 @@ pub(crate) async fn channel_tls(
     endpoint: &str,
     certificate_pem: Option<&[u8]>,
 ) -> Result<Channel, ConnectError> {
-    let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
+    let endpoint = acyclic_auth::channel::endpoint(endpoint)?;
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
@@ -414,7 +414,7 @@ pub(crate) async fn channel_with_verifier(
     endpoint: &str,
     verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
 ) -> Result<Channel, ConnectError> {
-    let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
+    let endpoint = acyclic_auth::channel::endpoint(endpoint)?;
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
