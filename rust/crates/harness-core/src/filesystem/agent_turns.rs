@@ -318,6 +318,7 @@ impl<'v> AdmittedAgent<'v> {
                 journal,
                 &verifier,
                 &scope,
+                journal == &self.journal,
                 || async {
                     let source_scope;
                     let policy_scope = if journal == &self.journal {
@@ -426,15 +427,12 @@ impl<'v> AdmittedAgent<'v> {
         let VolumeOwner::Agent(owner) = journal.owner() else {
             return Ok(false);
         };
-        match structured_scope_view(scope, *owner, journal)? {
-            Some(view) => Ok(view
-                .decide(
-                    acyclic_fs::access::Action::Admin,
-                    "",
-                    super::access::access_now()?,
-                )
-                .allowed),
-            None => Ok(scope.agent().is_none_or(|agent| agent == *owner)),
+        // Structured generation and administrator checks require the actual
+        // source head. The host evaluates them with its ordinary access view.
+        if crate::core::filesystem_scope_label(scope.capabilities(), &mut None)?.is_some() {
+            Ok(true)
+        } else {
+            Ok(scope.agent().is_none_or(|agent| agent == *owner))
         }
     }
 
