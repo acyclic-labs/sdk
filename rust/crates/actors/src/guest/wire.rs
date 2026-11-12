@@ -551,6 +551,7 @@ impl<F, I> Remote<F, I>
 where
     F: Fn(Vec<u8>, CancellationToken) -> GuestFuture<'static, Vec<u8>>
         + acyclic_stream::ProviderPlatform,
+    I: Fn(Vec<u8>) -> Result<bool, GuestError> + acyclic_stream::ProviderPlatform,
 {
     /// The guest of `manifest`, as [`decode_manifest`] admitted it.
     pub const fn new(manifest: Manifest, call: F, interrupt: I) -> Self {
