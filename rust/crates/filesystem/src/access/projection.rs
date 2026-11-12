@@ -390,6 +390,10 @@ mod properties {
     fn unknown_authorities_cannot_claim_a_process_policy_owner() {
         struct Unknown(crate::OperationClaims);
         impl crate::AsyncAuthorityStore for Unknown {
+            fn retains_operation_payload(&self) -> bool {
+                false
+            }
+
             fn operation_claims(&self) -> &crate::OperationClaims {
                 &self.0
             }

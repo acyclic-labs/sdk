@@ -8,7 +8,10 @@ mod tests;
 /// It is not a workspace file and never appears in a directory or checkout.
 pub struct OperationPublication<A: 'static, O: 'static> {
     generation: Generation<A, O>,
-    evidence: Option<crate::kernel::Retained<Bytes>>,
+    evidence: Option<Bytes>,
+    // Backing drops before this credit. Funded provider bytes retain their
+    // own original owner instead of acquiring a second allocation lease.
+    _allocation: Option<crate::kernel::RetainedAllocation>,
 }
 
 impl<A, O> OperationPublication<A, O> {
@@ -19,7 +22,7 @@ impl<A, O> OperationPublication<A, O> {
 
     /// The exact evidence supplied when this publication was prepared.
     pub fn evidence(&self) -> Option<&[u8]> {
-        self.evidence.as_ref().map(|evidence| evidence.as_ref())
+        self.evidence.as_deref()
     }
 
     /// Releases the record backing while retaining the immutable result.
@@ -56,8 +59,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 crate::kernel::retire_allocation(allocation, 0, &mut accounting)?;
                 return Ok(None);
             };
-            let bytes = record.payload.len() as u64;
-            if matches!(allocation, KernelOwnedAllocation::Standalone) {
+            let bytes =
+                if !self.volume.fs.authority().retains_operation_payload() && evidence.is_some() {
+                    record.payload.len() as u64
+                } else {
+                    0
+                };
+            if bytes != 0 && matches!(allocation, KernelOwnedAllocation::Standalone) {
                 let (funding, admitted) = accounting.record_actual_owned(bytes)?;
                 allocation = funding;
                 if let Err(error) = admitted {
@@ -68,9 +76,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 }
             }
             drop(record);
-            let evidence = if let Some(evidence) = evidence {
-                Some(crate::kernel::Retained::from_owned(
-                    crate::kernel::Owned::new(evidence, allocation, bytes),
+            let allocation = if bytes != 0 {
+                Some(crate::kernel::RetainedAllocation::transfer(
+                    &mut allocation,
+                    bytes,
                     &mut accounting,
                 )?)
             } else {
@@ -84,6 +93,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                     publication_closure: None,
                 },
                 evidence,
+                _allocation: allocation,
             }))
         }
         .await;

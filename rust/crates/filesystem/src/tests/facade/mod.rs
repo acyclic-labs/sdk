@@ -284,6 +284,10 @@ impl CountingObjectStore {
     }
 }
 impl AsyncAuthorityStore for FaultAuthorityStore {
+    fn retains_operation_payload(&self) -> bool {
+        self.inner.retains_operation_payload()
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
     }
@@ -372,6 +376,10 @@ impl AsyncAuthorityStore for FaultAuthorityStore {
     }
 }
 impl AsyncAuthorityStore for PostAppendAuthorityStore {
+    fn retains_operation_payload(&self) -> bool {
+        self.inner.retains_operation_payload()
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
     }

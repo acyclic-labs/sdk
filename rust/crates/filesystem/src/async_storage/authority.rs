@@ -42,6 +42,11 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Separates actor registries of distinct stores sharing one owner, such
     /// as two Streams placements on one provider. Forwarding adapters forward it.
     fn actor_scope(&self) -> [u8; 16];
+    /// Whether every payload returned by `find_operation` carries its original
+    /// allocation on the lookup's work ledger through the last `Bytes` alias.
+    /// Forwarding adapters forward this guarantee. Otherwise a consumer
+    /// retaining the payload must fund it on its own original ledger.
+    fn retains_operation_payload(&self) -> bool;
     /// Backend guarantee used to keep authorization and publication on one cut.
     fn policy_owner(&self) -> PolicyOwner {
         PolicyOwner::Unsupported

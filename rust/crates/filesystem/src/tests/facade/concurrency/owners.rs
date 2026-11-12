@@ -23,6 +23,10 @@ impl Drop for Retirement {
 }
 
 impl AsyncAuthorityStore for ForeignOwner {
+    fn retains_operation_payload(&self) -> bool {
+        self.inner.retains_operation_payload()
+    }
+
     fn own_group<G: crate::OwnedAuthorityGuard>(
         &self,
         group: crate::OwnedAuthorityGroup<G>,

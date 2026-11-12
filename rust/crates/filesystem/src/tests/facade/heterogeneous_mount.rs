@@ -40,6 +40,13 @@ macro_rules! delegate {
         };
     }
 impl AsyncAuthorityStore for Stores {
+    fn retains_operation_payload(&self) -> bool {
+        match self {
+            Self::Memory(fs) => fs.inner.authority.retains_operation_payload(),
+            Self::Local(fs) => fs.inner.authority.retains_operation_payload(),
+        }
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         match self {
             Self::Memory(fs) => fs.operation_claims(),

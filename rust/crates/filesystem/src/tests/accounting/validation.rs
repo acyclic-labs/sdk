@@ -17,6 +17,10 @@ struct DamagedReplay<'a> {
 }
 
 impl AsyncAuthorityStore for DamagedReplay<'_> {
+    fn retains_operation_payload(&self) -> bool {
+        false
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
     }

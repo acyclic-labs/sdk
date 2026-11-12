@@ -3,6 +3,10 @@ use super::*;
 impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     for StreamAuthorityStore<P>
 {
+    fn retains_operation_payload(&self) -> bool {
+        true
+    }
+
     fn own_group<G: crate::OwnedAuthorityGuard>(
         &self,
         group: crate::OwnedAuthorityGroup<G>,

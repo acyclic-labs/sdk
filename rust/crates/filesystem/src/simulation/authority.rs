@@ -36,6 +36,10 @@ fn lost_authority_acknowledgement(operation: &'static str) -> AuthorityStoreErro
 }
 
 impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A> {
+    fn retains_operation_payload(&self) -> bool {
+        self.inner.retains_operation_payload()
+    }
+
     fn own_group<G: crate::OwnedAuthorityGuard>(
         &self,
         group: crate::OwnedAuthorityGroup<G>,

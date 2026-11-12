@@ -772,6 +772,10 @@ pub(super) struct ObservedAuthority {
 }
 
 impl AsyncAuthorityStore for ObservedAuthority {
+    fn retains_operation_payload(&self) -> bool {
+        self.inner.retains_operation_payload()
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.inner.operation_claims()
     }

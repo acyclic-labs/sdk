@@ -104,7 +104,7 @@ async fn content_routing_evidence_never_creates_or_overwrites_a_workspace_path()
             &reference,
             None,
             "/.system/harness-content-workspace",
-            Some(64),
+            64,
             None
         )
         .await?

@@ -44,8 +44,18 @@ impl<
             crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         };
-        let bytes = record.payload.len() as u64;
-        if matches!(guard, KernelOwnedAllocation::Standalone) {
+        let bytes = if self
+            .workspace
+            .volume
+            .fs
+            .authority()
+            .retains_operation_payload()
+        {
+            0
+        } else {
+            record.payload.len() as u64
+        };
+        if bytes != 0 && matches!(guard, KernelOwnedAllocation::Standalone) {
             let (funding, admitted) = ctx.record_actual_owned(bytes)?;
             guard = funding;
             if let Err(error) = admitted {

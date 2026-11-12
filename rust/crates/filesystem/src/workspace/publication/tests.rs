@@ -6,9 +6,23 @@ use std::sync::Mutex;
 #[tokio::test]
 async fn original_publication_evidence_survives_later_heads_without_workspace_files()
 -> Result<(), Box<dyn std::error::Error>> {
+    exercise_original_publication(Fs::memory()).await?;
+    exercise_original_publication(Fs::new(
+        crate::MemoryAuthorityStore::default(),
+        crate::MemoryObjectStore::default(),
+        crate::EmbeddedCapabilities::MEMORY,
+    ))
+    .await
+}
+
+async fn exercise_original_publication<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    filesystem: Fs<A, O>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let budget = crate::performance::BOUNDARY_BUDGET;
-    let filesystem = Fs::memory();
     let workspace = filesystem
         .create_workspace("evidence", budget, &cancellation)
         .await?
@@ -55,6 +69,53 @@ async fn original_publication_evidence_survives_later_heads_without_workspace_fi
         workspace.head(budget, &cancellation).await?.value.id(),
         current
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::initialize_test_native_io();
+        let native = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let authority = filesystem.authority();
+        let mut work = crate::AuthorityWork::native(&native, &cancellation);
+        // Warm the provider's existing owner once, then compare the original
+        // payload's live funding with the API alias, on the same ledger.
+        drop(
+            authority
+                .find_operation(workspace.authority_id(), key.operation_id(), &mut work)
+                .await?,
+        );
+        let baseline = native.live_allocation_bytes();
+        let record = authority
+            .find_operation(workspace.authority_id(), key.operation_id(), &mut work)
+            .await?
+            .ok_or("record absent")?;
+        let returned_credit = native.live_allocation_bytes() - baseline;
+        let payload_bytes = record.payload.len() as u64;
+        drop(record);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+        let recovered = workspace
+            .operation_publication(key, &native, &cancellation)
+            .await?
+            .ok_or("publication absent")?;
+        assert_eq!(recovered.evidence(), Some(b"original context".as_slice()));
+        let recovered_credit = native.live_allocation_bytes() - baseline;
+        if authority.retains_operation_payload() {
+            assert!(
+                recovered_credit <= returned_credit,
+                "recovery charged an already funded payload twice"
+            );
+        } else {
+            assert!(
+                recovered_credit >= payload_bytes,
+                "unfunded payload escaped its original ledger"
+            );
+        }
+        drop(recovered);
+        assert_eq!(
+            native.live_allocation_bytes(),
+            baseline,
+            "evidence release leaked funding"
+        );
+    }
     let missing = workspace
         .operation_publication(IdempotencyKey::new(), budget, &cancellation)
         .await?;
