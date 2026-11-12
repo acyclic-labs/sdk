@@ -707,6 +707,18 @@ impl RecordCache {
     /// Unknown ancestry stays unknown; this adds no provider observation.
     #[must_use]
     pub fn record_segment(&self, stream: &StreamPath, sequence: u64) -> RecordSegment<'_> {
+        self.select_segment(stream, sequence, |_, _| {})
+    }
+
+    fn select_segment<'cache, 'path>(
+        &'cache self,
+        stream: &'path StreamPath,
+        sequence: u64,
+        mut inherited: impl FnMut(&'path StreamPath, u64),
+    ) -> RecordSegment<'cache>
+    where
+        'cache: 'path,
+    {
         let mut path = stream;
         let mut first = 0;
         let mut last = u64::MAX;
@@ -717,6 +729,7 @@ impl RecordCache {
             self.origin_visits.set(self.origin_visits.get() + 1);
             match self.meta.get(path).and_then(|meta| meta.fork.as_ref()) {
                 Some(origin) if sequence < origin.inherited.forked_at => {
+                    inherited(path, origin.inherited.forked_at);
                     // This branch proves the cut is nonzero.
                     last = last.min(origin.inherited.forked_at - 1);
                     path = &origin.source;
@@ -746,7 +759,7 @@ impl RecordCache {
     }
 
     /// Borrow `[from, to)` in sequence order, including `None` for cache gaps.
-    /// Each inherited segment resolves once, rather than once per record. The
+    /// Ancestry resolves once, retaining only remaining visible owner cuts. The
     /// borrow prevents replacement or eviction of its publication facts; source
     /// access is still checked on every record. No payload or window is copied.
     pub fn records<'a>(
@@ -756,12 +769,33 @@ impl RecordCache {
         to: u64,
     ) -> impl Iterator<Item = (u64, Option<&'a RecordBytes>)> + use<'a> {
         let mut segment = None;
+        let mut initialized = false;
+        let mut owners = Vec::<(&StreamPath, u64)>::new();
         (from..to).map(move |next| {
-            let selected = segment.get_or_insert_with(|| self.record_segment(stream, next));
-            let value = selected.record(next);
-            if next == selected.last {
-                segment = None;
+            if !initialized {
+                initialized = true;
+                let mut ceiling = to;
+                segment = Some(self.select_segment(stream, next, |path, cut| {
+                    // A descendant's earlier cut hides later ancestor owners.
+                    // Only decreasing cuts can become visible in this window.
+                    if cut < ceiling {
+                        owners.push((path, cut));
+                        ceiling = cut;
+                    }
+                }));
             }
+            while segment
+                .as_ref()
+                .is_some_and(|selected| next > selected.last)
+            {
+                segment = owners.pop().map(|(path, first)| RecordSegment {
+                    cache: self,
+                    key: Key::Record(path.clone(), next),
+                    first,
+                    last: owners.last().map_or(u64::MAX, |(_, cut)| cut - 1),
+                });
+            }
+            let value = segment.as_mut().and_then(|selected| selected.record(next));
             (next, value)
         })
     }
@@ -2194,6 +2228,169 @@ mod tests {
         cyclic.retain_passed(mark);
         assert_eq!(cyclic.record(&child, 0).unwrap().as_ref(), b"cycle");
         assert!(cyclic.record(&source, 0).is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn inherited_windows_visit_each_origin_once_with_growing_owner_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_stream::{
+            AppendRequest, ForkRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamProvider,
+            StreamProviderExt as _,
+        };
+        use acyclic_test_support::scale::{Bound, assert_scales};
+        use futures::TryStreamExt as _;
+
+        let mut samples = Vec::new();
+        for depth in [16_u64, 128] {
+            let memory = MemoryStream::default();
+            let mut cache = RecordCache::new(256 * 1024, depth as usize + 4);
+            let mut source = StreamPath::new("owner0")?;
+            cache.observe_origin(&source, None);
+            for sequence in 0..=depth {
+                memory
+                    .append(AppendRequest {
+                        path: source.clone(),
+                        records: vec![sequence.to_le_bytes().to_vec().into()],
+                        if_tail: Some(sequence),
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await?;
+                if sequence < depth {
+                    let child = StreamPath::new(format!("owner{}", sequence + 1))?;
+                    let fork = memory
+                        .fork(ForkRequest {
+                            source,
+                            destination: child.clone(),
+                            at_tail: Some(sequence + 1),
+                            exclude: Vec::new(),
+                            idempotency_key: IdempotencyKey::unique(),
+                        })
+                        .await?;
+                    cache.observe_origin(
+                        &child,
+                        Some(Provenance {
+                            source: fork.source,
+                            inherited: ForkCut {
+                                forked_at: fork.forked_at,
+                                commit_id: fork.commit_id,
+                            },
+                        }),
+                    );
+                    source = child;
+                }
+            }
+            let records = memory
+                .read(ReadRequest {
+                    path: source.clone(),
+                    from: 0,
+                    limit: depth as u32 + 1,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            assert_eq!(records.len() as u64, depth + 1);
+            for record in &records {
+                assert!(cache.insert_record(
+                    &record.origin,
+                    record.sequence,
+                    record.value.clone(),
+                    None,
+                    None
+                ));
+            }
+            cache.origin_visits.set(0);
+            drop(cache.records(&source, 0, depth + 1));
+            assert_eq!(
+                cache.origin_visits.get(),
+                0,
+                "unpolled window walked ancestry"
+            );
+            for ((sequence, value), original) in cache.records(&source, 0, depth + 1).zip(&records)
+            {
+                let value = value.ok_or("missing window row")?;
+                assert_eq!(sequence, original.sequence);
+                assert_eq!(value.as_ref(), original.value.as_slice());
+                assert_eq!(value.as_ptr(), original.value.as_slice().as_ptr());
+            }
+            let visits = cache.origin_visits.replace(0);
+            assert_eq!(visits as u64, depth + 1);
+            samples.push((depth, visits as u64));
+            let mut sparse = cache.records(&source, 0, depth + 1);
+            assert_eq!(
+                sparse
+                    .next()
+                    .and_then(|(_, row)| row)
+                    .map(|row| row.as_ref()),
+                Some(records[0].value.as_slice())
+            );
+            assert_eq!(
+                sparse
+                    .nth(depth as usize - 1)
+                    .and_then(|(_, row)| row)
+                    .map(|row| row.as_ref()),
+                Some(records[depth as usize].value.as_slice())
+            );
+            drop(sparse);
+            assert_eq!(cache.origin_visits.replace(0) as u64, depth + 1);
+            // The former window implementation independently resolved each row.
+            for original in &records {
+                assert!(cache.record(&source, original.sequence).is_some());
+            }
+            assert_eq!(
+                cache.origin_visits.replace(0) as u64,
+                (depth + 1) * (depth + 2) / 2
+            );
+            assert_eq!(cache.first_missing(&source, 0, depth + 2), Some(depth + 1));
+            assert_eq!(cache.origin_visits.replace(0) as u64, depth + 1);
+
+            // An earlier descendant cut hides every later ancestor owner.
+            let hidden = StreamPath::new("short-prefix")?;
+            let fork = memory
+                .fork(ForkRequest {
+                    source,
+                    destination: hidden.clone(),
+                    at_tail: Some(1),
+                    exclude: Vec::new(),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?;
+            cache.observe_origin(
+                &hidden,
+                Some(Provenance {
+                    source: fork.source,
+                    inherited: ForkCut {
+                        forked_at: fork.forked_at,
+                        commit_id: fork.commit_id,
+                    },
+                }),
+            );
+            let replacement = OwnedBytes::from_static(b"replacement");
+            memory
+                .append(AppendRequest {
+                    path: hidden.clone(),
+                    records: vec![replacement.clone().into()],
+                    if_tail: Some(1),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?;
+            assert!(cache.insert_record(&hidden, 1, replacement.clone(), None, None));
+            let rows: Vec<_> = cache
+                .records(&hidden, 0, 2)
+                .map(|(_, row)| row.map(|row| row.as_ref()))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    Some(records[0].value.as_slice()),
+                    Some(replacement.as_ref())
+                ]
+            );
+        }
+        assert_scales(Bound::Linear, samples[0], samples[1]);
+        Ok(())
     }
 
     #[tokio::test]
