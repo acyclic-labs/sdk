@@ -468,6 +468,41 @@ struct CompletionTarget {
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
 impl CompletionTarget {
+    /// Select the completed cut only after every admitted command publishes.
+    async fn source(&self) -> Result<acyclic_fs::GitGenerationRef> {
+        let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
+            &self.workspace.state,
+        ))
+        .await;
+        let view = self.workspace.view();
+        if super::workspace::LocalWorkspace::owes_publication(
+            &self.workspace.filesystem,
+            view.workspace().id(),
+        )
+        .await?
+        {
+            self.workspace
+                .publication_debt
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.commands()
+                .settle_publications(&self.context(), &mut state)
+                .await?;
+        }
+        let source = view
+            .workspace()
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        Ok(acyclic_fs::GitGenerationRef {
+            workspace_id: view.workspace().id(),
+            generation: source.id(),
+        })
+    }
+
     fn commands(&self) -> super::workspace::git::Commands<'_> {
         super::workspace::git::Commands {
             workspace: &self.workspace,
@@ -517,32 +552,7 @@ impl LocalHarness {
         let own = self
             .completion_target(root, agent, &child_project, turn)
             .await?;
-        let mut state =
-            crate::sync::owned::lock_owned(super::workspace::StateArc::clone(&own.workspace.state))
-                .await;
-        if super::workspace::LocalWorkspace::owes_publication(
-            &root.filesystem,
-            child.workspace().id(),
-        )
-        .await?
-        {
-            own.workspace
-                .publication_debt
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            own.commands()
-                .settle_publications(&own.context(), &mut state)
-                .await?;
-        }
-        let source = child
-            .workspace()
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        drop(state);
+        let source = own.source().await?;
         let target = self
             .completion_target(root, &parent, &parent_project, turn)
             .await?;
@@ -551,7 +561,7 @@ impl LocalHarness {
             target.workspace.view().workspace().id(),
             target.workspace.store.clone(),
         )
-        .register_branch_workspace(branch.clone(), child.workspace().id(), None, false)
+        .register_branch_workspace(branch.clone(), source.workspace_id, None, false)
         .await
         .map_err(storage)?;
         target
@@ -560,8 +570,8 @@ impl LocalHarness {
                 &target.context(),
                 branch,
                 acyclic_fs::GitGenerationRef {
-                    workspace_id: child.workspace().id(),
-                    generation: source.id(),
+                    workspace_id: source.workspace_id,
+                    generation: source.generation,
                 },
             )
             .await
@@ -1139,4 +1149,64 @@ fn session_operation(agent: &crate::agent::AgentPath) -> OperationId {
     let mut id = [0; 16];
     hasher.finalize_xof().fill(&mut id);
     OperationId::from_bytes(id)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod completion_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn completion_cut_waits_for_capture_without_publication_debt() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
+        let local = LocalHarness::open(crate::test_support::local_harness_config(
+            directory.path(),
+            (
+                model,
+                Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            ),
+        )?)
+        .await?;
+        let (agents, root) = local.agents().await?;
+        let agent = agents.state(root).await.map_err(storage)?;
+        let workspace = local.workspace.as_ref().unwrap();
+        let own = local
+            .completion_target(workspace, &agent, &local.project, OperationId::new())
+            .await?;
+        assert!(
+            !super::super::workspace::LocalWorkspace::owes_publication(
+                &workspace.filesystem,
+                workspace.view().workspace().id(),
+            )
+            .await?
+        );
+        let busy = crate::sync::owned::lock_owned(super::super::workspace::StateArc::clone(
+            &own.workspace.state,
+        ))
+        .await;
+        let mut completion = Box::pin(own.source());
+        assert!(futures::poll!(&mut completion).is_pending());
+        // The admitted command's final capture commits before releasing its guard.
+        own.workspace
+            .view()
+            .workspace()
+            .write_text("/captured", "retained")
+            .await
+            .map_err(storage)?;
+        let captured = own
+            .workspace
+            .view()
+            .workspace()
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        drop(busy);
+        let source = completion.await?;
+        assert_eq!(source.generation, captured.id());
+        local.disconnect().await
+    }
 }

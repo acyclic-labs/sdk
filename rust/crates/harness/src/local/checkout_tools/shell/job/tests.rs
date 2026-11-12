@@ -183,7 +183,7 @@ async fn foreground_deadline_retains_capture_and_publication_after_cleanup() -> 
         assert_eq!(retained.as_ref(), b"before-stop");
         let grant = ContentGrant::verify_directory_read(&harness.verifier, &harness.signed, &home_volume, "", &mut None)?;
         let (_, retained) = harness.files.read_private_path(&home_volume, &grant, "timeout-retained", None, 64, Default::default()).await?;
-        assert_eq!(retained, b"before-stop");
+        assert_eq!(retained.as_ref(), b"before-stop");
         assert_eq!(gate.read(&mut byte).await.map_err(storage)?, 0);
         Ok::<_, Error>(())
     }).await?;
