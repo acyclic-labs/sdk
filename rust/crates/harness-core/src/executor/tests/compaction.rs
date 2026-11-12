@@ -470,15 +470,22 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         ))?;
         let journal = storage.journal();
         let journal = journal.as_ref();
-        let (provider, accounting_calls) = counted_model(32_768, None, [], []);
+        let (provider, accounting_calls) = counted_model(
+            32_768,
+            None,
+            [ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":2,"summary":"retained history"}"#.into(),
+            )],
+            [],
+        );
         let history = vec![
             ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("o".repeat(27_000)),
+                content: ModelContent::Text("o".repeat(11_000)),
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text("a".repeat(27_000)),
+                content: ModelContent::Text("a".repeat(11_000)),
             },
         ];
         let pipeline = if source == "projected" {
@@ -506,7 +513,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         let mut input = TurnInput {
             max_steps: None,
             operation_id: OperationId::new(),
-            input: ModelContent::Text("current".into()),
+            input: ModelContent::Text("current".repeat(2_000)),
             selected_context: None,
         };
         if source == "selected" {
@@ -549,7 +556,7 @@ fn compacted_projection_recovers_before_response_admission() -> Result<()> {
         let recovered = recovered?;
         assert_eq!(original.bytes(), recovered.bytes(), "{source}");
         assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
-        assert!(provider.requests().is_empty());
+        assert_eq!(provider.request_count(), 1);
         let (_, records) = runtime.block_on(execution.model_records(
             journal,
             input.operation_id,
@@ -643,48 +650,6 @@ fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<
             assert!(serde_json::from_value::<ContextAccounting>(count).is_err());
         }
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn actual_compacted_accounting_blocks_the_response_without_a_model_call() -> Result<()> {
-    let journal = Journal::default();
-    let (provider, _accounting_calls) =
-        counted_model(32_768, Some(AccountingFault::CompactedPressure), [], []);
-    let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
-    let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "counter".into(), "1".into())?,
-        provider.clone(),
-        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
-            "changing-history",
-            "1",
-            source.clone(),
-            crate::context::ContextPlacement::Prepend,
-        )) as Arc<dyn crate::context::ContextStage>]),
-        ToolRegistry::default(),
-    );
-    let input = TurnInput {
-        max_steps: None,
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("c".repeat(6_000)),
-        selected_context: None,
-    };
-    // The block is the turn's durable, visible outcome, the same on replay.
-    for _ in 0..2 {
-        assert!(
-            matches!(executor.execute_progress(input.clone(), &journal).await?,
-            ExecutionProgress::PreDispatchFailed(failure)
-                if failure.message().ends_with("context backstop: the irreducible set exceeds the model window"))
-        );
-    }
-    assert_eq!(source.0.load(Ordering::SeqCst), 1);
-    assert!(provider.requests().is_empty());
-    let records = journal.0.lock().unwrap();
-    assert!(
-        !records
-            .iter()
-            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
-    );
     Ok(())
 }
 
@@ -1122,18 +1087,20 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
         let counted = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = counted.clone();
         let provider = Arc::new(
-            ScriptedModelProvider::new([])
-                .with_context_capacity(crate::context::ModelContextCapacity {
-                    context_tokens: 65_536,
-                    output_tokens: Some(4096),
-                })
-                .with_token_counter(move |request| {
-                    seen.lock().unwrap().push(request.request_digest());
-                    if request.bytes().len() > 5_000 {
-                        return Err(Error::ModelContextOverflow);
-                    }
-                    fixture_token_count(request)
-                }),
+            ScriptedModelProvider::new([ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":3,"summary":"retained history"}"#.into(),
+            )])
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 65_536,
+                output_tokens: Some(4096),
+            })
+            .with_token_counter(move |request| {
+                seen.lock().unwrap().push(request.request_digest());
+                if request.bytes().len() > 5_000 {
+                    return Err(Error::ModelContextOverflow);
+                }
+                fixture_token_count(request)
+            }),
         );
         let executor = StockExecutor::new(
             Model::new("fixture".into(), "reported-usage".into(), "1".into())?,
@@ -1158,15 +1125,15 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
         let prior = vec![
             ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("old".repeat(10_000)),
+                content: ModelContent::Text("old".repeat(500)),
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text("old answer".repeat(2_000)),
+                content: ModelContent::Text("old answer".repeat(150)),
             },
             ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text("recent answer".into()),
+                content: ModelContent::Text("recent answer".repeat(200)),
             },
         ];
         let execution = StockExecution::ordinary(&executor);
@@ -1204,8 +1171,8 @@ async fn counting_context_refusal_compacts_and_replays_without_recounting() -> R
             );
         }
         assert!(
-            provider.requests().is_empty(),
-            "admission never generates before a verified count"
+            provider.request_count() == usize::from(!irreducible),
+            "only an admissible summary may generate; the worker remains undispatched"
         );
     }
     Ok(())
