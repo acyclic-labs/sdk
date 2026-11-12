@@ -505,7 +505,10 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
             )
             .unwrap(),
         );
-        let (stored, mut journal) = store.compare_and_swap(operation, 0, journal).await.unwrap();
+        let (stored, mut journal) =
+            MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
+                .await
+                .unwrap();
         assert!(stored);
         let custody = journal.custody.as_mut().unwrap();
         crate::materializer::reserve_buffer(&mut journal.preimages, count, custody).unwrap();
@@ -529,10 +532,10 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
             );
             let expected = journal.revision;
             journal.revision += 1;
-            let (stored, updated) = store
-                .compare_and_swap(operation, expected, journal)
-                .await
-                .unwrap();
+            let (stored, updated) =
+                MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
+                    .await
+                    .unwrap();
             assert!(stored);
             journal = updated;
             let after = work.receipt();
@@ -550,21 +553,23 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 "history was rewritten at {index}/{count}: {delta:?} vs {baseline:?}"
             );
         }
-        let recovered = store.load(operation).await.unwrap().unwrap();
+        let recovered = MaterializationJournalStore::load(&store, operation)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(recovered, journal);
         drop(recovered);
         journal.revision += 1;
         journal.phase = crate::MaterializationPhase::RolledBack;
         let expected = journal.revision - 1;
-        let (stored, journal) = store
-            .compare_and_swap(operation, expected, journal)
-            .await
-            .unwrap();
+        let (stored, journal) =
+            MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
+                .await
+                .unwrap();
         assert!(stored);
         let before = work.receipt();
         assert!(
-            !store
-                .compare_and_swap(operation, expected, journal)
+            !MaterializationJournalStore::compare_and_swap(&store, operation, expected, journal)
                 .await
                 .unwrap()
                 .0
@@ -574,7 +579,12 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
             before.object_bytes_written
         );
         store.remove_materialization_async(operation).await.unwrap();
-        assert!(store.load(operation).await.unwrap().is_none());
+        assert!(
+            MaterializationJournalStore::load(&store, operation)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(
             std::fs::read_dir(directory.path().join("materialization-data-v1"))
                 .unwrap()

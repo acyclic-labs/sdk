@@ -99,12 +99,14 @@ pub(super) fn publish(
             }
             None => {
                 let mut work = crate::native_host::ordinary_work();
-                let root = crate::native_host::HostRoot::open(&namespace.root, &mut work)?;
+                let root = crate::native_host::HostRoot::open(&namespace.root, &mut work)
+                    .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
                 root.create_directories(
                     relative,
                     crate::native_host::NativeDurability::Durable,
                     &mut work,
-                )?;
+                )
+                .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
             }
         }
         write_journaled(&paths, &journal.plan)?;
@@ -206,7 +208,8 @@ pub(super) fn remove(
                 crate::native_host::host_path(leaf, state, |leaf, work| {
                     root.remove(leaf, None, work)
                 })
-            })?;
+            })
+            .map_err(|error| LocalCoreStateStoreError::LazyWork(error.into()))?;
             crate::native_host::sync_directory_held(&root.directory(), &mut &*work)?;
         }
         None => match std::fs::remove_dir_all(directory) {
