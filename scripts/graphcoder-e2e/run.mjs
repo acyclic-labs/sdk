@@ -138,10 +138,12 @@ async function prepare(test, gitOrigin) {
     if (event.case === test.id) listener(event);
   });
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
-  fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
-    ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`]),
-    ...mountingArguments(test),
-    ...expand(test.extra_args ?? [], fixture)];
+  const selection = ["--workspace", fixture.workspace, "--catalog", fixture.catalog,
+    ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`])];
+  const extra = expand(test.extra_args ?? [], fixture);
+  fixture.clientArgs = [...selection, ...extra];
+  fixture.args = [...selection, "--settings-root", fixture.settings,
+    ...mountingArguments(test), ...extra];
   // Tracing owns explicit text storage, including through the native PTY host.
   for (const option of ["diagnostic-records", "diagnostic-record-bytes"]) {
     const value = process.env[`E2E_${option.toUpperCase().replaceAll("-", "_")}`];
@@ -178,7 +180,7 @@ async function execute(test, prepared) {
           const publication = await new Spool(service.child.stdout, service.closed,
             { transcript: join(artifact, "endpoint.jsonl") }).next(() => true);
           fixture.env.ACYCLIC_API_KEY = publication.credential;
-          fixture.args.push("--endpoint", publication.endpoint);
+          fixture.args = [...fixture.clientArgs, "--endpoint", publication.endpoint];
           continue;
         }
         await new Promise((resolve, reject) => {
@@ -193,6 +195,7 @@ async function execute(test, prepared) {
             reject(new Error(`session service exited before readiness: ${result.stderr}`));
           }, reject);
         });
+        fixture.args = fixture.clientArgs;
         continue;
       }
       if (input.mode === "conversation") {

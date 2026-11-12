@@ -112,10 +112,12 @@ impl Commands<'_> {
             .chain((!read_only).then_some((Action::Write, VolumeOperation::Write)))
         {
             mount.check(action, "", self.clock.now_unix_millis() / 1000)?;
-            if !scope
-                .grants()
-                .contains(&mount.view.volume.capability(operation, &mut None)?)
-            {
+            if !crate::core::volume_operation_granted_with_work(
+                scope.grants(),
+                &mount.view.volume,
+                operation,
+                &mut None,
+            )? {
                 return Err(Error::Unauthorized(
                     "fs target volume is not granted".into(),
                 ));

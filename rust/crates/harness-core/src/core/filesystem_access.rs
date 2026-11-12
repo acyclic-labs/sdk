@@ -172,19 +172,17 @@ pub(crate) fn contains_content_grant_with_work<T: serde::Serialize + ?Sized>(
     ))
 }
 
-pub(crate) fn volume_write_granted_with_work(
+/// Whether a grant admits attempting this volume operation. A structured
+/// filesystem grant still requires the bound policy check before content IO.
+pub fn volume_operation_granted_with_work(
     grants: &crate::Capabilities,
     volume: &crate::conversation::VolumeRef,
+    operation: crate::conversation::VolumeOperation,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
     if volume.provider().family() == "filesystem" && filesystem_scope_label(grants, work)?.is_some()
     {
         return Ok(true);
     }
-    contains_content_grant_with_work(
-        grants,
-        volume,
-        acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
-        work,
-    )
+    contains_content_grant_with_work(grants, volume, operation.capability_prefix(), work)
 }

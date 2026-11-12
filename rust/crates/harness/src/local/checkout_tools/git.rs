@@ -115,6 +115,15 @@ mod tests {
         )
         .await?;
         let granted = RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?;
+        let structured = RuntimeScope::new(
+            Capabilities::new([acyclic_fs::access::Capability::whole_volume(
+                None,
+                &acyclic_fs::access::Action::ALL,
+            )
+            .to_scope_label()
+            .map_err(storage)?]),
+            Default::default(),
+        )?;
         let denied = RuntimeScope::new(Default::default(), Default::default())?;
         let mut refused = Vec::new();
         for (target, volume) in [("", None), ("--volume home ", Some("home"))] {
@@ -136,8 +145,10 @@ mod tests {
                 "merge --abort",
             ] {
                 let command = format!("{target}{command}");
-                if let Err(error) = tools.fs_arguments(&command, &granted) {
-                    refused.push((command.clone(), error));
+                for scope in [&granted, &structured] {
+                    if let Err(error) = tools.fs_arguments(&command, scope) {
+                        refused.push((command.clone(), error));
+                    }
                 }
                 assert!(
                     matches!(
