@@ -125,6 +125,22 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
     )?);
     let executor = &harness.harness.target(None)?.executor;
     let child = std::env::current_exe().map_err(storage)?;
+    // This fixture executes its own image and connects to host-owned event
+    // listeners. Neither authority is part of an ordinary isolated shell.
+    let reads: Vec<_> = [
+        "/usr",
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/System/Library",
+        "/etc/ld.so.cache",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .chain(std::env::var_os("SystemRoot").map(std::path::PathBuf::from))
+    .filter(|path| path.exists())
+    .chain(std::iter::once(child.clone()))
+    .collect();
     let selector = "local::checkout_tools::shell::job::tests::shell_job_child";
     let mut jobs = Vec::new();
     let mut gates = Vec::new();
@@ -157,6 +173,34 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             Some(exit)
         };
         let context = ToolContext::new(task.clone(), crate::OperationId::new(), name)?;
+        let ports = std::iter::once(listener.local_addr().map_err(storage)?.port())
+            .chain(
+                exit.as_ref()
+                    .map(|exit| exit.local_addr().map(|address| address.port()))
+                    .transpose()
+                    .map_err(storage)?,
+            )
+            .collect();
+        let workspace = harness
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("workspace".into()))?;
+        let grant = acyclic_native_runtime::execution::ExecutionGrant::new(
+            &workspace.path,
+            acyclic_native_runtime::execution::ExecutionAccess::WorkspaceWrite,
+            reads.clone(),
+            acyclic_native_runtime::execution::ExecutionNetwork::TcpPorts(ports),
+        )
+        .map_err(storage)?;
+        let (job_executor, _) = workspace
+            .executor(
+                (&harness.project, &harness.files, 1 << 20),
+                Arc::new(acyclic_stream::SystemUnixMillisClock),
+                &harness.signed,
+                &harness.verifier,
+                Some(grant),
+            )
+            .await?;
         let invocation = ToolInvocation {
             operation_id: context.operation_id(),
             call_id: name.into(),
@@ -164,7 +208,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
             arguments: serde_json::json!({"command": [child, "--exact", selector, "--nocapture"], "cwd": name, "background": true}),
         };
         eprintln!("shell job {name}: executing");
-        let result = executor
+        let result = job_executor
             .execute(invocation.clone(), Some(context.clone()))
             .await?;
         assert_eq!(result.value["background"], true, "{result:?}");
@@ -204,7 +248,7 @@ async fn shell_background_jobs_keep_capture_and_cancel_independently() -> Result
         // Reconciliation recovers the original durable admission, without
         // restarting the command or waiting for its lifetime to end.
         assert_eq!(
-            executor
+            job_executor
                 .reconcile(invocation, Some(context.clone()))
                 .await?
                 .unwrap()

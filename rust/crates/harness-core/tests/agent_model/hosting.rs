@@ -322,7 +322,8 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
             principal: "bob".into(),
         },
     );
-    // The root's private volume is live: an input stages on it.
+    // Input publication shares the journal created atomically with the root,
+    // without adding it to the model's bound volumes.
     let staged = bound
         .stage_text(
             &created,
@@ -332,6 +333,44 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
             ("/command", "hello"),
         )
         .await?;
+    assert_eq!(staged.volume(), &journal);
+    let (scope, verifier) = bound.volume_scope(&created).await?;
+    assert!(
+        acyclic_harness_core::conversation::ContentGrant::verify(
+            &verifier,
+            &scope,
+            &journal,
+            acyclic_harness_core::conversation::VolumeOperation::Write,
+            &mut None,
+        )
+        .is_err()
+    );
+    assert!(bound.read_file(&created, &staged, 0, 64).await.is_err());
+    let prompt = bound
+        .stage_prompt(
+            &created,
+            &alice,
+            &intent("prompt"),
+            &ModelContent::Text("hello".into()),
+        )
+        .await?;
+    assert_eq!(prompt.volume(), &journal);
+    // Staging an envelope does not authorize a reference to hidden journal
+    // content: embedded files still need the ordinary content grant.
+    assert!(
+        bound
+            .stage_prompt(
+                &created,
+                &alice,
+                &intent("hidden"),
+                &ModelContent::Part(acyclic_harness_core::model::ModelContentPart::File {
+                    file: staged.clone(),
+                    policy: acyclic_harness_core::model::FileProjectionPolicy::BoundedFull,
+                }),
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(
         bound
             .staged_text(&created, "message", &alice, &intent("m1"), "/command")
@@ -367,7 +406,7 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
 #[tokio::test]
 async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result {
     use acyclic_harness_core::{
-        conversation::wire::Notice,
+        conversation::{ContentResidencyVerifier as _, wire::Notice},
         filesystem::{FilesystemContentVerifier, agent_authority},
         model::ModelContentPart,
     };
@@ -439,11 +478,14 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         return Err("waking notice was not staged".into());
     };
     assert_eq!(
+        file.volume(),
+        &acyclic_harness_core::conversation::journal_volume(provider()?, &agent.id())?
+    );
+    assert!(
         bound
             .read_file(&agent, file, 0, original.len() as u64)
-            .await?
-            .0,
-        original
+            .await
+            .is_err()
     );
     let input = TurnInput::Notice {
         id: request,
@@ -470,7 +512,7 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         bound.admission(),
         &agent,
         &state.volumes,
-        &[],
+        std::slice::from_ref(file.as_ref()),
     )
     .await?;
     let reader = FilesystemContentVerifier::new(
@@ -480,6 +522,13 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
         1 << 20,
         None,
     )?;
+    assert_eq!(
+        reader
+            .read(file, original.len() as u64, None, None)?
+            .await?
+            .as_ref(),
+        original
+    );
     let expanded = expand_attachments(model_input(&input)?, reader.as_ref()).await?;
     assert_eq!(
         expanded,

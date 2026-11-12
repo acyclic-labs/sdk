@@ -684,7 +684,6 @@ pub struct StockExecutor {
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
     reconciliation_only: bool,
-    live_reply: Option<LiveReply>,
 }
 
 /// Journal payload separating canonical history from the exact transformed request.

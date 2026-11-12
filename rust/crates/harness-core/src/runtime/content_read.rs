@@ -158,6 +158,11 @@ impl TaskContext {
     }
 
     pub(crate) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+        if let Some(output) = self.journal_output.as_ref()
+            && volume == Some(&output.volume)
+        {
+            return Some(output);
+        }
         let writes = |binding: &&ContentBindings| {
             binding
                 .writer

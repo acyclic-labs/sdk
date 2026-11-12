@@ -1894,7 +1894,7 @@ async fn names(
 }
 
 #[tokio::test]
-async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
+async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
     let waits = acyclic_native_runtime::obs::WaitReport::default();
     let _subscriber = tracing::subscriber::set_default(
@@ -1948,31 +1948,28 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
         .ok_or_else(|| Error::NotFound("private volume".into()))?
         .volume()?;
-    let output = harness
-        .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
-        .await?;
-    let root = names(&harness, private, "").await?;
     assert!(
-        root.iter().any(|name| name == "tools"),
-        "no tools directory in {root:?}; turn output {}",
-        String::from_utf8_lossy(&output)
+        !names(&harness, private, "")
+            .await?
+            .iter()
+            .any(|name| name == "tools")
     );
-    let turn = format!("tools/{turn}");
-    let calls = names(&harness, private, &turn).await?;
-    let [call] = calls.as_slice() else {
-        return Err(Error::Conflict(format!(
-            "one shell call staged, got {calls:?}"
-        )));
-    };
-    assert_eq!(
-        names(&harness, private, &format!("{turn}/{call}")).await?,
-        ["request.json", "result.json", "stdout"]
-    );
-    assert_eq!(
-        names(&harness, private, &format!("{turn}/{call}/stdout")).await?,
-        ["0000000000000000"]
-    );
+    let journal =
+        crate::conversation::journal_volume(private.provider().clone(), &state.path.id())?;
+    assert_eq!(entry.output.volume(), &journal);
+    let call = crate::tool::ToolInvocation::model_call_operation(turn, 0, "checkout-0", None)?;
+    let bound = harness.agents.get().unwrap().server().bound();
+    for name in ["request.json", "result.json", "stdout/0000000000000000"] {
+        let path = format!("tools/{turn}/{call}/{name}");
+        let (bytes, _) = bound
+            .read_tool_output(&state.path, &path, Some(&entry.output), 0, 1 << 20)
+            .await
+            .map_err(agent)?;
+        assert!(!bytes.is_empty(), "empty {name}");
+        if name.starts_with("stdout/") {
+            assert!(String::from_utf8_lossy(&bytes).contains("staged"));
+        }
+    }
     let scope = admission
         .0
         .lock()

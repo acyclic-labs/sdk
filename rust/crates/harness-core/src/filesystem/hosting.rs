@@ -536,15 +536,7 @@ where
     ) -> Result<super::AgentObservation, Error> {
         self.admit_path(root)?;
         let state = self.agents.state(root).await?;
-        let authority = agent_authority(
-            &self.issuer,
-            &self.admission,
-            &state.path,
-            &state.volumes,
-            &[],
-        )
-        .await
-        .map_err(turn)?;
+        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
         let peers = self.peer_resource();
         let invocations = [calls, peers.as_str()];
         let calls = if root.depth() == 0 {
@@ -553,14 +545,7 @@ where
             &invocations[..1]
         };
         self.volumes
-            .client_observation(
-                &authority,
-                &state.path,
-                authority.private.volume()?,
-                clock,
-                calls,
-                directory,
-            )
+            .client_observation(&authority, &state.path, &journal, clock, calls, directory)
             .await
             .map_err(turn)
     }
@@ -569,19 +554,14 @@ where
     /// each new chunk.
     ///
     /// # Errors
-    /// When `agent` is absent or its private volume cannot be opened.
+    /// When `agent` is absent or its journal cannot be opened.
     pub async fn tool_resource(&self, agent: &AgentPath) -> Result<String, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let private = state
-            .volumes
-            .iter()
-            .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
-            .ok_or(Error::Record("agent has no private volume"))?;
-        self.volumes
-            .tool_resource(private.volume()?)
-            .await
-            .map_err(turn)
+        self.admit_agent(agent, &state.volumes)?;
+        let journal =
+            crate::conversation::journal_volume(self.volumes.provider.clone(), &agent.id())?;
+        self.volumes.tool_resource(&journal).await.map_err(turn)
     }
 
     /// Native enrollment of a selected agent's read-only observation on an
@@ -610,22 +590,14 @@ where
                 .audience_resource()
                 .map_err(turn)?;
             let state = self.agents.state(agent).await?;
-            let authority = agent_authority(
-                &self.issuer,
-                &self.admission,
-                &state.path,
-                &state.volumes,
-                &[],
-            )
-            .await
-            .map_err(turn)?;
+            let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
             let clock = ObservationClock(self.clock.clone());
             let (resource, credential, _) = self
                 .volumes
                 .observation_credential(
                     &authority,
                     &state.path,
-                    authority.private.volume()?,
+                    &journal,
                     &clock,
                     &[],
                     None,
@@ -819,20 +791,12 @@ where
     ) -> Result<(Vec<u8>, u64), Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let authority = agent_authority(
-            &self.issuer,
-            &self.admission,
-            &state.path,
-            &state.volumes,
-            &[],
-        )
-        .await
-        .map_err(turn)?;
-        if at.is_some_and(|file| Some(file.volume()) != authority.private.as_volume())
+        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
+        if at.is_some_and(|file| file.volume() != &journal)
             || (path.starts_with(super::InternalContentClass::ToolResult.prefix()) && at.is_none())
         {
             return Err(Error::Record(
-                "tool result requires its original private generation",
+                "tool result requires its original journal generation",
             ));
         }
         let generation = at
@@ -842,7 +806,7 @@ where
         let grant = super::ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            authority.private.volume()?,
+            &journal,
             super::TOOL_OUTPUT,
             &mut None,
         )
@@ -850,7 +814,7 @@ where
         let (bytes, _selection, length) = self
             .volumes
             .read_private_range(
-                authority.private.volume()?,
+                &journal,
                 &grant,
                 path,
                 generation.as_ref(),
@@ -1034,13 +998,13 @@ where
         self.agents.child_profile(parent, role).await
     }
 
-    /// Stages `text` once on `agent`'s private volume under the agent's
+    /// Stages `text` once on `agent`'s journal volume under the agent's
     /// admitted authority, keyed by the agent, the input `kind`, its sender
     /// and `intent`. The original source binds the request before expansion;
     /// every retry must name that same source, even if a command file changed.
     ///
     /// # Errors
-    /// When the admission does not write the agent's private volume, or the
+    /// When the admission does not write the agent's journal volume, or the
     /// store fails.
     pub async fn stage_text(
         &self,
@@ -1149,9 +1113,6 @@ where
     ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
-            .await
-            .map_err(turn)?;
         let encoded;
         let (source, payload, extension) = match input {
             StagedInput::Notice(notice) => {
@@ -1169,6 +1130,10 @@ where
                 "txt",
             ),
             StagedInput::Content(content) => {
+                let authority =
+                    agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
+                        .await
+                        .map_err(turn)?;
                 encoded = crate::agent::encode_user_input(content).map_err(turn)?;
                 for file in content.file_refs() {
                     crate::conversation::ContentGrant::verify_read(
@@ -1199,9 +1164,10 @@ where
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
         let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
+        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
-            authority.private.volume()?,
+            &journal,
             &authority.verifier,
             &authority.scope,
             self.maximum_bytes,

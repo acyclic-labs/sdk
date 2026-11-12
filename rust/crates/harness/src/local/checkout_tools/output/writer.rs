@@ -1,4 +1,4 @@
-//! Tool output is files on the agent's private volume, each staged once under
+//! Tool output is files on the host-selected output volume, each staged once under
 //! an operation derived from the command's own: `tools/{turn}/{operation}/`,
 //! under the turn the call belongs to, holds
 //! `request.json`, `stdout/{sequence}`, `stderr/{sequence}` and `result.json`.
@@ -51,46 +51,21 @@ impl Writer {
     }
 }
 
-pub(in crate::local::checkout_tools) fn operation(
-    context: &ToolContext,
-    name: &str,
-) -> OperationId {
-    let path = format!(
-        "tools/{}/{}/{name}",
-        context.turn_id(),
-        context.operation_id()
-    );
-    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.tool-output/v1");
-    hash.update(&context.operation_id().into_bytes());
-    hash.update(path.as_bytes());
-    let mut operation = [0; 16];
-    operation.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    OperationId::from_bytes(operation)
-}
-
 pub(in crate::local::checkout_tools) async fn stage(
     context: &ToolContext,
     name: &str,
     bytes: &[u8],
     media_type: &str,
 ) -> Result<crate::conversation::FileRef> {
-    let path = format!(
-        "tools/{}/{}/{name}",
-        context.turn_id(),
-        context.operation_id()
-    );
-    let (file, _) = context
-        .stage_file_once(
-            operation(context, name),
-            &path,
+    context
+        .stage_output_file_once(
+            name,
             bytes,
             media_type,
             // A label is one path component: `stdout`, not `stdout/{seq}`.
             name.split('/').next().unwrap_or(name),
-            None,
         )
-        .await?;
-    Ok(file)
+        .await
 }
 
 impl Writer {

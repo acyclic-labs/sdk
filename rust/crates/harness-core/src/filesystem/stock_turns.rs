@@ -81,7 +81,7 @@ impl Tasks {
     ) -> Result<(StockExecutor, TaskContext)> {
         let context = harness
             .agent_context(&authority.grants, authority.content.clone())?
-            .with_execution_journal(Arc::clone(&authority.journal))
+            .with_execution_journal(Arc::clone(&authority.journal), turn)?
             .for_agent(agent.path.clone(), agent.volumes.clone())
             .with_agent_children(authority.children.clone());
         let executor = executor

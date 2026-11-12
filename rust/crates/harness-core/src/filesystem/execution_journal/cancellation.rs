@@ -32,7 +32,7 @@ mod tests {
             Err(Error::Unsupported(_))
         ));
         let (journal, _issuer) = super::super::test_support::journal().await?;
-        let task = task.with_execution_journal(Arc::new(journal));
+        let task = task.with_execution_journal(Arc::new(journal), OperationId::new())?;
         // A bound journal without a stop binding stays pending; a completed
         // read still supplies its exact value rather than inventing a stop.
         let mut unbound = task.model_cancellation(None)?;
@@ -46,7 +46,10 @@ mod tests {
         let original = acyclic_actors::guest::CancellationToken::new();
         let unrelated = acyclic_actors::guest::CancellationToken::new();
         let (journal, _issuer) = super::super::test_support::journal().await?;
-        let task = task.with_execution_journal(Arc::new(journal.with_stop(original.clone())));
+        let task = task.with_execution_journal(
+            Arc::new(journal.with_stop(original.clone())),
+            OperationId::new(),
+        )?;
         {
             let mut cancellation = task.model_cancellation(None)?;
             let (producer, receiver) = futures::channel::oneshot::channel::<u8>();
@@ -74,7 +77,7 @@ mod tests {
         }
 
         let (journal, _issuer) = super::super::test_support::journal().await?;
-        let task = task.with_execution_journal(Arc::new(journal));
+        let task = task.with_execution_journal(Arc::new(journal), OperationId::new())?;
         let mut cancellation = task.model_cancellation(None)?;
         let (producer, receiver) = futures::channel::oneshot::channel::<u8>();
         let lookup = crate::filesystem::fs_tools::read_before_effect(&mut cancellation, async {

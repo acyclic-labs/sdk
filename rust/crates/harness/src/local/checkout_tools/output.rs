@@ -1,4 +1,4 @@
-//! Tool output is staged on the agent's private volume while the command runs.
+//! Tool output is staged under its host-owned destination while the command runs.
 use super::*;
 use acyclic_native_runtime::ProcessOutput;
 use tokio::sync::{Mutex, Notify, oneshot};

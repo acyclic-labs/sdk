@@ -192,9 +192,8 @@ impl CheckoutTools {
                 let published = async {
                     let mut source = futures::io::AllowStdIo::new(file);
                     context
-                        .stage_file_stream_once(
-                            output::writer::operation(context, "spill.log"),
-                            &spill_file,
+                        .stage_output_stream_once(
+                            "spill.log",
                             &mut source,
                             ("application/octet-stream", "spill.log"),
                         )

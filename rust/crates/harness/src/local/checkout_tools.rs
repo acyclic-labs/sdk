@@ -594,7 +594,7 @@ impl ToolExecutor for CheckoutTools {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
-            // A started receipt is immutable private data. Its own read grant
+            // A started receipt belongs to the call's host-owned output. Its read grant
             // authorizes replay without queueing behind the running command.
             if invocation.name == crate::tools::shell::PLATFORM.name
                 && invocation
@@ -602,14 +602,8 @@ impl ToolExecutor for CheckoutTools {
                     .get("background")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
-                && let (Some(file), _) = context
-                    .observe_staged_file_once(
-                        output::writer::operation(context, "started.json"),
-                        None,
-                    )
-                    .await?
+                && let Some((file, bytes)) = context.read_output_file_once("started.json").await?
             {
-                let bytes = context.task().read_file(&file, None).await?;
                 let mut value: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(storage)?;
                 value["output_volume"] = serde_json::to_value(file.volume()).map_err(storage)?;

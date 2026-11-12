@@ -113,7 +113,8 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
             },
             Default::default(),
         );
-        let (documents, _) = host.announcement_storage(&state, &[]).await?;
+        let admitted = host.admit(&state)?;
+        let documents = host.journal_storage(&admitted, &[]).await?.files;
         assert!(
             documents
                 .create("targets.json", br#"{"targets":[]}"#, 1024)

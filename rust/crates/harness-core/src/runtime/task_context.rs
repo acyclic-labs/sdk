@@ -6,6 +6,7 @@ pub struct TaskContext {
     pub(crate) harness: Arc<AgentHarness>,
     pub(super) scope: RuntimeScope,
     pub(super) output_content: ContentBindings,
+    pub(super) journal_output: Option<ContentBindings>,
     pub(super) journal: Option<Arc<dyn crate::executor::ExecutionJournal>>,
     /// The agent whose turn this is, with the volumes it binds.
     pub(super) agent: Option<(crate::agent::AgentPath, Vec<crate::agent::WorkspaceEntry>)>,
@@ -28,14 +29,36 @@ impl TaskContext {
         self.children.as_deref()
     }
 
-    /// Retains the same finalized journal supplied to this turn's executor.
-    #[must_use]
+    /// Retains the finalized journal and its read-only public tool-output route.
+    /// Ordinary content keeps its publisher; only `tools/` is delegated here.
     pub fn with_execution_journal(
         mut self,
         journal: Arc<dyn crate::executor::ExecutionJournal>,
-    ) -> Self {
+        operation: OperationId,
+    ) -> Result<Self> {
+        let previous = self
+            .journal_output
+            .as_ref()
+            .map(|content| content.volume.directory_read_capability("tools", &mut None))
+            .transpose()?;
+        let mut output = journal.output_content(operation)?;
+        let grant = output
+            .as_mut()
+            .map(|content| {
+                content.writer = None;
+                content.volume.directory_read_capability("tools", &mut None)
+            })
+            .transpose()?;
+        self.scope.grants = Capabilities::new(
+            self.scope
+                .grants
+                .iter()
+                .filter(|grant| previous.as_deref() != Some(*grant))
+                .chain(grant.as_deref()),
+        );
+        self.journal_output = output;
         self.journal = Some(journal);
-        self
+        Ok(self)
     }
 
     /// Follows this turn's original journal stop signal.

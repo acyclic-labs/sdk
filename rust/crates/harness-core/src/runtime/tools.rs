@@ -1032,9 +1032,18 @@ impl ToolContext {
         // Resolve output before workspace routing: the journal and the home
         // are different volumes. The ordinary read path still checks this
         // original volume's directory grant and pinned source generation.
-        if let Some(relative) = path.strip_prefix(OUTPUT_PATH) {
+        if let Some(relative) = path.strip_prefix(OUTPUT_PATH).or_else(|| {
+            (kind == crate::tool::ReadPathKind::Directory
+                && path == OUTPUT_PATH.trim_end_matches('/'))
+            .then_some("")
+        }) {
             return Ok((
-                &self.task().output_content.volume,
+                &self
+                    .task()
+                    .journal_output
+                    .as_ref()
+                    .unwrap_or(&self.task().output_content)
+                    .volume,
                 std::borrow::Cow::Borrowed(relative),
             ));
         }

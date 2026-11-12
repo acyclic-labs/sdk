@@ -91,6 +91,278 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
 }
 
 #[tokio::test]
+async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
+    use crate::{agent::TurnHost, executor::ExecutionJournal};
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let journal = bound.turns().query_journal(&state).await?;
+    let operation = OperationId::from_bytes([51; 16]);
+    let result = journal
+        .stage(
+            operation,
+            "tool:read:result",
+            b"original",
+            "text/plain",
+            None,
+        )?
+        .await?;
+    let output = bound
+        .turns()
+        .open_control(
+            &state,
+            &crate::agent::ContextAction::Clear,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?
+        .outputs
+        .stage(operation, b"{}")
+        .await?;
+    assert_eq!(result.volume(), output.volume());
+    assert_ne!(state.volumes[0].as_volume(), Some(output.volume()));
+    let later = journal
+        .stage(operation, "tool:later:result", b"later", "text/plain", None)?
+        .await?;
+    let (bytes, length) = bound
+        .read_tool_output(&root, result.path(), Some(&output), 2, 3)
+        .await?;
+    assert_eq!(bytes, b"igi");
+    assert_eq!(length, 8);
+    assert!(
+        bound
+            .read_tool_output(&root, later.path(), Some(&output), 0, 32)
+            .await
+            .is_err()
+    );
+    assert!(
+        bound
+            .read_tool_output(&root, result.path(), None, 0, 32)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        bound.tool_resource(&root).await?,
+        bound.volumes().tool_resource(output.volume()).await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> TestResult {
+    use crate::{
+        agent::TurnHost,
+        runtime::{ContentBindings, RuntimeScope, ToolContext},
+    };
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let (scope, verifier) = bound.volume_scope(&root).await?;
+    let private = state.volumes[0].volume()?;
+    let writer = super::super::FilesystemContentPublisher::new(
+        bound.volumes().clone(),
+        private,
+        &verifier,
+        &scope,
+        65_536,
+        None,
+    )?;
+    let runtime = crate::runtime::Bindings {
+        scope: RuntimeScope::new(
+            scope.capabilities().clone(),
+            crate::conversation::Limits::default(),
+        )?,
+        ..crate::runtime::Bindings::local()
+    }
+    .build()?;
+    let turn = OperationId::from_bytes([53; 16]);
+    let task = Arc::new(
+        runtime
+            .agent_context(
+                &crate::Capabilities::default(),
+                ContentBindings {
+                    volume: private.clone(),
+                    reader: bound.content_reader(&root).await?,
+                    writer: Some(writer),
+                },
+            )?
+            .with_execution_journal(Arc::new(bound.turns().query_journal(&state).await?), turn)?,
+    );
+    let context = ToolContext::new(task.clone(), turn, "shell")?;
+    let file = context
+        .stage_output_file_once("stdout/0", b"retained", "text/plain", "stdout")
+        .await?;
+    assert_eq!(
+        file.volume(),
+        &crate::conversation::journal_volume(private.provider().clone(), &root.id())?
+    );
+    assert!(
+        task.stage_file(
+            Some(file.volume()),
+            OperationId::new(),
+            "ui/title",
+            b"forged",
+            "text/plain",
+            "forged"
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        context
+            .stage_output_file_once("../ui/title", b"forged", "text/plain", "forged")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        context.task().read_file(&file, None).await?.as_ref(),
+        b"retained"
+    );
+    // A later model call reads the advertised address through the ordinary
+    // path/range/directory readers, without receiving the host's publisher.
+    let reader = ToolContext::new(task.clone(), OperationId::new(), "read")?;
+    let address = format!("volume:///output/{}", file.path());
+    let (selected, bytes, _) = reader
+        .read_tool_path_range(
+            &address,
+            None,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 3,
+            },
+            None,
+        )
+        .await?;
+    assert_eq!(bytes.as_ref(), b"ret");
+    assert_eq!(selected.volume, *file.volume());
+    let parent = file
+        .path()
+        .rsplit_once('/')
+        .ok_or("missing output parent")?
+        .0;
+    let directory = format!("volume:///output/{parent}");
+    let (volume, path) = reader.authorize_tool_directory_read(&directory, None)?;
+    let (page, _) = reader
+        .list_tool_directory(
+            crate::conversation::DirectoryRead {
+                volume,
+                granted_prefix: &path,
+                path: &path,
+                generation: Some(&selected.generation),
+                after: None,
+                maximum_entries: 8,
+            },
+            None,
+        )
+        .await?;
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].name, "0");
+    assert!(
+        reader
+            .stage_tool_file_once(
+                OperationId::new(),
+                &address,
+                b"forged",
+                "text/plain",
+                "forged",
+                None,
+            )
+            .await
+            .is_err()
+    );
+    let hidden_input = bound
+        .stage_text(
+            &root,
+            "message",
+            &Sender::Host {
+                host: "hidden".into(),
+            },
+            &IntentId::try_from("hidden")?,
+            ("hidden", "host-only input"),
+        )
+        .await?;
+    assert!(reader.read_file(&hidden_input, None).await.is_err());
+    for hidden in [hidden_input.path(), ".system/effects/hidden"] {
+        assert!(
+            reader
+                .read_tool_path(&format!("volume:///output/{hidden}"), None, None)
+                .await
+                .is_err()
+        );
+    }
+    assert!(
+        reader
+            .authorize_tool_directory_read("volume:///output/", None)
+            .is_err()
+    );
+    // Private UI remains independently writable.
+    reader
+        .stage_tool_file_once(
+            OperationId::new(),
+            "volume:///private/ui/title",
+            b"title",
+            "text/plain",
+            "title",
+            None,
+        )
+        .await?;
+    let replay = context
+        .read_output_file_once("stdout/0")
+        .await?
+        .ok_or("missing original output")?;
+    assert_eq!(replay.0, file);
+    assert_eq!(replay.1.as_ref(), b"retained");
+    let mut source = futures::io::Cursor::new(b"streamed".as_slice());
+    let spill = context
+        .stage_output_stream_once("spill.log", &mut source, ("text/plain", "spill"))
+        .await?;
+    assert_eq!(spill.volume(), file.volume());
+    let (_, bytes, _) = reader
+        .read_tool_path_range(
+            &address,
+            Some(&selected.generation),
+            acyclic_fs::ByteRange {
+                offset: 3,
+                length: 5,
+            },
+            None,
+        )
+        .await?;
+    assert_eq!(bytes.as_ref(), b"ained");
+    assert_eq!(
+        reader
+            .read_tool_path(&format!("volume:///output/{}", spill.path()), None, None)
+            .await?
+            .1
+            .as_ref(),
+        b"streamed"
+    );
+    let output = bound
+        .turns()
+        .open_control(
+            &state,
+            &crate::agent::ContextAction::Clear,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?
+        .outputs
+        .stage(turn, b"{}")
+        .await?;
+    assert_eq!(
+        bound
+            .read_tool_output(&root, file.path(), Some(&output), 0, 32)
+            .await?
+            .0,
+        b"retained"
+    );
+    assert_eq!(
+        bound
+            .read_tool_output(&root, spill.path(), Some(&output), 0, 32)
+            .await?
+            .0,
+        b"streamed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn input_previews_pin_pending_messages_without_reading_the_whole_body() -> TestResult {
     use crate::agent::{InputPreview, InputPreviewStep, Message};
     use futures::StreamExt as _;
@@ -103,6 +375,11 @@ async fn input_previews_pin_pending_messages_without_reading_the_whole_body() ->
     let file = bound
         .stage_text(&root, "message", &by, &first, ("preview", &text))
         .await?;
+    assert_eq!(
+        file.volume(),
+        &crate::conversation::journal_volume(bound.volumes().provider.clone(), &root.id(),)?
+    );
+    assert!(bound.read_file(&root, &file, 0, 3).await.is_err());
     bound
         .agents()
         .send(

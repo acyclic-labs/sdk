@@ -588,12 +588,12 @@ impl StockExecution<'_> {
         let step = dispatch.step;
         let purpose_key = model_purpose_key(purpose);
         let io = self.io;
-        let mut text = self
-            .stock
-            .live_reply
-            .as_ref()
-            .filter(|_| live)
-            .map(LiveReply::dispatch);
+        let reply = if live {
+            journal.live_reply(operation_id)?
+        } else {
+            None
+        };
+        let mut text = reply.as_ref().map(LiveReply::dispatch);
         {
             let mut stream = stream;
             loop {

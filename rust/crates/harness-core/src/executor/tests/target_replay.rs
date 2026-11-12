@@ -188,7 +188,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     )?);
     assert_ne!(original.binding_identity(), foreign.binding_identity());
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
-    let bind = |filesystem| {
+    let bind = |filesystem, operation| {
         Bindings {
             filesystem,
             scope: runtime_scope.clone(),
@@ -196,7 +196,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         }
         .build()?
         .agent_context(&Capabilities::default(), content.clone())
-        .map(|task| task.with_execution_journal(journal.clone()))
+        .and_then(|task| task.with_execution_journal(journal.clone(), operation))
     };
     let base = uncompacted_executor(
         Model::new("fixture".into(), "bound-filesystem".into(), "1".into())?,
@@ -212,9 +212,10 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         name: "fs".into(),
         arguments: json!({"command":"commit -m base"}),
     };
-    let committing = base
-        .clone()
-        .with_task_context(&bind(Some(original.clone()))?, commit_operation)?;
+    let committing = base.clone().with_task_context(
+        &bind(Some(original.clone()), commit_operation)?,
+        commit_operation,
+    )?;
     StockExecution::ordinary(&committing)
         .settle_tool_call(
             &*journal,
@@ -235,7 +236,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     };
     let bound = base
         .clone()
-        .with_task_context(&bind(Some(original.clone()))?, operation)?;
+        .with_task_context(&bind(Some(original.clone()), operation)?, operation)?;
     let mut messages = vec![call_message(&invocation)];
     StockExecution::ordinary(&bound)
         .settle_tool_call(
@@ -269,7 +270,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     for filesystem in [Some(replacement.clone()), None, Some(foreign.clone())] {
         let changed = base
             .clone()
-            .with_task_context(&bind(filesystem)?, operation)?;
+            .with_task_context(&bind(filesystem, operation)?, operation)?;
         let error = StockExecution::ordinary(&changed)
             .settle_tool_call(
                 &*journal,
@@ -396,7 +397,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     for filesystem in [Some(replacement), None, Some(foreign)] {
         let bound = base
             .clone()
-            .with_task_context(&bind(filesystem)?, operation)?;
+            .with_task_context(&bind(filesystem, operation)?, operation)?;
         let error = StockExecution::ordinary(&bound)
             .settle_tool_call(
                 &*journal,
@@ -421,7 +422,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             RecordedCall::Started(_)
         ));
     }
-    let bound = base.with_task_context(&bind(Some(original))?, operation)?;
+    let bound = base.with_task_context(&bind(Some(original), operation)?, operation)?;
     let recovery = bound.clone().into_reconciliation();
     let error = StockExecution::ordinary(&recovery)
         .settle_tool_call(

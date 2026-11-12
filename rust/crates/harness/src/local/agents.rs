@@ -321,10 +321,6 @@ impl TurnContext for LocalContext {
             let hooks = local.turn_hooks(turn, &**writer).await?;
             let (executor, context) =
                 Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;
-            let executor = executor.with_live_reply(crate::executor::LiveReply::new(
-                Arc::clone(writer),
-                format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
-            ));
             // SessionStart runs once per agent, keyed by the agent itself, so
             // a forked child (which inherits its parent's tail) runs its own.
             #[cfg(any(test, not(target_arch = "wasm32")))]

@@ -60,6 +60,51 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn output_content(
+        &self,
+        operation: OperationId,
+    ) -> Result<Option<crate::runtime::ContentBindings>> {
+        self.require_operation(operation, None)?;
+        Ok(Some(crate::runtime::ContentBindings {
+            volume: self.volume.clone(),
+            reader: crate::filesystem::FilesystemContentVerifier::new(
+                Arc::clone(&self.host),
+                &self.verifier,
+                &self.scope,
+                super::MAXIMUM_PAYLOAD_BYTES,
+                None,
+            )?,
+            writer: Some(crate::filesystem::FilesystemContentPublisher::new(
+                Arc::clone(&self.host),
+                &self.volume,
+                &self.verifier,
+                &self.scope,
+                super::MAXIMUM_PAYLOAD_BYTES,
+                None,
+            )?),
+        }))
+    }
+
+    fn live_reply(&self, operation: OperationId) -> Result<Option<crate::executor::LiveReply>> {
+        self.require_operation(operation, None)?;
+        let publisher = crate::filesystem::FilesystemContentPublisher::new(
+            Arc::clone(&self.host),
+            &self.volume,
+            &self.verifier,
+            &self.scope,
+            super::MAXIMUM_PAYLOAD_BYTES,
+            None,
+        )?;
+        Ok(Some(crate::executor::LiveReply::new(
+            publisher,
+            format!(
+                "{}/{}",
+                crate::filesystem::TOOL_OUTPUT,
+                self.turn_operation(operation)
+            ),
+        )))
+    }
+
     fn model_boundary(&self) -> Option<&dyn crate::agent::ModelBoundary> {
         self.boundary.as_deref()
     }

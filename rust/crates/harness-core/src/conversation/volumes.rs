@@ -410,6 +410,10 @@ impl ContentGrant {
         self.authority.scope()
     }
 
+    pub(crate) const fn verifier(&self) -> &AuthorityVerifier {
+        self.authority.verifier()
+    }
+
     /// Resolves an authenticated read of `file`: the one read decision
     /// ([`crate::core::file_read_grant`]) every content path shares, signed.
     pub fn verify_read(
