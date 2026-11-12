@@ -39,7 +39,7 @@ async fn retained_content_comparisons_recheck_current_read_authority()
     ));
     {
         let recovered = bound
-            .operation_publication(publication_key, WorkBudget::UNBOUNDED, &cancel)
+            .operation_publication(publication_key, None, WorkBudget::UNBOUNDED, &cancel)
             .await?
             .value
             .ok_or("publication is missing")?;
@@ -131,7 +131,7 @@ async fn retained_content_comparisons_recheck_current_read_authority()
     for key in [publication_key, IdempotencyKey::new()] {
         assert!(matches!(
             bound
-                .operation_publication(key, WorkBudget::UNBOUNDED, &cancel)
+                .operation_publication(key, None, WorkBudget::UNBOUNDED, &cancel)
                 .await,
             Err(crate::OperationFailure {
                 error: WorkspaceError::AccessDenied,
@@ -140,7 +140,7 @@ async fn retained_content_comparisons_recheck_current_read_authority()
         ));
     }
     let recovered = owner
-        .operation_publication(publication_key, WorkBudget::UNBOUNDED, &cancel)
+        .operation_publication(publication_key, None, WorkBudget::UNBOUNDED, &cancel)
         .await?
         .value
         .ok_or("owner recovery is missing")?;

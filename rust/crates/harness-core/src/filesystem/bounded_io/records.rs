@@ -190,11 +190,6 @@ impl UploadRecord for FileRef {
         FileRef::logical_owned_bytes(self)
     }
 }
-impl PreparationRecord for (FileRef, Option<crate::resources::GenerationRef>) {
-    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
-        self.logical_owned_bytes().map(Some)
-    }
-}
 impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.0
@@ -213,5 +208,11 @@ impl UploadRecord for (FileRef, Option<crate::resources::GenerationRef>) {
 impl PreparationRecord for crate::resources::GenerationRef {
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         self.logical_owned_bytes().map(Some)
+    }
+}
+
+impl PreparationRecord for (u8, (FileRef, Option<crate::resources::GenerationRef>)) {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        self.1.logical_owned_bytes().map(Some)
     }
 }

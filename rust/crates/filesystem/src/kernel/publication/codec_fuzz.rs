@@ -3,10 +3,12 @@ use super::*;
 
 pub fn check(bytes: &[u8]) {
     let mut steps = 0;
-    let Ok(value) = decode_publication_evidence::<CanonicalDecodeError>(bytes, u64::MAX, |_| {
-        steps += 1;
-        Ok(())
-    }) else {
+    let Ok(value) =
+        decode_publication_evidence::<CanonicalDecodeError>(bytes, u64::MAX, None, |_| {
+            steps += 1;
+            Ok(())
+        })
+    else {
         return;
     };
     let length = publication_payload_length_with_evidence(
@@ -37,15 +39,16 @@ pub fn check(bytes: &[u8]) {
             CanonicalDecodeError::Invariant(crate::kernel::codec::CanonicalInvariant::Static(
                 "original publication admission refusal",
             ));
-        let result = decode_publication_evidence::<CanonicalDecodeError>(bytes, u64::MAX, |_| {
-            let current = calls;
-            calls += 1;
-            if current == stop {
-                Err(refused.clone())
-            } else {
-                Ok(())
-            }
-        });
+        let result =
+            decode_publication_evidence::<CanonicalDecodeError>(bytes, u64::MAX, None, |_| {
+                let current = calls;
+                calls += 1;
+                if current == stop {
+                    Err(refused.clone())
+                } else {
+                    Ok(())
+                }
+            });
         assert_eq!(result.err(), Some(refused));
         assert_eq!(calls, stop + 1);
     }
@@ -53,8 +56,13 @@ pub fn check(bytes: &[u8]) {
     for version in [0_u16, 1, 2, 3, 5, u16::MAX] {
         header[PAYLOAD_DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
-            decode_publication_evidence::<CanonicalDecodeError>(&header, u64::MAX, |_| Ok(()))
-                .err(),
+            decode_publication_evidence::<CanonicalDecodeError>(
+                &header,
+                u64::MAX,
+                None,
+                |_| Ok(())
+            )
+            .err(),
             Some(CanonicalDecodeError::UnsupportedVersion {
                 found: version,
                 expected: 4,
@@ -64,7 +72,8 @@ pub fn check(bytes: &[u8]) {
     let mut wrong = bytes.to_vec();
     wrong[PAYLOAD_DOMAIN.len() + 2 + 16 + value.publication.generation_root.encoded_len()] = 4;
     assert!(
-        decode_publication_evidence::<CanonicalDecodeError>(&wrong, u64::MAX, |_| Ok(())).is_err()
+        decode_publication_evidence::<CanonicalDecodeError>(&wrong, u64::MAX, None, |_| Ok(()))
+            .is_err()
     );
 }
 

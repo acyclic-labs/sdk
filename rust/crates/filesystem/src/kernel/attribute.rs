@@ -45,6 +45,9 @@ pub enum AttributeClass {
     WindowsStream,
     /// macOS resource fork or Finder metadata stream.
     MacResourceFork,
+    /// Object-backed application metadata. Never projected into native files,
+    /// extended attributes or alternate streams.
+    Annotation,
 }
 
 impl AttributeClass {
@@ -53,6 +56,7 @@ impl AttributeClass {
             Self::PosixXattr => 1,
             Self::WindowsStream => 2,
             Self::MacResourceFork => 3,
+            Self::Annotation => 4,
         }
     }
 
@@ -61,6 +65,7 @@ impl AttributeClass {
             1 => Ok(Self::PosixXattr),
             2 => Ok(Self::WindowsStream),
             3 => Ok(Self::MacResourceFork),
+            4 => Ok(Self::Annotation),
             value => Err(AttributeError::UnknownClass(value)),
         }
     }
@@ -103,7 +108,8 @@ impl AttributeName {
         &self.bytes
     }
 
-    pub(crate) fn retained_bytes(&self) -> usize {
+    /// Retained name backing, excluding the fixed-size name value.
+    pub fn retained_bytes(&self) -> usize {
         self.bytes.capacity()
     }
 }

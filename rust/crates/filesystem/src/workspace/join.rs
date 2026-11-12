@@ -216,6 +216,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinBuilde
                         &self.target.volume,
                         key.operation_id(),
                         None,
+                        None,
                         &mut accounting,
                         cancellation,
                     )

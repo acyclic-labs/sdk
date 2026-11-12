@@ -30,6 +30,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &'a [WorkspaceMutation],
         key: IdempotencyKey,
         io: &'a PreparationIo,
+        evidence: acyclic_stream::OwnedBytes,
+        metadata_key: AttributeName,
         staged: Option<(
             acyclic_fs::Transaction<A, O>,
             String,
@@ -43,6 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io,
             FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
             root_cut,
+            Some((evidence, metadata_key)),
             staged,
         )
     }
@@ -83,6 +86,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 publication,
                 None,
                 None,
+                None,
             )?
             .await
         })
@@ -96,6 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &'a PreparationIo,
         publication: FilePublication<'a>,
         root_cut: Option<acyclic_fs::PolicyCut>,
+        evidence: Option<(acyclic_stream::OwnedBytes, AttributeName)>,
         staged: Option<(
             acyclic_fs::Transaction<A, O>,
             String,
@@ -146,14 +151,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     pause().await;
                 }
                 Self::publish_mutations(&mut transaction, mutations, io)?.await?;
-                if let Some((path, content)) = content {
+                if let Some((path, content)) = &content {
                     io.sdk(
                         transaction
-                            .write_staged(&path, &[content], io, io.cancellation())
+                            .write_staged(
+                                path,
+                                std::slice::from_ref(content),
+                                io,
+                                io.cancellation(),
+                            )
                             .await,
                     )?;
                 }
-                Self::commit_publication(transaction, io, publication)?.await
+                if let Some((evidence, metadata_key)) = &evidence {
+                    // This path publishes one uploaded file, staged or inline.
+                    // Reuse its destination rather than allocate a second path.
+                    let path = content
+                        .as_ref()
+                        .map(|(path, _)| path.as_str())
+                        .or_else(|| {
+                            mutations.iter().find_map(|mutation| match mutation {
+                                WorkspaceMutation::PutFile { path, .. } => Some(path.as_str()),
+                                _ => None,
+                            })
+                        })
+                        .ok_or_else(|| io.invalid("upload publication has no file destination"))?;
+                    io.sdk(
+                        transaction
+                            .change_named_attribute(
+                                path,
+                                metadata_key,
+                                Some((
+                                    evidence.as_ref(),
+                                    acyclic_fs::NamedAttributeWriteMode::Upsert,
+                                )),
+                                io,
+                                io.cancellation(),
+                            )
+                            .await,
+                    )?;
+                }
+                let context = evidence
+                    .map(|(evidence, _)| publication_context(evidence, io))
+                    .transpose()?;
+                Self::commit_contextual_publication(transaction, io, publication, context)?.await
             };
             match root_cut {
                 Some(cut) => futures::future::Either::Left(cut.scope(operation)),
@@ -203,14 +244,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             Ok(())
         })
-    }
-
-    pub(in crate::filesystem::host) fn commit_publication<'a>(
-        transaction: acyclic_fs::Transaction<A, O>,
-        io: &'a PreparationIo,
-        publication: FilePublication<'a>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        Self::commit_contextual_publication(transaction, io, publication, None)
     }
 
     pub(in crate::filesystem::host) fn commit_contextual_publication<'a>(
@@ -334,4 +367,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         })
     }
+}
+
+pub(in crate::filesystem::host) fn publication_context(
+    evidence: acyclic_stream::OwnedBytes,
+    io: &PreparationIo,
+) -> Result<(
+    acyclic_fs::Digest,
+    acyclic_stream::OwnedBytes,
+    acyclic_fs::PublicationPermit,
+)> {
+    let work = WorkCounters {
+        bytes_hashed: evidence.len() as u64,
+        ..Default::default()
+    };
+    io.preflight(work)?;
+    let fingerprint = acyclic_fs::Digest::from_bytes(*blake3::hash(&evidence).as_bytes());
+    io.charge(work)?;
+    Ok((
+        fingerprint,
+        evidence,
+        acyclic_fs::PublicationPermit::Unrestricted,
+    ))
 }

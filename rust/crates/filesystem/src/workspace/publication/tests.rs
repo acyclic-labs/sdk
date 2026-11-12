@@ -53,7 +53,12 @@ async fn exercise_original_publication<
     let current = workspace.head(budget, &cancellation).await?.value.id();
     assert_ne!(current, original.id());
     let publication = workspace
-        .operation_publication(key, budget, &cancellation)
+        .operation_publication(
+            key,
+            Some(b"original context".len() as u64),
+            budget,
+            &cancellation,
+        )
         .await?;
     publication.work.verify(budget)?;
     let publication = publication.value.ok_or("publication disappeared")?;
@@ -77,6 +82,7 @@ async fn exercise_original_publication<
             &workspace.volume,
             key.operation_id(),
             Some(1),
+            None,
             &mut bounded,
             &cancellation,
         )
@@ -87,6 +93,17 @@ async fn exercise_original_publication<
         failure,
         WorkspaceError::Filesystem(crate::FsError::Decode(
             crate::kernel::CanonicalDecodeError::ObjectTooLarge { maximum: 1, .. }
+        ))
+    ));
+    let failure = workspace
+        .operation_publication(key, Some(0), budget, &cancellation)
+        .await
+        .err()
+        .ok_or("oversized original evidence was admitted")?;
+    assert!(matches!(
+        failure.error,
+        WorkspaceError::Filesystem(crate::FsError::Decode(
+            crate::kernel::CanonicalDecodeError::FieldTooLarge { maximum: 0, .. }
         ))
     ));
     #[cfg(not(target_arch = "wasm32"))]
@@ -113,7 +130,7 @@ async fn exercise_original_publication<
         drop(record);
         assert_eq!(native.live_allocation_bytes(), baseline);
         let recovered = workspace
-            .operation_publication(key, &native, &cancellation)
+            .operation_publication(key, None, &native, &cancellation)
             .await?
             .ok_or("publication absent")?;
         assert_eq!(recovered.evidence(), Some(b"original context".as_slice()));
@@ -137,7 +154,7 @@ async fn exercise_original_publication<
         );
     }
     let missing = workspace
-        .operation_publication(IdempotencyKey::new(), budget, &cancellation)
+        .operation_publication(IdempotencyKey::new(), None, budget, &cancellation)
         .await?;
     assert!(missing.value.is_none());
     let denied = WorkBudget {
@@ -145,14 +162,14 @@ async fn exercise_original_publication<
         ..budget
     };
     let failure = workspace
-        .operation_publication(key, denied, &cancellation)
+        .operation_publication(key, None, denied, &cancellation)
         .await
         .err()
         .ok_or("unfunded read admitted")?;
     assert_eq!(failure.work.backend_read_operations, 0);
     cancellation.cancel();
     let failure = workspace
-        .operation_publication(key, budget, &cancellation)
+        .operation_publication(key, None, budget, &cancellation)
         .await
         .err()
         .ok_or("cancelled read admitted")?;

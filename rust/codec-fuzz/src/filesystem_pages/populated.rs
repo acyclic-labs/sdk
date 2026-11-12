@@ -207,6 +207,7 @@ pub(super) fn seeds() -> Result<Seeds, Box<dyn std::error::Error>> {
             AttributeClass::PosixXattr,
             AttributeClass::WindowsStream,
             AttributeClass::MacResourceFork,
+            AttributeClass::Annotation,
         ] {
             attributes.push(AttributeEntry {
                 name: AttributeName::new(class, b"attribute".to_vec())?,

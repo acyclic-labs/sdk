@@ -4,6 +4,7 @@ use super::*;
 #[path = "publication_batch.rs"]
 mod batch;
 mod commit;
+pub(super) use commit::publication_context;
 
 type WorkspaceOperation<'a, T, E = WorkspaceError> = crate::conversation::BoundedContentFuture<
     'a,
@@ -379,24 +380,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // Invalidate the old index atomically, including same-byte writes.
         // The content writer supplies its own metadata in this transaction.
         if let Some(workspace) = metadata_workspace
-            && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
-                mutation
+            && let WorkspaceMutation::PutFile { path, .. } = mutation
         {
             let namespace = std::str::from_utf8(workspace.as_resource().key())
                 .map_err(|_| Error::Invalid("workspace name is not UTF-8".into()))?;
-            let metadata = super::keys::content_metadata_path_in_namespace_io(
+            let metadata = super::keys::content_metadata_key_in_namespace_io(
                 namespace,
                 path.trim_start_matches('/'),
-                true,
                 None,
             )?;
             match unmeasured_workspace_operation(|| {
-                transaction.remove(&metadata, budget, cancellation)
+                transaction.change_named_attribute(path, &metadata, None, budget, cancellation)
             })?
             .await?
             {
                 Ok(_) => {}
-                Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                Err(failure)
+                    if matches!(
+                        failure.error,
+                        WorkspaceError::NotFound
+                            | WorkspaceError::Filesystem(acyclic_fs::FsError::NotFound)
+                    ) => {}
                 Err(failure) => return Err(map_error(failure.error)),
             }
         }

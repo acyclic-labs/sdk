@@ -78,19 +78,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             else {
                 return Ok(None);
             };
-            let Some(generation) = io.sdk(
+            let Some(publication) = io.sdk(
                 opened
-                    .operation_generation(operation, io, io.cancellation())
+                    .operation_publication(
+                        operation,
+                        Some(maximum_receipt_bytes),
+                        io,
+                        io.cancellation(),
+                    )
                     .await,
             )?
             else {
                 return Ok(None);
             };
-            let path = content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
-            let bytes =
-                read_generation(&generation, &path, Some(maximum_receipt_bytes), Some(io)).await?;
-            let receipt: ChangeReceipt = io.decode_json(&bytes)?;
-            if receipt.0 != 2 {
+            let generation = publication.generation();
+            let bytes = super::publication::publication_evidence(publication.evidence(), Some(io))?;
+            let receipt: ChangeReceipt = io.decode_json(bytes)?;
+            if receipt.0 != 1 {
                 return Err(io.invalid("unsupported conditional publication receipt"));
             }
             let payload = change_payload(grant.policy_scope(), volume, io)?;
@@ -157,10 +161,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             access::require_current(&opened, &view.0, io).await?;
             grant.recheck(Some(io))?;
-            bounded_io::retain(&generation, Some(io)).await?;
+            bounded_io::retain(generation, Some(io)).await?;
             let count = receipt.1.len();
             self.finish_change_files(
-                &generation,
+                generation,
                 receipt
                     .1
                     .into_iter()
@@ -294,9 +298,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             // Versioned as a fresh public contract; the key uses the original
             // workspace operation index and the receipt commits with all files.
-            let receipt = io.encode(&(2_u8, &records), io.remaining()?.bytes_encoded, true)?;
-            let receipt_path =
-                content_receipt_path_io(volume, key.as_str(), false, true, Some(io))?;
+            let receipt = io.encode(&(1_u8, &records), io.remaining()?.bytes_encoded, true)?;
             let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
             let root = self.open(&reference, Some(io)).await?;
             let binding = self
@@ -334,7 +336,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let prior = io.sdk(
                 opened
-                    .operation_generation(operation, io, io.cancellation())
+                    .operation_publication(operation, None, io, io.cancellation())
                     .await,
             )?;
             let root_cut = if opened.id() != root.id() && prior.is_none() {
@@ -353,10 +355,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 access::require(&view.0, action, change.path(), io)?;
             }
             let generation = if let Some(prior) = prior {
-                let recorded =
-                    read_generation(&prior, &receipt_path, Some(receipt.len() as u64), Some(io))
-                        .await?;
-                if recorded.as_ref() != receipt.as_ref() {
+                if super::publication::publication_evidence(prior.evidence(), Some(io))?
+                    != receipt.as_ref()
+                {
                     return Err(stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Conflict,
@@ -367,7 +368,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(root_view) = &root_view {
                     access::require_current(&root, &root_view.0, io).await?;
                 }
-                prior
+                prior.into_generation()
             } else {
                 let selected = io.sdk(opened.generation(view.2, io, io.cancellation()).await)?;
                 let selected_ref = self.generation_ref_id(view.2, Some(io))?;
@@ -388,12 +389,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 &mut Some(&mut io.history_io()),
                             )?;
                             let metadata =
-                                content_metadata_path_io(volume, change.path(), true, Some(io))?;
+                                content_metadata_key_io(volume, change.path(), Some(io))?;
                             self.require_unchanged_content(
                                 &opened,
                                 source_generation,
                                 &selected_ref,
-                                [&metadata, &absolute],
+                                (&absolute, &metadata),
                                 Some(io),
                             )?
                             .await?;
@@ -508,56 +509,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             io.sdk(transaction.remove(&absolute, io, io.cancellation()).await)?;
                         }
                     }
-                    let metadata_path =
-                        content_metadata_path_io(volume, change.path(), true, Some(io))?;
                     if let Some(file) = record.file() {
+                        let metadata_key =
+                            content_metadata_key_io(volume, change.path(), Some(io))?;
                         let bytes = io.encode(
-                            &(file, Option::<&GenerationRef>::None),
+                            &(1_u8, (file, Option::<&GenerationRef>::None)),
                             io.remaining()?.bytes_encoded,
                             true,
                         )?;
                         io.sdk(
                             transaction
-                                .create_dir_all(
-                                    metadata_path
-                                        .rsplit_once('/')
-                                        .ok_or_else(|| io.invalid("metadata parent is absent"))?
-                                        .0,
+                                .change_named_attribute(
+                                    &absolute,
+                                    &metadata_key,
+                                    Some((
+                                        bytes.as_ref(),
+                                        acyclic_fs::NamedAttributeWriteMode::Upsert,
+                                    )),
                                     io,
                                     io.cancellation(),
                                 )
                                 .await,
                         )?;
-                        io.sdk(
-                            transaction
-                                .write(&metadata_path, bytes, io, io.cancellation())
-                                .await,
-                        )?;
-                    } else {
-                        io.sdk_if_present(
-                            transaction
-                                .remove(&metadata_path, io, io.cancellation())
-                                .await,
-                        )?;
                     }
+                    // Removing a file removes its annotation in the same mutation.
                 }
-                io.sdk(
-                    transaction
-                        .create_dir_all("/.system/harness-uploads", io, io.cancellation())
-                        .await,
-                )?;
-                io.sdk(
-                    transaction
-                        .write(&receipt_path, receipt, io, io.cancellation())
-                        .await,
-                )?;
                 let root_fence = root_view
                     .as_ref()
                     .and_then(|view| view.0.publication_fence());
-                let publication = Self::commit_publication(
+                let publication = Self::commit_contextual_publication(
                     transaction,
                     io,
                     workspaces::FilePublication::Authorized(fence, grant, root_fence),
+                    Some(workspaces::publication_context(receipt, io)?),
                 )?;
                 match root_cut {
                     Some(cut) => cut.scope(publication).await?,

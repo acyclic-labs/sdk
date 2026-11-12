@@ -183,12 +183,15 @@ impl<A, O> FilesystemHost<A, O> {
 
 mod content;
 mod publication;
-pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
+pub(in crate::filesystem) use publication::{
+    PublicationLookup, PublicationPurpose, publication_evidence,
+};
 mod content_selection;
 mod diff;
 mod directory;
 mod family;
 mod keys;
+mod metadata;
 mod ranges;
 pub(crate) mod reads;
 mod seed;
@@ -198,12 +201,11 @@ mod volume_access;
 pub use import::VolumeImportPlan;
 mod volumes;
 mod workspaces;
-pub(in crate::filesystem) use keys::{content_metadata_path_io, content_receipt_path_io};
+pub(in crate::filesystem) use keys::content_metadata_key_io;
 pub(crate) use keys::{content_path, map_error};
 pub use keys::{filesystem_key, workspace_ref};
-pub(in crate::filesystem) use publication::{
-    content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
-};
+pub(in crate::filesystem) use metadata::read_file_annotation;
+pub(in crate::filesystem) use publication::decode_content_metadata;
 pub(in crate::filesystem) use reads::{read_generation, read_generation_if_present};
 
 use crate::executor::stock_boundary;

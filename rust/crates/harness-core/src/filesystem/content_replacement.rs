@@ -6,7 +6,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &'a Workspace<A, O>,
         original: &'a GenerationRef,
         authorized: &'a GenerationRef,
-        paths: [&'a str; 2],
+        content: (&'a str, &'a AttributeName),
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -23,28 +23,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // the file payload also catches writes that bypassed that metadata.
             // Metadata is optional for files authored outside this publisher.
             // Its matching absence is stable, while the actual source must exist.
-            for (index, path) in paths.into_iter().enumerate() {
-                let matches = if index == 0 {
-                    io.sdk(
-                        authorized
-                            .matches_optional_file_payload(&original, path, io, io.cancellation())
-                            .await,
-                    )?
-                } else {
-                    io.sdk(
-                        authorized
-                            .matches_file_payload(&original, path, io, io.cancellation())
-                            .await,
-                    )?
-                };
-                if !matches {
-                    return Err(stock_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Conflict,
-                        "source file changed before content authorization",
-                    )
-                    .tool_input());
-                }
+            let before = io.sdk(
+                original
+                    .named_attribute_value(content.0, content.1, io, io.cancellation())
+                    .await,
+            )?;
+            let after = io.sdk(
+                authorized
+                    .named_attribute_value(content.0, content.1, io, io.cancellation())
+                    .await,
+            )?;
+            let unchanged = before == after
+                && io.sdk(
+                    authorized
+                        .matches_file_payload(&original, content.0, io, io.cancellation())
+                        .await,
+                )?;
+            if !unchanged {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Conflict,
+                    "source file changed before content authorization",
+                )
+                .tool_input());
             }
             Ok(())
         })
@@ -111,11 +112,13 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
         .map(|receipt| receipt.value)
         .map_err(|failure| map_error(failure.error))?;
     let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+    let annotation = AttributeName::new(AttributeClass::Annotation, b"publication".to_vec())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     host.require_unchanged_content(
         &workspace,
         &original,
         &original,
-        ["/file.txt", "/file.txt"],
+        ("/file.txt", &annotation),
         Some(&io),
     )?
     .await?;
@@ -123,7 +126,7 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
         &workspace,
         &original,
         &unrelated,
-        ["/.system/absent-metadata", "/file.txt"],
+        ("/file.txt", &annotation),
         Some(&io),
     )?
     .await?;
@@ -132,7 +135,7 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
             &workspace,
             &original,
             &unrelated,
-            ["/.system/absent-metadata", "/absent-source"],
+            ("/absent-source", &annotation),
             Some(&io),
         )?
         .await
@@ -143,7 +146,7 @@ async fn changed_content_refuses_as_tool_feedback_without_reclassifying_native_f
             &workspace,
             &original,
             &changed,
-            ["/file.txt", "/file.txt"],
+            ("/file.txt", &annotation),
             Some(&io),
         )?
         .await

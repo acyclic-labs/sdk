@@ -41,19 +41,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let operation = selection_key(operation, io)?;
         let Some(binding) = io.sdk(
-            root.operation_publication(operation, io, io.cancellation())
-                .await,
+            root.operation_publication(
+                operation,
+                Some(SELECTION_BYTES as u64),
+                io,
+                io.cancellation(),
+            )
+            .await,
         )?
         else {
             return Ok(None);
         };
-        let bytes = binding.evidence().ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Storage,
-                "content workspace binding has no original evidence",
-            )
-        })?;
+        let bytes = super::publication::publication_evidence(binding.evidence(), Some(io))?;
         if bytes.len() != SELECTION_BYTES || bytes[0] != 1 {
             return Err(stock_boundary(
                 Some(io),

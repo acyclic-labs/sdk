@@ -24,78 +24,39 @@ pub fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {
     FilesystemKey::from_bytes(bytes)
 }
 
-pub(in crate::filesystem) fn content_metadata_path_io(
+pub(in crate::filesystem) fn content_metadata_key_io(
     volume: &VolumeRef,
     path: &str,
-    absolute: bool,
     io: Option<&PreparationIo>,
-) -> Result<String> {
+) -> Result<AttributeName> {
     let namespace = crate::executor::with_history_io(io, |work| volume.storage_name(work))?;
     let _hold = io
         .map(|io| io.guard_owned(namespace.capacity() as u64))
         .transpose()?;
-    content_metadata_path_in_namespace_io(&namespace, path, absolute, io)
+    content_metadata_key_in_namespace_io(&namespace, path, io)
 }
 
-// Publication indexes are volume-local, even when a fork or join inherits
-// their containing tree. A path-only key aliases the source's FileRef in the
-// destination. Bind custody at addressing time, before either record is read.
-pub(super) fn content_metadata_path_in_namespace_io(
+// A fork or join can inherit file annotations. Bind their keys to the destination
+// volume and path so it cannot adopt another publication's FileRef.
+pub(super) fn content_metadata_key_in_namespace_io(
     namespace: &str,
     path: &str,
-    absolute: bool,
     io: Option<&PreparationIo>,
-) -> Result<String> {
-    content_identity_path_io(
-        path,
-        Some(namespace),
-        absolute,
-        ".system/harness-file-metadata/v1/",
-        io,
-    )
-}
-
-/// Internal publications already have a path identity. Their canonical metadata
-/// is also their recovery receipt; only caller-selected upload keys need an index.
-pub(in crate::filesystem) fn content_receipt_path_io(
-    volume: &VolumeRef,
-    identity: &str,
-    internal: bool,
-    absolute: bool,
-    io: Option<&PreparationIo>,
-) -> Result<String> {
-    if internal {
-        content_metadata_path_io(volume, identity, absolute, io)
-    } else {
-        content_identity_path_io(identity, None, absolute, ".system/harness-uploads/", io)
-    }
-}
-
-fn content_identity_path_io(
-    path: &str,
-    namespace: Option<&str>,
-    absolute: bool,
-    prefix: &str,
-    io: Option<&PreparationIo>,
-) -> Result<String> {
-    const SUFFIX: &str = ".json";
-    let capacity = usize::from(absolute) + prefix.len() + 64 + SUFFIX.len();
+) -> Result<AttributeName> {
+    const PREFIX: &[u8] = b"acyclic.harness.file-metadata.v1.";
+    let capacity = PREFIX.len() + 64;
     let hash_work = acyclic_fs::WorkCounters {
-        bytes_hashed: path.len() as u64 + namespace.map_or(0, |name| name.len() as u64 + 1),
+        bytes_hashed: path.len() as u64 + namespace.len() as u64 + 1,
         ..Default::default()
     };
     if let Some(io) = io {
         io.preflight(hash_work)?;
     }
-    let hash = if let Some(namespace) = namespace {
-        let mut hash = blake3::Hasher::new_derive_key("acyclic harness file index v1");
-        hash.update(namespace.as_bytes());
-        hash.update(&[0]);
-        hash.update(path.as_bytes());
-        hash.finalize()
-    } else {
-        blake3::hash(path.as_bytes())
-    };
+    let mut hash = blake3::Hasher::new_derive_key("acyclic harness file index v1");
+    hash.update(namespace.as_bytes());
+    hash.update(&[0]);
+    hash.update(path.as_bytes());
+    let hash = hash.finalize();
     if let Some(io) = io {
         io.charge(hash_work)?;
         io.retain_owned(capacity as u64)?;
@@ -105,23 +66,20 @@ fn content_identity_path_io(
         })?;
         io.allocation_attempt(capacity as u64)?;
     }
-    let mut encoded = String::with_capacity(capacity);
-    if absolute {
-        encoded.push('/');
-    }
-    encoded.push_str(prefix);
-    encoded.push_str(&hash.to_hex());
-    encoded.push_str(SUFFIX);
+    let mut name = Vec::with_capacity(capacity);
+    name.extend_from_slice(PREFIX);
+    name.extend_from_slice(hash.to_hex().as_bytes());
     if let Some(io) = io {
-        if encoded.capacity() > capacity {
-            io.retain_owned((encoded.capacity() - capacity) as u64)?;
+        if name.capacity() > capacity {
+            io.retain_owned((name.capacity() - capacity) as u64)?;
         }
         io.charge(acyclic_fs::WorkCounters {
             bytes_copied: capacity as u64,
             ..Default::default()
         })?;
     }
-    Ok(encoded)
+    AttributeName::new(AttributeClass::Annotation, name)
+        .map_err(|error| Error::Storage(error.to_string()))
 }
 
 pub(crate) fn map_error(error: WorkspaceError) -> Error {

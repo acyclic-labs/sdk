@@ -77,8 +77,13 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         listing: &crate::kernel::AttributeListing,
     ) -> Result<MountAttributePage, MountSourceError> {
         let mut names = self.vec(listing.entries.len())?;
+        let mut has_more = listing.has_more;
         for entry in &listing.entries {
             self.items(1)?;
+            if entry.name.class() == AttributeClass::Annotation {
+                has_more = false;
+                break;
+            }
             if entry.name.class() != AttributeClass::PosixXattr {
                 return Err(MountSourceError::Unsupported(
                     "POSIX mount encountered a non-POSIX named attribute".into(),
@@ -86,7 +91,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             }
             names.push(self.copy_bytes(entry.name.as_bytes())?);
         }
-        let next_cursor = if listing.has_more {
+        let next_cursor = if has_more {
             names.last().map(|name| self.copy_bytes(name)).transpose()?
         } else {
             None

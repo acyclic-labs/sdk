@@ -19,6 +19,7 @@ pub fn attribute_class(value: &str) -> Result<AttributeClass, &'static str> {
         "posix-xattr" => Ok(AttributeClass::PosixXattr),
         "windows-stream" => Ok(AttributeClass::WindowsStream),
         "mac-resource-fork" => Ok(AttributeClass::MacResourceFork),
+        "annotation" => Ok(AttributeClass::Annotation),
         _ => Err("unknown named-attribute class"),
     }
 }
@@ -30,6 +31,7 @@ pub const fn attribute_class_name(value: AttributeClass) -> &'static str {
         AttributeClass::PosixXattr => "posix-xattr",
         AttributeClass::WindowsStream => "windows-stream",
         AttributeClass::MacResourceFork => "mac-resource-fork",
+        AttributeClass::Annotation => "annotation",
     }
 }
 

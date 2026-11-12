@@ -20,9 +20,25 @@ fn materialize_policy(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
                 &cancellation,
             )
             .await?;
+        let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
+        let annotation = crate::kernel::AttributeName::new(
+            crate::kernel::AttributeClass::Annotation,
+            b"user.retained".to_vec(),
+        )?;
+        checkout
+            .change_named_attribute(
+                &root,
+                &annotation,
+                Some((
+                    b"application annotation",
+                    crate::NamedAttributeWriteMode::Create,
+                )),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
         #[cfg(target_os = "linux")]
         {
-            let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
             let name = crate::kernel::AttributeName::new(
                 crate::kernel::AttributeClass::PosixXattr,
                 b"user.retained".to_vec(),
@@ -50,6 +66,14 @@ fn materialize_policy(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             .await?
             .value;
         assert_eq!(retained.ok_or("policy disappeared")?.bytes.as_ref(), bytes);
+        let retained = checkout
+            .read_named_attribute(&root, &annotation, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        assert_eq!(
+            retained.ok_or("annotation disappeared")?.bytes.as_ref(),
+            b"application annotation"
+        );
         assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
         #[cfg(target_os = "linux")]
         assert!(matches!(
@@ -78,8 +102,8 @@ fn volume_policy_is_not_a_native_extended_attribute() -> Result<(), Box<dyn std:
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
-    // Materialization preserves every policy payload in the volume while never
-    // exporting it through an operating-system extended attribute or stream.
+    // Projection preserves authority metadata and application annotations in
+    // the volume without exporting them through native files or attributes.
     #[test]
     fn native_projection_preserves_reserved_policy(bytes in prop::collection::vec(any::<u8>(), 0..128)) {
         materialize_policy(&bytes).map_err(|error| TestCaseError::fail(error.to_string()))?;
