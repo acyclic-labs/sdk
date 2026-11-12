@@ -18,7 +18,15 @@ origin. These are original record addresses, including for inherited records;
 the search does not copy records into a second store. History, inbox decisions,
 child records and logs in the subtree use the same traversal.
 
-`page-size` bounds work, including nonmatching records and namespace
+Canonical message and conversation records reference immutable files rather
+than embedding their bodies. The shared content matcher resolves those exact
+references through the existing content reader and the caller's current grants.
+A matching body also returns its original `FileRef`. Unauthorized referenced
+content produces no hit. Each step reads a bounded range; overlapping ranges
+come from the original file so matches can cross chunk boundaries without
+trusting bytes supplied by a continuation.
+
+`page-size` bounds work, including nonmatching record/content steps and namespace
 observations. It is a chunk size, not a total-result limit. An empty page with a
 `next` token is progress. Continue until `next` is absent. The first observation
 pins the namespace cut, excluding concurrent appends and new descendants from
