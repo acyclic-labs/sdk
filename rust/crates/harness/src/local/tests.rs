@@ -128,6 +128,14 @@ pub(super) async fn request_text(
                 text.push_str(body);
                 text.push('\n');
             }
+            if let crate::model::ModelContentPart::ToolResult {
+                content: crate::model::ToolResultContent::Error { message },
+                ..
+            } = part
+            {
+                text.push_str(message);
+                text.push('\n');
+            }
         }
         for (file, policy) in message.content.file_parts() {
             if matches!(

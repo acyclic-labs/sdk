@@ -17,6 +17,16 @@ fn call(name: &str, arguments: serde_json::Value) -> ScriptedTurn {
     ])
 }
 
+// These scenarios exercise question authority and replies, not capacity admission.
+// Use the same disabled-compaction fixture policy as filesystem command tests.
+fn question_config(
+    directory: &Path,
+    volume: VolumeRef,
+    provider: Arc<dyn ModelProvider>,
+) -> Result<LocalHarnessConfig> {
+    Ok(volume_config(directory, volume, provider)?
+        .compaction(crate::context::CompactionPolicy::Disabled))
+}
 const ASK: &str = "Choose the color\n```input choose id=color\n- blue\n- green\n```\n";
 
 #[tokio::test]
@@ -30,7 +40,7 @@ async fn headless_question_plugin_has_no_declaration_and_file_writes_cannot_ask(
         ScriptedTurn::Text("I chose blue within the given authority.".into()),
     ]);
     let harness = Arc::new(
-        LocalHarness::open(volume_config(
+        LocalHarness::open(question_config(
             directory.path(),
             volume(directory.path()).await?,
             provider.clone(),
@@ -38,7 +48,8 @@ async fn headless_question_plugin_has_no_declaration_and_file_writes_cannot_ask(
         .await?,
     );
     let mut observed = ObservedConversation::open(&harness).await?;
-    observed.send("headless", "Choose a color").await?;
+    let entry = observed.send("headless", "Choose a color").await?;
+    assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
     assert!(
@@ -46,10 +57,10 @@ async fn headless_question_plugin_has_no_declaration_and_file_writes_cannot_ask(
             .iter()
             .all(|request| request.tools.iter().all(|tool| tool.name != "ask_question"))
     );
+    let refusal = request_text(&harness, &requests[1]).await?;
     assert!(
-        request_text(&harness, &requests[1])
-            .await?
-            .contains("only the orchestrator role may ask the human")
+        refusal.contains("only the orchestrator role may ask the human"),
+        "{refusal}"
     );
     assert!(!matches!(
         observed.conversation.phase().await?,
@@ -72,7 +83,7 @@ async fn interactive_orchestrator_asks_directly_and_receives_a_generation_bound_
     ]);
     let harness = Arc::new(
         LocalHarness::open(
-            volume_config(
+            question_config(
                 directory.path(),
                 volume(directory.path()).await?,
                 provider.clone(),
@@ -137,7 +148,7 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
         ScriptedTurn::Text("Worker reports ambiguity to its parent.".into()),
         ScriptedTurn::Text("Nested orchestrator ready.".into()),
     ]);
-    let config = volume_config(
+    let config = question_config(
         directory.path(),
         volume(directory.path()).await?,
         provider.clone(),
@@ -194,7 +205,7 @@ async fn sessions_pin_question_choice_independently_of_the_serving_workspace() -
         ["headless", "interactive", "headless again"].map(|text| ScriptedTurn::Text(text.into())),
     );
     let harness = Arc::new(
-        LocalHarness::open(volume_config(
+        LocalHarness::open(question_config(
             directory.path(),
             volume(directory.path()).await?,
             provider.clone(),
@@ -249,7 +260,7 @@ async fn question_tool_cannot_publish_workspace_files() -> Result<()> {
     }));
     let harness = Arc::new(
         LocalHarness::open(
-            volume_config(
+            question_config(
                 directory.path(),
                 volume(directory.path()).await?,
                 provider.clone(),
@@ -268,10 +279,10 @@ async fn question_tool_cannot_publish_workspace_files() -> Result<()> {
             .await?;
         let requests = provider.requests();
         assert_eq!(requests.len(), 2 * (index + 1));
+        let refusal = request_text(&harness, &requests[2 * index + 1]).await?;
         assert!(
-            request_text(&harness, &requests[2 * index + 1])
-                .await?
-                .contains("ask_question requires a private ui/ file")
+            refusal.contains("ask_question requires a private ui/ file"),
+            "{refusal}"
         );
         assert!(!matches!(
             observed.conversation.phase().await?,
