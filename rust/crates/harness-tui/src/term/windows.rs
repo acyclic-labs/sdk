@@ -50,28 +50,37 @@ impl super::console_owner::CloseWake for Arc<ffi::ConsoleClose> {
 }
 
 type ConsoleOwner = Owner<ConsoleIo, Arc<ffi::ConsoleClose>>;
-type ConsoleSlot = Mutex<Option<Arc<ConsoleOwner>>>;
-static CONSOLE: OnceLock<io::Result<ConsoleSlot>> = OnceLock::new();
+struct ConsoleSlot {
+    owner: Option<Arc<ConsoleOwner>>,
+    exiting: bool,
+}
+static CONSOLE: Mutex<ConsoleSlot> = Mutex::new(ConsoleSlot {
+    owner: None,
+    exiting: false,
+});
+static CONTROL: OnceLock<io::Result<()>> = OnceLock::new();
 
 fn close_console(owner: &Arc<ConsoleOwner>) -> io::Result<()> {
-    let Some(Ok(slot)) = CONSOLE.get() else {
-        return Err(io::ErrorKind::NotConnected.into());
-    };
-    let mut current = slot.lock().map_err(|_| io::ErrorKind::Other)?;
     Owner::close(owner, ConsoleIo::restore)?;
+    let mut current = CONSOLE.lock().map_err(|_| io::ErrorKind::Other)?;
     if current
+        .owner
         .as_ref()
         .is_some_and(|live| Arc::ptr_eq(live, owner))
     {
-        *current = None;
+        current.owner = None;
     }
     Ok(())
 }
 
 fn console_control(event: u32) -> bool {
     if matches!(event, 0 | 1 | 2 | 5 | 6)
-        && let Some(Ok(slot)) = CONSOLE.get()
-        && let Some(owner) = slot.lock().ok().and_then(|current| current.clone())
+        && let Some(owner) = CONSOLE.lock().ok().and_then(|mut current| {
+            // Restoration can free descriptors, but an exiting process must
+            // never admit another owner before its default handler terminates.
+            current.exiting = true;
+            current.owner.clone()
+        })
     {
         let _ = close_console(&owner);
     }
@@ -195,15 +204,15 @@ impl Tty {
     }
     /// Capture modes and code pages before enabling VT and UTF-8.
     pub fn open() -> io::Result<Self> {
-        let slot = CONSOLE
-            .get_or_init(|| {
-                ffi::console_register(console_control)?;
-                Ok(Mutex::new(None))
-            })
+        CONTROL
+            .get_or_init(|| ffi::console_register(console_control))
             .as_ref()
             .map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
-        let mut current = slot.lock().map_err(|_| io::ErrorKind::Other)?;
-        if current.is_some() {
+        let mut current = CONSOLE.lock().map_err(|_| io::ErrorKind::Other)?;
+        if current.exiting {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        if current.owner.is_some() {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
         let input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
@@ -223,11 +232,10 @@ impl Tty {
         );
         let closed = Arc::new(ffi::ConsoleClose::new()?);
         let owner = Owner::notifying(guard, ffi::cancel_thread, Arc::clone(&closed));
-        *current = Some(Arc::clone(&owner));
+        current.owner = Some(Arc::clone(&owner));
+        drop(current);
         if let Err(error) = Owner::run(&owner, None, |guard| guard.writer().reapply()) {
-            if Owner::close(&owner, ConsoleIo::restore).is_ok() {
-                *current = None;
-            }
+            let _ = close_console(&owner);
             return Err(error);
         }
         Ok(Self {
