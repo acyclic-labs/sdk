@@ -335,10 +335,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     }
                 }
                 let before = selected.0.entries.capacity();
-                crate::store::history::reserve(
+                crate::store::history::reserve_for_push(
                     &mut selected.0.entries,
-                    1,
-                    &mut Some(&mut io.history_io()),
+                    &mut io.history_io(),
                 )?;
                 selected.1.adopt(
                     ((selected.0.entries.capacity() - before)
