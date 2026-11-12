@@ -52,7 +52,7 @@ impl CheckoutTools {
             if reconciliation::recover(&workspace, view, &|| async { Ok(()) }).await? {
                 state.watcher = None;
             }
-            workspace::volumes::sync(&state.mounts).await?;
+            workspace::volumes::sync(&workspace.mounts).await?;
             {
                 let State {
                     active, watcher, ..
@@ -72,7 +72,7 @@ impl CheckoutTools {
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
             let check = owner_check(Arc::clone(&workspace), control);
-            let mounts = Arc::clone(&state.mounts);
+            let mounts = Arc::clone(&workspace.mounts);
             let (result, mut state) = workspace::volumes::native_scope(&mounts, async |claims| {
                 // Pin the active projections, after native_scope has mounted
                 // them. Binding the dormant backing directory would fence a
@@ -81,7 +81,7 @@ impl CheckoutTools {
                 let grant = match &self.execution_grant {
                     Some(grant) => Some(grant.clone()),
                     None => crate::filesystem::native_process::shell::workspace_grant(
-                        &state.mounts,
+                        &mounts,
                         &mut environment,
                     )?,
                 };

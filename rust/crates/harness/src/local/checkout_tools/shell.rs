@@ -44,7 +44,7 @@ impl CheckoutTools {
         };
         let invocation = native_process::shell::prepare(
             input,
-            &state.mounts,
+            &workspace.mounts,
             invocation,
             self.clock.now_unix_millis() / 1000,
         )?;
@@ -61,7 +61,7 @@ impl CheckoutTools {
         let capture_control = control.clone();
         let shutdown = workspace.shutdown.clone();
         let spill_name = format!("shell-{operation}.log");
-        let spill_root = state
+        let spill_root = workspace
             .mounts
             .scratch_root
             .clone()

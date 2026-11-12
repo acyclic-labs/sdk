@@ -450,7 +450,6 @@ pub(super) async fn open(
     let mounts = Arc::new(mounts);
     let state = StateArc::new(AsyncMutex::new(super::checkout_tools::State::new(
         view.workspace().id(),
-        Arc::clone(&mounts),
     )));
     Ok(LocalWorkspace {
         shutdown: acyclic_fs::CancellationToken::new(),

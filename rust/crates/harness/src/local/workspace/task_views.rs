@@ -251,10 +251,7 @@ impl LocalWorkspace {
             selection_reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(all(test, not(loom)))]
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&mounts),
-            ))),
+            state: StateArc::new(AsyncMutex::new(State::new(view.workspace().id()))),
             mounts: Arc::clone(&mounts),
             binding: None,
             binding_owner: None,
@@ -351,7 +348,7 @@ impl LocalWorkspace {
                 workspace.state = StateArc::new(AsyncMutex::new(State {
                     active,
                     initialized: true,
-                    ..State::new(initial_view, Arc::clone(&workspace.mounts))
+                    ..State::new(initial_view)
                 }));
             }
             let workspace = Arc::new(workspace);
@@ -382,16 +379,12 @@ impl LocalWorkspace {
         owner: &dyn super::owner::ViewOwner,
     ) -> Result<Arc<LocalWorkspace>> {
         if self.mounted.is_none() {
-            // The primary selection is shared, but each caller retains its
-            // own auxiliary volumes for the duration of this command guard.
-            state.mounts = Arc::clone(&self.mounts);
             return Ok(self.clone());
         }
         let view = state.active.as_ref().unwrap_or_else(|| self.view());
         let id = view.workspace().id();
         if id == state.initial_view {
             state.workspace = None;
-            state.mounts = Arc::clone(&self.mounts);
             return Ok(self.clone());
         }
         if let Some(workspace) = self.cached_selected_workspace(state) {
@@ -429,10 +422,7 @@ impl LocalWorkspace {
             binding_owner: self.binding_owner.clone(),
             bindings: self.bindings.clone(),
             // This cached physical handle must not retain its owning cache.
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&mounts),
-            ))),
+            state: StateArc::new(AsyncMutex::new(State::new(view.workspace().id()))),
             identity: served_identity(&mounted)?,
             path,
             fresh: false,
@@ -448,7 +438,6 @@ impl LocalWorkspace {
             mount_authority: self.mount_authority.clone(),
         });
         owner.verify().await?;
-        state.mounts = mounts;
         state.workspace = Some((id, workspace.clone()));
         Ok(workspace)
     }

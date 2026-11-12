@@ -12,7 +12,28 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .state_directory(state.path().join("runtime")),
     )
     .await?;
-    let session_bindings = harness.session_bindings();
+    let shared = VolumeRef::new(
+        harness.shared.provider().clone(),
+        "other-shared".into(),
+        VolumeClass::SessionShared,
+        harness.shared.owner().clone(),
+        &mut None,
+    )?;
+    harness.files.create_volume(&shared).await?;
+    let grants = crate::Capabilities::new([
+        shared.capability(crate::conversation::VolumeOperation::Write, &mut None)?
+    ]);
+    let signed = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("test signing custody".into()))?
+        .bootstrap_scope("other-shared", &grants, None, &mut None)?;
+    let mut session_bindings = harness.session_bindings();
+    session_bindings
+        .iter_mut()
+        .find(|entry| entry.name == "shared")
+        .ok_or_else(|| Error::NotFound("shared binding".into()))?
+        .source = crate::agent::WorkspaceSource::Volume(shared);
     let mut changed_bindings = session_bindings.clone();
     changed_bindings[1].source = crate::agent::WorkspaceSource::Volume(harness.project.clone());
     let mut changed_mode = session_bindings.clone();
@@ -39,10 +60,8 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .await
             .map_err(storage)
     };
-    let authority = crate::filesystem::NativeMountAuthority::admitted(
-        harness.verifier.clone(),
-        harness.signed.copy(&mut None)?,
-    );
+    let authority =
+        crate::filesystem::NativeMountAuthority::admitted(harness.verifier.clone(), signed);
     let (entered, observed) = oneshot::channel();
     let (release, released) = oneshot::channel();
     let owner = PausedOwner {
