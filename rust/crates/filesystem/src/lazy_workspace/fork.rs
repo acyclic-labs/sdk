@@ -95,7 +95,7 @@ impl<
             return Err(LazyWorkspaceError::Concurrent);
         }
         drop(original);
-        loop {
+        {
             let state = self
                 .store
                 .load_lazy_workspace(child.id(), ctx)
@@ -120,10 +120,9 @@ impl<
                     .compare_and_swap_lazy_workspace(child.id(), revision, next, ctx)
                     .await?
                 {
-                    continue;
+                    return Err(LazyWorkspaceError::Concurrent);
                 }
             }
-            break;
         }
         ctx.charge(WorkCounters {
             bytes_hashed: LazySnapshotRef::hash_bytes(original_generation),
@@ -197,18 +196,7 @@ impl<
         if swapped? {
             return Ok(cut);
         }
-        // Another creator won. Its identity, operation and original cut must
-        // still match; the same operation is success, a different one conflicts.
-        let state = self
-            .store
-            .load_lazy_workspace(id, ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        if self.fork_origin(&state, id, operation)?.snapshot == cut {
-            Ok(cut)
-        } else {
-            Err(LazyWorkspaceError::Concurrent)
-        }
+        Err(LazyWorkspaceError::Concurrent)
     }
     fn fork_origin(
         &self,

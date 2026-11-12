@@ -1,8 +1,7 @@
 //! Source-backed sparse workspaces.
 //!
-//! A binding transition publishes against one observed revision. A lost
-//! conditional commit reloads that revision and rebuilds its transition, keeping
-//! concurrent changes. Identity and operation conflicts remain explicit errors.
+//! Source-epoch reads project their cut without publishing bookkeeping.
+//! Mutations retain their exact operation and source identities.
 
 use crate::demand::{
     DemandError, DemandSource, SourceCursor, SourceNode, SourceNodeKind, SourceReference,

@@ -329,7 +329,9 @@ impl AgentTool {
         };
         let recorded = match turn.effects.record(&key, &effect).await {
             Ok(recorded) => recorded,
-            Err(error @ Error::Conflict(_)) => return Ok(super::rejected_input(error)),
+            Err(error @ (Error::Conflict(_) | Error::MergeConflict { .. })) => {
+                return Ok(super::rejected_input(error));
+            }
             Err(error) => return Err(error),
         };
         self.result(recorded)

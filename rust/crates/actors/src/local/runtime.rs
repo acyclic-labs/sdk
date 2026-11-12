@@ -132,7 +132,6 @@ fn terminal(error: &Error) -> bool {
 
 enum Event {
     Created(Record),
-    Dispatched(Result<Snapshot, Error>),
     Work(Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
@@ -504,28 +503,25 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut failure = None;
         let root = self.store.root().clone();
         let provider = self.store.provider();
-        let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
-        let dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
-        // A cursor alone would forget all previously discovered subscriptions
-        // and alarms. Rebuild residents from current state names, without
-        // replaying their creation history. New creations race safely with the
-        // enumeration: the follow starts at the checkpoint read BEFORE it.
+        // Discovery has no durable bookkeeping writer. Capture the activation
+        // cut BEFORE enumerating current actors: every earlier creation is in
+        // that enumeration; every later creation is in this follow. A creation
+        // seen by both is harmless because track is idempotent. Restart already
+        // restores every resident's subscriptions and alarms from actor state.
+        let from = match provider.tail(root.clone()).await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(error.into()),
+        };
         self.restore().await?;
-        let from = dispatcher
-            .state()
-            .and_then(|state| state.cursor("activation"))
-            .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
         let mut created = acyclic_stream::records_only(
             provider
-                .follow(acyclic_stream::FollowRequest::new(root, from))
+                .follow(acyclic_stream::FollowRequest {
+                    when_absent: acyclic_stream::WhenAbsent::Wait,
+                    ..acyclic_stream::FollowRequest::new(root, from)
+                })
                 .await?,
         );
-        let mut dispatcher = Some(dispatcher);
-        let mut dispatching: Option<BoxProviderFuture<'_, std::result::Result<Snapshot, Error>>> =
-            None;
-        // The activation log is also every producer's wake entry: the cursor
-        // only bounds restart replay, so consecutive entries coalesce into one
-        // checkpoint in flight at the latest seen end.
         let mut seen = from;
         let mut running = FuturesUnordered::new();
         let mut timer: Option<(u64, BoxProviderFuture<'static, Result<(), ClockError>>)> = None;
@@ -545,31 +541,22 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     next_class = (next_class + 1) % 5;
                     match class {
                         0 => {
-                            // Provider I/O owned by an active delivery must keep
-                            // progressing during dispatcher checkpoint writes.
                             if let Poll::Ready(Some(result)) = running.poll_next_unpin(context) {
                                 return Poll::Ready(Event::Done(result));
                             }
                         }
-                        1 => {
-                            if let Some(checkpoint) = dispatching.as_mut()
-                                && let Poll::Ready(result) = checkpoint.poll_unpin(context)
-                            {
-                                return Poll::Ready(Event::Dispatched(result));
+                        1 => match created.poll_next_unpin(context) {
+                            Poll::Ready(Some(Ok(record))) => {
+                                return Poll::Ready(Event::Created(record));
                             }
-                            match created.poll_next_unpin(context) {
-                                Poll::Ready(Some(Ok(record))) => {
-                                    return Poll::Ready(Event::Created(record));
-                                }
-                                Poll::Ready(Some(Err(error))) => {
-                                    return Poll::Ready(Event::Failed(error));
-                                }
-                                Poll::Ready(None) => {
-                                    return Poll::Ready(Event::Failed(StreamError::Unavailable));
-                                }
-                                Poll::Pending => {}
+                            Poll::Ready(Some(Err(error))) => {
+                                return Poll::Ready(Event::Failed(error));
                             }
-                        }
+                            Poll::Ready(None) => {
+                                return Poll::Ready(Event::Failed(StreamError::Unavailable));
+                            }
+                            Poll::Pending => {}
+                        },
                         2 => {
                             if self
                                 .limits
@@ -603,11 +590,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         }
                     }
                 }
-                if !completing.is_empty()
-                    && running.is_empty()
-                    && dispatching.is_none()
-                    && seen >= completion_tail
-                {
+                if !completing.is_empty() && running.is_empty() && seen >= completion_tail {
                     return Poll::Ready(Event::Idle);
                 }
                 Poll::Pending
@@ -627,10 +610,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .sequence
                         .checked_add(1)
                         .ok_or(Error::Invalid("activation cursor overflow"))?;
-                }
-                Event::Dispatched(result) => {
-                    dispatching = None;
-                    dispatcher = Some(result?);
                 }
                 Event::Work(work) => {
                     let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
@@ -671,19 +650,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         completing.finish(failure.as_ref());
                     }
                 }
-            }
-            if dispatching.is_none()
-                && let Some(previous) = dispatcher.take_if(|previous| {
-                    previous
-                        .state()
-                        .and_then(|state| state.cursor("activation"))
-                        .is_some_and(|cursor| cursor < seen)
-                })
-            {
-                let store = &dispatch_store;
-                dispatching = Some(Box::pin(async move {
-                    self.advance_dispatcher(store, previous, seen).await
-                }));
             }
         }
     }

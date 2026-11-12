@@ -379,13 +379,6 @@ impl LocalHarness {
             .await?;
         let child = root.spawned_project_view(&child_project).await?;
         let branch = format!("agents/{}", agent.path.id());
-        acyclic_fs::GitCompatRepository::new(
-            parent_workspace.view().workspace().id(),
-            parent_workspace.store.clone(),
-        )
-        .register_branch_workspace(branch.clone(), child.workspace().id(), None, false)
-        .await
-        .map_err(storage)?;
         let (capture_options, capture_policy) =
             super::checkout_tools::capture::configuration(&parent_workspace)?;
         let commands = super::workspace::git::Commands {

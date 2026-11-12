@@ -143,6 +143,12 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Content disagreements projected into working files for agent repair.
+    #[error("merge conflict: {}. Edit the conflicted paths, then continue the merge", paths.join(", "))]
+    MergeConflict {
+        /// Working paths requiring explicit resolution.
+        paths: Vec<String>,
+    },
     /// The agent host definitively refused a request, which committed
     /// nothing. It reads as the host error's own text, already classified.
     #[error("{0}")]
@@ -715,7 +721,10 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_)
+            | Self::MergeConflict { .. }
+            | Self::Refused(_)
+            | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::GoalBlocked(_)
@@ -988,6 +997,7 @@ impl Error {
             Self::ModelContextOverflow
             | Self::NotFound(_)
             | Self::Conflict(_)
+            | Self::MergeConflict { .. }
             | Self::Refused(_)
             | Self::ExactEdit(_)
             | Self::TaskFailed { .. }

@@ -201,48 +201,30 @@ impl<
         Ok(state)
     }
 
-    /// Loads the ready binding at the source's current epoch. A source
-    /// shared by several workspaces advances its epoch when any of them
-    /// observes a change; that invalidates source cursors, not this
-    /// workspace's authored or observed state, so every reader of the
-    /// binding follows the newer epoch rather than treating it as stale.
+    /// Projects the source's current epoch without publishing read bookkeeping.
+    /// Only a workspace mutation persists a new binding. Concurrent readers
+    /// therefore cannot contend with that writer just to invalidate cursors.
     pub(crate) async fn current_binding(
         &self,
         missing: fn() -> LazyWorkspaceError,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
-        loop {
-            let state = self
-                .store
-                .load_lazy_workspace(self.workspace.id(), ctx)
-                .await?
-                .ok_or_else(missing)?;
-            let source = self.source.reference();
-            if state.schema_version != LAZY_STATE_SCHEMA
-                || state.workspace_id != self.workspace.id()
-                || state.source.identity != source.identity
-                || state.source.epoch > source.epoch
-            {
-                return Err(LazyWorkspaceError::StaleSource);
-            }
-            state.require_ready_fork()?;
-            if state.source == source {
-                return Ok(state);
-            }
-            let revision = state.revision;
-            let next = LazyWorkspaceState {
-                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-                source,
-                ..state
-            };
-            if self
-                .store
-                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next.clone(), ctx)
-                .await?
-            {
-                return Ok(next);
-            }
+        let mut state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or_else(missing)?;
+        let source = self.source.reference();
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.source.identity != source.identity
+            || state.source.epoch > source.epoch
+        {
+            return Err(LazyWorkspaceError::StaleSource);
         }
+        state.require_ready_fork()?;
+        state.source = source;
+        Ok(state)
     }
 
     /// Selects companion indexes for a retained mounted checkout without mutation.
@@ -296,59 +278,55 @@ impl<
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let mut recovering = None;
-        loop {
-            let state = self
-                .store
-                .load_lazy_workspace(self.workspace.id(), ctx)
-                .await?
-                .ok_or(LazyWorkspaceError::NotFound)?;
-            if state.schema_version != LAZY_STATE_SCHEMA
-                || state.workspace_id != self.workspace.id()
-                || state.source.identity != self.source.reference().identity
-            {
-                return Err(LazyWorkspaceError::StaleSource);
-            }
-            let Some(pending) = state.pending_remove.as_ref() else {
-                return Ok(());
-            };
-            match &recovering {
-                Some(original) if original != pending => return Ok(()),
-                None => recovering = Some(pending.clone()),
-                _ => {}
-            }
-            let committed = match pending.kind {
-                PendingLazyRemoveKind::SourceOnly => true,
-                PendingLazyRemoveKind::Authored { idempotency_key }
-                | PendingLazyRemoveKind::Mounted { idempotency_key } => self
-                    .operation_generation(idempotency_key, ctx)
-                    .await?
-                    .is_some(),
-            };
-            let revision = state.revision;
-            let next = LazyWorkspaceState {
-                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-                overlay: if committed {
-                    pending.prepared_overlay
-                } else {
-                    pending.prior_overlay
-                },
-                shadows: if committed {
-                    state.shadows
-                } else {
-                    pending.prior_shadows
-                },
-                pending_remove: None,
-                ..state
-            };
-            if self
-                .store
-                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
-                .await?
-            {
-                return Ok(());
-            }
+        let state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.source.identity != self.source.reference().identity
+        {
+            return Err(LazyWorkspaceError::StaleSource);
         }
+        let Some(pending) = state.pending_remove.as_ref() else {
+            return Ok(());
+        };
+        let committed = match pending.kind {
+            PendingLazyRemoveKind::SourceOnly => true,
+            PendingLazyRemoveKind::Authored { idempotency_key }
+            | PendingLazyRemoveKind::Mounted { idempotency_key } => self
+                .operation_generation(idempotency_key, ctx)
+                .await?
+                .is_some(),
+        };
+        let revision = state.revision;
+        let next = LazyWorkspaceState {
+            revision: state
+                .revision
+                .checked_add(1)
+                .ok_or(crate::WorkError::Overflow)?,
+            overlay: if committed {
+                pending.prepared_overlay
+            } else {
+                pending.prior_overlay
+            },
+            shadows: if committed {
+                state.shadows
+            } else {
+                pending.prior_shadows
+            },
+            pending_remove: None,
+            ..state
+        };
+        if self
+            .store
+            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
+            .await?
+        {
+            return Ok(());
+        }
+        Err(LazyWorkspaceError::Concurrent)
     }
 
     pub(crate) async fn source_lookup(
