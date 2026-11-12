@@ -382,12 +382,9 @@ impl TurnContext for LocalContext {
                 })
                 .collect();
             let limits = crate::context::ContextDiscoveryLimits::default();
-            let mut work = crate::context::DiscoveryWork {
-                limits: crate::context::ContextDiscoveryLimits {
-                    instruction_bytes: limits.instruction_bytes.min(local.limits.file_bytes),
-                    ..limits
-                },
-                ..Default::default()
+            let limits = crate::context::ContextDiscoveryLimits {
+                instruction_bytes: limits.instruction_bytes.min(local.limits.file_bytes),
+                ..limits
             };
             crate::agent::WorkspaceUpdate::discover(
                 agent.volumes.clone(),
@@ -396,7 +393,7 @@ impl TurnContext for LocalContext {
                 seen,
                 content.reader.as_ref(),
                 &Default::default(),
-                &mut work,
+                &limits,
             )
             .await
             .map(Some)

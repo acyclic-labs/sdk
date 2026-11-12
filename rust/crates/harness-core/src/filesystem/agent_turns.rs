@@ -1084,6 +1084,18 @@ fn announcement_id(turn: OperationId) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
+fn announcement_part_id(turn: OperationId, part: usize) -> uuid::Uuid {
+    if part == 0 {
+        return announcement_id(turn);
+    }
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.announcement-part.v1");
+    hasher.update(&turn.into_bytes());
+    hasher.update(&(part as u64).to_le_bytes());
+    let mut bytes = [0; 16];
+    hasher.finalize_xof().fill(&mut bytes);
+    uuid::Uuid::from_bytes(bytes)
+}
+
 fn notice_id(turn: OperationId, block: usize) -> uuid::Uuid {
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.notices.v1");
     hasher.update(&turn.into_bytes());
@@ -1554,12 +1566,18 @@ impl<'a> TurnContext<'a> {
                 place(&mut messages, &mut message_ids, ancestor);
             }
             if !announced.is_empty() {
-                messages.push(ModelMessage {
-                    role: ModelRole::User,
-                    content: crate::agent::announcement_message(&announced, reader, render_bytes)
-                        .await?,
-                });
-                message_ids.push(announcement_id(settled));
+                for (part, content) in
+                    crate::agent::announcement_messages(&announced, reader, render_bytes)
+                        .await?
+                        .into_iter()
+                        .enumerate()
+                {
+                    messages.push(ModelMessage {
+                        role: ModelRole::User,
+                        content,
+                    });
+                    message_ids.push(announcement_part_id(settled, part));
+                }
             }
             let (notices, content) =
                 selected_notices(stream, &agent.path, notices.as_ref(), content, render_bytes)
@@ -1593,12 +1611,18 @@ impl<'a> TurnContext<'a> {
             directive(&mut messages, &mut message_ids);
         }
         if !announcements.is_empty() {
-            messages.push(ModelMessage {
-                role: ModelRole::User,
-                content: crate::agent::announcement_message(announcements, reader, render_bytes)
-                    .await?,
-            });
-            message_ids.push(announcement_id(turn));
+            for (part, content) in
+                crate::agent::announcement_messages(announcements, reader, render_bytes)
+                    .await?
+                    .into_iter()
+                    .enumerate()
+            {
+                messages.push(ModelMessage {
+                    role: ModelRole::User,
+                    content,
+                });
+                message_ids.push(announcement_part_id(turn, part));
+            }
         }
         let (notices, input) = selected_notices(
             stream,

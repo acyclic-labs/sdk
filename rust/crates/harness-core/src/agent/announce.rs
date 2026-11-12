@@ -156,14 +156,16 @@ impl AnnouncedDocument {
     }
 }
 
-/// One appended message for this turn's changed documents and instructions.
-pub async fn announcement_message(
+/// Appended messages for this turn's changed documents and instructions.
+/// Each contains one source identity and at most one bounded text part, fitting
+/// even the smallest supported attachment allowance without a count ceiling.
+pub async fn announcement_messages(
     documents: &[AnnouncedDocument],
     reader: &dyn crate::conversation::ContentResidencyVerifier,
     render_bytes: Option<u64>,
-) -> crate::Result<crate::model::ModelContent> {
+) -> crate::Result<Vec<crate::model::ModelContent>> {
     use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
-    let mut parts = Vec::new();
+    let mut messages = Vec::new();
     for document in documents {
         for file in std::iter::once(&document.file).chain(
             document
@@ -173,28 +175,25 @@ pub async fn announcement_message(
         ) {
             // Retain the immutable selection's identity without requiring the
             // aggregate body to fit a single file/render allowance.
-            parts.push(ModelContentPart::File {
+            let reference = ModelContentPart::File {
                 file: file.clone(),
                 policy: FileProjectionPolicy::Reference,
-            });
+            };
             let bytes = reader
                 .read(file, file.descriptor().byte_length(), None, None)?
                 .await?;
             let text = std::str::from_utf8(&bytes)
                 .map_err(|_| crate::Error::Invalid("announcement is not UTF-8".into()))?;
-            parts.extend(
-                ModelContent::bounded_text(text, render_bytes)?
-                    .parts()
-                    .iter()
-                    .cloned(),
-            );
+            if text.is_empty() {
+                messages.push(ModelContent::Part(reference));
+            } else {
+                for part in ModelContent::bounded_text_parts(text, render_bytes)? {
+                    messages.push(ModelContent::Parts(vec![reference.clone(), part]));
+                }
+            }
         }
     }
-    if parts.len() == 1 {
-        Ok(ModelContent::Part(parts.remove(0)))
-    } else {
-        Ok(ModelContent::Parts(parts))
-    }
+    Ok(messages)
 }
 
 /// Discover one user entry's instruction files through the shared, pinned
@@ -262,7 +261,7 @@ impl WorkspaceUpdate {
         seen: &BTreeMap<super::EntryId, [u8; 32]>,
         reader: &dyn crate::conversation::ContentResidencyVerifier,
         policy: &crate::context::ContextDiscoveryPolicy,
-        work: &mut crate::context::DiscoveryWork,
+        limits: &crate::context::ContextDiscoveryLimits,
     ) -> crate::Result<Self> {
         let table = WorkspaceTable::new(entries).map_err(crate::Error::from)?;
         let document =
@@ -275,8 +274,14 @@ impl WorkspaceUpdate {
         {
             let source = WorkspaceInstructions::source_for(entry).map_err(crate::Error::from)?;
             if seen.get(&entry.id) != Some(&source) {
+                // Admission bounds one source scan, independently of how many
+                // admitted workspace entries need their own discovery.
+                let mut work = crate::context::DiscoveryWork {
+                    limits: *limits,
+                    ..Default::default()
+                };
                 instructions
-                    .push(discover_workspace_instructions(entry, reader, policy, work).await?);
+                    .push(discover_workspace_instructions(entry, reader, policy, &mut work).await?);
             }
         }
         Ok(Self {

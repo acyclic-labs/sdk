@@ -25,7 +25,7 @@ impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
             acyclic_harness_core::executor::StockExecutor,
             acyclic_harness_core::conversation::Limits,
         ),
-        _: &'a AgentState,
+        agent: &'a AgentState,
         _: OperationId,
         _: &'a ModelContent,
         authority: &'a acyclic_harness_core::filesystem::TurnAuthority,
@@ -34,11 +34,21 @@ impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
         acyclic_harness_core::Result<acyclic_harness_core::executor::StockExecutor>,
     > {
         Box::pin(async move {
+            let private = agent
+                .volumes
+                .iter()
+                .find(|entry| entry.role == WorkspaceRole::Private)
+                .ok_or_else(|| {
+                    acyclic_harness_core::Error::Invalid("missing private entry".into())
+                })?
+                .volume()?;
             executor.with_tool_authority(
                 acyclic_harness_core::runtime::RuntimeScope::new(
                     Capabilities::new([
-                        "tool:call:wait",
-                        acyclic_harness_core::contract::capability::MODEL_GENERATE,
+                        "tool:call:wait".to_owned(),
+                        acyclic_harness_core::contract::capability::MODEL_GENERATE.to_owned(),
+                        private.capability(VolumeOperation::Read, &mut None)?,
+                        private.capability(VolumeOperation::Write, &mut None)?,
                     ]),
                     limits,
                 )?,
@@ -97,7 +107,7 @@ impl TurnExecutors for Exposed {
                 seen,
                 content.reader.as_ref(),
                 &self.policy,
-                &mut Default::default(),
+                &Default::default(),
             )
             .await
             .map(Some)
@@ -330,12 +340,16 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
             paths: BTreeMap::new(),
         })
         .collect();
-    let document =
-        WorkspaceAnnouncement::new(&WorkspaceTable::new(entries)?, None::<&Roster>, exposures)?;
+    let document = WorkspaceAnnouncement::new(
+        &WorkspaceTable::new(entries.clone())?,
+        None::<&Roster>,
+        exposures,
+    )?;
     let (bytes, digest) = document.canonical();
     let limits = acyclic_harness_core::conversation::Limits {
         render_bytes: 64 * 1024,
         file_bytes: 64 * 1024,
+        attachments: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
     assert!(bytes.len() as u64 > limits.render_bytes);
@@ -375,7 +389,30 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
         acyclic_harness_core::conversation::MAX_EXACT_JS_INTEGER,
         None,
     )?;
-    let delta = announcement_message(
+    let discovered = WorkspaceUpdate::discover(
+        entries.clone(),
+        None,
+        entries
+            .iter()
+            .map(|entry| WorkspaceExposure {
+                entry: entry.id,
+                paths: BTreeMap::new(),
+            })
+            .collect(),
+        &BTreeMap::new(),
+        reader.as_ref(),
+        &Default::default(),
+        &Default::default(),
+    )
+    .await?;
+    assert_eq!(discovered.instructions.len(), entries.len());
+    assert!(
+        discovered
+            .instructions
+            .iter()
+            .all(|entry| entry.files.len() == 1)
+    );
+    let delta = announcement_messages(
         &[AnnouncedDocument {
             kind: AnnouncementKind::Workspaces,
             digest,
@@ -386,11 +423,13 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
         Some(limits.render_bytes),
     )
     .await?;
-    delta.validate_limits(limits, &mut None)?;
-    assert_eq!(delta.file_refs().collect::<Vec<_>>(), vec![&file]);
+    for message in &delta {
+        message.validate_limits(limits, &mut None)?;
+        assert!(message.file_refs().all(|source| source == &file));
+    }
     let rendered = delta
-        .parts()
         .iter()
+        .flat_map(ModelContent::parts)
         .filter_map(|part| match part {
             ModelContentPart::Text { text, .. } => Some(text.as_str()),
             _ => None,
@@ -557,7 +596,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                 );
                 let requests = model.requests();
                 let request = requests.last().ok_or("missing model request")?;
-                let delta = request
+                request
                     .messages
                     .iter()
                     .rev()
@@ -569,9 +608,10 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                     })
                     .ok_or("workspace document not rendered")?;
                 assert!(
-                    delta
-                        .content
-                        .file_refs()
+                    request
+                        .messages
+                        .iter()
+                        .flat_map(|message| message.content.file_refs())
                         .any(|file| *file == document.instructions.as_ref().unwrap().content)
                 );
             }
@@ -657,6 +697,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         let projection_limits = acyclic_harness_core::conversation::Limits {
             render_bytes: 64 * 1024,
             file_bytes: 64 * 1024,
+            attachments: std::num::NonZeroUsize::new(1),
             ..Default::default()
         };
         let turns = StockExecutors::new(
@@ -696,6 +737,15 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         change(&stream, &path, WorkspaceOp::Add, extra.clone(), &extra.name).await?;
         host.drain(&path).await?;
         let waiting = deliver(&host, &path, requested("pause-with-instructions", &path)).await?;
+        if waiting.phase == Phase::Idle {
+            let entries = super::super::values(stream.as_ref(), path.conversation()?).await?;
+            let entry = ConversationEntry::decode(entries.last().ok_or("missing initial turn")?)?;
+            return Err(format!(
+                "instruction turn failed before parking: {:?}",
+                entry.outcome
+            )
+            .into());
+        }
         assert_eq!(
             waiting.phase,
             Phase::Waiting {
@@ -748,22 +798,16 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
         let requests = model.requests();
         assert_eq!(requests.len(), 2);
         assert!(requests[1].messages.starts_with(&requests[0].messages));
-        let delta = requests[0]
+        let rendered = requests[0]
             .messages
             .iter()
-            .find(|message| {
+            .filter(|message| {
                 message
                     .content
                     .file_refs()
                     .any(|file| *file == selection.content)
             })
-            .ok_or("missing rendered instruction selection")?;
-        let rendered = delta
-            .content
-            .parts()
-            .iter()
-            .skip_while(|part| !matches!(part, ModelContentPart::File {file, ..} if *file == selection.content))
-            .skip(1)
+            .flat_map(|message| message.content.parts())
             .filter_map(|part| match part {
                 ModelContentPart::Text { text, .. } => Some(text.as_str()),
                 _ => None,

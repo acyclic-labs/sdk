@@ -11,7 +11,7 @@ pub(crate) use announce::InstructionManifest;
 pub use announce::{
     AnnouncedDocument, AnnouncedInstructions, Announcement, AnnouncementDocument, AnnouncementKind,
     WorkspaceAnnouncement, WorkspaceExposure, WorkspaceInstructions, WorkspaceUpdate,
-    announcement_message, discover_workspace_instructions,
+    announcement_messages, discover_workspace_instructions,
 };
 pub(crate) mod checkpoint;
 mod children;
