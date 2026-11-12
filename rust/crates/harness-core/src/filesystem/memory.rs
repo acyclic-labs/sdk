@@ -106,7 +106,7 @@ fn agent_approvals(
     Ok(Arc::new(AgentApprovals::new(files, Arc::new(policy))))
 }
 
-/// A fully bound journal and owner-private file volume.
+/// A harness-owned journal and an independent owner-private file volume.
 ///
 /// The journal runs on any [`StreamProvider`]: [`MemoryStream`] by default, or a
 /// remote Streams service through [`MemoryHarnessStorage::with_stream`]. Both
@@ -307,9 +307,9 @@ impl<
                     stream.clone(),
                     Arc::clone(&host),
                     crate::filesystem::FilesystemJournalBinding {
-                        volume: &volume,
+                        volume: &control_volume,
                         verifier: &verifier,
-                        scope: &scope,
+                        scope: &control_scope,
                         io: None,
                     },
                 )?

@@ -3,7 +3,12 @@ use crate::{agent::TurnOutputs, executor::ExecutionEvent};
 
 #[tokio::test]
 async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 1_048_576).await?;
+    let agent = AgentId::new();
+    let storage = MemoryHarnessStorage::new(agent, 1_048_576).await?;
+    let control_volume = crate::conversation::journal_volume(
+        storage.volume.provider().clone(),
+        &crate::agent::AgentId::from_bytes(agent.into_bytes()),
+    )?;
     let files = storage.internal_files.clone();
     let journal = storage.journal();
     let turn = OperationId::new();
@@ -47,6 +52,17 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
     let invocation = journal
         .stage(turn, "write-invocation", b"{}", "application/json", None)?
         .await?;
+    assert_eq!(result.volume(), &control_volume);
+    assert_eq!(invocation.volume(), &control_volume);
+    assert_eq!(journal.load(&invocation, None)?.await?.as_ref(), b"{}");
+    assert_eq!(
+        storage
+            .read(&result)
+            .await
+            .expect_err("private owner read journal payload")
+            .code(),
+        crate::wire::ErrorCode::Unauthorized,
+    );
     journal
         .append(
             turn,

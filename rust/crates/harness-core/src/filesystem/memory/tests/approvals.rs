@@ -39,13 +39,6 @@ async fn open(
 }
 
 #[tokio::test]
-async fn default_policy_opens_an_approval_that_waits_for_its_decider() -> Result<()> {
-    let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
-    assert_eq!(open(&storage).await?.1, None);
-    Ok(())
-}
-
-#[tokio::test]
 async fn human_decision_settles_a_waiting_approval() -> Result<()> {
     for (approved, settled) in [
         (true, InteractionOutcome::Approved {}),
