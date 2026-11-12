@@ -32,6 +32,10 @@ struct Index<K> {
     ready_count: usize,
     waiter: Option<Waker>,
     due: BTreeSet<(u64, Id, u64)>,
+    /// Alarms of retired registrations that were still due here, as
+    /// `(wake_at, deadline, key)`, kept for the dispatcher once it takes them.
+    /// None until a dispatcher exists, so nothing accumulates without one.
+    parked: Option<Vec<(u64, u64, K)>>,
 }
 impl<K> Default for Index<K> {
     fn default() -> Self {
@@ -43,6 +47,7 @@ impl<K> Default for Index<K> {
             ready_count: 0,
             waiter: None,
             due: BTreeSet::new(),
+            parked: None,
         }
     }
 }
@@ -234,6 +239,20 @@ impl<K: Clone> ReadySet<K> {
             .waiter
             .replace(waker);
         drop(previous);
+    }
+
+    /// Take the alarms of registrations retired while still armed, as
+    /// `(wake_at, deadline, key)`. The first call makes this index keep them:
+    /// only the dispatcher calls it, and it wakes on each new one.
+    pub fn take_parked(&self) -> Vec<(u64, u64, K)> {
+        std::mem::take(
+            self.core
+                .index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .parked
+                .get_or_insert_with(Vec::new),
+        )
     }
 
     /// Exact retained registration and ready counts, independent of actor heaps.
@@ -468,16 +487,29 @@ impl<K> Drop for Registration<K> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let retired = index.entries.remove(&self.id);
-        if let Some(entry) = &retired {
-            if let Some(due) = entry.due {
-                index.due.remove(&due);
-            }
+        let mut waiter = None;
+        if let Some(entry) = retired {
             if let Phase::Queued { previous, next } = entry.phase {
                 index.unlink(previous, next);
             }
+            if let Some(due) = entry.due {
+                index.due.remove(&due);
+                // Retiring a resident never drops its armed alarm: the
+                // dispatcher takes it over, so hibernation cannot lose it.
+                if let Some(parked) = &mut index.parked {
+                    parked.push((
+                        due.0,
+                        entry.alarm.deadline_unix_ms.unwrap_or(due.0),
+                        entry.key,
+                    ));
+                    waiter = index.waiter.take();
+                }
+            }
         }
         drop(index);
-        drop(retired);
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
     }
 }
 impl<K> Work<K> {

@@ -139,6 +139,7 @@ enum Event {
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
     Due(Result<(), ClockError>),
+    Parked(Vec<(u64, u64, ActorReference)>),
     Failed(StreamError),
     Completion(Completion),
     CompletionCancelled,
@@ -364,7 +365,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     "actor placement retired during pause admission",
                 ))?;
                 pause::start(
-                    Store::new(Arc::clone(self.store.provider()), self.store.root().clone()),
+                    self.store.clone(),
                     actor.clone(),
                     placement,
                     self.places.then_some(placement::Owner {
@@ -568,6 +569,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // watermark: one bounded children page per assigned shard.
         let mut consumed = BTreeMap::new();
         let mut windows = BTreeSet::new();
+        // Alarms of hibernated residents whose window was already opened, as
+        // `(wake_at, window, shard, actor)`: bounded by the opened windows,
+        // never by the number of dormant actors.
+        let mut parked: BTreeSet<(u64, u64, u16, ActorReference)> = BTreeSet::new();
+        drop(self.ready.take_parked());
         let earliest =
             futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
                 |(&shard, dispatcher)| {
@@ -657,9 +663,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         3 => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
+                            let retired = self.ready.take_parked();
+                            if !retired.is_empty() {
+                                return Poll::Ready(Event::Parked(retired));
+                            }
                             let opens = windows
                                 .first()
-                                .map(|&(window, _)| scheduling::window_start(window));
+                                .map(|&(window, _)| scheduling::window_start(window))
+                                .into_iter()
+                                .chain(parked.first().map(|&(at, ..)| at))
+                                .min();
                             let next = match (self.ready.next_deadline(), opens) {
                                 (Some(resident), Some(opens)) => Some(resident.min(opens)),
                                 (resident, opens) => resident.or(opens),
@@ -728,6 +741,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     failure.get_or_insert_with(|| Arc::new(error));
                 }
                 Event::Done(Ok(())) => {}
+                Event::Parked(retired) => {
+                    self.adopt(retired, &consumed, &mut windows, &mut parked);
+                }
                 Event::Rearm(next) => {
                     timer = next.map(|deadline| (deadline, self.clock.sleep_until(deadline)));
                 }
@@ -736,6 +752,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     timer = None;
                     let now = self.clock.now_unix_ms();
                     self.ready.wake_due(now, self.limits.work);
+                    while let Some((at, _, _, actor)) = parked.first()
+                        && *at <= now
+                    {
+                        if self.places {
+                            self.track(actor.clone())?;
+                        }
+                        self.wake(actor);
+                        parked.pop_first();
+                    }
                     // An opened window wakes its dormant actors, page by page;
                     // each delivery installs its exact committed deadline.
                     while let Some(&(window, shard)) = windows.first()
@@ -761,13 +786,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         let from = window
                             .checked_add(1)
                             .ok_or(Error::Invalid("alarm window overflow"))?;
-                        consumed.insert(shard, from);
-                        windows.extend(
-                            self.store
-                                .next_window(shard, from)
-                                .await?
-                                .map(|next| (next, shard)),
-                        );
+                        if consumed
+                            .get(&shard)
+                            .is_some_and(|&consumed| consumed < from)
+                        {
+                            consumed.insert(shard, from);
+                            windows.extend(
+                                self.store
+                                    .next_window(shard, from)
+                                    .await?
+                                    .map(|next| (next, shard)),
+                            );
+                        }
                     }
                 }
                 Event::Failed(error) => return Err(error.into()),
@@ -820,6 +850,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // (an alarm armed now with a future deadline lands at or after
             // it), and never a resident deadline that has not fired yet; it
             // moves back only for a resident alarm armed already past due.
+            // A hibernated resident's alarm holds it at its window, as its
+            // resident deadline did, until the dispatcher wakes it.
             if !running.is_empty() || self.ready.counts().1 != 0 || failure.is_some() {
                 continue;
             }
@@ -829,9 +861,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .unwrap_or(u64::MAX)
                     .min(self.clock.now_unix_ms()),
             );
+            // Read the resident minimum before taking retired alarms: an
+            // actor hibernating in between is in exactly one of the two.
+            self.adopt(
+                self.ready.take_parked(),
+                &consumed,
+                &mut windows,
+                &mut parked,
+            );
             for (&shard, previous) in &mut dispatchers {
                 let cursor = seen[&shard];
-                let deadline = consumed[&shard].min(bound);
+                let deadline = parked
+                    .iter()
+                    .filter(|&&(_, _, owner, _)| owner == shard)
+                    .map(|&(_, window, ..)| window)
+                    .fold(consumed[&shard].min(bound), u64::min);
                 if let Some(previous) = previous.take_if(|previous| {
                     dispatcher::activation_cursor(previous) < cursor
                         || dispatcher::deadline_cursor(previous) != deadline
@@ -845,6 +889,33 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         )
                     }));
                 }
+            }
+        }
+    }
+
+    /// Take over the alarms residents still had armed when they retired.
+    fn adopt(
+        &self,
+        retired: Vec<(u64, u64, ActorReference)>,
+        consumed: &BTreeMap<u16, u64>,
+        windows: &mut BTreeSet<(u64, u16)>,
+        parked: &mut BTreeSet<(u64, u64, u16, ActorReference)>,
+    ) {
+        for (at, deadline, actor) in retired {
+            let shard = self.store.scheduling_shard(&actor);
+            let Some(&from) = consumed.get(&shard) else {
+                continue;
+            };
+            let window = scheduling::window(deadline);
+            if window < from {
+                // Its window was already opened: wake the actor itself.
+                parked.insert((at, window, shard, actor));
+            } else if !windows
+                .iter()
+                .any(|&(known, owner)| owner == shard && known <= window)
+            {
+                // Its committed window entry is read once the window opens.
+                windows.insert((window, shard));
             }
         }
     }
@@ -943,6 +1014,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 inner.observed = None;
                 return Ok(true);
             };
+            if state.deleted() {
+                // Deletion is terminal: nothing is left to deliver or wake.
+                inner.observed = None;
+                slot.registration.suspend_alarm();
+                return Ok(true);
+            }
             if inner.epoch != 0 && state.epoch() != inner.epoch {
                 return Err(Error::Conflict);
             }
@@ -995,8 +1072,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // Until canonical control invalidation is available, observe the
             // real provider before every handler attempt, including alarms.
             if self.store.observe(&snapshot).await?.is_some() {
+                // Decide from the new cut: a moved epoch is a conflict above,
+                // a deletion or pause is finished work.
                 inner.observed = None;
-                return Err(Error::Conflict);
+                continue;
             }
             let epoch = inner.epoch;
             let cancellation = crate::guest::CancellationToken::new();
