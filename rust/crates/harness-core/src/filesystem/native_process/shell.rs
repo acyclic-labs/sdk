@@ -21,7 +21,7 @@ pub(crate) async fn run<T>(
     observer: Option<Arc<NativeProcessObserver>>,
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
 ) -> Result<Option<NativeProcessResult>> {
-    let invocation = prepare(input, mounts, invocation, now, std::time::Instant::now())?;
+    let invocation = prepare(input, mounts, invocation, now)?;
     capture::capture_with_custody(
         invocation,
         move |_: &mut (), chunk| {

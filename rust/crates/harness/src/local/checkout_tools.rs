@@ -573,6 +573,7 @@ impl ToolExecutor for CheckoutTools {
                 });
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let background = shell.as_ref().is_some_and(|input| input.background);
+            let (started, launched) = tokio::sync::oneshot::channel();
             // The signed scope's expiry stops a command whenever it runs out;
             // timeout_ms is the process's own schedule, armed at its launch.
             let control = shell
