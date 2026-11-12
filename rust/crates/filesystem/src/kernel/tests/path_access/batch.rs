@@ -141,6 +141,11 @@ async fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicat
 #[tokio::test]
 async fn batch_observation_captures_exactly_each_paths_observation()
 -> Result<(), Box<dyn std::error::Error>> {
+    let config = || {
+        let mut config = config();
+        config.limits.maximum_paths_per_batch = 2;
+        config
+    };
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store).await?;
     let name = |bytes: &[u8]| LogicalName::new(NameEncoding::Utf8, bytes.to_vec());
@@ -291,6 +296,40 @@ async fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
     assert_eq!(result.entries.len(), paths.len());
     assert!(result.entries.iter().all(|entry| entry.record.is_none()));
     assert!(result.work.peak_allocation_bytes <= budget.peak_allocation_bytes);
+    // The same complete result must fit with a smaller paid traversal chunk,
+    // including the final partial chunk. The result itself stays resident.
+    for width in [1, 7] {
+        let mut chunked = config();
+        chunked.limits.maximum_paths_per_batch = width;
+        let borrowed = lookup_path_refs(
+            &store,
+            &generation,
+            &paths,
+            chunked,
+            budget,
+            &CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(borrowed.entries, result.entries);
+        assert!(borrowed.work.peak_allocation_bytes < result.work.peak_allocation_bytes);
+        let mut exact = budget;
+        exact.peak_allocation_bytes = borrowed.work.peak_allocation_bytes;
+        let owned = vec![path.clone(); paths.len()];
+        let bounded = lookup_paths(
+            &store,
+            &generation,
+            &owned,
+            chunked,
+            exact,
+            &CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(bounded.entries, result.entries);
+        assert_eq!(
+            bounded.work.peak_allocation_bytes,
+            exact.peak_allocation_bytes
+        );
+    }
     Ok(())
 }
 

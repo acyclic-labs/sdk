@@ -213,6 +213,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         u64::MAX,
         &mut None,
     )?;
+    // A real upload receipt larger than the former name-derived record bound.
+    let display_name = "quoted\"λ".repeat(16_384);
     let first = host
         .put_content(
             &volume,
@@ -220,7 +222,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages/first.txt",
             b"one",
             "text/plain",
-            "first.txt",
+            display_name.as_str(),
             16,
             &IdempotencyKey::new("stage-first")?,
             None,
@@ -234,7 +236,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages/first.txt",
             b"two",
             "text/plain",
-            "first.txt",
+            display_name.as_str(),
             16,
             &IdempotencyKey::new("stage-second")?,
             None,
@@ -248,7 +250,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages/first.txt",
             b"one",
             "text/plain",
-            "first.txt",
+            display_name.as_str(),
             16,
             &IdempotencyKey::new("stage-first")?,
             None,
@@ -261,10 +263,10 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         (
             "messages/first.txt",
             "application/octet-stream",
-            "first.txt",
+            display_name.as_str(),
         ),
         ("messages/first.txt", "text/plain", "renamed.txt"),
-        ("messages/other.txt", "text/plain", "first.txt"),
+        ("messages/other.txt", "text/plain", display_name.as_str()),
     ] {
         assert!(
             host.put_content(
@@ -351,6 +353,19 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         host.read_content(&second, &read, 16, None).await?,
         acyclic_stream::OwnedBytes::from_static(b"two")
     );
+    for (reference, expected) in [(&first, b"n"), (&second, b"w")] {
+        let selected = host
+            .read_pinned_range(
+                reference,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 1,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(selected.as_ref(), expected);
+    }
     let delegated_scope = issuer.delegate_private_directory_read(
         &scope,
         AgentId::from_bytes([8; 16]),

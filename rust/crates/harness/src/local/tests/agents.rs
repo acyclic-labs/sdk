@@ -2344,7 +2344,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         ScriptedTurn::Text("writer settled".into()),
         call(
             "shell",
-            serde_json::json!({"command":"pwd", "cwd":"missing-cwd-gc65"}),
+            serde_json::json!({"command":"pwd", "cwd":"missing-cwd"}),
         ),
         call(
             "read",
@@ -2422,7 +2422,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
     ));
     assert!(
         matches!(refused, crate::model::ToolResultContent::Error { message }
-        if message == "tool execution failed: cwd missing-cwd-gc65 does not exist")
+        if message == "tool execution failed: cwd missing-cwd does not exist")
     );
     let result = request
         .messages
@@ -3137,18 +3137,17 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
     };
     assert_eq!(parts.len(), MENTIONS + 1);
 
-    // The next turn keeps copy names bounded even at the source path bound.
-    // Naming a copy by that full path would exceed the same bound.
-    use crate::conversation::MAX_PATH_BYTES;
+    // Copy names use their admitted identity instead of repeating a long source path.
+    const FIXTURE_PATH_BYTES: usize = 4096;
     // Nested 200-byte components, then a file name, to one byte under the bound.
     let mut parents = Vec::new();
     let mut long = String::new();
-    while MAX_PATH_BYTES - 1 - long.len() > 200 {
+    while FIXTURE_PATH_BYTES - 1 - long.len() > 200 {
         long.push_str(&format!("{}{}/", parents.len() % 10, "d".repeat(199)));
         parents.push(format!("/{}", long.trim_end_matches('/')));
     }
-    long.push_str(&"f".repeat(MAX_PATH_BYTES - 1 - long.len()));
-    assert_eq!(long.len() + 1, MAX_PATH_BYTES);
+    long.push_str(&"f".repeat(FIXTURE_PATH_BYTES - 1 - long.len()));
+    assert_eq!(long.len() + 1, FIXTURE_PATH_BYTES);
     let mutations = parents
         .into_iter()
         .map(|path| crate::filesystem::WorkspaceMutation::CreateDirectory { path })
@@ -3191,7 +3190,7 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
         assert_eq!(bytes.as_ref(), text.as_bytes());
     }
     let (directory, _) = listed[1].path().rsplit_once('/').expect("copy directory");
-    assert!(format!("{directory}/{long}").len() > MAX_PATH_BYTES);
+    assert!(format!("{directory}/{long}").len() > FIXTURE_PATH_BYTES);
     Ok(())
 }
 

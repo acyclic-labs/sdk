@@ -315,7 +315,7 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                                                 .block_on(read_generation(
                                                     &pinned,
                                                     &format!("/{}", file.path()),
-                                                    4096,
+                                                    Some(4096),
                                                     Some(io),
                                                 ))
                                                 .unwrap();

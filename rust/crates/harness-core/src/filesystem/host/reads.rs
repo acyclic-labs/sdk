@@ -370,7 +370,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation_if_present(&generation, &requested.0, maximum_bytes, io)
+        let bytes = read_generation_if_present(&generation, &requested.0, Some(maximum_bytes), io)
             .await
             .map_err(path_read_refusal)?;
         let selected = if let Some(bytes) = bytes {
@@ -733,10 +733,12 @@ fn path_read_refusal(error: Error) -> Error {
     error
 }
 
+// An absent application policy reads the immutable file's own extent through
+// the Filesystem primitive, on the original I/O and allocation ledger.
 pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let unmeasured;
@@ -757,7 +759,7 @@ pub(in crate::filesystem) async fn read_generation_if_present<
 >(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
-    maximum: u64,
+    maximum: Option<u64>,
     io: &PreparationIo,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
@@ -857,15 +859,7 @@ async fn read_content_metadata<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata_path = content_metadata_path_io(volume, path, true, Some(io))?;
     let metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, metadata_path_hold);
-    let metadata = read_generation_if_present(
-        generation,
-        &metadata_path.0,
-        io.remaining()?
-            .source_bytes_read
-            .min(super::publication::UPLOAD_RECORD_BYTES),
-        io,
-    )
-    .await?;
+    let metadata = read_generation_if_present(generation, &metadata_path.0, None, io).await?;
     let staged = match metadata {
         Some(metadata) => {
             let metadata_hold = io.guard_bytes(&metadata)?;
@@ -924,16 +918,8 @@ async fn private_read_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 fn validate_private_read_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
-    let name = path.rsplit('/').next().unwrap_or(path);
     crate::executor::with_history_io(io, |work| {
         crate::conversation::validate_content_path(path, work)
     })?;
-    if name.len() > crate::conversation::MAX_LABEL_BYTES {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "file or volume label is invalid",
-        ));
-    }
     Ok(())
 }

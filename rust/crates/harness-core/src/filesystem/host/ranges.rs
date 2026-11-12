@@ -49,8 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
-        let metadata =
-            read_generation_if_present(selected, &metadata_path, MAXIMUM_METADATA, io).await?;
+        let metadata = read_generation_if_present(selected, &metadata_path, None, io).await?;
         let original = if let Some(metadata) = metadata {
             let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
             if staged.volume() != reference.volume() || staged.path() != reference.path() {
@@ -95,11 +94,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-const MAXIMUM_METADATA: u64 = 6
-    * (crate::conversation::MAX_PATH_BYTES as u64
-        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-        + 1024);
-
 // Resolve the original operation before trusting an index inherited by a join.
 // Both path resolution and explicit ranges use this same canonical-record check.
 pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -136,8 +130,7 @@ pub(super) async fn matching_publication<A: AsyncAuthorityStore, O: AsyncObjectS
             )
         })?;
     if selected.id() != original.id() {
-        let original_metadata =
-            read_generation(&original, metadata_path, MAXIMUM_METADATA, Some(io)).await?;
+        let original_metadata = read_generation(&original, metadata_path, None, Some(io)).await?;
         if original_metadata.as_ref() != metadata {
             return Err(stock_boundary(
                 Some(io),

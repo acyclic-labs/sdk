@@ -167,12 +167,30 @@ fn descriptor_checks_exact_bytes() -> Result<()> {
 
 #[test]
 fn configured_limits_reject_oversized_references() -> Result<()> {
-    Limits::default().validate_file(
-        &file(AgentId::new(), &"x".repeat(MAX_PATH_BYTES))?,
+    let path = "x".repeat(8193);
+    let original = file(AgentId::new(), &path)?;
+    let label = "λ".repeat(1025);
+    let media_type = format!("text/{}", "a".repeat(1025));
+    let long = FileRef::new(
+        original.volume().clone(),
+        path.clone(),
+        label.clone(),
+        FileDescriptor::from_bytes(b"hello", &media_type, &mut None)?,
+        label,
         &mut None,
     )?;
-    // Every reference is bounded by the protocol maxima, whatever the limits.
-    assert!(file(AgentId::new(), &"x".repeat(MAX_PATH_BYTES + 1)).is_err());
+    Limits::default().validate_file(&long, &mut None)?;
+    let mut selected = Limits {
+        path_bytes: std::num::NonZeroUsize::new(4096),
+        ..Limits::default()
+    };
+    assert!(selected.validate_file(&long, &mut None).is_err());
+    selected.path_bytes = std::num::NonZeroUsize::new(path.len());
+    selected.validate_file(&long, &mut None)?;
+    let encoded = serde_json::to_vec(&long).map_err(|error| Error::Invalid(error.to_string()))?;
+    let decoded: FileRef =
+        serde_json::from_slice(&encoded).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(decoded, long);
     let file = file(AgentId::new(), "message.txt")?;
     let mut limits = Limits {
         file_bytes: 4,
