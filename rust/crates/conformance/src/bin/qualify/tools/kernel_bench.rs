@@ -40,13 +40,7 @@ pub(super) fn kernel_bench(args: &[String]) -> Result<(), Failure> {
             .await
             .map_err(engine_err("checkout"))?
             .value;
-        let name = |value: String| {
-            LogicalName::new(
-                NameEncoding::Utf8,
-                value.into_bytes(),
-                config.limits.maximum_component_bytes,
-            )
-        };
+        let name = |value: String| LogicalName::new(NameEncoding::Utf8, value.into_bytes());
         let file_path = |index: u64| -> Result<NamespacePath, Failure> {
             Ok(NamespacePath::new(
                 vec![name("d".to_owned())?, name(format!("file-{index:07}.dat"))?],

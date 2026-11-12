@@ -62,11 +62,7 @@ fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_
                 AuthoredMutation::CreateFile {
                     file_id: None,
                     path: NamespacePath::new(
-                        vec![LogicalName::new(
-                            NameEncoding::Utf8,
-                            b"original".to_vec(),
-                            config.limits.maximum_component_bytes,
-                        )?],
+                        vec![LogicalName::new(NameEncoding::Utf8, b"original".to_vec())?],
                         config.limits,
                     )?,
                     bytes: acyclic_stream::OwnedBytes::from_static(b"original generation contents"),
