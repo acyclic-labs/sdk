@@ -910,12 +910,10 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
     Ok(())
 }
 
-/// The owner dies after its composed publication applied, and its input
-/// stream is then targeted for replacement at the delivered sequence.
-/// Recovery hands the composer the original delivered bytes, or refuses with
-/// a typed failure; never other bytes. Custody also checks the delivered
-/// record's commit, so a provider that broke append-only history would
-/// refuse rather than compose.
+/// Proof that custody recovery reading by (path, seq) is exact: the owner
+/// dies after its composed publication applied, every way to replace the
+/// delivered input is attempted and refused by the stream primitive, and
+/// recovery hands the composer the original bytes.
 #[tokio::test]
 async fn custody_recovery_never_reads_a_replaced_input() -> Result<(), Failure> {
     for replaced in [false, true] {
@@ -1023,13 +1021,8 @@ async fn custody_recovery_never_reads_a_replaced_input() -> Result<(), Failure> 
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .split_off(opened);
-        match recovered {
-            Err(Error::CustodyReplaced) => assert!(seen.is_empty(), "composer saw {seen:?}"),
-            recovered => {
-                recovered?;
-                assert_eq!(seen, [Some(b"original".to_vec())]);
-            }
-        }
+        recovered?;
+        assert_eq!(seen, [Some(b"original".to_vec())]);
     }
     Ok(())
 }
