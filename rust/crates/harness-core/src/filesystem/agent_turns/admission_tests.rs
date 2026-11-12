@@ -345,7 +345,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             None,
         )?
         .with_selected_inputs(super::super::content_verifier::SelectedInputs::new(
-            original_owner,
+            &original_owner,
             vec![selected.clone()],
         ))?;
         #[cfg(not(target_arch = "wasm32"))]

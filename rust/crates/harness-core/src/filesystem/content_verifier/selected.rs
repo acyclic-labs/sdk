@@ -20,26 +20,32 @@ fn identity(file: &FileRef) -> (&VolumeRef, &str, &str, &[u8; 32], u64, &str, &s
 
 impl<A, O> SelectedInputs<A, O> {
     pub(in crate::filesystem) fn new(
-        owner: Arc<FilesystemContentVerifier<A, O>>,
+        owner: &Arc<FilesystemContentVerifier<A, O>>,
         mut files: Vec<FileRef>,
-    ) -> Arc<Self> {
+    ) -> Option<Arc<Self>> {
         // Move the existing committed selection. Ordinary files keep their
         // original reader, policy and caller ceiling; no directory is delegated.
         files.retain(|file| file.volume().is_agent_journal());
+        if files.is_empty() {
+            return None;
+        }
         files.sort_unstable_by(|a, b| identity(a).cmp(&identity(b)));
         files.dedup();
-        Arc::new(Self { owner, files })
+        Some(Arc::new(Self {
+            owner: Arc::clone(owner),
+            files,
+        }))
     }
 }
 
 impl<A, O> FilesystemContentVerifier<A, O> {
     pub(in crate::filesystem) fn with_selected_inputs(
         mut self: Arc<Self>,
-        inputs: Arc<SelectedInputs<A, O>>,
+        inputs: Option<Arc<SelectedInputs<A, O>>>,
     ) -> Result<Arc<Self>> {
         Arc::get_mut(&mut self)
             .ok_or_else(|| Error::Conflict("turn input reader is already shared".into()))?
-            .selected_inputs = Some(inputs);
+            .selected_inputs = inputs;
         Ok(self)
     }
 

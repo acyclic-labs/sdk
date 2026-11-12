@@ -1063,7 +1063,7 @@ where
             crate::conversation::ContentGrant::verify_read(&verifier, &scope, file)?;
         }
         let selected_inputs =
-            super::content_verifier::SelectedInputs::new(Arc::clone(&storage.reader), external);
+            super::content_verifier::SelectedInputs::new(&storage.reader, external);
         // The turn's reader and writer take no content bound of their own:
         // each caller states its bound, and harness-owned records (manifests,
         // settled outputs, policies) are read at their pinned length, so a
@@ -1075,7 +1075,7 @@ where
             crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
         )?
-        .with_selected_inputs(Arc::clone(&selected_inputs))?;
+        .with_selected_inputs(selected_inputs.clone())?;
         // Open only the committed input envelopes under their original grant.
         // Their validated ordered contents become the selection before deriving
         // the exact-file closure, including files on an ancestor's private volume.
@@ -1109,7 +1109,7 @@ where
                     crate::conversation::MAX_EXACT_JS_INTEGER,
                     None,
                 )?
-                .with_selected_inputs(Arc::clone(&selected_inputs))?;
+                .with_selected_inputs(selected_inputs.clone())?;
             }
         }
         let writer = FilesystemContentPublisher::new(
