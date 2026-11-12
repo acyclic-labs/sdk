@@ -17,7 +17,6 @@ struct Interleaved {
     source: MemoryStream,
     writes: AtomicU64,
     before_write: Mutex<Option<Competing>>,
-    after_page: Mutex<Option<CommitRequest>>,
 }
 
 impl Interleaved {
@@ -44,14 +43,7 @@ impl ExplicitStreamProvider for Interleaved {
     }
 
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
-        let is_page = request.children.is_some();
         let result = self.source.heads(request).await?;
-        let competing = is_page
-            .then(|| self.after_page.lock().unwrap().take())
-            .flatten();
-        if let Some(request) = competing {
-            self.publish(request).await?;
-        }
         Ok(result)
     }
 
@@ -350,64 +342,5 @@ async fn a_lost_delivery_publication_returns_without_reinvoking_the_handler() ->
         records(&**provider, "out/publish-conflict").await?,
         vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn restoration_returns_a_changed_page_cut_without_restarting() -> TestResult {
-    let runtime = runtime()?;
-    let store = runtime.store();
-    let provider = store.provider();
-    let mut initial = PreparedPublish::foreign(key("restore/initial")?);
-    // The first page has 256 children. A real new child between the captured
-    // first page and the second must invalidate the original traversal.
-    for index in 0..257 {
-        for effect in [
-            store.create(
-                None,
-                &actor(&format!("restore-{index}"))?,
-                crate::local::Creation {
-                    subscriptions: BTreeMap::new(),
-                    checkpoint: None,
-                    escrow: None,
-                },
-            )?,
-            store.activation(&actor(&format!("restore-{index}"))?),
-        ] {
-            initial.join(effect)?;
-        }
-    }
-    store.submit(initial).await?;
-    let mut competing = PreparedPublish::foreign(key("restore/competing")?);
-    for effect in [
-        store.create(
-            None,
-            &actor("restore-new")?,
-            crate::local::Creation {
-                subscriptions: BTreeMap::new(),
-                checkpoint: None,
-                escrow: None,
-            },
-        )?,
-        store.activation(&actor("restore-new")?),
-    ] {
-        competing.join(effect)?;
-    }
-    *provider.inner().after_page.lock().unwrap() = Some(competing.into_request()?);
-    let before = provider.requests();
-    assert!(matches!(
-        runtime.restore().await,
-        Err(Error::Stream(StreamError::HierarchyChanged))
-    ));
-    let original = provider.requests().since(before);
-    assert_eq!(original.control(), 2);
-    assert_eq!(original.data(), 0);
-    assert_eq!(runtime.counts().0, 256);
-    // Explicit restart restores the entire current set. Names from the first
-    // partial traversal retain one registration apiece.
-    let before = provider.requests();
-    runtime.restore().await?;
-    assert_eq!(provider.requests().since(before).control(), 2);
-    assert_eq!(runtime.counts().0, 258);
     Ok(())
 }

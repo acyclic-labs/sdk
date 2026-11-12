@@ -1,9 +1,7 @@
 //! Activation discovery is a checkpointed actor in a separate state root.
-//! Its cursor never replaces the current resident set: restart restores that
-//! set from state names before following the captured activation cut.
+//! Placement commands, not a root child scan, admit resident execution.
 use super::*;
 use crate::local::Subscription;
-use acyclic_stream::ChildrenPageRequest;
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub(super) fn dispatcher_store(&self) -> Result<(Store<P>, ActorReference), Error> {
@@ -96,37 +94,5 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .submit_retained(publication)
             .await?
             .ok_or(Error::Invalid("dispatcher receipt has no state"))
-    }
-
-    pub(super) async fn restore(&self) -> Result<(), Error> {
-        let mut after = None;
-        let mut version = None;
-        loop {
-            let page = self
-                .store
-                .provider()
-                .children_page(ChildrenPageRequest {
-                    parent: Some(self.store.root().clone()),
-                    after: after.clone(),
-                    hierarchy_version: version,
-                    limit: 256,
-                    tail_stream: None,
-                })
-                .await?;
-            for child in page.children {
-                if let Ok(actor) = self.store.actor(&child.path)
-                    && self.includes(&actor)
-                {
-                    self.track(actor)?;
-                }
-            }
-            match page.next_after {
-                Some(next) => {
-                    after = Some(next);
-                    version = Some(page.hierarchy_version);
-                }
-                None => return Ok(()),
-            }
-        }
     }
 }

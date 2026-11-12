@@ -170,6 +170,7 @@ struct LocalTarget<P: StreamProvider> {
     running: std::sync::Mutex<Running<P>>,
     clock: Arc<ControlledClock>,
     time: std::sync::Mutex<ClockControl>,
+    placement: std::sync::Mutex<BTreeMap<ActorReference, (uuid::Uuid, u64)>>,
 }
 
 impl<P: StreamProvider> LocalTarget<P> {
@@ -186,6 +187,7 @@ impl<P: StreamProvider> LocalTarget<P> {
             running: std::sync::Mutex::new(None),
             clock: Arc::new(clock),
             time: std::sync::Mutex::new(time),
+            placement: std::sync::Mutex::new(BTreeMap::new()),
         };
         target.launch()?;
         Ok(target)
@@ -219,6 +221,30 @@ impl<P: StreamProvider> LocalTarget<P> {
             .map(|(runtime, _, _)| Arc::clone(runtime))
             .ok_or(Error::Invalid("runtime stopped"))
     }
+
+    // The fixture is the placement owner, not the runtime under test. It
+    // sends one actor-local command per node incarnation through the same
+    // durable admission path used by a real host's placement controller.
+    async fn admit(&self, runtime: &Runtime<P>, actor: &ActorReference) -> Result<(), Error> {
+        let previous = self
+            .placement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(actor)
+            .copied();
+        if previous.is_some_and(|(node, _)| node == runtime.instance) {
+            return Ok(());
+        }
+        let index = previous
+            .map_or(Some(1), |(_, index)| index.checked_add(1))
+            .ok_or(Error::Invalid("placement index overflow"))?;
+        runtime.place(actor.clone(), index).await?;
+        self.placement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(actor.clone(), (runtime.instance, index));
+        Ok(())
+    }
 }
 
 impl<P: StreamProvider> Drop for LocalTarget<P> {
@@ -245,7 +271,7 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
     fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
     }
-    fn complete<'a>(&'a self, _actor: &'a ActorReference) -> BoxFuture<'a, Result<(), Error>> {
+    fn complete<'a>(&'a self, actor: &'a ActorReference) -> BoxFuture<'a, Result<(), Error>> {
         async move {
             let (runtime, mut ready) = self
                 .running
@@ -258,6 +284,7 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
                 .wait_for(|started| *started)
                 .await
                 .map_err(|_| Error::CompletionStopped)?;
+            self.admit(&runtime, actor).await?;
             runtime.complete().await
         }
         .boxed()
@@ -277,7 +304,12 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
         actor: &'a ActorReference,
         paused: bool,
     ) -> BoxFuture<'a, Result<(), Error>> {
-        async move { self.runtime()?.pause(actor, paused).await }.boxed()
+        async move {
+            let runtime = self.runtime()?;
+            self.admit(&runtime, actor).await?;
+            runtime.pause(actor, paused).await
+        }
+        .boxed()
     }
     fn restart(&self) -> BoxFuture<'_, Result<(), Error>> {
         async move {
