@@ -22,25 +22,15 @@ mod watched;
 use cancellation::CancelOnDrop;
 
 /// Host-selected initialization credit and independent per-message bounds.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct McpClientLimits {
     /// Concurrent initialization credit, never a total server allowance.
     /// `None` starts every configured server without an implicit ceiling.
     pub servers: Option<u32>,
-    /// Maximum bytes in one discovery request or response, never the whole catalog.
-    pub frame_bytes: u32,
-    /// Maximum request or response bytes for an installed tool call.
-    pub tool_bytes: u32,
-}
-
-impl Default for McpClientLimits {
-    fn default() -> Self {
-        Self {
-            servers: None,
-            frame_bytes: 1_048_576,
-            tool_bytes: 1_048_576,
-        }
-    }
+    /// Optional bytes in one discovery request or response; `None` is unbounded.
+    pub frame_bytes: Option<u32>,
+    /// Optional bytes for an installed tool exchange; `None` is unbounded.
+    pub tool_bytes: Option<u32>,
 }
 
 /// A server that could not be installed; no connection configuration is retained.
@@ -100,7 +90,10 @@ impl McpConfig {
     where
         F: for<'a> Fn(&'a McpServer) -> BoxProviderFuture<'a, Result<Connected>>,
     {
-        if limits.servers == Some(0) || limits.frame_bytes == 0 || limits.tool_bytes == 0 {
+        if limits.servers == Some(0)
+            || limits.frame_bytes == Some(0)
+            || limits.tool_bytes == Some(0)
+        {
             return Err(Error::Invalid(
                 "MCP credit and message bounds must be positive".into(),
             ));

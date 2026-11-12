@@ -10,15 +10,15 @@ use std::{
 /// Admits the same response prefix regardless of a provider's chunk sizes.
 /// Foreign adapters use this before copying bytes into Rust storage.
 pub struct ResponseByteFrontier {
-    remaining: u32,
+    remaining: Option<u32>,
     overflow: bool,
 }
 
 impl ResponseByteFrontier {
     /// Starts one response's byte allowance, without allocation or I/O.
-    pub fn new(maximum: u32) -> Self {
+    pub fn new(maximum: impl Into<Option<u32>>) -> Self {
         Self {
-            remaining: maximum,
+            remaining: maximum.into(),
             overflow: false,
         }
     }
@@ -26,13 +26,17 @@ impl ResponseByteFrontier {
     /// Admits a prefix, retaining overflow for the next demand after that prefix.
     /// None means overflow has no remaining prefix; the original operation must
     /// return its typed error without another read or copy.
-    pub fn admit(&mut self, length: u64) -> Option<u32> {
+    pub fn admit(&mut self, length: usize) -> Option<usize> {
         if self.overflow {
             return None;
         }
-        let allowed = length.min(u64::from(self.remaining)) as u32;
-        self.remaining -= allowed;
-        self.overflow = length > u64::from(allowed);
+        let Some(remaining) = &mut self.remaining else {
+            return Some(length);
+        };
+        let allowed = length.min(*remaining as usize);
+        // The admitted prefix is at most the selected u32 remainder.
+        *remaining -= allowed as u32;
+        self.overflow = length > allowed;
         (!self.overflow || allowed != 0).then_some(allowed)
     }
 
@@ -52,7 +56,11 @@ pin_project_lite::pin_project! {
     }
 }
 
-pub(super) fn bounded<S>(body: S, maximum: u32, operation: OperationId) -> Bounded<S> {
+pub(super) fn bounded<S>(
+    body: S,
+    maximum: impl Into<Option<u32>>,
+    operation: OperationId,
+) -> Bounded<S> {
     Bounded {
         body,
         frontier: ResponseByteFrontier::new(maximum),
@@ -75,12 +83,12 @@ impl<S: Stream<Item = Result<Bytes>>> Stream for Bounded<S> {
         }
         match this.body.poll_next(cx) {
             Poll::Ready(Some(Ok(mut chunk))) => {
-                let Some(allowed) = this.frontier.admit(chunk.len() as u64) else {
+                let Some(allowed) = this.frontier.admit(chunk.len()) else {
                     *this.ended = true;
                     return Poll::Ready(Some(Err(Error::Indeterminate(*this.operation))));
                 };
                 // Bytes::truncate only changes its view; no payload copy.
-                chunk.truncate(allowed as usize);
+                chunk.truncate(allowed);
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(other) => {
@@ -100,6 +108,11 @@ mod tests {
 
     #[test]
     fn frontier_borrows_prefix_and_settles_without_another_source_poll() {
+        let mut unbounded = ResponseByteFrontier::new(None);
+        assert_eq!(unbounded.admit(usize::MAX), Some(usize::MAX));
+        assert_eq!(unbounded.admit(1), Some(1));
+        assert!(!unbounded.overflowed());
+
         let polls = Cell::new(0);
         let bytes = Bytes::from_static(b"permitted and excess");
         let pointer = bytes.as_ptr();
@@ -109,7 +122,7 @@ mod tests {
             assert_eq!(polls.get(), 1, "overflow polled the original body again");
             Poll::Ready(Some(Ok(bytes.clone())))
         });
-        let body = bounded(body, 9, operation);
+        let body = bounded(body, Some(9), operation);
         futures::pin_mut!(body);
         futures::executor::block_on(async {
             let prefix = body.next().await.unwrap().unwrap();

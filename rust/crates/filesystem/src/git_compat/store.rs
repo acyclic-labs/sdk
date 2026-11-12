@@ -3,7 +3,7 @@ use super::*;
 /// Durable optimistic-concurrency adapter for private compatibility state.
 pub trait GitCompatStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: std::error::Error + acyclic_stream::ProviderPlatform + 'static;
 
     /// Loads state for one repository/workspace identity.
     fn load(

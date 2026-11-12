@@ -12,8 +12,13 @@ const message = `{"jsonrpc":"2.0","id":"${operation}","result":{"content":[{"typ
 test("browser transport rejects lossy byte and deadline bounds before I/O", () => {
   let calls = 0;
   const provider = () => { calls++; throw new Error("unexpected I/O"); };
-  for (const invalid of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity, "4096", undefined, null, true]) {
+  for (const invalid of [-1, 0, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity, "4096", true]) {
     assert.throws(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, invalid, 1000));
+  }
+  for (const maximum of [undefined, null]) {
+    const transport = new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, maximum, 1000);
+    try { assert.equal(transport.initializationRequest(operation, "client", "1").maximum_response_bytes, null); }
+    finally { transport.free(); }
   }
   for (const invalid of [-1, 0, 0.5, 1.5, 2 ** 64, -1n, 1n << 64n, NaN, Infinity, -Infinity, "4096", true]) {
     assert.throws(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, invalid));
@@ -33,6 +38,28 @@ test("browser transport rejects lossy byte and deadline bounds before I/O", () =
     assert.equal(request.timeout_ms, BigInt(maximum));
   } finally { transport.free(); }
   assert.equal(calls, 0);
+});
+
+test("absent browser byte policies preserve large requests and JSON/SSE responses", async () => {
+  const payload = "x".repeat(1_048_577);
+  for (const sse of [false, true]) {
+    let calls = 0;
+    const fetcher = async (_endpoint, options) => {
+      calls++;
+      assert.equal(JSON.parse(new TextDecoder().decode(options.body)).params.arguments.payload, payload);
+      const result = JSON.stringify({ jsonrpc: "2.0", id: operation,
+        result: { content: [{ type: "text", text: payload }], isError: false } });
+      return new Response(sse ? `data: ${result}\r\n\r\n` : result,
+        { headers: { "content-type": sse ? "text/event-stream" : "application/json" } });
+    };
+    const transport = new WasmMcpHttpTransport(createBrowserMcpHttpProvider(fetcher),
+      "http://localhost/mcp", undefined, undefined, 1000);
+    try {
+      const result = JSON.parse(new TextDecoder().decode(await transport.callJson(operation, "echo", { payload })));
+      assert.equal(result.content[0].text, payload);
+      assert.equal(calls, 1);
+    } finally { transport.free(); }
+  }
 });
 
 test("browser I/O feeds the Rust JSON/SSE decoder at every chunk width", async () => {

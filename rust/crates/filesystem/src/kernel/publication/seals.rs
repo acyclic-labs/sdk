@@ -25,7 +25,7 @@ pub(super) fn shared<E, F, Fut>(
     factory: F,
 ) -> Result<NativeSeal<E>, E>
 where
-    E: From<crate::FsError> + Send + 'static,
+    E: From<crate::FsError> + acyclic_stream::ProviderTask + 'static,
     F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<(), E>> + Send + 'static,
 {

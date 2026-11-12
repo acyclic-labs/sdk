@@ -1,4 +1,4 @@
-//! Streamable HTTP over a host-supplied bounded provider.
+//! Streamable HTTP over one host-supplied provider with optional byte policies.
 
 use super::{
     McpToolTransport, PROTOCOL_VERSION,
@@ -24,7 +24,7 @@ mod sse;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::NativeMcpHttpProvider;
 
-/// One portable HTTP request with finite I/O bounds.
+/// One portable HTTP request with independently selected byte and time policies.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
@@ -40,8 +40,8 @@ pub struct McpHttpRequest {
     /// Optional whole-exchange deadline.
     #[cfg_attr(feature = "wasm", tsify(type = "bigint | null"))]
     pub timeout_ms: Option<u64>,
-    /// Total response body allowance.
-    pub maximum_response_bytes: u32,
+    /// Optional total response body allowance; `None` is unbounded.
+    pub maximum_response_bytes: Option<u32>,
 }
 
 /// Bounded streaming HTTP response.
@@ -56,7 +56,7 @@ pub struct McpHttpResponse {
 
 /// Platform I/O for admitted HTTP operations.
 pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
-    /// Performs one exchange with finite I/O bounds.
+    /// Performs one exchange with the original selected policies.
     fn exchange<'a>(
         &'a self,
         operation: OperationId,
@@ -75,7 +75,7 @@ pub struct HttpMcpTransport {
     provider: Arc<dyn McpHttpProvider>,
     endpoint: String,
     session: Option<String>,
-    maximum_bytes: u32,
+    maximum_bytes: Option<u32>,
     timeout_ms: Option<u64>,
     callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     tools_generation: Arc<std::sync::atomic::AtomicU64>,
@@ -96,11 +96,12 @@ impl HttpMcpTransport {
     /// Selects independent tool-exchange bounds after catalog discovery.
     pub fn with_tool_limits(
         mut self,
-        maximum_bytes: u32,
+        maximum_bytes: impl Into<Option<u32>>,
         timeout_ms: impl Into<Option<u64>>,
     ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
         let timeout_ms = timeout_ms.into();
-        if maximum_bytes == 0 || timeout_ms == Some(0) {
+        if maximum_bytes == Some(0) || timeout_ms == Some(0) {
             return Err(Error::Invalid(
                 "MCP request deadline must be positive".into(),
             ));
@@ -128,10 +129,11 @@ impl HttpMcpTransport {
         provider: Arc<dyn McpHttpProvider>,
         endpoint: String,
         session: Option<String>,
-        maximum_bytes: u32,
+        maximum_bytes: impl Into<Option<u32>>,
         timeout_ms: impl Into<Option<u64>>,
         callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
         let timeout_ms = timeout_ms.into();
         let uri = endpoint
             .parse::<::http::Uri>()
@@ -143,7 +145,7 @@ impl HttpMcpTransport {
                 || authority.as_str().contains('@')
                 || (authority.port().is_some() && authority.port_u16().is_none())
         }) || endpoint.contains('#')
-            || maximum_bytes == 0
+            || maximum_bytes == Some(0)
             || timeout_ms == Some(0)
             || session.as_ref().is_some_and(|value| !valid_session(value))
         {
@@ -263,7 +265,9 @@ impl HttpMcpTransport {
     /// Constructs the exact request for separate host admission.
     pub fn request(&self, method: &str, body: Vec<u8>) -> Result<McpHttpRequest> {
         if !matches!(method, "POST" | "GET" | "DELETE")
-            || body.len() as u64 > u64::from(self.maximum_bytes)
+            || self
+                .maximum_bytes
+                .is_some_and(|maximum| body.len() as u64 > u64::from(maximum))
         {
             return Err(Error::Invalid("invalid MCP HTTP request".into()));
         }

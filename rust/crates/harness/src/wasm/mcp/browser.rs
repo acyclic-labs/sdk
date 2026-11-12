@@ -121,8 +121,8 @@ impl McpHttpProvider for BrowserProvider {
                 let (bytes, ()) =
                     acyclic_stream::javascript_bytes::snapshot_prefix(&bytes, |length| {
                         body.frontier
-                            .admit(u64::from(length))
-                            .map(|allowed| (allowed, ()))
+                            .admit(length as usize)
+                            .map(|allowed| (allowed as u32, ()))
                             .ok_or_else(|| js_error(Error::Indeterminate(body.operation)))
                     })
                     .map_err(|_| Error::Indeterminate(body.operation))?;
@@ -178,20 +178,20 @@ impl WasmMcpHttpInitialization {
 
 #[wasm_bindgen]
 impl WasmMcpHttpTransport {
-    /// Binds finite platform I/O and an optional host-provided session without effects.
+    /// Binds optional exchange policies and a host-provided session without effects.
     #[wasm_bindgen(constructor)]
     pub fn new(
         #[wasm_bindgen(unchecked_param_type = "McpBrowserHttpProvider")] provider: Function,
         endpoint: String,
         session: Option<String>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_bytes: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | null | undefined")] maximum_bytes: JsValue,
         #[wasm_bindgen(unchecked_param_type = "number | bigint | undefined")] timeout_ms: JsValue,
     ) -> std::result::Result<Self, JsValue> {
         HttpMcpTransport::new(
             Arc::new(BrowserProvider(provider)),
             endpoint,
             session,
-            from_js(maximum_bytes)?,
+            optional_from_js::<u32>(maximum_bytes)?,
             optional_from_js::<u64>(timeout_ms)?,
             None,
         )
@@ -236,8 +236,8 @@ impl WasmMcpHttpTransport {
         let mut frontier = ResponseByteFrontier::new(allowance);
         let (body, ()) = acyclic_stream::javascript_bytes::snapshot_prefix(&body, |length| {
             frontier
-                .admit(u64::from(length))
-                .map(|allowed| (allowed, ()))
+                .admit(length as usize)
+                .map(|allowed| (allowed as u32, ()))
                 .ok_or_else(|| js_error(Error::Indeterminate(operation)))
         })?;
         let body = Bytes::from(body);

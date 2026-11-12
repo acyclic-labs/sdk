@@ -8,7 +8,7 @@ fn parse(
     input: &[u8],
     width: usize,
     media: &str,
-    maximum: u32,
+    maximum: Option<u32>,
     operation: OperationId,
 ) -> crate::Result<Value> {
     let body = futures::stream::unfold(
@@ -44,7 +44,7 @@ pub fn admit(
     operation: OperationId,
     initialization: bool,
 ) -> crate::Result<Value> {
-    let result = parse(input, input.len().max(1), media, u32::MAX, operation)?;
+    let result = parse(input, input.len().max(1), media, Some(u32::MAX), operation)?;
     if initialization {
         rpc::initialization(&result, None)?;
     }
@@ -55,7 +55,7 @@ pub fn admit(
 /// The finite body supplies every event synchronously and closes at its original EOF.
 pub fn check(input: &[u8]) {
     for media in ["application/json", "text/event-stream"] {
-        for maximum in [0, 1, u32::MAX] {
+        for maximum in [None, Some(0), Some(1), Some(u32::MAX)] {
             let operation = OperationId::from_bytes([7; 16]);
             let whole = parse(input, input.len().max(1), media, maximum, operation)
                 .map_err(|error| error_observation(&error));
@@ -64,7 +64,7 @@ pub fn check(input: &[u8]) {
                     whole,
                     parse(input, width, media, maximum, operation)
                         .map_err(|error| error_observation(&error)),
-                    "media={media}, maximum={maximum}, width={width}, input bytes={}",
+                    "media={media}, maximum={maximum:?}, width={width}, input bytes={}",
                     input.len()
                 );
             }

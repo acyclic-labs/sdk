@@ -484,8 +484,8 @@ async fn filtered_tools_stay_unavailable_and_invalid_limits_never_connect() -> R
         let mut limits = McpClientLimits::default();
         match field {
             0 => limits.servers = Some(0),
-            1 => limits.frame_bytes = 0,
-            _ => limits.tool_bytes = 0,
+            1 => limits.frame_bytes = Some(0),
+            _ => limits.tool_bytes = Some(0),
         }
         assert!(matches!(
             configuration()?
@@ -764,8 +764,8 @@ IFS= read -r input
             ToolRegistry::default(),
             root.path(),
             McpClientLimits {
-                frame_bytes: 1024,
-                tool_bytes: 8192,
+                frame_bytes: Some(1024),
+                tool_bytes: Some(8192),
                 ..Default::default()
             },
             Arc::new(crate::secrets::EnvSecrets),

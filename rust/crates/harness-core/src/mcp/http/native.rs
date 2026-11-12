@@ -29,8 +29,10 @@ impl McpHttpProvider for NativeMcpHttpProvider {
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
         Box::pin(async move {
-            if request.timeout_ms == Some(0) || request.maximum_response_bytes == 0 {
-                return Err(Error::Invalid("HTTP exchange needs finite bounds".into()));
+            if request.timeout_ms == Some(0) || request.maximum_response_bytes == Some(0) {
+                return Err(Error::Invalid(
+                    "HTTP exchange requires positive configured allowances".into(),
+                ));
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
@@ -175,7 +177,14 @@ mod tests {
 
     #[tokio::test]
     async fn real_local_http_json_sse_and_lost_response_never_repost() -> Result<()> {
-        for mode in ["json", "sse", "lost", "redirect"] {
+        for mode in [
+            "json",
+            "sse",
+            "lost",
+            "redirect",
+            "json-unbounded",
+            "sse-unbounded",
+        ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .map_err(|e| Error::Storage(e.to_string()))?;
@@ -199,9 +208,6 @@ mod tests {
                         return Err(Error::Invalid("fixture request disconnected".into()));
                     }
                     input.extend_from_slice(&buffer[..count]);
-                    if input.len() > 8192 {
-                        return Err(Error::Invalid("fixture request bound".into()));
-                    }
                     if let Some(end) = input.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
                         let header = std::str::from_utf8(&input[..end])
                             .map_err(|e| Error::Invalid(e.to_string()))?;
@@ -232,18 +238,33 @@ mod tests {
                     );
                     return Ok(());
                 }
-                let result=json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"content":[{"type":"text","text":"local"}],"isError":false}}).to_string();
+                let text = if mode.ends_with("unbounded") {
+                    let request: serde_json::Value =
+                        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1)
+                            .map_err(|error| Error::Invalid(error.to_string()))?;
+                    assert_eq!(
+                        request["params"]["arguments"]["payload"]
+                            .as_str()
+                            .unwrap()
+                            .len(),
+                        1_048_577
+                    );
+                    "x".repeat(1_048_577)
+                } else {
+                    "local".into()
+                };
+                let result=json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"content":[{"type":"text","text":text}],"isError":false}}).to_string();
                 let response = if mode == "redirect" {
                     format!(
                         "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     )
                 } else {
-                    let body = if mode == "sse" {
+                    let body = if mode.starts_with("sse") {
                         format!("data: {result}\r\n\r\n")
                     } else {
                         result
                     };
-                    let media = if mode == "sse" {
+                    let media = if mode.starts_with("sse") {
                         "text/event-stream"
                     } else {
                         "application/json"
@@ -276,15 +297,29 @@ mod tests {
                 provider,
                 format!("http://{address}/mcp"),
                 Some("session".into()),
-                8192,
+                if mode.ends_with("unbounded") {
+                    None
+                } else {
+                    Some(8192)
+                },
                 1000,
                 None,
             )?;
-            let result = transport.call(operation, "echo", json!({}), None).await;
+            let arguments = if mode.ends_with("unbounded") {
+                json!({"payload":"x".repeat(1_048_577)})
+            } else {
+                json!({})
+            };
+            let result = transport.call(operation, "echo", arguments, None).await;
             assert!(transport.reconcile(operation, None).await?.is_none());
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
-            if matches!(mode, "json" | "sse") {
-                assert_eq!(result?.content, [rmcp::model::ContentBlock::text("local")]);
+            if matches!(mode, "json" | "sse" | "json-unbounded" | "sse-unbounded") {
+                let expected = if mode.ends_with("unbounded") {
+                    "x".repeat(1_048_577)
+                } else {
+                    "local".into()
+                };
+                assert_eq!(result?.content, [rmcp::model::ContentBlock::text(expected)]);
             } else {
                 assert!(matches!(result, Err(Error::Indeterminate(_))));
             }

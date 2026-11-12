@@ -251,8 +251,8 @@ async fn fixture_with_response_gate(
                     .map_err(invalid)?
             } else {
                 match mode {
-                    "oversize" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
-                        "result":{"tools":[{"name":"large","description":"x".repeat(8192),
+                    "oversize" | "unbounded" => serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,
+                        "result":{"tools":[{"name":"large","description":"x".repeat(if mode == "unbounded" { 1_048_577 } else { 8192 }),
                         "inputSchema":{"type":"object"}}]}}))
                     .map_err(invalid)?,
                     "malformed" => b"not json".to_vec(),
@@ -283,7 +283,7 @@ async fn fixture_with_response_gate(
             };
             for bytes in std::iter::once(bytes).chain(first) {
                 if let Err(error) = write.write_all(&bytes).await {
-                    if mode == "oversize" {
+                    if matches!(mode, "oversize" | "unbounded") {
                         return Ok(methods);
                     }
                     return Err(Error::process_io(error));
@@ -295,9 +295,44 @@ async fn fixture_with_response_gate(
         Ok(methods)
     });
     let (read, write) = tokio::io::split(client);
-    let client =
-        StdioMcpTransport::bind(read, write, 4096, Some(Duration::from_millis(50)), None).await?;
+    let client = StdioMcpTransport::bind(
+        read,
+        write,
+        if mode == "unbounded" {
+            None
+        } else {
+            Some(4096)
+        },
+        Some(Duration::from_millis(50)),
+        None,
+    )
+    .await?;
     Ok((client, server))
+}
+
+#[tokio::test(start_paused = true)]
+async fn absent_frame_policy_admits_large_messages_and_selected_tool_policy_still_refuses()
+-> Result<()> {
+    let (transport, server) = fixture("unbounded").await?;
+    let listed = transport.list_tools(OperationId::new(), None).await?;
+    assert_eq!(
+        listed.tools[0].description.as_deref().unwrap().len(),
+        1_048_577
+    );
+    let transport = transport.with_tool_limits(Some(4096), None)?;
+    let operation = OperationId::new();
+    assert!(matches!(transport.list_tools(operation, None).await,
+        Err(Error::Indeterminate(id)) if id == operation));
+    drop(transport);
+    let methods = server.await.map_err(invalid)??;
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| method.as_str() == "tools/list")
+            .count(),
+        2
+    );
+    Ok(())
 }
 
 #[tokio::test(start_paused = true)]
