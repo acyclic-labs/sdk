@@ -5,6 +5,56 @@ use crate::{
     resources::ProviderRef,
 };
 
+async fn replace_policy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    workspace: &Workspace<A, O>,
+    policy: &acyclic_fs::access::Policy,
+) -> Result<()> {
+    let cancel = acyclic_fs::CancellationToken::new();
+    let mut checkout = workspace
+        .checkout(
+            acyclic_fs::model::GenerationSelector::Head,
+            acyclic_fs::model::CheckoutMode::tracking_transaction(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| Error::from(failure.error))?
+        .value;
+    checkout
+        .write_access_policy(
+            &serde_json::to_vec(policy).map_err(|error| Error::Invalid(error.to_string()))?,
+            acyclic_fs::NamedAttributeWriteMode::Replace,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancel,
+        )
+        .await
+        .map_err(|failure| Error::from(failure.error))?;
+    let result = checkout
+        .commit::<acyclic_fs::FsError, _, _>(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancel,
+            |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await
+        .map_err(|failure| Error::from(failure.error))?
+        .value;
+    assert!(matches!(
+        result,
+        acyclic_fs::LivePublicationObservation::Committed { .. }
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn announcement_publication_preserves_workload_and_delegated_authority() -> Result<()> {
     struct NoDispatch;
@@ -399,48 +449,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             serde_json::from_slice(include_bytes!("../host/journal-policy.json"))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         policy.layers[0].retain(|rule| rule.id != "published-input");
-        let mut checkout = workspace
-            .checkout(
-                acyclic_fs::model::GenerationSelector::Head,
-                acyclic_fs::model::CheckoutMode::tracking_transaction(),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
-        checkout
-            .write_access_policy(
-                &serde_json::to_vec(&policy).map_err(|error| Error::Invalid(error.to_string()))?,
-                acyclic_fs::NamedAttributeWriteMode::Replace,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| Error::from(failure.error))?;
-        let changed = checkout
-            .commit::<acyclic_fs::FsError, _, _>(
-                acyclic_fs::OperationId::new(),
-                None,
-                None,
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                    }))
-                },
-            )
-            .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
-        assert!(matches!(
-            changed,
-            acyclic_fs::LivePublicationObservation::Committed { .. }
-        ));
+        replace_policy(&workspace, &policy).await?;
         let refused = async { selected_reader.read(&input, 4096, None, None)?.await }
             .await
             .expect_err("the saved policy did not exercise input refusal");
@@ -605,6 +614,160 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .as_ref(),
             b"selected input"
         );
+        let foreign = crate::conversation::journal_volume(
+            journal.provider().clone(),
+            &crate::agent::AgentId::from_bytes([202; 16]),
+        )?;
+        host.create_volume(&foreign).await?;
+        let foreign_scope = root.bootstrap_scope(
+            "source-host",
+            &Capabilities::new([
+                HARNESS_HOST.to_owned(),
+                foreign.capability(VolumeOperation::Read, &mut None)?,
+                foreign.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(crate::AgentId::from_bytes([202; 16])),
+            &mut None,
+        )?;
+        let foreign_write = ContentGrant::verify(
+            &guest.verifier,
+            &foreign_scope,
+            &foreign,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let source_files = AgentInternalFiles::new(
+            host.clone(),
+            foreign.clone(),
+            foreign_write.clone(),
+            foreign.clone(),
+            foreign_write,
+        );
+        let shared = source_files
+            .stage_announcement(
+                crate::agent::AnnouncementKind::Targets,
+                [203; 32],
+                br#"{"source":"shared"}"#,
+            )
+            .await?;
+        let source_workspace = host
+            .filesystem
+            .open_workspace(
+                foreign.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        replace_policy(&source_workspace, &policy).await?;
+        let source_reference = workspace_ref(
+            foreign.provider().clone(),
+            &foreign.storage_name(&mut None)?,
+        )?;
+        let source_before = host.resolve(&source_reference, None).await?;
+        let label = crate::core::filesystem_scope_label(parent.capabilities(), &mut None)?;
+        let mut read_only: Vec<_> = parent
+            .capabilities()
+            .iter()
+            .filter(|capability| Some(*capability) != label)
+            .map(str::to_owned)
+            .collect();
+        read_only.push(shared.read_capability(&mut None)?);
+        if structured {
+            let mut capability = acyclic_fs::access::Capability::whole_volume(
+                Some(private.id().into()),
+                &acyclic_fs::access::Action::ALL,
+            );
+            capability.layers[0].extend(
+                acyclic_fs::access::Capability::whole_volume(
+                    Some(journal.id().into()),
+                    &acyclic_fs::access::Action::ALL,
+                )
+                .layers
+                .into_iter()
+                .flatten(),
+            );
+            capability.layers[0].extend(
+                acyclic_fs::access::Capability::whole_volume(
+                    Some(foreign.id().into()),
+                    &[
+                        acyclic_fs::access::Action::Read,
+                        acyclic_fs::access::Action::ReadHistory,
+                    ],
+                )
+                .layers
+                .into_iter()
+                .flatten(),
+            );
+            read_only.push(
+                capability
+                    .to_scope_label()
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+        }
+        let read_only = root.bootstrap_scope(
+            "host-with-read-only-source",
+            &Capabilities::new(read_only),
+            Some(owner),
+            &mut None,
+        )?;
+        let (_source_producer, source_stopped) = futures::channel::oneshot::channel::<()>();
+        let source_context = acyclic_auth::operation::Context::from_stopped(
+            root.verifier(&mut None)?
+                .expiry(&read_only)?
+                .saturating_mul(1000),
+            async move {
+                let _ = source_stopped.await;
+                acyclic_auth::operation::Stopped::Cancelled
+            },
+        );
+        let source_issuer = RuntimeAuthority::admitted(
+            root.admit(read_only.clone(), source_context)?,
+            OperationId::from_bytes([204; 16]),
+        );
+        let read_only_admission = TurnAdmission::Admitted {
+            audience: audience.clone(),
+            scope: read_only,
+        };
+        let reader_admission =
+            AdmittedAgent::verify(&source_issuer, &read_only_admission, &path, &volumes)?;
+        reader_admission
+            .journal_authority(&reopened, &[], std::slice::from_ref(&shared))
+            .await?;
+        assert_eq!(
+            host.resolve(&source_reference, None).await?.generation,
+            source_before.generation,
+            "reading a foreign journal changed its owner's policy"
+        );
+        let reader_authority = reader_admission
+            .authority(std::slice::from_ref(&shared))
+            .await?;
+        let foreign_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &reader_authority.verifier,
+            &reader_authority.scope,
+            4096,
+            None,
+        )?;
+        assert_eq!(
+            foreign_reader
+                .read(&shared, 4096, None, None)?
+                .await?
+                .as_ref(),
+            br#"{"source":"shared"}"#
+        );
+        if structured {
+            let administrator = AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?;
+            administrator
+                .journal_authority(&reopened, &[], std::slice::from_ref(&shared))
+                .await?;
+            assert_ne!(
+                host.resolve(&source_reference, None).await?.generation,
+                source_before.generation,
+                "an actor-bound administrator could not update its admitted source"
+            );
+        }
         let announcements = AgentInternalFiles::new(
             host.clone(),
             journal.clone(),

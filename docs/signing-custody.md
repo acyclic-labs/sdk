@@ -48,9 +48,11 @@ listing or writes. Other journal control data requires host custody even when
 the caller holds a broad journal capability.
 
 Host journal admission checks the current kernel policy for its journal and
-selected retained journal sources, including after reopening. A differing policy
-requires the owner's authenticated write and administrator authority and uses
-the ordinary fenced workspace publication. The original input references and
+selected retained journals it administers, including after reopening. Read-only
+foreign sources retain their owner's policy and ordinary read checks. Delegated
+source administration preserves an existing agent binding and source ceilings.
+A differing owned policy requires authenticated write and administrator authority
+and uses the ordinary fenced workspace publication. The original input references and
 bytes stay fixed. A matching policy publishes no generation and does not require
 a source writer. The journal format is unchanged; no older-format reader or
 conversion is involved.
