@@ -139,6 +139,53 @@ async fn explicit_home_module_configures_the_first_model_call() {
     model.close().await;
 }
 
+#[tokio::test]
+async fn home_model_selection_preserves_only_explicit_model_requirements() {
+    for explicit in [false, true] {
+        let fixture = fixture();
+        let model = model(fixture._directory.path()).await;
+        let mut catalog: Value =
+            serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
+        catalog["default_model"] = json!("graphcoder-qual/tiny");
+        std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
+        let source = fixture._directory.path().join("initial-settings.ts");
+        std::fs::write(
+            &source,
+            "export default (base) => ({ ...base, model: 'graphcoder-qual/drifted' });",
+        )
+        .unwrap();
+        let mut command = graphcoder_command(&fixture);
+        command
+            .args([
+                "--default-config",
+                "--workspace-mounting",
+                "physical",
+                "--catalog",
+            ])
+            .arg(&model.catalog)
+            .arg("--home-file")
+            .arg(format!("agent.ts={}", source.display()))
+            .args(["-p", "reply"]);
+        if explicit {
+            command.args(["--model", "graphcoder-qual/tiny"]);
+        }
+        let output = capture(command, "").await;
+        if explicit {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("requested model"),
+                "{output:?}"
+            );
+            assert_eq!(model.generated(), 0);
+        } else {
+            succeeded(&output);
+            let requests = model.requests.lock().unwrap().clone();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0]["model"], "drifted");
+        }
+        model.close().await;
+    }
+}
 async fn model_response(
     directory: &Path,
     status: axum::http::StatusCode,
