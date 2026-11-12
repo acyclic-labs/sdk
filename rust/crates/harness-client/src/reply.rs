@@ -1586,7 +1586,7 @@ mod tests {
             output: file.clone(),
             outcome: Default::default(),
             goal: Some(run),
-            targets: None,
+            announcements: Vec::new(),
             tool_results: None,
             steering: None,
             notices: None,

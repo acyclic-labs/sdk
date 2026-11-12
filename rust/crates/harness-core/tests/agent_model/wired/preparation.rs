@@ -99,8 +99,8 @@ struct Executors {
 }
 
 impl TurnExecutors for Executors {
-    fn render_bytes(&self) -> Option<u64> {
-        self.original.render_bytes()
+    fn content_limits(&self) -> acyclic_harness_core::conversation::Limits {
+        self.original.content_limits()
     }
 
     fn executor<'a>(

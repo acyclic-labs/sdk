@@ -18,8 +18,8 @@ pub(crate) fn codec() -> CodecIdentity {
 fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
-            name: "acyclic.harness.agent.workspaces".into(),
-            // Version-one workspace-aware actor state; old state is refused.
+            name: "acyclic.harness.agent.workspace-snapshot".into(),
+            // Version-one snapshot-backed actor state; embedded tables are refused.
             version: "1".into(),
         });
     &IDENTITY
@@ -579,7 +579,12 @@ mod tests {
                     message: widest_text(MAX_MESSAGE_BYTES),
                 },
                 goal: Some(crate::OperationId::from_bytes([255; 16])),
-                targets: Some(file()),
+                announcements: vec![crate::agent::AnnouncedDocument {
+                    kind: crate::agent::AnnouncementKind::Targets,
+                    digest: [255; 32],
+                    file: file(),
+                    instructions: None,
+                }],
                 steering: Some(crate::agent::SteeringTranscript {
                     through: u64::MAX,
                     file: file(),
@@ -636,7 +641,8 @@ mod tests {
                     pending_notices: Some(0..u64::MAX),
                     dropped_before: u64::MAX,
                     checkpoint: Some(u64::MAX),
-                    roster: Some([u8::MAX; 32]),
+                    announcements: [(crate::agent::AnnouncementKind::Targets, [u8::MAX; 32])]
+                        .into(),
                     status_tail: u64::MAX,
                     phase: Phase::Done { outcome },
                     archive_pending: open_children.clone(),
@@ -790,7 +796,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), targets: Some(file()), steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
+                let record = ConversationEntry { observed_through: u64::MAX, inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Failed { message: widest_text(MAX_MESSAGE_BYTES) }, goal: Some(crate::OperationId::from_bytes([255; 16])), announcements: vec![crate::agent::AnnouncedDocument { kind: crate::agent::AnnouncementKind::Targets, digest: [255; 32], file: file(), instructions: None }], steering: Some(crate::agent::SteeringTranscript { through: u64::MAX, file: file() }), notices: Some(crate::agent::NoticeSelection { source: crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16])), range: 0..u64::MAX }), tool_results: Some(format!("tools/.results/{}", crate::OperationId::from_bytes([255; 16]))) };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

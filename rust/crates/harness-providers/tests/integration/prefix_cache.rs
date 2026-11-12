@@ -198,8 +198,8 @@ impl Changing {
 }
 
 impl TurnExecutors for Changing {
-    fn render_bytes(&self) -> Option<u64> {
-        self.current().render_bytes()
+    fn content_limits(&self) -> Limits {
+        self.current().content_limits()
     }
     fn templates(&self) -> bool {
         self.current().templates()

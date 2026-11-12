@@ -183,7 +183,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.append(path, super::goal::Completed { sequence }.encode()?);
             }
             Out::Checkpoint
-            | Out::Roster(_)
+            | Out::Announced(_)
             | Out::Steered(_)
             | Out::Notices(_)
             | Out::PendingSpawns(_)

@@ -19,13 +19,19 @@ async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> 
 }
 
 #[tokio::test]
-async fn renaming_the_primary_keeps_local_turns_on_the_same_source() -> Result<()> {
-    use crate::agent::{InboxRecord, WorkspaceChanged, WorkspaceOp, WorkspaceTable};
+async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
+    use crate::agent::{
+        InboxRecord, WorkspaceChanged, WorkspaceEntry, WorkspaceOp, WorkspaceRole, WorkspaceTable,
+    };
+    use crate::conversation::{
+        ContentPublisher as _, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    };
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let provider = super::scripted([
         super::ScriptedTurn::Text("before rename".into()),
         super::ScriptedTurn::Text("after rename".into()),
+        super::ScriptedTurn::Text("after add".into()),
     ]);
     let harness = Arc::new(
         LocalHarness::open(
@@ -86,6 +92,112 @@ async fn renaming_the_primary_keeps_local_turns_on_the_same_source() -> Result<(
     assert_eq!(primary.id, id);
     assert_eq!(primary.volume()?, &project);
     assert_eq!(primary.name, "renamed");
+    let added = VolumeRef::new(
+        project.provider().clone(),
+        "added-repository".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("test".into()),
+        &mut None,
+    )?;
+    harness.files.create_volume(&added).await?;
+    let issuer = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("test signing custody".into()))?;
+    let grants = crate::Capabilities::new([added.capability(VolumeOperation::Write, &mut None)?]);
+    let scope = issuer.bootstrap_scope("added-instructions", &grants, None, &mut None)?;
+    let publisher = crate::filesystem::FilesystemContentPublisher::new(
+        Arc::clone(&harness.files),
+        &added,
+        &harness.verifier,
+        &scope,
+        harness.limits.file_bytes,
+        None,
+    )?;
+    let (instructions, _) = publisher
+        .stage(
+            crate::OperationId::new(),
+            "repo/AGENTS.md",
+            b"Instructions from the newly added repository.",
+            "text/markdown",
+            "AGENTS.md",
+            Default::default(),
+        )?
+        .await?;
+    let mut added = WorkspaceEntry::initial_volume(WorkspaceRole::User, "second".into(), added);
+    added.root = "repo".into();
+    let record = InboxRecord::WorkspaceChanged(Box::new(WorkspaceChanged {
+        version: 1,
+        op: WorkspaceOp::Add,
+        entry: added,
+    }));
+    let result = streams
+        .commit(acyclic_stream::CommitRequest {
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"add-second-repository".to_vec())
+                .map_err(agent)?,
+            deadline_unix_millis: None,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![acyclic_stream::CommitCondition::Absent {
+                    path: root.closed().map_err(agent)?,
+                }],
+                vec![acyclic_stream::CommitMutation::Append {
+                    path: root.inbox().map_err(agent)?,
+                    records: vec![record.encode().map_err(agent)?.into()],
+                }],
+            )],
+        })
+        .await
+        .map_err(agent)?;
+    assert!(matches!(
+        result,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    agents.drain(root).await.map_err(agent)?;
+    let after = observed.send("added", "after add").await?;
+    assert_eq!(after.outcome, crate::agent::TurnOutcome::Completed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2].messages[..requests[1].messages.len()],
+        requests[1].messages
+    );
+    assert!(
+        !super::request_text(&harness, &requests[1])
+            .await?
+            .contains("Instructions from the newly added repository.")
+    );
+    let announced = after
+        .announcements
+        .iter()
+        .find(|document| document.kind == crate::agent::AnnouncementKind::Workspaces)
+        .ok_or_else(|| Error::NotFound("workspace delta".into()))?;
+    let selection = announced
+        .instructions
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("instruction delta".into()))?;
+    let proof_grants = crate::Capabilities::new([selection.manifest.read_capability(&mut None)?]);
+    let proof_scope =
+        issuer.bootstrap_scope("instruction-proof", &proof_grants, None, &mut None)?;
+    let reader = crate::filesystem::FilesystemContentVerifier::new(
+        Arc::clone(&harness.files),
+        &harness.verifier,
+        &proof_scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    assert!(
+        selection
+            .entries(reader.as_ref())
+            .await?
+            .iter()
+            .flat_map(|entry| &entry.files)
+            .any(|file| file == &instructions)
+    );
+    assert!(
+        super::request_text(&harness, &requests[2])
+            .await?
+            .contains("Instructions from the newly added repository.")
+    );
     Ok(())
 }
 
@@ -3432,6 +3544,50 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         return Err(Error::Invalid("notice recipient closed".into()));
     };
     let saved = crate::filesystem::history_checkpoint(agents.provider().as_ref(), &root, 0).await?;
+    // A display rename after the saved cut cannot change its restore identity.
+    let state = agents.state(&root).await.map_err(agent)?;
+    let mut primary = crate::agent::WorkspaceTable::primary_in(&state.volumes)
+        .ok_or_else(|| Error::NotFound("primary workspace".into()))?
+        .clone();
+    let original_id = primary.id;
+    primary.name = "renamed-before-restore".into();
+    let record = InboxRecord::WorkspaceChanged(Box::new(crate::agent::WorkspaceChanged {
+        version: 1,
+        op: crate::agent::WorkspaceOp::Rename,
+        entry: primary,
+    }));
+    let request = acyclic_stream::CommitRequest {
+        idempotency_key: acyclic_stream::IdempotencyKey::new(b"rename-saved-workspace".to_vec())
+            .map_err(agent)?,
+        deadline_unix_millis: None,
+        effects: vec![acyclic_stream::CommitEffect::hard(
+            vec![
+                acyclic_stream::CommitCondition::Present {
+                    path: root.inbox().map_err(agent)?,
+                },
+                acyclic_stream::CommitCondition::Absent {
+                    path: root.closed().map_err(agent)?,
+                },
+            ],
+            vec![acyclic_stream::CommitMutation::Append {
+                path: root.inbox().map_err(agent)?,
+                records: vec![record.encode().map_err(agent)?.into()],
+            }],
+        )],
+    };
+    assert!(matches!(
+        agents.provider().commit(request).await.map_err(agent)?,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    agents.drain(&root).await.map_err(agent)?;
+    assert_eq!(
+        crate::agent::WorkspaceTable::primary_in(
+            &agents.state(&root).await.map_err(agent)?.volumes
+        )
+        .ok_or_else(|| Error::NotFound("renamed workspace".into()))?
+        .id,
+        original_id
+    );
     let snapshot = saved
         .volumes
         .first()

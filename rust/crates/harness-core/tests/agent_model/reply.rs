@@ -27,7 +27,7 @@ fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
         output: file("output")?,
         outcome: Default::default(),
         goal: None,
-        targets: None,
+        announcements: Vec::new(),
         tool_results: None,
         steering: None,
         notices: None,
