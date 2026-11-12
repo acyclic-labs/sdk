@@ -14,46 +14,48 @@ impl LocalHarness {
     /// # Errors
     /// A name both a command and a skill define, or that multiple commands
     /// or skills define, is a conflict; an unknown name is not found.
-    pub(in crate::local) async fn resolve_prompt_command(
-        &self,
-        text: &str,
-    ) -> Result<Option<String>> {
-        let Some((name, arguments)) = CommandCatalog::selected(text, None)? else {
-            return Ok(None);
-        };
-        let maximum = self.limits.file_bytes;
-        let paths = prompt_paths(&name).collect::<Vec<_>>();
-        let mut commands = self.project_files(&paths, maximum).await?.into_iter();
-        let command = commands.next();
-        if commands.next().is_some() {
-            return Err(Error::Conflict(format!("duplicate command: {name}")));
-        }
-        let mut skills = self
-            .skills_with_work(None, &mut crate::context::DiscoveryWork::default())
-            .await?
-            .into_iter()
-            .filter(|skill| skill.name.eq_ignore_ascii_case(&name));
-        let skill = skills.next();
-        if skills.next().is_some() {
-            return Err(Error::Conflict(format!("ambiguous skill: {name}")));
-        }
-        let body = match (command, skill) {
-            (Some(_), Some(_)) => {
-                return Err(Error::Conflict(format!("skill/command collision: {name}")));
+    pub(in crate::local) fn resolve_prompt_command<'a>(
+        self: Arc<Self>,
+        text: &'a str,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            let Some((name, arguments)) = CommandCatalog::selected(text, None)? else {
+                return Ok(None);
+            };
+            let maximum = self.limits.file_bytes;
+            let paths = prompt_paths(&name).collect::<Vec<_>>();
+            let mut commands = self.project_files(&paths, maximum).await?.into_iter();
+            let command = commands.next();
+            if commands.next().is_some() {
+                return Err(Error::Conflict(format!("duplicate command: {name}")));
             }
-            (Some((_, bytes)), None) => bytes,
-            (None, Some(skill)) => {
-                let message = skill
-                    .invoke(self.context_reader()?.as_ref(), maximum)
-                    .await?;
-                let crate::model::ModelContent::Text(body) = message.content else {
-                    return Err(Error::Invalid("skill body is not text".into()));
-                };
-                body.into_bytes()
+            let mut skills = self
+                .skills_with_work(None, &mut crate::context::DiscoveryWork::default())
+                .await?
+                .into_iter()
+                .filter(|skill| skill.name.eq_ignore_ascii_case(&name));
+            let skill = skills.next();
+            if skills.next().is_some() {
+                return Err(Error::Conflict(format!("ambiguous skill: {name}")));
             }
-            (None, None) => return Err(Error::NotFound(format!("Unknown command: /{name}"))),
-        };
-        CommandCatalog::expand(&body, arguments, maximum).map(Some)
+            let body = match (command, skill) {
+                (Some(_), Some(_)) => {
+                    return Err(Error::Conflict(format!("skill/command collision: {name}")));
+                }
+                (Some((_, bytes)), None) => bytes,
+                (None, Some(skill)) => {
+                    let message = skill
+                        .invoke(self.context_reader()?.as_ref(), maximum)
+                        .await?;
+                    let crate::model::ModelContent::Text(body) = message.content else {
+                        return Err(Error::Invalid("skill body is not text".into()));
+                    };
+                    body.into_bytes()
+                }
+                (None, None) => return Err(Error::NotFound(format!("Unknown command: /{name}"))),
+            };
+            CommandCatalog::expand(&body, arguments, maximum).map(Some)
+        })
     }
 
     /// Each of `paths` present in the project, from the selected checkout

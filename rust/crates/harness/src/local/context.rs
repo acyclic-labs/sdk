@@ -503,57 +503,59 @@ impl LocalHarness {
     /// staged once for it, beside its copies, so a resend replays it exactly
     /// whatever has happened to the files since, and the message carries one
     /// reference however many files it names.
-    pub(super) async fn prompt_attachments(
-        &self,
-        key: &[u8],
-        text: Option<&str>,
-    ) -> Result<Option<FileRef>> {
-        // A new prompt without mentions stages nothing and observes nothing.
-        if let Some(text) = text
-            && crate::client::file_mention_paths(text)?.is_empty()
-        {
-            return Ok(None);
-        }
-        // The manifest's own encoding bounds it: it lists files already
-        // admitted under the content bounds, so it takes no content bound.
-        let publisher = self.input_publisher_with_limit(None)?;
-        let operation = publication_operation(b"acyclic.local.mention-manifest/v1\0", key);
-        if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
-            return Ok(Some(manifest));
-        }
-        // A replay whose first delivery staged no manifest attaches none.
-        let Some(text) = text else {
-            return Ok(None);
-        };
-        let reader = self.client_reader()?;
-        let base = format!("inputs/mentions/{}", blake3::hash(key));
-        let items = self
-            .resolve_attachments(&base, text, &*reader)
-            .await?
-            .into_iter()
-            .map(|file| crate::conversation::Attachment { file, label: None })
-            .collect::<Vec<_>>();
-        let bytes = crate::conversation::encode_attachment_manifest(&items)?;
-        let path = format!("{base}/{}.json", blake3::hash(&bytes));
-        let staged = publisher
-            .stage_once(
-                operation,
-                &path,
-                &bytes,
-                crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
-                "attachments.json",
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await;
-        match staged {
-            Ok((manifest, _)) => Ok(Some(manifest)),
-            // A concurrent first send pinned its manifest first: that one stands.
-            Err(error) => self
-                .observe_manifest(operation, &*publisher)
+    pub(super) fn prompt_attachments<'a>(
+        self: Arc<Self>,
+        key: &'a [u8],
+        text: Option<&'a str>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<FileRef>>> {
+        Box::pin(async move {
+            // A new prompt without mentions stages nothing and observes nothing.
+            if let Some(text) = text
+                && crate::client::file_mention_paths(text)?.is_empty()
+            {
+                return Ok(None);
+            }
+            // The manifest's own encoding bounds it: it lists files already
+            // admitted under the content bounds, so it takes no content bound.
+            let publisher = self.input_publisher_with_limit(None)?;
+            let operation = publication_operation(b"acyclic.local.mention-manifest/v1\0", key);
+            if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
+                return Ok(Some(manifest));
+            }
+            // A replay whose first delivery staged no manifest attaches none.
+            let Some(text) = text else {
+                return Ok(None);
+            };
+            let reader = self.client_reader()?;
+            let base = format!("inputs/mentions/{}", blake3::hash(key));
+            let items = self
+                .resolve_attachments(&base, text, &*reader)
                 .await?
-                .map(Some)
-                .ok_or(error),
-        }
+                .into_iter()
+                .map(|file| crate::conversation::Attachment { file, label: None })
+                .collect::<Vec<_>>();
+            let bytes = crate::conversation::encode_attachment_manifest(&items)?;
+            let path = format!("{base}/{}.json", blake3::hash(&bytes));
+            let staged = publisher
+                .stage_once(
+                    operation,
+                    &path,
+                    &bytes,
+                    crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
+                    "attachments.json",
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await;
+            match staged {
+                Ok((manifest, _)) => Ok(Some(manifest)),
+                // A concurrent first send pinned its manifest first: that one stands.
+                Err(error) => self
+                    .observe_manifest(operation, &*publisher)
+                    .await?
+                    .map(Some)
+                    .ok_or(error),
+            }
+        })
     }
 
     async fn observe_manifest(
