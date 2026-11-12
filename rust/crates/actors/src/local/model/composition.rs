@@ -634,6 +634,71 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
     Ok(())
 }
 
+/// The owner dies after its composed publication applied but before it learned
+/// so: the intent the publication itself carried lets the next owner settle
+/// the participant exactly once, and a later plain publication clears it.
+#[tokio::test]
+async fn a_new_owner_settles_the_participant_a_dead_owner_left_unsettled() -> Result<(), Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+        calls: AtomicUsize::new(0),
+    });
+    let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+    let record = |sequence| Trigger::Record {
+        subscription: "inbox".into(),
+        sequence,
+    };
+    let result = store
+        .publish(
+            &store.load(&actor).await?,
+            1,
+            &record(0),
+            None,
+            transition(false)?,
+            key("dead-owner")?,
+        )
+        .await;
+    let Err(Error::Unknown { publication, .. }) = result else {
+        return Err("lost acknowledgement did not retain the publication".into());
+    };
+    drop(publication);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+    let custody = StreamPath::new(format!("{}/custody", store.path(&actor)?))?;
+    let claimed = store
+        .claim(&store.load(&actor).await?, 2, key("new-owner")?)
+        .await?;
+    store.recover_custody(&claimed).await?;
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        claimed.state().and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
+    store
+        .publish(
+            &claimed,
+            2,
+            &record(1),
+            None,
+            Transition {
+                participant: None,
+                effects: Vec::new(),
+                ..transition(false)?
+            },
+            key("plain")?,
+        )
+        .await?;
+    let plain = store
+        .claim(&store.load(&actor).await?, 3, key("third-owner")?)
+        .await?;
+    store.recover_custody(&plain).await?;
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.inner.tail(custody).await?, 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result<(), Failure> {
     let provider = Arc::new(Faulty {

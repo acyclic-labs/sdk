@@ -1413,6 +1413,7 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
         paused: false,
         metadata: BTreeMap::new(),
         journal_tail: 0,
+        custody: false,
     };
     let add = |id: &str, path: &StreamPath, from| SubscriptionChange::Add {
         id: id.into(),

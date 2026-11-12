@@ -198,6 +198,9 @@ pub struct State {
     paused: bool,
     metadata: BTreeMap<String, bytes::Bytes>,
     journal_tail: u64,
+    /// Whether this state's publication appended a participant custody
+    /// intent whose settlement a new owner must recover.
+    custody: bool,
 }
 impl State {
     /// Durable guest metadata, from this same checkpoint/epoch/commit cut.
@@ -858,6 +861,120 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .await
     }
 
+    /// Settle the participant of the claimed state's composed publication
+    /// again. Its old owner may have died between that publication and its
+    /// settlement; the new owner's claim fenced the old owner's publications.
+    /// Settlement is therefore at least once across owners and exactly once
+    /// within one, so every composer settles idempotently. A state without
+    /// custody costs nothing here.
+    pub(crate) async fn recover_custody(&self, snapshot: &Snapshot) -> Result<(), Error> {
+        if !snapshot.state.as_ref().is_some_and(|state| state.custody) {
+            return Ok(());
+        }
+        let composer = self
+            .composer
+            .as_ref()
+            .ok_or(Error::Invalid("actor custody has no composer"))?;
+        let intent = record::Intent::decode(
+            &self
+                .provider
+                .head(custody_path(&snapshot.path)?)
+                .await?
+                .last
+                .ok_or(Error::Invalid("actor custody intent is missing"))?
+                .value,
+        )?;
+        let observation = self
+            .provider
+            .inspect_idempotency(intent.key.clone())
+            .await?
+            .ok_or(Error::Invalid(
+                "composed publication outcome is not retained",
+            ))?;
+        let (acyclic_stream::IdempotencyOutcome::Commit(envelope), Some(revision)) =
+            (observation.outcome, observation.revision)
+        else {
+            return Err(Error::Invalid(
+                "composed publication outcome is not a commit",
+            ));
+        };
+        let own = envelope
+            .mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                acyclic_stream::CommittedMutation::Append(append)
+                    if append.path == snapshot.path =>
+                {
+                    Some(append)
+                }
+                _ => None,
+            })
+            .ok_or(Error::Invalid("composed publication omits actor state"))?;
+        let next = match own.records.as_slice() {
+            [record] => State::decode(&record.value)?
+                .checkpoint
+                .ok_or(Error::Invalid("composed publication has no checkpoint"))?,
+            _ => {
+                return Err(Error::Invalid(
+                    "composed publication changes state record count",
+                ));
+            }
+        };
+        let previous = match own.start.checked_sub(1) {
+            Some(sequence) => {
+                State::decode(&self.record(&snapshot.path, sequence).await?.value)?.checkpoint
+            }
+            None => None,
+        };
+        let delivered = match &intent.delivered {
+            Some((path, sequence)) => Some(self.record(path, *sequence).await?),
+            None => None,
+        };
+        let appends = envelope
+            .mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, acyclic_stream::CommittedMutation::Append(_)))
+            .count();
+        let receipt = CommitReceipt::project(
+            &envelope,
+            revision,
+            Vec::with_capacity(appends),
+            Vec::with_capacity(envelope.mutations.len() - appends),
+            |_, _| Ok::<(), StreamError>(()),
+        )?;
+        composer
+            .open(
+                &self.actor(&snapshot.path)?,
+                previous.as_ref(),
+                delivered.as_ref(),
+                &next,
+                &intent.participant,
+            )
+            .map_err(Error::Handler)?
+            .settle(Ok(&CommitOutcome::Committed(receipt)))
+            .await
+            .map_err(Error::Handler)
+    }
+
+    /// The one record at `sequence` of `path`.
+    async fn record(&self, path: &StreamPath, sequence: u64) -> Result<Record, Error> {
+        use futures::StreamExt as _;
+        self.provider
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: sequence,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?
+            .next()
+            .await
+            .transpose()?
+            .filter(|record| record.sequence == sequence)
+            .ok_or(Error::Invalid("custody names a missing record"))
+    }
+
     async fn claim_control(
         &self,
         previous: &Snapshot,
@@ -1029,7 +1146,28 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             None
         };
         let previous_checkpoint = state.checkpoint.take();
-        let state = next(state, &previous.path, original_alarm, trigger, &transition)?;
+        // A participant's custody intent rides in the publication itself.
+        let intent = match &transition.participant {
+            None => None,
+            Some(participant) => Some(record::Intent {
+                participant: participant.clone(),
+                key: key.clone(),
+                delivered: match (trigger, delivered) {
+                    (Trigger::Record { subscription, .. }, Some(record)) => Some((
+                        state
+                            .subscriptions
+                            .get(subscription)
+                            .ok_or(Error::Invalid("trigger names no subscription"))?
+                            .path
+                            .clone(),
+                        record.sequence,
+                    )),
+                    _ => None,
+                },
+            }),
+        };
+        let mut state = next(state, &previous.path, original_alarm, trigger, &transition)?;
+        state.custody = intent.is_some();
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
         let composition = match &transition.participant {
@@ -1050,6 +1188,15 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             ),
         };
         let mut prepared = self.prepare(previous, state, transition.effects, key)?;
+        if let Some(intent) = intent {
+            prepared.join_host(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: custody_path(&previous.path)?,
+                    records: vec![intent.encode().into()],
+                }],
+            ))?;
+        }
         prepared.call = call.map(|call| (call, trigger.clone()));
         prepared.composition = composition;
         Ok(prepared)
@@ -1258,6 +1405,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         Ok(prepared)
     }
+}
+
+fn custody_path(state: &StreamPath) -> Result<StreamPath, Error> {
+    Ok(StreamPath::new(format!(
+        "{state}/{}",
+        disposition::CUSTODY
+    ))?)
 }
 
 fn covers(ancestor: &StreamPath, path: &StreamPath) -> bool {

@@ -251,6 +251,10 @@ pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
 
     /// Release or adopt custody from the exact terminal provider outcome or
     /// definite refusal. Uncertain acknowledgements never reach settlement.
+    /// A committed publication's participant is settled at least once: after
+    /// an ownership change the new owner opens the same committed inputs again
+    /// and settles them with the receipt projected from the retained envelope
+    /// (its `skipped` is empty), so settlement must be idempotent.
     fn settle<'a>(
         self: Box<Self>,
         outcome: Result<&'a CommitOutcome, &'a StreamError>,
