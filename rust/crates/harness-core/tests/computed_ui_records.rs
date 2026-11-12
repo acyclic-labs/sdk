@@ -358,8 +358,14 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     let verifier = issuer.verifier(&mut None)?;
     let child_reader =
         FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 16_384, None)?;
-    let child_writer =
-        FilesystemContentPublisher::new(host, &child_volume, &verifier, &scope, 16_384, None)?;
+    let child_writer = FilesystemContentPublisher::new(
+        host.clone(),
+        &child_volume,
+        &verifier,
+        &scope,
+        16_384,
+        None,
+    )?;
     let (child_output, _) = child_writer
         .stage(
             OperationId::new(),
@@ -422,6 +428,30 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     assert_eq!(bound.selected_import_roots, original.selected_import_roots);
     let child_cut = child.snapshot(&mut ctx).await?;
     assert_ne!(child_cut.source.identity, parent_cut.source.identity);
+    let projected_reader = FilesystemContentVerifier::new(
+        host.for_private_view(&child_volume, child.share(&mut ctx)?)?,
+        &verifier,
+        &scope,
+        16_384,
+        None,
+    )?;
+    let (selected, projected, _) = projected_reader
+        .read_private_range(
+            &child_volume,
+            "",
+            "ui/status.md",
+            None,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 4096,
+            },
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(std::str::from_utf8(&projected)?.contains("child.md"));
+    assert_eq!(selected.generation.as_resource().version(), Some("lazy-v1"));
+    let selected: acyclic_harness_core::conversation::FilePathSelection =
+        serde_json::from_slice(&serde_json::to_vec(&selected)?)?;
     let directory_lookup = child.lookup("/ui", &mut ctx).await?;
     assert_eq!(
         child
@@ -505,6 +535,39 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
             idempotency_key: IdempotencyKey::unique(),
         })
         .await?;
+    let measured = acyclic_harness_core::filesystem::PreparationIo::from_native_work(&native)?;
+    let (reselected, repeated, _) = projected_reader
+        .read_private_range(
+            &child_volume,
+            "",
+            "ui/status.md",
+            Some(&selected.generation),
+            acyclic_fs::ByteRange {
+                offset: 1,
+                length: 7,
+            },
+            ContentAccess {
+                ceiling: None,
+                io: Some(&measured),
+            },
+        )?
+        .await?;
+    assert_eq!(reselected, selected);
+    assert_eq!(repeated.as_ref(), &projected[1..8]);
+    let (_, current, _) = projected_reader
+        .read_private_range(
+            &child_volume,
+            "",
+            "ui/status.md",
+            None,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 4096,
+            },
+            ContentAccess::default(),
+        )?
+        .await?;
+    assert!(std::str::from_utf8(&current)?.contains("later-child.md"));
     assert_eq!(
         child
             .read_at_snapshot(&child_cut, "/ui/status.md", None, 4096, &mut ctx)
@@ -515,6 +578,7 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         frozen.bytes.as_slice()
     );
     let child_workspace = child.workspace().clone();
+    drop(projected_reader);
     drop(replay);
     drop(child);
     drop(inherited);

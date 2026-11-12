@@ -22,6 +22,8 @@ struct PrivateReadSelection<'a, A: 'static, O: 'static> {
     generation: Generation<A, O>,
     view: super::super::access::CompiledAccess<'a>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'a>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    snapshot: Option<acyclic_fs::kernel::Retained<acyclic_fs::LazySnapshotRef>>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PrivateReadSelection<'_, A, O> {
@@ -52,9 +54,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_ref = (workspace_ref, workspace_hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
         drop(workspace_ref);
-        let generation = match expected_generation {
-            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => self.current_generation(&workspace, io).await?,
+        #[cfg(not(target_arch = "wasm32"))]
+        let snapshot = self
+            .private_snapshot(&workspace, expected_generation, io)
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let lazy_generation = snapshot.as_ref().map(|cut| cut.authored_generation);
+        #[cfg(target_arch = "wasm32")]
+        let lazy_generation: Option<GenerationId> = None;
+        let generation = match (lazy_generation, expected_generation) {
+            (Some(generation), _) => self.select_generation(&workspace, generation, io).await?,
+            (None, Some(expected)) => self.generation(&workspace, expected, Some(io)).await?,
+            (None, None) => self.current_generation(&workspace, io).await?,
         };
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
@@ -77,6 +88,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             generation,
             view,
             data_access,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot,
         })
     }
 
@@ -106,6 +119,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .select_private_read(volume, grant, path, expected_generation, access.ceiling, io)
             .await?;
         selected.recheck(grant, io).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(cut) = &selected.snapshot {
+            self.validate_private_snapshot(cut, io).await?;
+            selected.recheck(grant, io).await?;
+            return self.private_generation_ref(cut, io);
+        }
         self.generation_ref_id(selected.generation.id(), access.io)
     }
 
@@ -421,7 +440,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         range: acyclic_fs::ByteRange,
         access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<(acyclic_stream::OwnedBytes, GenerationId, u64)> {
+    ) -> Result<(acyclic_stream::OwnedBytes, GenerationRef, u64)> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
         let unmeasured;
         let io = if let Some(io) = io {
@@ -438,6 +457,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(cut) = &selected.snapshot {
+            let (bytes, length) = self
+                .read_private_snapshot(cut, &requested, range, io)
+                .await?;
+            selected.recheck(grant, io).await?;
+            return Ok((bytes, self.private_generation_ref(cut, io)?, length));
+        }
         let stat = io
             .sdk(generation.stat(&requested, io, io.cancellation()).await)
             .map_err(path_read_refusal)?;
@@ -467,7 +494,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         selected.recheck(grant, io).await?;
         drop(requested_hold);
-        let selected_id = generation.id();
+        let selected_id = self.generation_ref_id(generation.id(), Some(io))?;
         Ok((chunk.bytes, selected_id, length))
     }
 

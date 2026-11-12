@@ -109,18 +109,33 @@ impl<
         maximum: u64,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(OwnedSourceChunk, bool), LazyWorkspaceError> {
+        self.read_range_at_snapshot(cut, path, range, maximum, ctx)
+            .await
+            .map(|(bytes, _, used)| (bytes, used))
+    }
+
+    /// Reads one selected range and its length from the same lookup.
+    pub async fn read_range_at_snapshot(
+        &self,
+        cut: &LazySnapshotRef,
+        path: &str,
+        range: Option<crate::ByteRange>,
+        maximum: u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(OwnedSourceChunk, LazyStat, bool), LazyWorkspaceError> {
         let (lookup, used, guard) = self.lookup_at_snapshot(&cut, path, ctx).await?;
         let Some(lookup) = lookup else {
             crate::kernel::retire_allocation(guard, 0, ctx)?;
             return Err(LazyWorkspaceError::NotFound);
         };
         let source = matches!(lookup, LazyLookup::Source { .. });
-        let result = if lookup.stat().kind != SourceNodeKind::RegularFile {
+        let stat = lookup.stat();
+        let result = if stat.kind != SourceNodeKind::RegularFile {
             Err(LazyWorkspaceError::NotRegularFile)
         } else {
             self.read_resolved(&lookup, path, range, maximum, ctx)
                 .await
-                .map(|bytes| (bytes, used || source))
+                .map(|bytes| (bytes, stat, used || source))
         };
         self.retire_lookup((lookup, guard), ctx)?;
         result

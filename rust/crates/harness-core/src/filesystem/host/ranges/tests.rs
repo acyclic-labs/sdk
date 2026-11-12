@@ -284,7 +284,7 @@ async fn private_generation_selection_preserves_absence_and_authority() -> Resul
         )
         .await?;
     assert_eq!(bytes.as_ref(), b"n");
-    assert_ne!(host.generation_ref_id(current, None)?, selected);
+    assert_ne!(current, selected);
     let denied = Capabilities::default();
     let error = host
         .select_private_generation(
@@ -351,7 +351,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
         (&body[offset..], body.len() as u64)
     );
     assert!(work.receipt().source_bytes_read < 64 * 1024);
-    let selected = host.generation_ref_id(selected_id, Some(&io))?;
+    let selected = selected_id;
     assert_eq!(selected.as_resource().provider(), volume.provider());
     host.apply(
         &workspace,
