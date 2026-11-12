@@ -513,7 +513,11 @@ pub(super) async fn plan<
     work.finish(result, &accounting)
 }
 
-async fn authorize<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static, T>(
+pub(super) async fn authorize<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+    T,
+>(
     workspace: &Workspace<A, O>,
     result: Result<T, WorkspaceError>,
     accounting: &mut KernelAccounting<'_>,

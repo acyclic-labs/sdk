@@ -15,6 +15,36 @@ async fn retained_content_comparisons_recheck_current_read_authority()
         .clone()
         .bind_coarse_access(&Action::ALL, &cancel)
         .await?;
+    let publication_key = IdempotencyKey::new();
+    let mut publication = owner
+        .begin_transaction(publication_key, WorkBudget::UNBOUNDED, &cancel)
+        .await?
+        .value;
+    assert!(matches!(
+        publication
+            .commit(
+                Some((
+                    crate::Digest::from_bytes([7; 32]),
+                    acyclic_stream::OwnedBytes::from_static(b"original evidence"),
+                    crate::PublicationPermit::Unrestricted,
+                )),
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &cancel,
+                publication_ready,
+            )
+            .await?
+            .value,
+        TransactionCommit::Committed(_)
+    ));
+    {
+        let recovered = bound
+            .operation_publication(publication_key, WorkBudget::UNBOUNDED, &cancel)
+            .await?
+            .value
+            .ok_or("publication is missing")?;
+        assert_eq!(recovered.evidence(), Some(b"original evidence".as_slice()));
+    }
     let original = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
     owner.write_text("/unrelated", "journal").await?;
     let unrelated = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
@@ -98,6 +128,23 @@ async fn retained_content_comparisons_recheck_current_read_authority()
         })
     ));
     fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "entry")).await?;
+    for key in [publication_key, IdempotencyKey::new()] {
+        assert!(matches!(
+            bound
+                .operation_publication(key, WorkBudget::UNBOUNDED, &cancel)
+                .await,
+            Err(crate::OperationFailure {
+                error: WorkspaceError::AccessDenied,
+                ..
+            })
+        ));
+    }
+    let recovered = owner
+        .operation_publication(publication_key, WorkBudget::UNBOUNDED, &cancel)
+        .await?
+        .value
+        .ok_or("owner recovery is missing")?;
+    assert_eq!(recovered.evidence(), Some(b"original evidence".as_slice()));
     for selected in [&original, &changed] {
         assert!(matches!(
             selected

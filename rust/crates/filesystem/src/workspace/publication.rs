@@ -33,9 +33,10 @@ impl<A, O> OperationPublication<A, O> {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Recovers a publication's immutable generation and original evidence using
-    /// its existing authority operation index. Reads neither the mutable head
-    /// nor any workspace path. Publications without caller evidence, including
-    /// workspace creation, return a generation with no evidence. Missing
+    /// its existing authority operation index, without reading workspace paths.
+    /// Bound handles recheck current access before returning evidence; unbound
+    /// owner handles need only the indexed lookup. Publications without caller
+    /// evidence, including workspace creation, return a generation with no evidence. Missing
     /// operations return `None`.
     pub async fn operation_publication<W: crate::facade::FsWork>(
         &self,
@@ -98,6 +99,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             }))
         }
         .await;
+        let result = read_core::authorize(self, result, &mut accounting, cancellation).await;
         work.finish(result, &accounting)
     }
 
