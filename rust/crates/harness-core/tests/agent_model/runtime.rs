@@ -575,6 +575,29 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
             ..
         }
     ));
+    let mut adoption = adopted(id(2));
+    adoption.brief = Some(super::driver::file("initial brief")?);
+    let initial = host.create(&intent("initial-brief"), adoption).await?;
+    let drain = host.runtime().drain();
+    tokio::pin!(drain);
+    let (input, stop, _release) = tokio::select! {
+        input = started.recv() => input.expect("initial brief starts"),
+        failures = &mut drain => panic!("initial brief ended: {failures:?}"),
+    };
+    assert_eq!(input, 0);
+    host.send(
+        &initial,
+        &user(),
+        &InboxRecord::Cancel(Cancellation {
+            by: user(),
+            id: intent("cancel-initial-brief"),
+            input,
+            conversation: 0,
+        }),
+    )
+    .await?;
+    assert!(drain.await.is_empty());
+    assert!(stop.is_cancelled());
     Ok(())
 }
 
