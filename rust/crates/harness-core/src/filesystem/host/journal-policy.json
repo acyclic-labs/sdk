@@ -12,7 +12,7 @@
     "id": "published-conversation",
     "effect": "allow",
     "principal": {"attributes": {}},
-    "actions": ["read"],
+    "actions": ["read", "read-history"],
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": ".system/inherited-conversation/**"},
     "conditions": {}
   }]]

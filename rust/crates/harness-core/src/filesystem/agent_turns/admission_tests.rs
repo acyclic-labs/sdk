@@ -57,7 +57,16 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         };
         let issuer = RuntimeAuthority::from(root.clone());
         let admitted = AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?;
-        let control_scope = admitted.control_scope(&Capabilities::default()).await?;
+        let (control_scope, signatures) = acyclic_test_support::differential::observe(
+            || (),
+            |()| futures::executor::block_on(admitted.control_scope(&Capabilities::default())),
+        );
+        let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+        assert!(
+            signatures.is_empty(),
+            "bound host custody repeated cryptographic work"
+        );
+        let control_scope = control_scope?;
         let guest = admitted.authority(&[]).await?;
         assert!(!guest.grants.contains(HARNESS_HOST));
         let control_grant = ContentGrant::verify(
@@ -183,6 +192,17 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 crate::agent::AnnouncementKind::Targets,
                 [189; 32],
                 b"published announcement",
+            )
+            .await?;
+        assert_eq!(
+            reader.read(&published, 4096, None, None)?.await?.as_ref(),
+            b"published announcement"
+        );
+        announcements
+            .stage_announcement(
+                crate::agent::AnnouncementKind::Targets,
+                [190; 32],
+                b"later announcement",
             )
             .await?;
         assert_eq!(

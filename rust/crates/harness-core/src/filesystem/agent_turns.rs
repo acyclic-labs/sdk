@@ -281,6 +281,11 @@ impl<'v> AdmittedAgent<'v> {
     }
 
     async fn control_scope(&self, content: &Capabilities) -> Result<Scope> {
+        if let Some(parent) = self.parent
+            && parent.agent() == Some(self.owner)
+        {
+            return Ok(parent.clone());
+        }
         let grants = match self.parent {
             Some(parent) => parent.capabilities().clone(),
             None => journal_grants(&self.journal, content)?,
