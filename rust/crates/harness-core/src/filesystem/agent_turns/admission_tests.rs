@@ -359,7 +359,34 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             4096,
             None,
         )?;
+        let manifest = host
+            .put_content(
+                &journal,
+                &control_grant,
+                &crate::context::ContextEpoch::path(OperationId::from_bytes([206; 16])),
+                br#"{"private_source":"original","callable":{"runtime":"private"}}"#,
+                "application/json",
+                "manifest.json",
+                4096,
+                &crate::IdempotencyKey::new("private-epoch-manifest")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let host_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &control_scope,
+            4096,
+            None,
+        )?;
+        assert!(host_reader.read(&manifest, 4096, None, None)?.await?.len() > 0);
+        ContentGrant::verify_read(&guest.verifier, &guest.scope, &manifest)?;
         for ceiling in [None, Some(parent.capabilities())] {
+            let denied = async { reader.read(&manifest, 4096, ceiling, None)?.await }
+                .await
+                .expect_err("a broad guest journal grant disclosed the private epoch manifest");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
             let denied = async { reader.read(&control, 4096, ceiling, None)?.await }
                 .await
                 .expect_err("guest read host data through the persisted policy");
@@ -382,6 +409,24 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 Default::default(),
             )
             .await?;
+        let skill = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/skills/source/SKILL.md",
+                b"optional instructions",
+                "text/markdown",
+                "SKILL.md",
+                4096,
+                &crate::IdempotencyKey::new("published-skill")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        assert_eq!(
+            reader.read(&skill, 4096, None, None)?.await?.as_ref(),
+            b"optional instructions"
+        );
         let selected = root.bootstrap_scope(
             "input-reader",
             &Capabilities::new([input.read_capability(&mut None)?]),
@@ -823,6 +868,13 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"shared original input"
             );
         }
+        assert_eq!(
+            async { reader.read(&manifest, 4096, None, None)?.await }
+                .await
+                .expect_err("reopening published private epoch metadata")
+                .code(),
+            crate::wire::ErrorCode::Unauthorized,
+        );
         let announcements = AgentInternalFiles::new(
             host.clone(),
             journal.clone(),

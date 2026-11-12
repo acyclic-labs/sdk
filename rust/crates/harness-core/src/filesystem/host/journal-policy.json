@@ -13,7 +13,14 @@
     "effect": "allow",
     "principal": {"attributes": {}},
     "actions": ["read", "read-history"],
-    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/**"},
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/*"},
+    "conditions": {}
+  }, {
+    "id": "published-skill",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/skills/*/SKILL.md"},
     "conditions": {}
   }, {
     "id": "published-conversation",
