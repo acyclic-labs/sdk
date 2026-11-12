@@ -45,7 +45,7 @@ fn definition(name: String, description: String) -> ToolDefinition {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result<()> {
-    let mut entry = skill("private/provenance/inspect/SKILL.md".into())?;
+    let mut entry = skill("skills/private/provenance/inspect/SKILL.md".into())?;
     entry.fields.insert(
         "opaque_metadata".into(),
         json!("UNPULLED_METADATA".repeat(4096)),
@@ -102,7 +102,7 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
         );
         assert_eq!(
             discovery.skills[0].source.path,
-            "private/provenance/inspect/SKILL.md"
+            "skills/private/provenance/inspect/SKILL.md"
         );
     }
     Ok(())
@@ -381,8 +381,8 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
     let reader = storage.content_bindings().reader;
     let mut manifest = ContextManifest::default();
     manifest.discovery.skills = vec![
-        skill("user/inspect/SKILL.md".into())?,
-        skill("project/inspect/SKILL.md".into())?,
+        skill("skills/user/inspect/SKILL.md".into())?,
+        skill("skills/project/inspect/SKILL.md".into())?,
     ];
     manifest.discovery.skills[0].identity = "PRIVATE_ORIGINAL_SOURCE".into();
     let initial = ContextEpoch::changes(&BTreeMap::new(), &manifest, reader.as_ref()).await?;
@@ -393,7 +393,7 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
     let told = manifest.digests()?;
     manifest.discovery.skills[0].description = "changed user skill".into();
     // Retention selects another immutable body path, never another source.
-    manifest.discovery.skills[0].source.path = "retained/new-version/SKILL.md".into();
+    manifest.discovery.skills[0].source.path = "skills/retained/new-version/SKILL.md".into();
     let changed = ContextEpoch::changes(&told, &manifest, reader.as_ref()).await?;
     assert_eq!(changed.len(), 1);
     assert_eq!(
