@@ -522,12 +522,12 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .unwrap()
                 .absorb(&mut custody)
                 .unwrap();
+            let before = work.receipt();
+            assert!(store.matches(&journal).await.unwrap());
             journal.preimages.push(crate::MaterializationPreimage {
                 image,
                 custody: None,
             });
-            let before = work.receipt();
-            assert!(store.matches(&journal).await.unwrap());
             let expected = journal.revision;
             journal.revision += 1;
             let (stored, updated) =
