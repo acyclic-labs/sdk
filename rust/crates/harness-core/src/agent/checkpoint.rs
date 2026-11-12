@@ -18,8 +18,8 @@ pub(crate) fn codec() -> CodecIdentity {
 fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
-            name: "acyclic.harness.agent.workspaces".into(),
-            // Version-one workspace-aware actor state; old state is refused.
+            name: "acyclic.harness.agent.workspace-snapshot".into(),
+            // Version-one snapshot-backed actor state; embedded tables are refused.
             version: "1".into(),
         });
     &IDENTITY

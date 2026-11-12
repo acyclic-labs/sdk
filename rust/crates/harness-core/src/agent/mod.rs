@@ -137,7 +137,7 @@ pub enum Error {
     #[error("invalid agent record: {0}")]
     Record(&'static str),
     /// The retained checkpoint belongs to another artifact codec.
-    #[error("state format predates v1 table; start a fresh session")]
+    #[error("unsupported agent checkpoint format; start a fresh session")]
     IncompatibleCheckpointCodec,
     /// The recipient agent was never created.
     #[error("no such agent")]

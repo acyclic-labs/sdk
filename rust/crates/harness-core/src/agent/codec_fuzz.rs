@@ -139,6 +139,14 @@ fn envelope(value: &acyclic_actors::guest::Checkpoint) {
         let mut foreign = value.clone();
         foreign.codec.name.push_str(".other");
         refuses_before_payload(foreign);
+        // The embedded-table format is a different v1 codec, including when
+        // its body is missing or happens to decode as the current wire shape.
+        let mut embedded = value.clone();
+        embedded.codec = acyclic_actors::guest::CodecIdentity {
+            name: "acyclic.harness.agent.workspaces".into(),
+            version: "1".into(),
+        };
+        refuses_before_payload(embedded);
         let malformed = acyclic_actors::guest::Checkpoint {
             codec: checkpoint::codec(),
             bytes: Vec::new().into(),
