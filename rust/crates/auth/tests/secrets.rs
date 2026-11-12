@@ -833,7 +833,7 @@ mod http {
         // The original bearer allocation survives the actual HTTP and gRPC
         // metadata constructors and clones. The old Vec route is a full-copy
         // negative control, measured independently of encoding the credential.
-        for length in [1024, acyclic_auth::credential::MAX_CREDENTIAL_BYTES] {
+        for length in [1024, 12 * 1024, 64 * 1024] {
             let token = "a".repeat(length);
             let encoded = acyclic_auth::credential::bearer_bytes(&token);
             let pointer = encoded.as_ptr();

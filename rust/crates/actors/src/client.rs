@@ -15,7 +15,7 @@ pub(crate) use validation::{validate_operation, validate_operation_request};
 #[derive(Clone)]
 pub struct BearerAuth(Option<MetadataValue<Ascii>>);
 impl BearerAuth {
-    /// Validates a bounded bearer credential and marks its metadata sensitive.
+    /// Validates an opaque bearer credential and marks its metadata sensitive.
     pub fn new(token: &str) -> Result<Self, Error> {
         let invalid = || Error::Configuration("invalid bearer credential".to_owned());
         if !crate::valid_token(token) {

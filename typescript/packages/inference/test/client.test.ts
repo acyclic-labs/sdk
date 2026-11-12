@@ -474,8 +474,9 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
     sequence: 0n,
     event: { case: "terminal", value: RunTerminal.COMPLETED },
   }));
+  let authorization = fixtureAuthorization;
   const fetcher: typeof fetch = async (input, init) => {
-    expect(new Headers(init?.headers).get("authorization")).toBe(fixtureAuthorization);
+    expect(new Headers(init?.headers).get("authorization")).toBe(authorization);
     expect(init?.redirect).toBe("error");
     const url = String(input);
     if (url.endsWith("/models/list")) {
@@ -502,7 +503,7 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
     if (url.endsWith("/runs/watch")) return new Response(`${terminal}\n`);
     throw new Error(`unexpected route ${url}`);
   };
-  const transport = new HttpInferenceTransport("https://example.test", () => ({ authorization: fixtureAuthorization }), fetcher);
+  const transport = new HttpInferenceTransport("https://example.test", () => ({ authorization }), fetcher);
   await transport.listModels();
   await transport.createContext(create(CreateContextRequestSchema));
   await transport.inspectContext(create(InspectContextRequestSchema));
@@ -522,8 +523,10 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
 
   const unauthorized = new HttpInferenceTransport("https://example.test", () => ({}), fetcher);
   await expect(unauthorized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
-  const oversized = new HttpInferenceTransport("https://example.test", () => ({ authorization: `Bearer ${"x".repeat(12 * 1024 + 1)}` }), fetcher);
-  await expect(oversized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
+  for (const length of [12 * 1024 + 1, 64 * 1024]) {
+    authorization = `Bearer ${"x".repeat(length)}`;
+    await transport.listModels();
+  }
 });
 
 test("HTTP transport applies one byte ceiling per message without conflating network chunks", async () => {

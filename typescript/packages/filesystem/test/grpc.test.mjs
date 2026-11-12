@@ -235,7 +235,7 @@ test("a pending mutation deadline cancels server work without redispatch", async
 });
 
 test("transport requires HTTPS and enforces explicit caller message capacity", async t => {
-  for (const overrides of [{ endpoint: "http://localhost" }, { token: "" }, { token: "x\ny" }, { token: "x".repeat(12289) }, { maximumMessageBytes: 0 }, { caCertificate: "" }]) {
+  for (const overrides of [{ endpoint: "http://localhost" }, { token: "" }, { token: "x\ny" }, { maximumMessageBytes: 0 }, { caCertificate: "" }]) {
     assert.throws(() => createFilesystemGrpcClient({ endpoint: "https://localhost", token: "fixture", ...overrides }));
   }
   const { filesystem } = await fixture(t, { read() { return { contents: new Uint8Array(1024) }; } }, { maximumMessageBytes: 256 });

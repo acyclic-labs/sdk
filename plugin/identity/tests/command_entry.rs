@@ -55,7 +55,8 @@ async fn secrets_invocation(directory: &std::path::Path) -> Result<(), Box<dyn s
     use axum::{Json, Router, http::StatusCode, routing::post};
     use std::io::Write as _;
     let bearer = directory.join("bearer");
-    acyclic_native_runtime::private_file::create(&bearer)?.write_all(b"fixture-bearer")?;
+    let token = "a".repeat(12 * 1024 + 1);
+    acyclic_native_runtime::private_file::create(&bearer)?.write_all(token.as_bytes())?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let arguments = [
         "secrets".into(),

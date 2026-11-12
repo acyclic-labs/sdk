@@ -11,13 +11,15 @@ const encoder = new TextEncoder();
 const encodeInto = encoder.encodeInto.bind(encoder);
 export function encodeCredentialInto(text, output) {
     const encoded = encodeInto(text, output);
-    return encoded.read === text.length ? encoded.written : -1;
+    return encoded.read === text.length ? encoded.written : undefined;
 }
 "#)]
 extern "C" {
     #[wasm_bindgen(catch, js_name = encodeCredentialInto)]
-    fn encode_credential_into(text: &JsString, output: &js_sys::Uint8Array)
-    -> Result<i32, JsValue>;
+    fn encode_credential_into(
+        text: &JsString,
+        output: &js_sys::Uint8Array,
+    ) -> Result<Option<usize>, JsValue>;
 }
 
 /// Admit JavaScript bearer text with the native transport predicate, without
@@ -31,14 +33,12 @@ fn protected_text(value: &JsValue) -> Result<Zeroizing<String>, CredentialError>
         .dyn_ref::<JsString>()
         .ok_or(CredentialError::Invalid)?;
     let units = text.length() as usize;
-    if units > MAX_CREDENTIAL_BYTES {
-        return Err(CredentialError::Invalid);
-    }
     // Three bytes per UTF-16 unit covers BMP characters and lone surrogates;
-    // a surrogate pair takes fewer. A longer encoding is already inadmissible.
+    // a surrogate pair takes fewer.
     // Encode once into the final protected backing, never through the generated
     // string glue's reallocations, which cannot scrub their old allocations.
-    let mut bytes = Zeroizing::new(vec![0; (units * 3).min(MAX_CREDENTIAL_BYTES)]);
+    let capacity = units.checked_mul(3).ok_or(CredentialError::Invalid)?;
+    let mut bytes = Zeroizing::new(vec![0; capacity]);
     let written = encode_protected(text, &mut bytes)?;
     bytes.truncate(written);
     match String::from_utf8(std::mem::take(&mut *bytes)) {
@@ -58,8 +58,7 @@ fn encode_protected(text: &JsString, bytes: &mut [u8]) -> Result<usize, Credenti
     // view after this synchronous call.
     let output = unsafe { js_sys::Uint8Array::view(bytes) };
     let written = encode_credential_into(text, &output).map_err(invalid)?;
-    usize::try_from(written)
-        .ok()
+    written
         .filter(|written| *written <= bytes.len())
         .ok_or(CredentialError::Invalid)
 }

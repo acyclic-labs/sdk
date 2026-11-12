@@ -1,16 +1,17 @@
 import { expect, test } from "bun:test";
 import { CredentialCache, CredentialSnapshot, credentialProvider, credentialStream, resolveCredential, validateCredential } from "../src/credential.js";
 
-test("opaque admission preserves the canonical Unicode and UTF-8 boundary", async () => {
+test("opaque admission preserves unbounded Unicode text and refuses delimiters", async () => {
   for (const [token, accepted] of [
     ["\uFEFF", true],
     ["\u0085", false],
     ["\u2003", false],
+    ["a".repeat(65_536), true], ["é".repeat(32_768), true],
     ["é".repeat(6144), true],
-    ["é".repeat(6145), false],
+    ["é".repeat(6145), true],
     ["\uD800".repeat(4096), true],
-    ["\uD800".repeat(4097), false],
-    ["a".repeat(12289), false],
+    ["\uD800".repeat(4097), true],
+    ["a".repeat(12289), true],
     ["credential\r", false],
     ["credential\n", false],
     ["credential\0", false],

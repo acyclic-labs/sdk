@@ -1,4 +1,4 @@
-//! Fresh opaque credentials obey bounded admission without caching or fallback.
+//! Fresh opaque credentials preserve header admission without caching or fallback.
 use acyclic_auth::credential::*;
 use futures::{executor::block_on, future};
 use proptest::prelude::*;
@@ -10,21 +10,21 @@ use std::sync::{
 mod conformance;
 
 #[test]
-fn credential_admission_matches_the_bounded_header_contract() {
+fn credential_admission_preserves_unbounded_opaque_text_and_refuses_delimiters() {
     conformance::check(include_bytes!("../fuzz/corpus/credential/v2-opaque-bearer"));
     conformance::check(include_bytes!(
         "../fuzz/corpus/capability/v2-signed-capability"
     ));
     // Fixed corpus and byte boundaries run once, independently of generated cases.
-    for length in [MAX_CREDENTIAL_BYTES, MAX_CREDENTIAL_BYTES + 1] {
+    for length in [12 * 1024, 12 * 1024 + 1, 64 * 1024] {
         conformance::check("a".repeat(length).as_bytes());
     }
-    for length in [MAX_CREDENTIAL_BYTES / 2, MAX_CREDENTIAL_BYTES / 2 + 1] {
+    for length in [6 * 1024, 6 * 1024 + 1, 32 * 1024] {
         conformance::check("é".repeat(length).as_bytes());
     }
     proptest!(ProptestConfig::with_cases(64), |(value in prop_oneof![
         any::<String>(),
-        (0..=MAX_CREDENTIAL_BYTES + 2, any::<bool>()).prop_map(|(length, unicode)|
+        (0usize..=12 * 1024 + 2, any::<bool>()).prop_map(|(length, unicode)|
             if unicode { "é".repeat(length) } else { "a".repeat(length) }),
     ])| {
         conformance::check(value.as_bytes());

@@ -638,7 +638,7 @@ test("invalid transport configuration is rejected before opening a session", () 
   for (const endpoint of ["http://example.test", "https://user@example.test", "https://example.test?q=1", "https://example.test/#fragment"]) {
     assert.throws(() => createMachinesGrpcClient({ ...options, endpoint }), TypeError);
   }
-  for (const token of [" ", "a\nb", "a\rb", "a\0b", "é".repeat(6145)]) {
+  for (const token of [" ", "a\nb", "a\rb", "a\0b"]) {
     assert.throws(() => createMachinesGrpcClient({ ...options, token }), TypeError);
   }
   for (const maximumMessageBytes of [0, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {

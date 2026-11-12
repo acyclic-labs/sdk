@@ -118,9 +118,6 @@ pub use local::replay_model::{
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
 
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
-
 /// Generated canonical Stream v1 protocol.
 #[allow(
     missing_docs,

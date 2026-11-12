@@ -77,8 +77,9 @@ test("WASM credential ingress shares opaque admission and retains original reque
   const planted = "ORIGINAL_CREDENTIAL_REFUSAL_DO_NOT_DISCLOSE";
   const cases: readonly (readonly [unknown, boolean])[] = [
     ["synthetic", true], ["\uFEFF", true], ["\u0085", false],
-    ["é".repeat(6144), true], ["é".repeat(6145), false],
-    ["\uD800".repeat(4096), true], ["\uD800".repeat(4097), false],
+    ["a".repeat(65_536), true], ["é".repeat(32_768), true],
+    ["é".repeat(6144), true], ["é".repeat(6145), true],
+    ["\uD800".repeat(4096), true], ["\uD800".repeat(4097), true],
     ["synthetic\r", false], ["synthetic\n", false], ["synthetic\0", false],
     [undefined, false], [1, false], [new String("synthetic"), false],
   ];

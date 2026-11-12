@@ -1170,12 +1170,12 @@ describe("website Stream contract", () => {
     expect(cancelled).toBeTrue();
   });
 
-  test("HTTP transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
-    for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(12 * 1024 + 1)]) {
+  test("HTTP transport refuses redirects and header-unsafe bearer tokens", async () => {
+    for (const token of [" ", "a\nb", "a\rb", "a\0b"]) {
       expect(() => new HttpStreamProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
     }
     let redirect: RequestRedirect | undefined;
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x".repeat(64 * 1024), fetcher: async (_input, init) => {
       redirect = init?.redirect;
       return new Response(JSON.stringify({ tail: "0", applied: fixtureRevisionJson }));
     } });

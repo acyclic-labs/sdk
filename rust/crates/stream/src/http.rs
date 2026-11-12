@@ -564,15 +564,14 @@ mod tests {
 
     #[test]
     fn endpoint_and_credential_policy_matches_other_families() {
-        let long = "t".repeat(crate::MAX_BEARER_TOKEN_BYTES + 1);
-        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+        for token in ["", " ", "a\r\nb", "a\0b"] {
             assert!(HttpStream::new("https://example.test", token, 1).is_err());
         }
         for endpoint in ["http://example.test", "https://u@example.test"] {
             assert!(HttpStream::new(endpoint, "t", 1).is_err());
         }
         for endpoint in ["http://localhost:1", "http://127.0.0.2:1", "http://[::1]:1"] {
-            assert!(HttpStream::new(endpoint, "t", 1).is_ok());
+            assert!(HttpStream::new(endpoint, &"t".repeat(64 * 1024), 1).is_ok());
         }
     }
 

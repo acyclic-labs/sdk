@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import fc from "fast-check";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CredentialCache, CredentialSnapshot, credentialProvider, validateCredential } from "../src/credential.js";
+import { CredentialCache, CredentialSnapshot, credentialProvider } from "../src/credential.js";
 import { ActorsClient, type ActorsRustClient } from "../src/client.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
@@ -14,19 +14,6 @@ const legacyClient = (): ActorsRustClient => Object.fromEntries(
 const token = fc.string({ minLength: 1, maxLength: 256 })
   .filter(value => value.trim().length > 0 && !/[\r\n\0]/.test(value));
 const settings = { numRuns: 128 };
-
-test("credential admission matches the byte bound and forbidden characters", () => {
-  fc.assert(fc.property(fc.oneof(fc.string({ maxLength: 14000 }), token), value => {
-    const admitted = value.trim().length > 0 &&
-      new TextEncoder().encode(value).byteLength <= 12288 && !/[\r\n\0]/.test(value);
-    if (admitted) expect(() => validateCredential(value)).not.toThrow();
-    else expect(() => validateCredential(value)).toThrow(TypeError);
-  }), settings);
-  for (const value of ["é".repeat(6144), "é".repeat(6145), "a".repeat(12288), "a".repeat(12289)]) {
-    if (new TextEncoder().encode(value).length <= 12288) validateCredential(value);
-    else expect(() => validateCredential(value)).toThrow(TypeError);
-  }
-});
 
 test("every request resolves the current provider without caching or fallback", async () => {
   await fc.assert(fc.asyncProperty(fc.array(token, { minLength: 1, maxLength: 16 }), async values => {

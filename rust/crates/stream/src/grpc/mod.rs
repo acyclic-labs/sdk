@@ -15,7 +15,6 @@ use tonic::{
 };
 use tracing::field::Empty;
 
-pub use crate::MAX_BEARER_TOKEN_BYTES;
 use crate::StreamProviderExt as _;
 use crate::obs;
 use crate::wire_codec::{

@@ -98,7 +98,7 @@ impl Token {
     }
 }
 
-/// A bounded credential and its custodian-supplied validity. Debug redacts bytes.
+/// An opaque credential and its custodian-supplied validity. Debug redacts bytes.
 pub struct CredentialSnapshot {
     token: Token,
     revision: CredentialRevision,

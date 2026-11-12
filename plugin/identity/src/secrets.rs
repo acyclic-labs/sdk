@@ -145,12 +145,7 @@ pub(super) async fn execute(
     let bytes = context
         .run(async move {
             acyclic_native_runtime::run_blocking_io(
-                move || {
-                    private_file::read(
-                        &bearer_file,
-                        acyclic_auth::credential::MAX_CREDENTIAL_BYTES as u64,
-                    )
-                },
+                move || private_file::read(&bearer_file, None),
                 None,
             )
             .map_err(|_| input_error())?
