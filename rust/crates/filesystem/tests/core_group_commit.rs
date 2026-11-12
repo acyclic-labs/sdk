@@ -17,7 +17,7 @@ fn state(id: WorkspaceId) -> Result<LazyWorkspaceState, serde_json::Error> {
         "parent_workspace_id": null,
         "fork_origin": null,
         "selected_import_roots": null,
-        "source": acyclic_fs::demand::SourceReference { identity: [1; 16], epoch: 0 },
+        "source": acyclic_fs::demand::SourceReference { components: acyclic_stream::OwnedBytes::new(),  identity: [1; 16], epoch: 0 },
         "overlay": acyclic_fs::LazyOverlayId::from_bytes([2; 32]),
         "shadows": shadows,
         "pending_remove": null

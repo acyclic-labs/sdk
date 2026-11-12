@@ -4,6 +4,15 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
+async fn source_reference<D: DemandSource>(source: &D) -> Result<SourceReference, Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    Ok(source
+        .reference(&mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .await?)
+}
 async fn lookup_node<D: DemandSource>(
     source: &D,
     reference: SourceReference,
@@ -11,7 +20,7 @@ async fn lookup_node<D: DemandSource>(
     cancellation: &CancellationToken,
 ) -> Result<SourceNode, Box<dyn Error>> {
     Ok(source
-        .lookup(reference, name, WorkBudget::UNBOUNDED, cancellation)
+        .lookup(reference.clone(), name, WorkBudget::UNBOUNDED, cancellation)
         .await?
         .value
         .ok_or("file absent")?)
@@ -120,10 +129,27 @@ impl RecordedChanges {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Box<dyn Error>> {
-    let root = tempfile::tempdir()?;
-    std::fs::create_dir(root.path().join("d"))?;
-    std::fs::write(root.path().join("f"), b"one")?;
-    let source = native_source(root.path()).await?;
+    for routed in [false, true] {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("d"))?;
+        std::fs::write(root.path().join("f"), b"one")?;
+        let source = native_source(root.path()).await?;
+        if routed {
+            let ui = path("/ui")?.components()[0].clone();
+            let source = Routed::new(Empty, ui, source, VolumeLimits::default());
+            assert_source_changes(&source, root.path(), "/ui").await?;
+        } else {
+            assert_source_changes(&source, root.path(), "").await?;
+        }
+    }
+    Ok(())
+}
+
+async fn assert_source_changes<D: DemandSource>(
+    source: &D,
+    root: &std::path::Path,
+    prefix: &str,
+) -> Result<(), Box<dyn Error>> {
     let recorded = Arc::new(RecordedChanges::default());
     let watch = source
         .watch(
@@ -134,13 +160,19 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
         .value
         .ok_or("a local root is watched")?;
     let cancellation = CancellationToken::new();
-    let node = lookup_node(&source, source.reference(), &path("/f")?, &cancellation).await?;
+    let node = lookup_node(
+        source,
+        source_reference(source).await?,
+        &path(&format!("{prefix}/f"))?,
+        &cancellation,
+    )
+    .await?;
     // Reading beneath a directory watches it where the host needs that.
     assert!(
         source
             .lookup(
-                source.reference(),
-                &path("/d/x")?,
+                source_reference(source).await?,
+                &path(&format!("{prefix}/d/x"))?,
                 WorkBudget::UNBOUNDED,
                 &cancellation
             )
@@ -149,9 +181,12 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
             .is_none()
     );
 
-    std::fs::write(root.path().join("f"), b"changed")?;
-    std::fs::write(root.path().join("d").join("x"), b"x")?;
-    let (f, x) = (path("/f")?, path("/d/x")?);
+    std::fs::write(root.join("f"), b"changed")?;
+    std::fs::write(root.join("d").join("x"), b"x")?;
+    let (f, x) = (
+        path(&format!("{prefix}/f"))?,
+        path(&format!("{prefix}/d/x"))?,
+    );
     let changes = recorded.until(watch.as_ref(), |changes| {
         changes.contains(&SourceChange::Node(node.file_identity))
             && changes.contains(&SourceChange::Name(x.clone()))
@@ -161,8 +196,9 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
     // `FSEvents` may coalesce the file's recent creation into its write,
     // which reports the name rebound rather than its entry altered.
     assert!(
-        changes.contains(&SourceChange::Entry(path("/f")?))
-            || cfg!(target_os = "macos") && changes.contains(&SourceChange::Name(path("/f")?)),
+        changes.contains(&SourceChange::Entry(path(&format!("{prefix}/f"))?))
+            || cfg!(target_os = "macos")
+                && changes.contains(&SourceChange::Name(path(&format!("{prefix}/f"))?)),
         "{changes:?}"
     );
     assert!(
@@ -170,7 +206,7 @@ async fn native_source_reports_the_names_and_nodes_it_changed() -> Result<(), Bo
         "{changes:?}"
     );
     assert!(
-        changes.contains(&SourceChange::Name(path("/d/x")?)),
+        changes.contains(&SourceChange::Name(path(&format!("{prefix}/d/x"))?)),
         "{changes:?}"
     );
     // Nothing was lost; a macOS fence reports everything by design.
@@ -248,16 +284,16 @@ async fn native_source_reports_symbolic_link_target_bytes() -> Result<(), Box<dy
     .await
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)?;
-    let reference = source.reference();
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
-    let node = lookup_node(&source, reference, &path("/link")?, &cancellation).await?;
+    let node = lookup_node(&source, reference.clone(), &path("/link")?, &cancellation).await?;
 
     assert_eq!(node.kind, SourceNodeKind::SymbolicLink);
     assert_eq!(node.logical_bytes, Some(6));
     assert_eq!(
         source
             .read_link(
-                reference,
+                reference.clone(),
                 &path("/link")?,
                 node.version,
                 6,
@@ -291,10 +327,10 @@ async fn native_source_observes_only_the_demanded_directory_before_reading()
     )
     .await?
     .value;
-    let reference = source.reference();
+    let reference = source_reference(&source).await?;
     source
         .lookup(
-            reference,
+            reference.clone(),
             &path("/nested/file")?,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -325,11 +361,11 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
 
     let source = native_source(root.path()).await?;
     let provider = &source;
-    let reference = provider.reference();
+    let reference = source_reference(provider).await?;
     let cancellation = CancellationToken::new();
     let node = provider
         .lookup(
-            reference,
+            reference.clone(),
             &path("/seen")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -339,7 +375,7 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
 
     let bytes = provider
         .read_range(
-            reference,
+            reference.clone(),
             &path("/seen")?,
             version,
             3,
@@ -352,7 +388,7 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
 
     let mut first = provider
         .list_page(
-            reference,
+            reference.clone(),
             &path("/")?,
             None,
             1,
@@ -373,7 +409,7 @@ async fn native_provider_reads_do_not_visit_unrelated_content() -> Result<(), Bo
     let continuation = first.value.next.ok_or("second root entry missing")?;
     let second = provider
         .list_page(
-            reference,
+            reference.clone(),
             &path("/")?,
             Some(continuation),
             1,
@@ -411,72 +447,15 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
         open.flush()?;
     }
     let source = native_source(root.path()).await?;
-    let provider = &source;
-    let reference = provider.reference();
-    let cancellation = CancellationToken::new();
-    let page = provider
-        .list_page(
-            reference,
-            &path("/")?,
-            None,
-            16,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    assert_eq!(page.value.entries.len(), if cfg!(unix) { 5 } else { 4 });
-    let mut listed = Vec::new();
-    for entry in &page.value.entries {
-        let name = entry
-            .name
-            .unicode_text(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .ok()
-            .map(|receipt| receipt.value)
-            .ok_or("listed name is not Unicode")?
-            .to_string();
-        let looked_up = provider
-            .lookup(
-                reference,
-                &path(&format!("/{name}"))?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?;
-        assert_eq!(looked_up.value, Some(entry.node), "{name}");
-        listed.push((name, entry.node));
-    }
-    // Every listed version opens: a listing never pins a version that a
-    // handle on the same file disagrees with.
-    let identity = |name| {
-        listed
-            .iter()
-            .find(|(listed, _)| listed == name)
-            .map(|(_, node)| node.file_identity)
-    };
-    assert_eq!(identity("file"), identity("alias"));
-    for (name, node) in listed {
-        if node.kind != SourceNodeKind::RegularFile {
-            continue;
-        }
-        let file = provider
-            .open_file(
-                reference,
-                &path(&format!("/{name}"))?,
-                node.version,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| format!("{name}: {failure:?}"))?
-            .value;
-        let length = node.logical_bytes.ok_or("regular file has no length")?;
-        let read = read(file.as_ref(), 0, length, &cancellation)
-            .map_err(|failure| format!("{name}: {failure:?}"))?;
-        assert_eq!(read.len() as u64, length, "{name}");
-    }
+    assert_listing(&source, "/", if cfg!(unix) { 5 } else { 4 }).await?;
+    let ui = path("/ui")?.components()[0].clone();
+    let routed = Routed::new(
+        Empty,
+        ui,
+        native_source(root.path()).await?,
+        VolumeLimits::default(),
+    );
+    assert_listing(&routed, "/ui", if cfg!(unix) { 5 } else { 4 }).await?;
     drop(open);
     Ok(())
 }
@@ -488,8 +467,8 @@ async fn native_device_metadata_preserves_the_host_number() -> Result<(), Box<dy
 
     let source = native_source("/dev").await?;
     let cancellation = CancellationToken::new();
-    let reference = source.reference();
-    let node = lookup_node(&source, reference, &path("/null")?, &cancellation).await?;
+    let reference = source_reference(&source).await?;
+    let node = lookup_node(&source, reference.clone(), &path("/null")?, &cancellation).await?;
     assert_eq!(node.kind, SourceNodeKind::CharacterDevice);
     let (major, minor) = node.device.ok_or("device number absent")?;
     let native =
@@ -499,7 +478,7 @@ async fn native_device_metadata_preserves_the_host_number() -> Result<(), Box<dy
         std::fs::symlink_metadata("/dev/null")?.rdev()
     );
 
-    let directory = lookup_node(&source, reference, &path("/")?, &cancellation).await?;
+    let directory = lookup_node(&source, reference.clone(), &path("/")?, &cancellation).await?;
     assert_eq!(directory.kind, SourceNodeKind::Directory);
     assert_eq!(directory.device, None);
     Ok(())
@@ -513,12 +492,12 @@ async fn held_file(
     std::fs::create_dir(&root)?;
     std::fs::write(root.join("file"), contents)?;
     let source = native_source(&root).await?;
-    let reference = source.reference();
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
-    let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
+    let node = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation).await?;
     let file = source
         .open_file(
-            reference,
+            reference.clone(),
             &path("/file")?,
             node.version,
             WorkBudget::UNBOUNDED,
@@ -624,12 +603,12 @@ async fn held_files_under_remote_roots_read_off_the_callback_thread() -> Result<
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"remote")?;
     let source = native_source(temporary.path()).await?.remote();
-    let reference = source.reference();
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
-    let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
+    let node = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation).await?;
     let file = source
         .open_file(
-            reference,
+            reference.clone(),
             &path("/file")?,
             node.version,
             WorkBudget::UNBOUNDED,
@@ -709,16 +688,16 @@ async fn reads_never_reopen_the_root() -> Result<(), Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt as _;
     let (temporary, source, file) = held_file(b"before").await?;
     let root = temporary.path().join("source");
-    let reference = source.reference();
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
-    let version = lookup_node(&source, reference, &path("/file")?, &cancellation)
+    let version = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation)
         .await?
         .version;
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o100))?;
     let held = read(file.as_ref(), 0, 6, &cancellation);
     let by_path = source
         .read_range(
-            reference,
+            reference.clone(),
             &path("/file")?,
             version,
             0,
@@ -739,13 +718,13 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     std::fs::create_dir(root.path().join("directory"))?;
     std::fs::write(root.path().join("file"), b"old")?;
     let source = native_source(root.path()).await?;
-    let reference = source.reference();
+    let reference = source_reference(&source).await?;
     let cancellation = CancellationToken::new();
-    let node = lookup_node(&source, reference, &path("/file")?, &cancellation).await?;
+    let node = lookup_node(&source, reference.clone(), &path("/file")?, &cancellation).await?;
     std::fs::write(root.path().join("file"), b"newer contents")?;
     let Err(stale) = source
         .read_range(
-            reference,
+            reference.clone(),
             &path("/file")?,
             node.version,
             0,
@@ -760,14 +739,14 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     assert!(matches!(stale.error, DemandError::StaleVersion));
     assert!(matches!(
         source
-            .read_metadata(reference, &path("/file")?, Some(node.version), WorkBudget::UNBOUNDED, &cancellation)
+            .read_metadata(reference.clone(), &path("/file")?, Some(node.version), WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleVersion)
     ));
 
     let mut first = source
         .list_page(
-            reference,
+            reference.clone(),
             &path("/")?,
             None,
             1,
@@ -787,7 +766,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     let cursor = first.value.next.take().ok_or("second root entry missing")?;
     assert!(matches!(
         source
-            .list_page(reference, &path("/directory")?, Some(cursor.clone()), 1, WorkBudget::UNBOUNDED, &cancellation)
+            .list_page(reference.clone(), &path("/directory")?, Some(cursor.clone()), 1, WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleCursor)
     ));
@@ -801,7 +780,14 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     let mut peers = Vec::new();
     for _ in 0..1024 {
         let mut peer = source
-            .list_page(reference, &directory, None, 1, &peer_work, &peer_stop)
+            .list_page(
+                reference.clone(),
+                &directory,
+                None,
+                1,
+                &peer_work,
+                &peer_stop,
+            )
             .await?;
         peer.publication
             .as_mut()
@@ -813,9 +799,9 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     }
     let mut resumed = source
         .list_page(
-            reference,
+            reference.clone(),
             &directory,
-            Some(SourceCursor::detached(reference, cursor.token)),
+            Some(SourceCursor::detached(reference.clone(), cursor.token)),
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -826,7 +812,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     assert!(resumed.value.next.is_none());
     assert!(matches!(
         source
-            .list_page(reference, &directory, Some(cursor.clone()), 1, WorkBudget::UNBOUNDED, &cancellation)
+            .list_page(reference.clone(), &directory, Some(cursor.clone()), 1, WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::CursorBusy)
     ));
@@ -843,7 +829,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     drop(resumed);
     let mut replayed = source
         .list_page(
-            reference,
+            reference.clone(),
             &directory,
             Some(cursor.clone()),
             1,
@@ -873,14 +859,14 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     drop(peers);
     assert_eq!(peer_work.live_allocation_bytes(), baseline);
     assert!(matches!(
-        source.list_page(reference, &directory, Some(SourceCursor::detached(reference, token)),
+        source.list_page(reference.clone(), &directory, Some(SourceCursor::detached(reference.clone(), token)),
             1, WorkBudget::UNBOUNDED, &cancellation).await,
         Err(failure) if matches!(failure.error, DemandError::StaleCursor)
     ));
     source.invalidate();
     assert!(matches!(
         source
-            .lookup(reference, &path("/file")?, WorkBudget::UNBOUNDED, &cancellation)
+            .lookup(reference.clone(), &path("/file")?, WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleSource)
     ));
@@ -955,7 +941,7 @@ async fn native_lookup_accepts_windows_names_longer_than_127_code_units()
     assert!(
         source
             .lookup(
-                source.reference(),
+                source_reference(&source).await?,
                 &exact,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new()
@@ -989,14 +975,14 @@ async fn assert_lossless_name(
     let exact = NamespacePath::new(vec![name], VolumeLimits::default())?;
     let node = lookup_node(
         &source,
-        source.reference(),
+        source_reference(&source).await?,
         &exact,
         &CancellationToken::new(),
     )
     .await?;
     let answer = source
         .read_range(
-            source.reference(),
+            source_reference(&source).await?,
             &exact,
             node.version,
             0,
@@ -1075,9 +1061,9 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
             std::fs::write(temporary.path().join("file"), b"remote")?;
             let source = native_source(temporary.path()).await?.remote();
             let stop = CancellationToken::new();
-            let reference = source.reference();
+            let reference = source_reference(&source).await?;
             let name = path("/file")?;
-            let node = lookup_node(&source, reference, &name, &stop).await?;
+            let node = lookup_node(&source, reference.clone(), &name, &stop).await?;
             let file = source
                 .open_file(reference, &name, node.version, WorkBudget::UNBOUNDED, &stop)
                 .await?
@@ -1255,5 +1241,237 @@ async fn remote_held_read_cancellation_does_not_wait_for_the_native_producer()
             let _ = driver.await;
         }
     }
+    Ok(())
+}
+
+async fn assert_listing<D: DemandSource>(
+    provider: &D,
+    directory: &str,
+    expected: usize,
+) -> Result<(), Box<dyn Error>> {
+    let reference = source_reference(provider).await?;
+    let cancellation = CancellationToken::new();
+    let page = provider
+        .list_page(
+            reference.clone(),
+            &path(directory)?,
+            None,
+            16,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(page.value.entries.len(), expected);
+    let mut listed = Vec::new();
+    for entry in &page.value.entries {
+        let name = entry
+            .name
+            .unicode_text(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .ok()
+            .map(|receipt| receipt.value)
+            .ok_or("listed name is not Unicode")?
+            .to_string();
+        let looked_up = provider
+            .lookup(
+                reference.clone(),
+                &path(&format!("{}/{name}", directory.trim_end_matches('/')))?,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(looked_up.value, Some(entry.node), "{name}");
+        listed.push((name, entry.node));
+    }
+    // Every listed version opens: a listing never pins a version that a
+    // handle on the same file disagrees with.
+    let identity = |name| {
+        listed
+            .iter()
+            .find(|(listed, _)| listed == name)
+            .map(|(_, node)| node.file_identity)
+    };
+    assert_eq!(identity("file"), identity("alias"));
+    for (name, node) in listed {
+        if node.kind != SourceNodeKind::RegularFile {
+            continue;
+        }
+        let file = provider
+            .open_file(
+                reference.clone(),
+                &path(&format!("{}/{name}", directory.trim_end_matches('/')))?,
+                node.version,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| format!("{name}: {failure:?}"))?
+            .value;
+        let length = node.logical_bytes.ok_or("regular file has no length")?;
+        let read = read(file.as_ref(), 0, length, &cancellation)
+            .map_err(|failure| format!("{name}: {failure:?}"))?;
+        assert_eq!(read.len() as u64, length, "{name}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn routed_pages_shadow_names_and_preserve_encoded_continuations() -> Result<(), Box<dyn Error>>
+{
+    let base = tempfile::tempdir()?;
+    let view = tempfile::tempdir()?;
+    std::fs::write(base.path().join("ui"), b"shadowed")?;
+    std::fs::write(base.path().join("base"), b"base")?;
+    std::fs::write(view.path().join("index.md"), b"0123456789")?;
+    let ui = path("/ui")?.components()[0].clone();
+    let base_source = native_source(base.path()).await?;
+    let view_source = native_source(view.path()).await?;
+    let source = Routed::new(
+        base_source.clone(),
+        ui,
+        view_source.clone(),
+        VolumeLimits::default(),
+    );
+    let reference = source_reference(&source).await?;
+    let cancellation = CancellationToken::new();
+    let root = path("/")?;
+    let mut cursor = None;
+    let mut owner = None;
+    let mut names = Vec::new();
+    loop {
+        let mut page = source
+            .list_page(
+                reference.clone(),
+                &root,
+                cursor,
+                1,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        drop(owner.take());
+        assert!(page.entries.len() <= 1);
+        for entry in &page.entries {
+            names.push(entry.name.as_bytes().to_vec());
+            let name = std::str::from_utf8(entry.name.as_bytes())?;
+            assert_eq!(
+                lookup_node(
+                    &source,
+                    reference.clone(),
+                    &path(&format!("/{name}"))?,
+                    &cancellation
+                )
+                .await?,
+                entry.node
+            );
+        }
+        if let Some(publication) = page.publication.as_mut() {
+            publication.accept(&mut crate::kernel::KernelAccounting::standalone(
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))?;
+        }
+        let Some(next) = page.next else {
+            break;
+        };
+        // This is the exact state the transport codec retains, independent of
+        // any source-specific owner held by this test's page.
+        cursor = Some(SourceCursor::detached(next.source.clone(), next.token));
+        // Native enumeration lifetime remains the caller's custody. Routing
+        // preserves that owner while encoded tokens locate it weakly.
+        owner = Some(next);
+    }
+    names.sort();
+    assert_eq!(names, [b"base".to_vec(), b"ui".to_vec()]);
+    assert!(
+        source
+            .lookup(
+                reference.clone(),
+                &path("/ui/missing")?,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await?
+            .value
+            .is_none()
+    );
+    let file_path = path("/ui/index.md")?;
+    let node = lookup_node(&source, reference.clone(), &file_path, &cancellation).await?;
+    assert_eq!(
+        source
+            .read_range(
+                reference.clone(),
+                &file_path,
+                node.version,
+                3,
+                4,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await?
+            .value
+            .bytes
+            .as_slice(),
+        b"3456"
+    );
+    let file = source
+        .open_file(
+            reference.clone(),
+            &file_path,
+            node.version,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    assert_eq!(read(file.as_ref(), 7, 3, &cancellation)?.as_slice(), b"789");
+    let mut stale = node.version;
+    stale.0[0] ^= 1;
+    assert!(matches!(
+        source
+            .read_range(
+                reference.clone(),
+                &file_path,
+                stale,
+                0,
+                1,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await
+            .unwrap_err()
+            .error,
+        DemandError::StaleVersion
+    ));
+    let root_before = lookup_node(&source, reference.clone(), &root, &cancellation).await?;
+    view_source.invalidate();
+    let refreshed = source_reference(&source).await?;
+    assert_eq!(refreshed.identity, reference.identity);
+    assert!(refreshed.follows(&reference));
+    assert_ne!(refreshed, reference);
+    let root_after = lookup_node(&source, refreshed.clone(), &root, &cancellation).await?;
+    assert_eq!(root_after.file_identity, root_before.file_identity);
+    assert_ne!(root_after.version, root_before.version);
+    assert!(matches!(
+        source
+            .lookup(
+                reference.clone(),
+                &root,
+                WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await
+            .unwrap_err()
+            .error,
+        DemandError::StaleSource
+    ));
+    base_source.invalidate();
+    let both_refreshed = source_reference(&source).await?;
+    assert_eq!(both_refreshed.identity, refreshed.identity);
+    assert!(both_refreshed.follows(&refreshed));
+    assert_ne!(both_refreshed, refreshed);
     Ok(())
 }

@@ -34,7 +34,6 @@ impl<
             .inspect_unauthored(
                 &mut checkout.value,
                 path,
-                None,
                 InspectBasis {
                     unobserved: true,
                     ..InspectBasis::default()
@@ -105,12 +104,26 @@ impl<
     /// Reads a regular file at an immutable cut and reports source participation.
     pub async fn read_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         range: Option<crate::ByteRange>,
         maximum: impl Into<Option<u64>>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(OwnedSourceChunk, bool), LazyWorkspaceError> {
+        self.read_range_at_snapshot(cut, path, range, maximum, ctx)
+            .await
+            .map(|(bytes, _, used)| (bytes, used))
+    }
+
+    /// Reads one selected range and its length from the same lookup.
+    pub async fn read_range_at_snapshot(
+        &self,
+        cut: &LazySnapshotRef,
+        path: &str,
+        range: Option<crate::ByteRange>,
+        maximum: impl Into<Option<u64>>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(OwnedSourceChunk, LazyStat, bool), LazyWorkspaceError> {
         let maximum = maximum.into();
         let (lookup, used, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
         let Some(lookup) = lookup else {
@@ -118,14 +131,13 @@ impl<
             return Err(LazyWorkspaceError::NotFound);
         };
         let source = matches!(lookup, LazyLookup::Source { .. });
-        let result = if source && cut.source != self.source.reference() {
-            Err(LazyWorkspaceError::StaleSource)
-        } else if lookup.stat().kind != SourceNodeKind::RegularFile {
+        let stat = lookup.stat();
+        let result = if stat.kind != SourceNodeKind::RegularFile {
             Err(LazyWorkspaceError::NotRegularFile)
         } else {
             self.read_resolved(&lookup, path, range, maximum, ctx)
                 .await
-                .map(|bytes| (bytes, used || source))
+                .map(|bytes| (bytes, stat, used || source))
         };
         self.retire_lookup((lookup, guard), ctx)?;
         result
@@ -134,7 +146,7 @@ impl<
     /// whose source alias has no entry in the authored namespace.
     pub async fn read_file_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         file_id: FileId,
         maximum: impl Into<Option<u64>>,
         ctx: &mut KernelAccounting<'_>,
@@ -239,7 +251,7 @@ impl<
                     if let Some(range) = range {
                         self.source
                             .read_range(
-                                *source,
+                                source.clone(),
                                 &namespace.value,
                                 node.version,
                                 range.offset,
@@ -251,7 +263,7 @@ impl<
                     } else {
                         self.source
                             .read_link(
-                                *source,
+                                source.clone(),
                                 &namespace.value,
                                 node.version,
                                 source_bound,

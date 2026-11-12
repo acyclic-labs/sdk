@@ -205,6 +205,13 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
 impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
     acyclic_stream::ExplicitNativeStreamProvider for Attested<P>
 {
+    fn native_follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        self.inner.native_follow(request, meter)
+    }
     fn native_heads(
         &self,
         request: acyclic_stream::HeadsRequest,

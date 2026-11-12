@@ -92,7 +92,7 @@ impl LocalHarness {
             publisher,
             directory: crate::context::native_discovery::LazyDiscovery {
                 view,
-                cut,
+                cut: cut.clone(),
                 work: &work,
             },
         };
@@ -151,7 +151,7 @@ impl LocalHarness {
         let mut found = Vec::new();
         for (index, path) in paths.iter().enumerate() {
             match view
-                .read_at_snapshot(cut, &format!("/{path}"), None, maximum, &mut accounting)
+                .read_at_snapshot(&cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await
             {
                 Ok((chunk, _)) => found.push((index, chunk.bytes.as_ref().to_vec())),
@@ -216,7 +216,7 @@ impl LocalHarness {
                 continue;
             }
             let (chunk, _allocation) = view
-                .read_at_snapshot(cut, &format!("/{path}"), None, remaining, &mut accounting)
+                .read_at_snapshot(&cut, &format!("/{path}"), None, remaining, &mut accounting)
                 .await?;
             remaining = remaining
                 .checked_sub(chunk.bytes.as_ref().len() as u64)
@@ -264,7 +264,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
         revision: Option<&'a Self::Revision>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
         Box::pin(async move {
-            let cut = revision.copied().unwrap_or(self.directory.cut);
+            let cut = revision.unwrap_or(&self.directory.cut);
             let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                 work: self.directory.work,
                 cancellation: self.directory.work.cancellation(),
@@ -282,7 +282,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                     "instruction entry is not a directory".into(),
                 ));
             }
-            Ok(Some((cut, 0)))
+            Ok(Some((cut.clone(), 0)))
         })
     }
 
@@ -312,7 +312,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
             let (bytes, _allocation) = match self
                 .directory
                 .view
-                .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
+                .read_at_snapshot(cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await
             {
                 Ok(file) => file,

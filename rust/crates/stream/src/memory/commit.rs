@@ -325,6 +325,7 @@ impl MemoryStream {
                     .and_then(|ancestor| destination.ancestor(ancestor))
                     .ok_or(StreamError::InvalidPath)?,
                 PathState {
+                    changed_at: 0,
                     history: None,
                     ranges: HistoryRanges::default(),
                     keys: KeyTree::default(),
@@ -829,9 +830,10 @@ fn stage_namespace(
     envelope: &CommittedEnvelope,
     build: &mut NamespaceBuilder<'_>,
 ) -> Result<Namespace, StreamError> {
+    let changed_at = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
     let mut next = state.paths.clone();
     for (path, data) in paths {
-        next.put_data(&path, data, None, build)?;
+        next.put_data(&path, data, None, changed_at, build)?;
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
         let mut origin = None;
@@ -868,14 +870,14 @@ fn stage_namespace(
                     commit_id: envelope.commit_id,
                     decision: state.decision.checked_add(1).ok_or(StreamError::Capacity)?,
                 });
-                next.put(&fork.destination, subtree, build)?;
+                next.put(&fork.destination, subtree, changed_at, build)?;
                 (&fork.destination, fork.tail)
             }
         };
         // Root prefix and histories are derived from the same old cut even
         // when this envelope also appends to the source.
         let data = fact_data(&state.paths, fact, history, tail)?;
-        next.put_data(path, data, origin, build)?;
+        next.put_data(path, data, origin, changed_at, build)?;
     }
     Ok(next)
 }
@@ -904,9 +906,8 @@ fn install_namespace(
             }
             ancestor = path.parent();
             if let Some(signals) = state.signals.get(&path)? {
-                let tail = state.paths.get(&path).map_or(0, |path| path.tail);
-                signals.changed.send_replace(tail);
-                crate::follow_index::FollowIndex::created(&signals.follows, tail);
+                let _ = signals.changed.notify();
+                crate::follow_index::FollowIndex::created(&signals.follows);
             }
         }
         if matches!(fact, CommittedMutation::Fork(_)) {
@@ -917,13 +918,12 @@ fn install_namespace(
                 std::ops::Bound::Excluded(upper.as_str()),
             ))?;
             for path in created {
-                let Some(stream) = state.paths.get(&path) else {
+                if state.paths.get(&path).is_none() {
                     continue;
-                };
+                }
                 if let Some(signals) = state.signals.get(&path)? {
-                    let tail = stream.tail;
-                    signals.changed.send_replace(tail);
-                    crate::follow_index::FollowIndex::created(&signals.follows, tail);
+                    let _ = signals.changed.notify();
+                    crate::follow_index::FollowIndex::created(&signals.follows);
                 }
             }
         }
@@ -938,7 +938,7 @@ fn install_namespace(
         #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path)? {
-            signals.changed.send_replace(tail);
+            let _ = signals.changed.notify();
             crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
         state.record_count += fact_records(fact).len();
@@ -991,6 +991,7 @@ fn fact_data(
         }
     }
     Ok(PathState {
+        changed_at: 0,
         prefix,
         history: Some(history),
         ranges,

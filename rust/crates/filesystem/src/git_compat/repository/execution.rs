@@ -18,7 +18,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        self.validate_workspace_tree(workspace_tree).await?;
+        self.validate_workspace_tree(&workspace_tree).await?;
         executor
             .validate()
             .await
@@ -197,7 +197,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         command: GitCommand,
         workspace_tree: GitTreeRef,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        self.validate_workspace_tree(workspace_tree).await?;
+        self.validate_workspace_tree(&workspace_tree).await?;
         self.execute_validated(command, workspace_tree).await
     }
 
@@ -281,7 +281,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
 
     async fn validate_workspace_tree(
         &self,
-        workspace_tree: GitTreeRef,
+        workspace_tree: &GitTreeRef,
     ) -> Result<(), GitCompatError<S::Error>> {
         let state = self.load().await?;
         if state

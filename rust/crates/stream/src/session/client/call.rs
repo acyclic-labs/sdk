@@ -142,7 +142,7 @@ impl Client {
             wire::HeadsResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
         )?;
         view.validate_for(&request)?;
-        self.revisions.observe(&view.snapshot);
+        self.revisions.observe(&view.applied);
         Ok(view)
     }
 

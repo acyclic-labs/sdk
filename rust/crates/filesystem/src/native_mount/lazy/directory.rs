@@ -224,7 +224,6 @@ where
                     .inspect_unauthored(
                         checkout,
                         &child_text,
-                        None,
                         crate::lazy_workspace::InspectBasis {
                             state: Some(state),
                             listed: Some(node),

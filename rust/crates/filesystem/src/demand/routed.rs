@@ -22,47 +22,45 @@ macro_rules! delegate {
 
 /// A source mounted at one root component, with all other paths supplied by
 /// the base. Nest this combinator for siblings or for deeper prefixes.
-/// A change to either child's epoch invalidates prior routed references and
-/// cursors, exactly as an invalidated native source reference does.
+/// References retain both child cuts. Providers either serve the requested
+/// historical cut or refuse it; routing never substitutes a current head.
 pub struct Routed<B, V> {
     base: B,
     view: V,
     prefix: LogicalName,
     limits: crate::VolumeLimits,
+    identity: [u8; 16],
 }
 
 impl<B: DemandSource, V: DemandSource> Routed<B, V> {
     /// Takes ownership of a static route. No child is queried at construction.
     pub fn new(base: B, prefix: LogicalName, view: V, limits: crate::VolumeLimits) -> Self {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic:routed:v2");
+        hash.update(&base.identity());
+        hash.update(&view.identity());
+        hash.update(&[prefix.encoding().tag()]);
+        hash.update(prefix.as_bytes());
+        let mut identity = [0; 16];
+        identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
         Self {
             base,
             prefix,
             view,
             limits,
+            identity,
         }
-    }
-
-    fn combined(&self, base: SourceReference, view: SourceReference) -> SourceReference {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic:routed:v1");
-        hash.update(&base.identity);
-        hash.update(&view.identity);
-        hash.update(&[self.prefix.encoding().tag()]);
-        hash.update(self.prefix.as_bytes());
-        let (epoch, carry) = base.epoch.overflowing_add(view.epoch);
-        hash.update(&[u8::from(carry)]);
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        SourceReference { identity, epoch }
     }
 
     fn sources(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
     ) -> Result<(SourceReference, SourceReference), DemandError> {
-        let base = self.base.reference();
-        let view = self.view.reference();
-        if source != self.combined(base, view) {
+        if source.identity != self.identity {
+            return Err(DemandError::StaleSource);
+        }
+        let (base, view) = source.paired()?;
+        if base.identity != self.base.identity() || view.identity != self.view.identity() {
             return Err(DemandError::StaleSource);
         }
         Ok((base, view))
@@ -74,6 +72,7 @@ impl<B: DemandSource, V: DemandSource> Routed<B, V> {
 
     fn root_version(
         &self,
+        source: &SourceReference,
         base: SourceVersion,
         view: SourceVersion,
         ctx: &mut KernelAccounting<'_>,
@@ -82,11 +81,15 @@ impl<B: DemandSource, V: DemandSource> Routed<B, V> {
             bytes_hashed: (b"acyclic:routed:directory:v1".len()
                 + base.0.len()
                 + view.0.len()
-                + self.prefix.as_bytes().len()) as u64,
+                + self.prefix.as_bytes().len()
+                + source.encoded_len()) as u64,
             ..WorkCounters::UNCHARGED
         })?;
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic:routed:directory:v1");
+        source.encode(|part| {
+            hash.update(part);
+        });
         hash.update(&base.0);
         hash.update(&view.0);
         hash.update(self.prefix.as_bytes());
@@ -114,8 +117,16 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         let result = self.start_watch(sink, &mut ctx, cancel);
         work.finish(result, &ctx)
     }
-    fn reference(&self) -> SourceReference {
-        self.combined(self.base.reference(), self.view.reference())
+    fn identity(&self) -> [u8; 16] {
+        self.identity
+    }
+    async fn reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, DemandError> {
+        let base = self.base.reference(ctx).await?;
+        let view = self.view.reference(ctx).await?;
+        SourceReference::pair(self.identity, &base, &view, ctx)
     }
 
     async fn lookup<W: FsWork + Send>(
@@ -128,12 +139,15 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         let mut ctx = work.accounting(cancel);
         let result = async {
             ctx.check()?;
-            let (base, view) = self.sources(source)?;
+            let (base, view) = self.sources(&source)?;
             if self.routed(path) {
                 let (relative, allocation) = path.strip_first_with_accounting(&mut ctx, cancel)?;
-                let result = delegate!(&mut ctx, cancel, |work| self
-                    .view
-                    .lookup(view, &relative, work, cancel));
+                let result = delegate!(&mut ctx, cancel, |work| self.view.lookup(
+                    view.clone(),
+                    &relative,
+                    work,
+                    cancel
+                ));
                 let bytes = relative.logical_owned_bytes();
                 drop(relative);
                 crate::kernel::retire_allocation(allocation, bytes, &mut ctx)?;
@@ -141,9 +155,12 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     .map(|node| scoped_node(view.identity, node, &mut ctx))
                     .transpose();
             }
-            let mut node = delegate!(&mut ctx, cancel, |work| self
-                .base
-                .lookup(base, path, work, cancel))?
+            let mut node = delegate!(&mut ctx, cancel, |work| self.base.lookup(
+                base.clone(),
+                path,
+                work,
+                cancel
+            ))?
             .map(|node| scoped_node(base.identity, node, &mut ctx))
             .transpose()?;
             if path.is_root() {
@@ -157,7 +174,8 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 {
                     return Err(DemandError::NotDirectory);
                 }
-                root.version = self.root_version(root.version, view_node.version, &mut ctx)?;
+                root.version =
+                    self.root_version(&source, root.version, view_node.version, &mut ctx)?;
             }
             Ok(node)
         }
@@ -180,12 +198,22 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
             if maximum_entries == 0 {
                 return Err(DemandError::InvalidRequest);
             }
-            let (base, view) = self.sources(source)?;
+            let (base, view) = self.sources(&source)?;
+            let first = cursor.is_none();
+            let cursor = match cursor {
+                Some(cursor)
+                    if directory.is_root() && cursor.source == source && cursor.token == 0 =>
+                {
+                    None
+                }
+                Some(cursor) => Some(cursor.unroute(&source)?),
+                None => None,
+            };
             if self.routed(directory) {
                 let (relative, allocation) =
                     directory.strip_first_with_accounting(&mut ctx, cancel)?;
                 let result = delegate!(&mut ctx, cancel, |work| self.view.list_page(
-                    view,
+                    view.clone(),
                     &relative,
                     cursor,
                     maximum_entries,
@@ -195,12 +223,12 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 let bytes = relative.logical_owned_bytes();
                 drop(relative);
                 crate::kernel::retire_allocation(allocation, bytes, &mut ctx)?;
-                return scope_page(result?, view.identity, &mut ctx);
+                return scope_page(result?, view.identity, &mut ctx)?.routed(&source, &mut ctx);
             }
             if !directory.is_root() {
                 return scope_page(
                     delegate!(&mut ctx, cancel, |work| self.base.list_page(
-                        base,
+                        base.clone(),
                         directory,
                         cursor,
                         maximum_entries,
@@ -209,16 +237,15 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                     ))?,
                     base.identity,
                     &mut ctx,
-                );
+                )?
+                .routed(&source, &mut ctx);
             }
-            let first = cursor.is_none();
-            let cursor = match cursor {
-                Some(cursor) if cursor.source == source && cursor.token == 0 => None,
-                other => other,
-            };
-            let prefix_node = delegate!(&mut ctx, cancel, |work| self
-                .view
-                .lookup(view, directory, work, cancel))?
+            let prefix_node = delegate!(&mut ctx, cancel, |work| self.view.lookup(
+                view.clone(),
+                directory,
+                work,
+                cancel
+            ))?
             .ok_or(DemandError::SourceUnavailable)?;
             if prefix_node.kind != SourceNodeKind::Directory {
                 return Err(DemandError::NotDirectory);
@@ -234,13 +261,13 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                         &self.prefix,
                         scoped_node(view.identity, prefix_node, &mut ctx)?,
                     )),
-                    Some(SourceCursor::detached(source, 0)),
-                    self.root_version(base_node.version, prefix_node.version, &mut ctx)?,
+                    Some(SourceCursor::detached(source.clone(), 0)),
+                    self.root_version(&source, base_node.version, prefix_node.version, &mut ctx)?,
                     &mut ctx,
                 );
             }
             let mut page = delegate!(&mut ctx, cancel, |work| self.base.list_page(
-                base,
+                base.clone(),
                 directory,
                 cursor,
                 maximum_entries - u32::from(first),
@@ -253,7 +280,8 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 .filter(|entry| entry.name != self.prefix)
                 .map(|entry| (&entry.name, entry.node));
             let prefix = first.then_some((&self.prefix, prefix_node));
-            let version = self.root_version(page.version, prefix_node.version, &mut ctx)?;
+            let version =
+                self.root_version(&source, page.version, prefix_node.version, &mut ctx)?;
             let mut output = SourceDirectoryPage::copied_with(
                 prefix.into_iter().chain(entries),
                 page.next.take(),
@@ -272,7 +300,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
                 },
             )?;
             output.publication = page.publication.take();
-            Ok(output)
+            output.routed(&source, &mut ctx)
         }
         .await;
         work.finish(result, &ctx)
@@ -291,7 +319,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         let mut ctx = work.accounting(cancel);
         let result = async {
             ctx.check()?;
-            let (base, view) = self.sources(source)?;
+            let (base, view) = self.sources(&source)?;
             if !self.routed(path) {
                 return delegate!(&mut ctx, cancel, |work| self
                     .base
@@ -321,7 +349,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         let mut ctx = work.accounting(cancel);
         let result = async {
             ctx.check()?;
-            let (base, view) = self.sources(source)?;
+            let (base, view) = self.sources(&source)?;
             if !self.routed(path) {
                 return delegate!(&mut ctx, cancel, |work| self
                     .base
@@ -352,7 +380,7 @@ impl<B: DemandSource, V: DemandSource> DemandSource for Routed<B, V> {
         let mut ctx = work.accounting(cancel);
         let result = async {
             ctx.check()?;
-            let (base, view) = self.sources(source)?;
+            let (base, view) = self.sources(&source)?;
             if !self.routed(path) {
                 return delegate!(&mut ctx, cancel, |work| self.base.read_link(
                     base,

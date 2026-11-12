@@ -1,9 +1,9 @@
 use super::*;
 
-pub(crate) const LAZY_STATE_SCHEMA: u32 = 10;
+pub(crate) const LAZY_STATE_SCHEMA: u32 = 12;
 
 /// Hash domain for an immutable lazy cut.
-pub const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
+pub const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v3\0";
 
 /// Stable logical identity of one constant-size lazy tree snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -18,13 +18,13 @@ impl LazySnapshotId {
     }
 }
 
-/// Constant-size reference to an authored generation plus unresolved source state.
+/// Complete reference to an authored generation plus unresolved source state.
 ///
 /// This is a logical identity, not a retention lease or read capability. Its
 /// digest does not prove that the source epoch, indexed objects or authored
 /// generation remain available. Historical publication must retain the complete
 /// dependency closure and original proof through the owning commit.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LazySnapshotRef {
     /// Stable logical identity over every represented component.
     pub id: LazySnapshotId,
@@ -41,8 +41,11 @@ pub struct LazySnapshotRef {
 }
 
 impl LazySnapshotRef {
-    pub(crate) fn hash_bytes(generation: crate::GenerationId) -> u64 {
-        (LAZY_SNAPSHOT_DOMAIN.len() + 104 + generation.object_id().encoded_len()) as u64
+    pub(crate) fn hash_bytes(generation: crate::GenerationId, source: &SourceReference) -> u64 {
+        (LAZY_SNAPSHOT_DOMAIN.len()
+            + 80
+            + source.encoded_len()
+            + generation.object_id().encoded_len()) as u64
     }
 
     /// Constructs the logical identity of the represented lazy cut.
@@ -59,8 +62,9 @@ impl LazySnapshotRef {
         hasher.update(LAZY_SNAPSHOT_DOMAIN);
         hasher.update(&workspace_id.into_bytes());
         hasher.update(&authored_generation.to_bytes());
-        hasher.update(&source.identity);
-        hasher.update(&source.epoch.to_le_bytes());
+        source.encode(|bytes| {
+            hasher.update(bytes);
+        });
         hasher.update(&overlay.into_bytes());
         hasher.update(&shadows.into_bytes());
         Self {
@@ -241,7 +245,7 @@ pub enum LazyForkPhase {
 }
 
 /// Immutable source cut and original SDK creation identity.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LazyForkOrigin {
     /// Original creation operation.
@@ -286,8 +290,7 @@ impl LazyWorkspaceState {
             || self.workspace_id != id
             || self.parent_workspace_id.is_some()
             || self.fork_origin.is_some()
-            || self.source.identity != source.identity
-            || self.source.epoch < source.epoch
+            || !self.source.follows(&source)
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -297,6 +300,7 @@ impl LazyWorkspaceState {
     pub(super) fn require_ready_fork(&self) -> Result<(), LazyWorkspaceError> {
         if self
             .fork_origin
+            .as_ref()
             .is_some_and(|o| o.phase == LazyForkPhase::Prepared)
         {
             return Err(LazyWorkspaceError::Concurrent);

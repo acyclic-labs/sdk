@@ -60,7 +60,9 @@ pub trait NativeStreamProvider: StreamProvider {
     /// Coherent named heads and absence on the original ledger.
     ///
     /// Memory and Local support named `Tail` and `History` without durability
-    /// confirmation, retained-record or child selections. History shares original
+    /// confirmation or retained-record selections. Direct-child pages, including
+    /// indexed offsets and projected last records, share the same snapshot and
+    /// original allocation owner. History shares original
     /// record owners and funds reconstructed provenance on this same ledger.
     /// Its durable offset is zero, making no persistence claim. Other selections refuse with
     /// `Unsupported`; a native consumer must never fall back to ordinary work.
@@ -86,6 +88,24 @@ pub trait NativeStreamProvider: StreamProvider {
         let _ = request;
         NativeProviderFuture::ready_observed(
             crate::native::span!("acyclic.stream.read"),
+            Ok(Err(StreamError::Unsupported)),
+            StreamError::code,
+        )
+    }
+    /// Live record delivery on the original native ledger. Memory and Local
+    /// support unfiltered, unanchored record follows, including initially absent
+    /// paths. Other selections refuse before registration. The cursor directly
+    /// owns pending acquisitions: destroying it retires that read frame rather
+    /// than detaching a replacement snapshot worker. Shared registration
+    /// bookkeeping remains in the provider's observation service.
+    fn native_follow(
+        &self,
+        request: FollowRequest,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, NativeRecordStream> {
+        let _ = request;
+        NativeProviderFuture::ready_observed(
+            crate::native::span!("acyclic.stream.follow"),
             Ok(Err(StreamError::Unsupported)),
             StreamError::code,
         )

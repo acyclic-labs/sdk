@@ -991,7 +991,7 @@ async fn merge_reachable_branch(advance_head: bool) -> (GitCommit, GitCommit) {
             GitCommand::Merge {
                 branch: "agents/kid".to_owned(),
             },
-            head.tree,
+            head.tree.clone(),
             &TestExecutor::returning(GitFilesystemResult::Applied {
                 tree: Some(tree(3)),
                 tracked_paths: Some(tracked.clone()),
@@ -1188,7 +1188,7 @@ async fn discard_keeps_every_record_a_discarded_branch_produced() {
                 GitCommand::Discard {
                     branch: "agents/kid".to_owned(),
                 },
-                main_tree,
+                main_tree.clone(),
                 &TestExecutor::failing(),
             )
             .await
@@ -1267,7 +1267,7 @@ async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
         panic!("expected commit");
     };
     let file = GitCommandOutput::Action(GitFilesystemAction::ShowFile {
-        tree: commit.tree,
+        tree: commit.tree.clone(),
         path: "tracked.txt".to_owned(),
     });
     // The committed tree, not the live one, answers REV:PATH.

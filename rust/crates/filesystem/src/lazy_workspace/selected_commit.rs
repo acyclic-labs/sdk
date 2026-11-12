@@ -81,19 +81,19 @@ impl<
             };
             if cut.workspace_id != self.workspace.id()
                 || cut.config != self.workspace.volume.config
-                || cut.source.identity != self.source.reference().identity
+                || cut.source.identity != self.source.identity()
             {
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
             ctx.charge(WorkCounters {
-                bytes_hashed: LazySnapshotRef::hash_bytes(generation),
+                bytes_hashed: LazySnapshotRef::hash_bytes(generation, &cut.source),
                 ..WorkCounters::UNCHARGED
             })?;
             Ok((
                 LazySnapshotRef::new(
                     cut.workspace_id,
                     generation,
-                    cut.source,
+                    cut.source.clone(),
                     cut.overlay,
                     cut.shadows,
                 ),
@@ -144,7 +144,7 @@ impl<
             revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
             pending_remove: None,
             selected_import_roots: Some([
-                (snapshot, self.workspace.volume.config),
+                (snapshot.clone(), self.workspace.volume.config),
                 (destination, self.workspace.volume.config),
                 (source, config),
             ]),

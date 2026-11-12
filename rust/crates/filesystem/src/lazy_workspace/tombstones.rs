@@ -79,7 +79,7 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
         let source = self.state(ctx).await?.source;
-        match self.source_lookup(source, path, ctx).await {
+        match self.source_lookup(&source, path, ctx).await {
             Ok(node) => Ok(node.map(|n| n.version)),
             Err(LazyWorkspaceError::Demand(DemandError::Absent | DemandError::NotDirectory)) => {
                 Ok(None)
@@ -96,7 +96,7 @@ impl<
         match self.overlay_fact(state.overlay, path, ctx).await? {
             Some(LazyOverlayChange::Observe { node, .. }) => Ok(Some(node.version)),
             Some(LazyOverlayChange::Tombstone { removed }) => Ok(removed),
-            None => match self.source_lookup(state.source, path, ctx).await {
+            None => match self.source_lookup(&state.source, path, ctx).await {
                 Ok(node) => Ok(node.map(|n| n.version)),
                 Err(LazyWorkspaceError::Demand(
                     DemandError::Absent | DemandError::NotDirectory,

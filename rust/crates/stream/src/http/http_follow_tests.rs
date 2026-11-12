@@ -177,6 +177,7 @@ async fn json_heads_refuses_incoherent_cuts_without_another_provider_request()
         })
         .await?;
     let request = HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: Default::default(),

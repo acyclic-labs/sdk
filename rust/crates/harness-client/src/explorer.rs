@@ -470,6 +470,7 @@ mod tests {
             {
                 let page = provider
                     .children_page(ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(parent.clone()),
                         after: None,
                         hierarchy_version: None,
@@ -602,6 +603,7 @@ mod tests {
             for index in 0..=128 {
                 let page = provider
                     .children_page(ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(parent.clone()),
                         after: after.clone(),
                         hierarchy_version: version,
@@ -680,18 +682,8 @@ mod tests {
             explorer.expand(&target);
             assert_eq!(explorer.expanded.get(&target), Some(&128));
             // Both residency maps contain actual pages from this same cut.
-            // A bounded predecessor query cannot borrow a later page's cursor
-            // or fall below its retained anchor, even on pass-through pages.
             assert!(!indexed.is_empty());
             assert!(indexed.passed_bytes() > 0);
-            assert_eq!(indexed.listing_before(&parent, 64, 128).unwrap().0, 127);
-            assert!(
-                indexed.take_listing_visits() <= 2,
-                "page predecessor visited unrelated retained pages"
-            );
-            assert!(indexed.listing_before(&parent, 129, u32::MAX).is_none());
-            assert_eq!(indexed.take_listing_visits(), 0);
-            assert!(indexed.listing_before(&parent, 128, 128).is_none());
             assert_eq!(indexed.indexed_children(), 129);
             let sparse = std::mem::replace(explorer.reader.cache_mut(), indexed);
             let hint = explorer.expanded.remove(&target);
@@ -716,14 +708,20 @@ mod tests {
             let requests = explorer.reader.poll(1);
             assert_eq!(requests.len(), explorer.reader.policy().requests);
             let resume = &requests[0];
-            assert!(matches!(resume, Op::Children { index: 129, .. }));
+            assert!(matches!(
+                resume,
+                Op::Children {
+                    index: 1_000_000,
+                    ..
+                }
+            ));
             // Raw cached pages lack this projection's original admission, so
             // their own refreshes also use the ordinary request credit.
             assert!(requests[1..].iter().all(|op| matches!(op,
                 Op::Children { index, .. } if *index < 129)));
             assert!(
                 explorer.reader.cache().take_listing_visits() <= 2,
-                "page predecessor visited unrelated retained pages"
+                "direct page selection visited unrelated retained pages"
             );
             let target_path = StreamPath::new(target.as_str()).unwrap();
             let record = provider
@@ -815,6 +813,7 @@ mod tests {
             let children = target.children().unwrap();
             let page = provider
                 .children_page(ChildrenPageRequest {
+                    offset: 0,
                     parent: Some(children.clone()),
                     after: None,
                     hierarchy_version: None,

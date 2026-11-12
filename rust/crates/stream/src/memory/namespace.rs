@@ -92,6 +92,7 @@ impl MemoryStream {
         let claim = |bytes| self.allocate(bytes);
         let mut builder = NamespaceBuilder::new(&claim);
         let blank = || PathState {
+            changed_at: 0,
             history: None,
             ranges: HistoryRanges::default(),
             keys: KeyTree::default(),
@@ -251,6 +252,8 @@ struct Branch {
     left: Index,
     right: Index,
     height: u8,
+    // Direct siblings only. `count` below also includes their descendants.
+    width: usize,
     count: usize,
     bytes: usize,
     max_suffix: usize,
@@ -294,6 +297,18 @@ struct NamespaceFrame {
 struct Namespace {
     roots: Index,
 }
+struct NamespaceCut {
+    paths: Namespace,
+    hierarchy_version: CommitId,
+}
+impl NamespaceCut {
+    fn capture(state: &State) -> Self {
+        Self {
+            paths: state.paths.clone(),
+            hierarchy_version: state.hierarchy_version,
+        }
+    }
+}
 impl NamespaceNode {
     fn count(&self) -> usize {
         1 + self.children.as_ref().map_or(0, |n| n.count)
@@ -307,6 +322,9 @@ impl NamespaceNode {
 }
 fn height(index: &Index) -> u8 {
     index.as_ref().map_or(0, |n| n.height)
+}
+fn width(index: &Index) -> usize {
+    index.as_ref().map_or(0, |edge| edge.width)
 }
 fn branch(
     name: Segment,
@@ -341,6 +359,7 @@ fn branch(
         name,
         node: Some(node),
         height: 1 + height(&left).max(height(&right)),
+        width: 1 + width(&left) + width(&right),
         left,
         right,
         count,
@@ -508,6 +527,7 @@ impl Namespace {
         &mut self,
         path: &StreamPath,
         node: Arc<NamespaceNode>,
+        changed_at: u64,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
         build.with_frames(path.as_str().split('/').count(), |build, frames| {
@@ -537,7 +557,12 @@ impl Namespace {
                 root = index_put(&frame.index, frame.name, Some(next), build)?;
                 if let Some(frame) = frames.last() {
                     let parent = frame.parent.as_ref().ok_or(StreamError::Unavailable)?;
-                    next = build.node(parent.data.clone(), root.take(), parent.origin.clone())?;
+                    let children = root.take();
+                    let mut data = parent.data.clone();
+                    if width(&children) != width(&parent.children) {
+                        data.changed_at = changed_at;
+                    }
+                    next = build.node(data, children, parent.origin.clone())?;
                 } else {
                     break;
                 }
@@ -548,21 +573,30 @@ impl Namespace {
     }
     #[cfg(test)]
     fn insert(&mut self, path: &StreamPath, data: PathState) {
-        self.put_data(path, data, None, &mut NamespaceBuilder::new(&|_| Ok(None)))
-            .expect("validated snapshot namespace");
+        let changed_at = data.changed_at;
+        self.put_data(
+            path,
+            data,
+            None,
+            changed_at,
+            &mut NamespaceBuilder::new(&|_| Ok(None)),
+        )
+        .expect("validated snapshot namespace");
     }
     fn put_data(
         &mut self,
         path: &StreamPath,
-        data: PathState,
+        mut data: PathState,
         origin: Option<ForkMarker>,
+        changed_at: u64,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
         let existing = self.node(path);
         let children = existing.and_then(|n| n.children.clone());
         let origin = origin.or_else(|| existing.and_then(|n| n.origin.clone()));
+        data.changed_at = changed_at;
         let node = build.node(data, children, origin)?;
-        self.put(path, node, build)
+        self.put(path, node, changed_at, build)
     }
     fn excluded(
         node: &Arc<NamespaceNode>,
@@ -629,13 +663,13 @@ impl<'a> IntoIterator for &'a Namespace {
 // Exact absolute-path subscriptions are never shared with a forked node.
 #[derive(Clone)]
 struct Signals {
-    changed: watch::Sender<u64>,
+    changed: crate::change::Change,
     follows: Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
 }
 impl Signals {
-    fn new(tail: u64) -> Self {
+    fn new() -> Self {
         Self {
-            changed: watch::channel(tail).0,
+            changed: crate::change::Change::new(),
             follows: Arc::new(crate::query_sync::SyncMutex::new(
                 crate::follow_index::FollowIndex::default(),
             )),

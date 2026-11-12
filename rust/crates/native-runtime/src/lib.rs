@@ -173,9 +173,9 @@ pub(crate) use blocking::{
     wait_measured_completion,
 };
 pub use task::{
-    AbortHandle, OwnedTask, PersistenceKey, TaskCompletion, TaskHandle, TaskSpawner,
-    persistence_syscall, spawn, spawn_blocking, spawn_eager, spawn_owned, spawn_persistence,
-    try_spawn,
+    AbortHandle, OwnedFuture, OwnedTask, PersistenceKey, TaskCompletion, TaskHandle, TaskSpawner,
+    persistence_syscall, retain_future, spawn, spawn_blocking, spawn_eager, spawn_owned,
+    spawn_persistence, try_spawn,
 };
 
 /// Creates the coordination executor after admitting the process's descriptor allowance.

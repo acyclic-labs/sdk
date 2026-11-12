@@ -165,6 +165,9 @@ impl CoreLog {
             let mut frame_allocation =
                 allocation.ok_or(crate::NativeTreeMaterializationError::MissingCustody)?;
             for mut record in change.0 {
+                if let Some(RecordValue::LazyWorkspace(state)) = &mut record.value {
+                    state.retain_decoded(&mut frame_allocation)?;
+                }
                 let owned_bytes = record
                     .value
                     .as_ref()

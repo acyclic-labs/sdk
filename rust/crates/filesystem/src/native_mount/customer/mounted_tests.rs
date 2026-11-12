@@ -313,7 +313,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let prepare = || async {
         let (plan, allocation) = child
             .prepare_selected_import(
-                child_snapshot,
+                child_snapshot.clone(),
                 std::slice::from_ref(&imported_path),
                 &mut KernelAccounting::native(&selected_work, &cancellation),
             )
@@ -332,7 +332,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     ) -> Ready<Result<(), MountLifecycleError>>| {
         mount
             .import_selected(
-                actual,
+                actual.clone(),
                 (plan, custody),
                 operation,
                 PublicationPermit::Unrestricted,

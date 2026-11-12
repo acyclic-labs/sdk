@@ -5,7 +5,7 @@ use std::sync::Arc;
 mod native;
 mod shared;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native::NativeAccounting;
+pub use native::NativeAccounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use shared::{ErasedRetainedArc, ErasedRetainedWeak};
 pub use shared::{RetainedArc, RetainedWeak};
@@ -541,12 +541,25 @@ impl<B: AsRef<[u8]> + Send + 'static> Retained<B> {
 }
 
 impl<T> Retained<Vec<T>> {
-    pub(crate) fn allocate(
+    /// Admits and allocates a vector on the original ledger.
+    pub fn allocate(
         capacity: usize,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
         let owned = crate::kernel::Owned::<Vec<T>>::allocate(capacity, accounting)?;
         Self::from_owned(owned, accounting)
+    }
+
+    /// Grows on the original ledger before inserting an independently owned
+    /// value. Memory credit is the only bound on the vector's length.
+    pub fn push(
+        &mut self,
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        self.ensure_for_push(usize::MAX, accounting)?;
+        self.value.push(value);
+        Ok(())
     }
 
     pub(crate) fn ensure_for_push(

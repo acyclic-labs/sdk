@@ -21,12 +21,12 @@ where
     ) -> Result<GitFilesystemResult, Error> {
         if matches!(workspace_tree, GitTreeRef::Lazy(_)) {
             return Ok(GitFilesystemResult::Captured {
-                tree: *workspace_tree,
+                tree: workspace_tree.clone(),
                 tracked_paths: tracked_paths.clone(),
                 proof: None,
             });
         }
-        let workspace_generation = self.generation(*workspace_tree).await?;
+        let workspace_generation = self.generation(workspace_tree).await?;
         if self.current.id() != workspace_generation.workspace_id()
             || self
                 .current
@@ -45,8 +45,8 @@ where
         }
         let captured = match (head_workspace_tree, head_tree) {
             (Some(previous_live), Some(previous_capture)) => {
-                let previous_live = self.generation(*previous_live).await?;
-                let previous_capture = self.generation(*previous_capture).await?;
+                let previous_live = self.generation(previous_live).await?;
+                let previous_capture = self.generation(previous_capture).await?;
                 capture_git_compatible_generation_incremental(
                     &self.current,
                     &previous_live,
@@ -111,7 +111,8 @@ where
                         == source.generation
             }
             GitTreeRef::Lazy(source) => {
-                self.lazy_current.tree(false, self.permit).await? == GitTreeRef::Lazy(*source)
+                self.lazy_current.tree(false, self.permit).await?
+                    == GitTreeRef::Lazy(source.clone())
             }
         };
         if !source_matches {
@@ -188,9 +189,9 @@ where
         to: &GitTreeRef,
         tracked_paths: &BTreeSet<String>,
     ) -> Result<GitFilesystemResult, Error> {
-        let to = self.generation(*to).await?;
+        let to = self.generation(to).await?;
         let value = if let Some(from) = from {
-            let from = self.generation(*from).await?;
+            let from = self.generation(from).await?;
             let diff = git_compatible_diff_counts(
                 &from,
                 &to,
@@ -231,12 +232,12 @@ where
             return self
                 .restore_paths(
                     operation_id,
-                    *tree,
+                    tree,
                     &paths.iter().cloned().collect::<Vec<_>>(),
                 )
                 .await;
         }
-        let source = self.generation(*tree).await?;
+        let source = self.generation(tree).await?;
         if source.workspace_id() != self.current.id() {
             return Err(Self::error(
                 "an exact workspace restore cannot use a foreign generation",
@@ -266,7 +267,7 @@ where
                 tracked_paths: None,
             });
         }
-        self.restore_paths(operation_id, *tree, &paths).await
+        self.restore_paths(operation_id, tree, &paths).await
     }
 
     /// Applies a commit's paths to the live workspace.
@@ -279,11 +280,11 @@ where
         tracked_paths: &BTreeSet<String>,
     ) -> Result<GitFilesystemResult, Error> {
         let base = match base {
-            Some(base) => Some(self.generation(*base).await?),
+            Some(base) => Some(self.generation(base).await?),
             None => None,
         };
         let source = match source {
-            Some(source) => Some(self.generation(*source).await?),
+            Some(source) => Some(self.generation(source).await?),
             None => None,
         };
         let current = self
@@ -351,7 +352,7 @@ where
 
     /// Lists a tree's Git-visible entries.
     pub(super) async fn archive(&self, tree: &GitTreeRef) -> Result<GitFilesystemResult, Error> {
-        let generation = self.generation(*tree).await?;
+        let generation = self.generation(tree).await?;
         let entries = walk_git_tree(&generation, None, 100_000)
             .await
             .map_err(Error::from)?;
@@ -372,7 +373,7 @@ where
         path: Option<&str>,
         tree: &GitTreeRef,
     ) -> Result<GitFilesystemResult, Error> {
-        let generation = self.generation(*tree).await?;
+        let generation = self.generation(tree).await?;
         let result = grep_git_generation(
             &generation,
             pattern,
@@ -397,7 +398,7 @@ where
     ) -> Result<GitFilesystemResult, Error> {
         let mut history = Vec::with_capacity(commits.len());
         for commit in commits {
-            let generation = self.generation(commit.tree).await?;
+            let generation = self.generation(&commit.tree).await?;
             history.push((commit.clone(), generation));
         }
         let lines = blame_git_generations(&history, path, 16 * 1024 * 1024)
@@ -417,7 +418,7 @@ where
         tree: &GitTreeRef,
         tracked_paths: &BTreeSet<String>,
     ) -> Result<GitFilesystemResult, Error> {
-        let generation = self.generation(*tree).await?;
+        let generation = self.generation(tree).await?;
         if generation.workspace_id() != self.current.id() {
             return Err(Self::error(
                 "Git clean generation is not the live workspace",
@@ -493,7 +494,7 @@ where
         paths: &[String],
         tree: &GitTreeRef,
     ) -> Result<GitFilesystemResult, Error> {
-        let generation = self.generation(*tree).await?;
+        let generation = self.generation(tree).await?;
         if generation.workspace_id() != self.current.id()
             || self
                 .current
@@ -529,7 +530,12 @@ where
         tree: &GitTreeRef,
         path: &str,
     ) -> Result<GitFilesystemResult, Error> {
-        let generation = self.generation(*tree).await?;
+        // Host namespaces are never part of a commit, even one captured
+        // before they were kept out of the repository view.
+        if self.ignore.reserves(path) {
+            return Err(Error::NotFound(path.to_owned()));
+        }
+        let generation = self.generation(tree).await?;
         let shown = format!("/{path}");
         let cancellation = acyclic_fs::CancellationToken::new();
         let kind = generation

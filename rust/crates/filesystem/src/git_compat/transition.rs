@@ -59,13 +59,13 @@ pub(super) fn record_captured_commit_state<E: std::error::Error + 'static>(
         return Err(GitCompatError::InvalidState);
     }
     let previous = current.head;
-    let head_tree = previous.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
-    if head_tree == Some(commit.tree) {
+    let head_tree = previous.and_then(|id| state.commits.get(&id).map(|commit| &commit.tree));
+    if head_tree == Some(&commit.tree) {
         return Err(GitCompatError::NothingToCommit);
     }
     if !capture_proof_valid(
-        commit.tree,
-        commit.workspace_tree,
+        &commit.tree,
+        &commit.workspace_tree,
         commit.capture_proof.as_ref(),
         head_tree,
     ) {
@@ -104,7 +104,7 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
             record_captured_commit_state(
                 state,
                 GitCommit::new(
-                    *tree,
+                    tree.clone(),
                     workspace_tree,
                     proof.clone(),
                     tracked_paths.clone(),
@@ -169,7 +169,9 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
             rebase,
             ..
         } => {
-            let tree = resulting_tree.ok_or(GitCompatError::MissingResultGeneration)?;
+            let tree = resulting_tree
+                .cloned()
+                .ok_or(GitCompatError::MissingResultGeneration)?;
             let tracked_paths = match result {
                 GitFilesystemResult::Applied {
                     tracked_paths: Some(paths),
@@ -202,7 +204,9 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
             )
         }
         GitPendingMutation::ApplyCommit { commit, reverse } => {
-            let tree = resulting_tree.ok_or(GitCompatError::MissingResultGeneration)?;
+            let tree = resulting_tree
+                .cloned()
+                .ok_or(GitCompatError::MissingResultGeneration)?;
             let tracked_paths = match result {
                 GitFilesystemResult::Applied {
                     tracked_paths: Some(paths),
@@ -243,7 +247,7 @@ pub(super) fn record_generated_commit<E: std::error::Error + 'static>(
     previous: Option<GitCommitId>,
 ) -> Result<GitCommandOutput, GitCompatError<E>> {
     let commit = GitCommit::new(
-        tree,
+        tree.clone(),
         tree,
         None,
         tracked_paths,
