@@ -364,7 +364,7 @@ where
                         ));
                     }
                 }
-                entries.push(observations::Observation {
+                entries.push(observations::ObservationEntry {
                     key: &observation.key,
                     event: &observation.event,
                     model: Some(observation.model),

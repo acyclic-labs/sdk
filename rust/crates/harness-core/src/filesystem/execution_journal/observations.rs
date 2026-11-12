@@ -387,7 +387,7 @@ where
         self.append_observation_group(
             operation_id,
             expected_tail,
-            &[Observation {
+            &[ObservationEntry {
                 key: claim_id,
                 event,
                 model: None,
@@ -403,7 +403,7 @@ where
         &self,
         operation_id: OperationId,
         expected_tail: Option<u64>,
-        entries: &[Observation<'_>],
+        entries: &[ObservationEntry<'_>],
         contributions: &[indexed_publication::Contribution<'_>],
         mut confirmation: Option<&mut Option<acyclic_stream::CommitId>>,
         io: Option<&PreparationIo>,
@@ -669,7 +669,7 @@ where
     }
 }
 
-pub(super) struct Observation<'a> {
+pub(super) struct ObservationEntry<'a> {
     pub(super) key: &'a str,
     pub(super) event: &'a ExecutionEvent,
     pub(super) model: Option<&'a crate::model::ModelEvent>,
