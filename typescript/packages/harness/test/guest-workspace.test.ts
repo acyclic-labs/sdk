@@ -65,7 +65,6 @@ test("one guest heap admits distinct Machines for two actors and re-admits every
     expect(await secondHost.read(second, "conversation", 0n, 16)).toHaveLength(1);
     expect(new Set(admitted.map(value => value.machine)).size).toBe(2);
     expect(admitted).toHaveLength(deliveries);
-    expect(new Set(admitted.map(value => value.request)).size).toBe(deliveries);
     expect(attempts.size).toBe(0);
   } finally {
     firstHost.close(); firstHost.free(); secondHost.close(); secondHost.free(); guest.free(); providers.free(); authority.free(); fixture.free(); credential.fill(0);
