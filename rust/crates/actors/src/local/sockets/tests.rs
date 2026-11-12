@@ -1035,7 +1035,7 @@ async fn close_fixture<P: StreamProvider + ?Sized + 'static>(
                 escrow: None,
             },
         )?,
-        shared.store.activation(&actor),
+        shared.store.activation(&actor)?,
     ] {
         publication.join(effect)?;
     }

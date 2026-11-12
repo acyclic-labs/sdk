@@ -265,7 +265,7 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
                     escrow: None,
                 },
             )?,
-            store.activation(&actor),
+            store.activation(&actor)?,
         ] {
             prepared.join(effect)?;
         }
@@ -317,7 +317,7 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
         let mark = format!("mark {}", self.marks);
         let store = self.target.store();
         let mut prepared = PreparedPublish::foreign(key(&format!("{}/{mark}", self.inbox))?);
-        prepared.join(store.activation(&self.actor))?;
+        prepared.join(store.activation(&self.actor)?)?;
         prepared.join(acyclic_stream::CommitEffect::hard(
             Vec::new(),
             vec![CommitMutation::Append {

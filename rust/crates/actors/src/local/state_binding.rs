@@ -448,7 +448,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
             // transition. Both changes share one activation entry and commit.
             effects.push(
                 self.store
-                    .activation(&self.store.actor(self.snapshot.path())?),
+                    .activation(&self.store.actor(self.snapshot.path())?)?,
             );
         }
         Ok(effects)

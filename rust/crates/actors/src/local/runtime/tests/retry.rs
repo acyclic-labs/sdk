@@ -279,7 +279,7 @@ async fn guarded_store() -> Result<(Store<MemoryStream>, ActorReference), Box<dy
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         held.join(effect)?;
     }
@@ -411,7 +411,7 @@ async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResu
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         create.join(effect)?;
     }

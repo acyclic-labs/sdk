@@ -401,7 +401,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     escrow: None,
                 },
             )?,
-            target.store().activation(&actor),
+            target.store().activation(&actor)?,
         ];
         Ok(Self {
             target,
@@ -436,7 +436,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     prepared.join(effect)?;
                 }
             }
-            None => prepared.join(store.activation(&self.actor))?,
+            None => prepared.join(store.activation(&self.actor)?)?,
         }
         prepared.join(acyclic_stream::CommitEffect::hard(
             vec![condition],
@@ -681,7 +681,7 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
                     escrow: None,
                 },
             )?,
-            store.activation(target),
+            store.activation(target)?,
         ] {
             publication.join(effect)?;
         }
@@ -699,7 +699,7 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         &forked,
         crate::local::Branch::unfunded(BTreeMap::new()),
     )?)?;
-    publication.join(store.activation(&forked))?;
+    publication.join(store.activation(&forked)?)?;
     store.submit(publication).await?;
 
     let created_cut = store.load(&created).await?;
@@ -1277,7 +1277,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
                 escrow: None,
             },
         )?,
-        store.activation(&observer.actor),
+        store.activation(&observer.actor)?,
     ] {
         prepared.join(effect)?;
     }
@@ -1312,7 +1312,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
         }],
     ))?;
     for actor in [&owner.actor, &observer.actor] {
-        send.join(store.activation(actor))?;
+        send.join(store.activation(actor)?)?;
     }
     store.submit(send).await?;
     owner.expect(&["r1", "r2"]).await?;
@@ -1703,7 +1703,7 @@ async fn produce<T: Backend + ?Sized>(
     sent: u64,
 ) -> Result<(), Failure> {
     let mut prepared = PreparedPublish::foreign(idempotency(&format!("{source}/produce/{sent}"))?);
-    prepared.join(target.store().activation(actor))?;
+    prepared.join(target.store().activation(actor)?)?;
     prepared.join(acyclic_stream::CommitEffect::hard(
         vec![if sent == 0 {
             CommitCondition::Absent {

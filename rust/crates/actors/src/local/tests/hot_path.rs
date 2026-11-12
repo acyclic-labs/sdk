@@ -202,7 +202,7 @@ async fn publication_and_reopen() -> TestResult {
                     escrow: None,
                 },
             )?,
-            store.activation(&address),
+            store.activation(&address)?,
         ] {
             create.join(effect)?;
         }

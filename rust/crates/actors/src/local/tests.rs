@@ -136,7 +136,7 @@ async fn forked_prepared_publication_retains_original_provenance() -> TestResult
     let parent_cut = store.load(&parent).await?;
     let mut publication = PreparedPublish::foreign(key("fork")?);
     publication.join(store.branch(&parent_cut, &child, Branch::unfunded(inbox(&child)?))?)?;
-    publication.join(store.activation(&child))?;
+    publication.join(store.activation(&child)?)?;
     store.submit(publication).await?;
     let forked = store.load(&child).await?;
     let original = forked.provenance().cloned().ok_or("missing fork origin")?;
@@ -837,7 +837,7 @@ async fn place<P: StreamProvider + ?Sized>(
                 escrow: None,
             },
         )?,
-        store.activation(address),
+        store.activation(address)?,
     ] {
         prepared.join(effect)?;
     }

@@ -677,7 +677,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                         }],
                     ),
                     Store::new(provider.clone(), StreamPath::new("harness/actors")?)
-                        .activation(&actor),
+                        .activation(&actor)?,
                 ],
                 idempotency_key: IdempotencyKey::new(key.to_vec())?,
             })
@@ -694,7 +694,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 },
             ),
             activation: Store::new(provider.clone(), StreamPath::new("harness/actors")?)
-                .activation_record(&actor),
+                .activation_record(&actor)?,
         };
         let journal = storage.journal();
         journal
