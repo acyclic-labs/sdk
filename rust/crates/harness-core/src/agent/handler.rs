@@ -420,7 +420,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .record
             .as_ref()
             .map(|record| record.committed_at_micros);
-        let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
+        let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
             (
                 Trigger::Record {
                     subscription,
@@ -473,9 +473,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
                 Wake::Inbox { sequence, .. } => *sequence,
-                Wake::Alarm => cursor,
+                Wake::Alarm | Wake::Rejected => cursor,
             };
             self.agents.refill(state, end).await?;
+        }
+        if let Wake::Inbox {
+            record: InboxRecord::Cancel(cancel),
+            ..
+        } = &wake
+            && !super::cancellation::accepted(self.agents.store.provider().as_ref(), &path, cancel)
+                .await?
+        {
+            wake = Wake::Rejected;
         }
         if let Some(state) = state.as_mut() {
             state
@@ -659,7 +668,29 @@ where
                                 super::input::input(record.sequence, input).map(|input| input.inbox)
                             })
                         });
-                    Ok(active == Some(cancel.input))
+                    if active != Some(cancel.input) {
+                        return Ok(false);
+                    }
+                    let inbox = &delivery
+                        .subscriptions
+                        .get(INBOX)
+                        .ok_or_else(|| guest("agent inbox subscription missing"))?
+                        .path;
+                    let path = AgentPath::try_from(
+                        inbox
+                            .as_str()
+                            .strip_suffix("/inbox")
+                            .ok_or_else(|| guest("agent inbox subscription differs"))?
+                            .to_owned(),
+                    )
+                    .map_err(guest)?;
+                    super::cancellation::accepted(
+                        self.agents.store.provider().as_ref(),
+                        &path,
+                        &cancel,
+                    )
+                    .await
+                    .map_err(guest)
                 }
                 _ => Ok(false),
             }

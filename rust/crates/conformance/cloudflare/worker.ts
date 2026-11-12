@@ -402,8 +402,10 @@ export default {
         if ((await observations.next()).value !== "started") {
           throw new Error("STEP guest-cancel start failed; recovery: bash scripts/qualify-cloudflare.sh");
         }
+        const prompt = (await agent.read("inbox")).find(record => record.value.message?.id === "cancel-root");
+        if (!prompt) throw new Error("accepted cancellation prompt is missing");
         const [outcome, aborted] = await Promise.all([
-          creation, observations.next(), agent.cancel("cancel-running-guest", 0n, 0n),
+          creation, observations.next(), agent.cancel("cancel-running-guest", prompt.sequence, 0n),
         ]);
         if ("error" in outcome || aborted.value !== "aborted") {
           throw new Error(`STEP guest-cancel failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);

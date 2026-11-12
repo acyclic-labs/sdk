@@ -71,6 +71,14 @@ pub(super) async fn cancelled<P: acyclic_stream::StreamProvider + ?Sized>(
     Ok(Some(fact.conversation))
 }
 
+pub(super) async fn accepted<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &super::AgentPath,
+    cancel: &super::Cancellation,
+) -> Result<bool, Error> {
+    Ok(cancelled(provider, agent, cancel.input).await? == Some(cancel.conversation))
+}
+
 pub(super) fn cancel_effect(
     agent: &super::AgentPath,
     input: u64,

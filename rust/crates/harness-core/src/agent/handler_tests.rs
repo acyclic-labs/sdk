@@ -127,13 +127,70 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
         input = starting => assert_eq!(input?, 2),
         result = &mut running => panic!("opening returned before cancellation: {:?}", result.map(|_| ())),
     }
+    provider
+        .append(AppendRequest {
+            path: path.conversation()?,
+            records: vec![b"settled answer".to_vec().into()],
+            if_tail: Some(0),
+            idempotency_key: crate::agent::intent_key("answer", &[])?,
+        })
+        .await?;
+    let stale = InboxRecord::Cancel(Cancellation {
+        by: Sender::User {
+            principal: "owner".into(),
+        },
+        id: "stale".try_into()?,
+        input: 2,
+        conversation: 0,
+    });
+    crate::agent::submit(
+        provider.as_ref(),
+        crate::agent::send(
+            &path,
+            &Sender::User {
+                principal: "owner".into(),
+            },
+            &stale,
+        )?,
+    )
+    .await?;
+    let mut records = provider
+        .read(ReadRequest {
+            key: None,
+            path: path.inbox()?,
+            from: 3,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let stale = records.try_next().await?.expect("stale control");
+    assert!(
+        !wire::accepts_interrupt(
+            &handler,
+            &wire::encode_interrupt(&delivery, Some(&checkpoint), INBOX, &stale)
+        )
+        .await?
+    );
+    let mut rejected = delivery.clone();
+    rejected.trigger = Trigger::Record {
+        subscription: INBOX.into(),
+        sequence: stale.sequence,
+    };
+    rejected.record = Some(stale);
+    let transition = handler
+        .on_record(rejected, Some(&checkpoint), CancellationToken::new())
+        .await?;
+    let retained = crate::agent::checkpoint_head(&transition.checkpoint)?.state;
+    assert_eq!(retained.queued.front().expect("retained input").inbox, 2);
+    assert_eq!(retained.phase, crate::agent::Phase::Idle);
+    assert!(!retained.taken.contains(&2));
     let cancel = InboxRecord::Cancel(Cancellation {
         by: Sender::User {
             principal: "owner".into(),
         },
         id: "cancel".try_into()?,
         input: 2,
-        conversation: 0,
+        conversation: 1,
     });
     crate::agent::submit(
         provider.as_ref(),
@@ -150,7 +207,7 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
         .read(ReadRequest {
             key: None,
             path: path.inbox()?,
-            from: 3,
+            from: 4,
             limit: 1,
             at_least: Default::default(),
         })
