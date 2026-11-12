@@ -12,7 +12,9 @@ pub mod ready;
 pub use overlay::{Branch, Creation};
 mod record;
 pub use applied::{Applied, AppliedCut};
-pub use record::{METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
+pub use record::{
+    METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD, alarm_admission,
+};
 mod runtime;
 mod scheduling;
 pub use crate::guest::Subscription;
@@ -122,6 +124,13 @@ pub enum Error {
         /// Original co-committed state and failure reply.
         receipt: Box<InvocationReceipt>,
     },
+    /// The authority refused an alarm consumption before its deadline: its
+    /// own commit time was uthority_unix_ms. Nothing was published.
+    #[error("alarm not yet due at authority time {authority_unix_ms}")]
+    AlarmNotDue {
+        /// The authority's commit time at the refusal.
+        authority_unix_ms: u64,
+    },
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -147,6 +156,7 @@ impl Error {
             Self::Paused => "paused",
             Self::Handler(_) => "handler",
             Self::InvocationFailed { .. } => "invocation_failed",
+            Self::AlarmNotDue { .. } => "alarm_not_due",
             Self::Invalid(_) => "invalid",
         }
     }
@@ -1173,6 +1183,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         Ok(CommitOutcome::Conflict(conflicts)) => conflicts,
                         _ => Vec::new(),
                     }));
+                }
+                if let Err(source) = &outcome
+                    && let Some(authority_unix_ms) = source.not_before_authority()
+                {
+                    return Err(Error::AlarmNotDue { authority_unix_ms });
                 }
                 PreparedPublish::settle(&outcome?)?;
                 retained

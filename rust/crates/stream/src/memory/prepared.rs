@@ -26,6 +26,8 @@ pub(crate) struct PreparedCommit {
     key: IdempotencyKey,
     /// The request's publication deadline; an accepted retry precedes it.
     deadline: Option<u64>,
+    /// The installed rule's acceptance time for this request.
+    not_before: Option<u64>,
     plan: CommitPlan,
     retained: RetainedReservation,
     namespace: NamespaceReserve,
@@ -85,6 +87,7 @@ impl MemoryStream {
         ),
         StreamError,
     > {
+        let not_before = self.not_before(&request);
         let maximum = capacity.payload_bytes;
         let expected = prepared_tail(&mut request, maximum)?;
         let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
@@ -192,6 +195,7 @@ impl MemoryStream {
                 conditions,
                 key,
                 deadline,
+                not_before,
                 plan,
                 retained,
                 namespace,
@@ -449,6 +453,7 @@ impl PreparedCommit {
                 state.last_committed_at_micros,
                 self.provider.commit_clock.now_unix_millis(),
             );
+            admit_not_before(self.not_before, time)?;
             let id = commit_identity(decision, digest);
             bind_body(&mut self.plan, body)?;
             for history in &mut self.plan.histories {

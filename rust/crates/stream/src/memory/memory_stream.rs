@@ -14,6 +14,9 @@ pub struct MemoryStream {
     clock: Arc<dyn UnixMillisClock>,
     /// Clock whose sampled commit time is recorded in each new record.
     commit_clock: Arc<dyn UnixMillisClock>,
+    /// Optional authority-side acceptance rule, decided at commit time.
+    /// Shared by every clone of this ledger, so a wrapper installs it once.
+    admission: Arc<std::sync::OnceLock<Arc<dyn CommitAdmission>>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) work: Option<Arc<Work>>,
     #[cfg(loom)]
@@ -60,11 +63,41 @@ impl MemoryStream {
             limits,
             clock,
             commit_clock,
+            admission: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
             #[cfg(loom)]
             retain_pending_read: false,
         }
+    }
+    /// Installs this ledger's authority-side time rule. At each new commit's
+    /// decision, after every condition holds and before anything is reserved,
+    /// that commit's own authority time must have reached the rule's
+    /// not-before time for it, else it is refused with [`StreamError::not_before`]
+    /// carrying that authority time. Replays never re-run it. A ledger has at
+    /// most one rule: installing that same rule again, as every opener of a
+    /// shared ledger does, is a no-op; a different rule is `AlreadyExists`.
+    pub fn install_commit_admission(
+        &self,
+        admission: Arc<dyn CommitAdmission>,
+    ) -> Result<(), StreamError> {
+        self.admission
+            .set(admission)
+            .or_else(|admission| match self.admission.get() {
+                Some(installed) if Arc::ptr_eq(installed, &admission) => Ok(()),
+                _ => Err(StreamError::AlreadyExists),
+            })
+    }
+
+    fn not_before(&self, request: &CommitRequest) -> Option<u64> {
+        self.admission
+            .get()
+            .and_then(|rule| rule.not_before(request))
+    }
+
+    /// Decides the installed rule with the commit's authority time in micros.
+    fn admit_at(&self, request: &CommitRequest, micros: u64) -> Result<(), StreamError> {
+        admit_not_before(self.not_before(request), micros)
     }
     /// Rebinds to an externally owned authority: replicas replaying one shared
     /// journal in one order, or a store whose incarnation outlives a process,
@@ -100,5 +133,21 @@ impl MemoryStream {
 impl MemoryStream {
     pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
         self.state.write().await
+    }
+}
+
+/// An authority-side time rule over new commits: the earliest authority time,
+/// in Unix milliseconds, at which a commit may be accepted. It reads only the
+/// request's own mutations; requests carry no time field for it.
+pub trait CommitAdmission: Send + Sync + 'static {
+    /// The earliest acceptance time of `request`, or `None` for any time.
+    fn not_before(&self, request: &CommitRequest) -> Option<u64>;
+}
+
+fn admit_not_before(not_before: Option<u64>, micros: u64) -> Result<(), StreamError> {
+    let authority = micros / 1_000;
+    match not_before {
+        Some(not_before) if authority < not_before => Err(StreamError::not_before(authority)),
+        _ => Ok(()),
     }
 }

@@ -5,7 +5,7 @@ use super::{Alarm, Error, State, Subscription};
 use crate::guest::{Checkpoint, CodecIdentity};
 use acyclic_stream::StreamPath;
 use prost::Message as _;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
 /// lengths and the fixed integers and flags.
@@ -63,6 +63,53 @@ struct SubscriptionRecord {
     path: String,
     #[prost(uint64, tag = "2")]
     cursor: u64,
+}
+
+/// The alarm fields of a state record; every other field is skipped unread.
+#[derive(Clone, PartialEq, prost::Message)]
+struct AlarmRecord {
+    #[prost(uint64, tag = "4")]
+    generation: u64,
+    #[prost(uint64, optional, tag = "5")]
+    deadline_unix_ms: Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    delivered_generation: Option<u64>,
+}
+
+/// The authority-side alarm rule: a state record that marks its alarm
+/// delivered is accepted only once the authority's own commit time reaches
+/// that alarm's deadline. State records are self-identifying by their format
+/// header, so one rule serves every actor root on a ledger; a later record
+/// still carrying that delivered alarm is always past its deadline, since the
+/// authority's commit time is monotonic. Install it with
+/// install_commit_admission on the provider that decides actor commits. It is
+/// one process-wide rule, so every opener of a shared ledger installs it
+/// idempotently.
+#[must_use]
+pub fn alarm_admission() -> Arc<dyn acyclic_stream::CommitAdmission> {
+    struct Alarms;
+    impl acyclic_stream::CommitAdmission for Alarms {
+        fn not_before(&self, request: &acyclic_stream::CommitRequest) -> Option<u64> {
+            request
+                .mutations()
+                .flat_map(|mutation| match mutation {
+                    acyclic_stream::CommitMutation::Append { records, .. }
+                    | acyclic_stream::CommitMutation::Fork { records, .. } => records,
+                })
+                .filter_map(|record| delivered_deadline(&record.value))
+                .max()
+        }
+    }
+    static ALARMS: std::sync::LazyLock<Arc<dyn acyclic_stream::CommitAdmission>> =
+        std::sync::LazyLock::new(|| Arc::new(Alarms));
+    Arc::clone(&ALARMS)
+}
+
+fn delivered_deadline(record: &[u8]) -> Option<u64> {
+    let alarm = AlarmRecord::decode(record.strip_prefix(STATE_FORMAT_V2)?).ok()?;
+    alarm
+        .deadline_unix_ms
+        .filter(|_| alarm.delivered_generation == Some(alarm.generation))
 }
 
 impl State {
