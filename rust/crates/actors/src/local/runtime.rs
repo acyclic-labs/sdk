@@ -141,11 +141,30 @@ enum Event {
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
     Due(Result<(), ClockError>),
+    Armed(Vec<(u64, ActorReference)>),
+    Opened(Result<Opened, Error>),
     Failed(StreamError),
     Completion(Completion),
     CompletionCancelled,
     Idle,
     Subscription(Result<(), (Vec<ActorReference>, StreamError)>),
+}
+
+/// One page of a due deadline window's actors, read off the dispatcher's
+/// event loop so in-flight deliveries keep progressing while it is read.
+struct Opened {
+    shard: u16,
+    window: u64,
+    actors: Vec<ActorReference>,
+    next: Next,
+}
+
+/// What follows an [`Opened`] page.
+enum Next {
+    /// The window's next entry.
+    Page(u64),
+    /// The page was the window's last: the shard's next deadline window.
+    Window(Option<u64>),
 }
 
 /// Executes one handler package for every actor whose state lives under the
@@ -636,6 +655,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut dispatching: FuturesUnordered<
             BoxProviderFuture<'_, (u16, Result<Snapshot, Error>)>,
         > = FuturesUnordered::new();
+        let mut opening: FuturesUnordered<BoxProviderFuture<'_, Result<Opened, Error>>> =
+            FuturesUnordered::new();
         // The activation log is also every producer's wake entry: the cursor
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
@@ -669,6 +690,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             {
                                 return Poll::Ready(Event::Dispatched(shard, result));
                             }
+                            if let Poll::Ready(Some(opened)) = opening.poll_next_unpin(context) {
+                                return Poll::Ready(Event::Opened(opened));
+                            }
                             match created.poll_next_unpin(context) {
                                 Poll::Ready(Some((shard, Ok(record)))) => {
                                     return Poll::Ready(Event::Created(shard, record));
@@ -695,6 +719,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         3 => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
+                            let armed = self.ready.take_armed();
+                            if !armed.is_empty() {
+                                return Poll::Ready(Event::Armed(armed));
+                            }
                             // Only a placing host can host a parked actor again.
                             let opens = windows
                                 .first()
@@ -733,6 +761,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 if !completing.is_empty()
                     && running.is_empty()
                     && dispatching.is_empty()
+                    && opening.is_empty()
                     && completion_tail
                         .iter()
                         .all(|(shard, tail)| seen.get(shard).is_some_and(|cursor| cursor >= tail))
@@ -775,6 +804,22 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     failure.get_or_insert_with(|| Arc::new(error));
                 }
                 Event::Done(Ok(())) => {}
+                Event::Armed(armed) => {
+                    // A newly armed alarm's window is learned as it is armed,
+                    // so its opening advances the watermark even when startup
+                    // found no window.
+                    for (deadline, actor) in armed {
+                        let shard = self.store.scheduling_shard(&actor);
+                        if let Some(&from) = consumed.get(&shard) {
+                            scheduling::learn(
+                                &mut windows,
+                                from,
+                                shard,
+                                scheduling::window(deadline),
+                            );
+                        }
+                    }
+                }
                 Event::Rearm(next) => {
                     timer = next.map(|deadline| (deadline, self.clock.sleep_until(deadline)));
                 }
@@ -800,42 +845,45 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         && scheduling::window_start(window) <= now
                     {
                         windows.pop_first();
-                        let mut entry = Some(0);
-                        while let Some(from) = entry {
-                            let (actors, next) =
-                                self.store.window_actors(shard, window, from).await?;
-                            for actor in actors {
-                                if self.store.scheduling_shard(&actor) == shard
-                                    && self.includes(&actor)
-                                {
-                                    if self.places {
-                                        self.track(actor.clone())?;
-                                    }
-                                    // The resident takes the filed alarm over
-                                    // before the window can be passed.
-                                    if let Some(slot) = self.slot(&actor) {
-                                        slot.registration
-                                            .claim_alarm(scheduling::window_start(window));
-                                    }
-                                    self.wake(&actor);
-                                }
+                        opening.push(Box::pin(self.open_window(shard, window, 0)));
+                    }
+                }
+                Event::Opened(opened) => {
+                    let Opened {
+                        shard,
+                        window,
+                        actors,
+                        next,
+                    } = opened?;
+                    for actor in actors {
+                        if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
+                            if self.places {
+                                self.track(actor.clone())?;
                             }
-                            entry = next;
+                            // The resident takes the filed alarm over before
+                            // the window can be passed.
+                            if let Some(slot) = self.slot(&actor) {
+                                slot.registration
+                                    .claim_alarm(scheduling::window_start(window));
+                            }
+                            self.wake(&actor);
                         }
-                        let from = window
-                            .checked_add(1)
-                            .ok_or(Error::Invalid("alarm window overflow"))?;
-                        if consumed
-                            .get(&shard)
-                            .is_some_and(|&consumed| consumed < from)
-                        {
-                            consumed.insert(shard, from);
-                            windows.extend(
-                                self.store
-                                    .next_window(shard, from)
-                                    .await?
-                                    .map(|next| (next, shard)),
-                            );
+                    }
+                    match next {
+                        Next::Page(from) => {
+                            opening.push(Box::pin(self.open_window(shard, window, from)))
+                        }
+                        Next::Window(next) => {
+                            let from = window
+                                .checked_add(1)
+                                .ok_or(Error::Invalid("alarm window overflow"))?;
+                            if consumed
+                                .get(&shard)
+                                .is_some_and(|&consumed| consumed < from)
+                            {
+                                consumed.insert(shard, from);
+                                windows.extend(next.map(|next| (next, shard)));
+                            }
                         }
                     }
                 }
@@ -935,6 +983,31 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self.actors[(self.shards.hash_one(actor) as usize) % self.actors.len()]
     }
 
+    /// Read one page of a due window from entry `from`; after its last page,
+    /// the shard's next window past it.
+    async fn open_window(&self, shard: u16, window: u64, from: u64) -> Result<Opened, Error> {
+        let (actors, entry) = self.store.window_actors(shard, window, from).await?;
+        let next = match entry {
+            Some(entry) => Next::Page(entry),
+            None => Next::Window(
+                self.store
+                    .next_window(
+                        shard,
+                        window
+                            .checked_add(1)
+                            .ok_or(Error::Invalid("alarm window overflow"))?,
+                    )
+                    .await?,
+            ),
+        };
+        Ok(Opened {
+            shard,
+            window,
+            actors,
+            next,
+        })
+    }
+
     async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
         let Some(slot) = self.slot(&actor) else {
@@ -979,11 +1052,37 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         )
     }
 
+    /// The one entry point of every delivery, activation replays included.
+    /// An incarnation that has not admitted placement settles custody on
+    /// every way out: admission recovers it after its claim, and a replay
+    /// that returns without admission (no input, no due alarm, paused)
+    /// recovers the cut it read. A dead owner's participant whose
+    /// publication consumed the final input therefore always settles.
     async fn deliver_retained(
         &self,
         actor: &ActorReference,
         slot: &Slot,
         mut inner: tokio::sync::MutexGuard<'_, Inner>,
+    ) -> Result<bool, Error> {
+        let mut replayed = None;
+        let done = self
+            .deliver_admitted(actor, slot, &mut inner, &mut replayed)
+            .await?;
+        if done
+            && inner.epoch == 0
+            && let Some(snapshot) = replayed
+        {
+            self.store.recover_custody(&snapshot).await?;
+        }
+        Ok(done)
+    }
+
+    async fn deliver_admitted(
+        &self,
+        actor: &ActorReference,
+        slot: &Slot,
+        inner: &mut Inner,
+        replayed: &mut Option<Arc<Snapshot>>,
     ) -> Result<bool, Error> {
         if inner.released {
             return Ok(true);
@@ -999,7 +1098,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(false);
             }
             steps += 1;
-            if settle_pending(&self.store, &mut inner).await? {
+            if settle_pending(&self.store, inner).await? {
                 continue;
             }
             if slot.refresh.swap(false, Ordering::AcqRel) {
@@ -1013,6 +1112,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     observed
                 }
             };
+            if inner.epoch == 0 {
+                *replayed = Some(Arc::clone(&snapshot));
+            }
             let Some(state) = snapshot.state() else {
                 // No actor: nothing is left to deliver or wake.
                 inner.observed = None;
@@ -1086,7 +1188,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Only work admits placement: one command per node incarnation,
                 // never per delivery. The next pass delivers at the admitted
                 // cut; admission is not a delivery step of the work budget.
-                self.admit(actor, &mut inner).await?;
+                self.admit(actor, inner).await?;
                 steps -= 1;
                 continue;
             }
@@ -1102,7 +1204,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             let epoch = inner.epoch;
             let cancellation = crate::guest::CancellationToken::new();
-            self.interrupt_follows(&mut inner, state, &trigger).await?;
+            self.interrupt_follows(inner, state, &trigger).await?;
             {
                 let control = slot
                     .delivery_control
@@ -1137,7 +1239,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .on_record(delivery.clone(), state.checkpoint(), cancellation.clone());
             let result = match self
                 .handled(
-                    &mut inner,
+                    inner,
                     cancellation.clone(),
                     &delivery,
                     state.checkpoint(),
@@ -1197,7 +1299,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Ok(publication) => {
                     inner.pending =
                         Some((Arc::clone(&snapshot), publication, subscription.clone()));
-                    settle_pending(&self.store, &mut inner).await
+                    settle_pending(&self.store, inner).await
                 }
                 Err(Error::PreconditionChanged(conflicts)) => {
                     inner.refused(conflicts).map(|()| true)
@@ -1221,7 +1323,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             state.subscriptions().clone(),
                         ),
                     };
-                    self.interrupt_follows(&mut inner, state, &trigger).await?;
+                    self.interrupt_follows(inner, state, &trigger).await?;
                     let handled = self.handler.on_failure(
                         delivery.clone(),
                         state.checkpoint(),
@@ -1229,7 +1331,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     );
                     let failure = match self
                         .handled(
-                            &mut inner,
+                            inner,
                             cancellation.clone(),
                             &delivery,
                             state.checkpoint(),
@@ -1265,7 +1367,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         Ok(Some(publication)) => {
                             inner.pending =
                                 Some((Arc::clone(&snapshot), publication, subscription.clone()));
-                            result = settle_pending(&self.store, &mut inner).await;
+                            result = settle_pending(&self.store, inner).await;
                         }
                         Ok(None) => {}
                         Err(error) => result = Err(error),

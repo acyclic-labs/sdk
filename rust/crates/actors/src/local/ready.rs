@@ -53,9 +53,14 @@ struct Index<K> {
     /// Bounded by parked alarms, never by residents.
     parked: BTreeMap<K, Token>,
     parked_wakes: BTreeSet<(u64, K)>,
+    /// Deadlines of tokens newly minted from committed alarms, as
+    /// `(deadline, key)`, until the dispatcher takes them to learn their
+    /// windows.
+    armed: Vec<(u64, K)>,
     /// Set once a dispatcher exists; until then nothing watermarks a window,
-    /// so a retiring registration's token is burned, never accumulated.
-    parking: bool,
+    /// so a retiring registration's token is burned and no armed deadline is
+    /// kept, never accumulated.
+    dispatching: bool,
 }
 impl<K> Default for Index<K> {
     fn default() -> Self {
@@ -71,7 +76,8 @@ impl<K> Default for Index<K> {
             serials: 0,
             parked: BTreeMap::new(),
             parked_wakes: BTreeSet::new(),
-            parking: false,
+            armed: Vec::new(),
+            dispatching: false,
         }
     }
 }
@@ -361,7 +367,20 @@ impl<K: Ord + Clone> ReadySet<K> {
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .parking = true;
+            .dispatching = true;
+    }
+
+    /// Take the deadlines newly armed since the last call, as
+    /// `(deadline, key)`, so their windows are known before they open.
+    pub fn take_armed(&self) -> Vec<(u64, K)> {
+        std::mem::take(
+            &mut self
+                .core
+                .index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .armed,
+        )
     }
 
     /// Earliest wake of a parked alarm, which only re-registering its key
@@ -610,10 +629,16 @@ impl<K: Ord + Clone> Registration<K> {
         entry.alarm = alarm.clone();
         let key = entry.key.clone();
         // The committed alarm replaces whatever this host claimed for it.
-        if let Some(previous) = index.release(self.id) {
+        let previous = index.release(self.id);
+        let known = previous.as_ref().map(|previous| previous.deadline);
+        if let Some(previous) = previous {
             index.burn(previous);
         }
         if let Some(pending) = pending {
+            // A new deadline is an event: the dispatcher learns its window.
+            if index.dispatching && known != Some(pending) {
+                index.armed.push((pending, key.clone()));
+            }
             let token = index.mint(pending, deadline);
             if let Err(token) = index.hold(self.id, token) {
                 index.park(key, token);
@@ -702,7 +727,7 @@ impl<K: Ord + Clone> Drop for Registration<K> {
                 }
                 // Retiring never drops an alarm token, armed, woken or
                 // deferred: it is parked until its key registers again.
-                if index.parking {
+                if index.dispatching {
                     token.wake = Some(token.wake.unwrap_or(token.deadline));
                     index.park(entry.key, token);
                     waiter = index.waiter.take();
