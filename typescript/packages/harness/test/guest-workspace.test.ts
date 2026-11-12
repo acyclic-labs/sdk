@@ -6,6 +6,8 @@ import { initializeClientQueries } from "../src/client-query.js";
 import { AgentGuest, WasmAgentProviders, WasmAgentServer } from "../generated/wasm/acyclic_harness_wasm.js";
 import { agentsFixture } from "./browser-agents-fixture.mjs";
 import { localSessionAuthority } from "./session-authority.js";
+import { initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
+import { hostFixtureWorkspaceGrants } from "../../../../rust/crates/conformance/cloudflare/generated/acyclic_cloudflare_conformance.js";
 
 const LD = WireType.LengthDelimited, V = WireType.Varint;
 const volume = new Uint8Array(readFileSync(new URL("../../../../rust/codec-fuzz/corpus/protobuf/acyclic.harness.v2.VolumeRef-project", import.meta.url))).subarray(8);
@@ -23,9 +25,10 @@ function observation(machine: number) {
 }
 
 test("one guest heap admits distinct Machines for two actors and re-admits every delivery attempt", async () => {
+  await initializeFixtureAuthority();
   const fixture = await agentsFixture("00112233-4455-6677-8899-aabbccddeeff", async function* () {
     yield { kind: "content", delta: "completed on admitted workspace" };
-  }, initializeClientQueries);
+  }, initializeClientQueries, hostFixtureWorkspaceGrants(volume));
   const { authority, credential } = await localSessionAuthority([{ name: "actors:/agents", prefix: false, actions: ["actors/invoke"] }]);
   const codec = await loadWasmModule();
   const attempts = new Map<bigint, number>(), machines = new Map<string, number>();

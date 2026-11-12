@@ -5,10 +5,10 @@ import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/c
 
 // Test composition only: the real Rust agent host over IndexedDB providers.
 // The model is a scripted host callback; scheduling and recovery stay in Rust.
-export async function agentsFixture(id, reply, initialize = init) {
+export async function agentsFixture(id, reply, initialize = init, grants = undefined) {
   await initialize();
   await initializeFixtureAuthority();
-  const authority = fixtureAuthority(id);
+  const authority = fixtureAuthority(id, grants);
   const owner = new WasmAgentAuthority(authority.capability);
   const registry = new WasmAgentRegistry();
   const requests = [];

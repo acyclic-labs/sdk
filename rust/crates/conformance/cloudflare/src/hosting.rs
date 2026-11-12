@@ -132,6 +132,28 @@ pub fn grants() -> Result<JsValue, JsValue> {
     Ok(grants.into())
 }
 
+#[wasm_bindgen(js_name = hostFixtureWorkspaceGrants)]
+pub fn workspace_grants(volume: &[u8]) -> Result<JsValue, JsValue> {
+    use acyclic_harness_core::conversation::{VolumeOperation, VolumeRef};
+    use prost::Message as _;
+    let error = |error: String| JsValue::from_str(&error);
+    let volume = acyclic_harness_core::wire::VolumeRef::decode(volume)
+        .map_err(|cause| error(cause.to_string()))?;
+    let volume = VolumeRef::try_from(volume).map_err(|cause| error(cause.to_string()))?;
+    let grants = js_sys::Array::from(&grants()?);
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        grants.push(&JsValue::from_str(
+            &volume
+                .capability(operation, &mut None)
+                .map_err(|cause| error(cause.to_string()))?,
+        ));
+    }
+    grants.push(&JsValue::from_str(
+        &acyclic_harness_core::contract::capability::tool_call("shell"),
+    ));
+    Ok(grants.into())
+}
+
 #[wasm_bindgen(js_name = hostFixtureTrust)]
 pub fn trust() -> String {
     let keys = acyclic_auth::testing::Snapshot::default();
