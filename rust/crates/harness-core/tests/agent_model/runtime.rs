@@ -601,6 +601,121 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
     Ok(())
 }
 
+#[tokio::test]
+async fn cancelling_during_open_publishes_its_input_and_preserves_queued_work() -> Result {
+    use acyclic_actors::guest::CancellationToken;
+    use acyclic_harness_core::{OperationId, model::ModelContent};
+    use acyclic_stream::BoxProviderFuture;
+    use tokio::sync::mpsc;
+
+    struct Opening(mpsc::UnboundedSender<u64>);
+    impl TurnHost for Opening {
+        fn open_control<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: &'a ContextAction,
+            _: CancellationToken,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenControl>> {
+            Box::pin(async {
+                Err(acyclic_harness_core::Error::Unsupported(
+                    "no context control".into(),
+                ))
+            })
+        }
+
+        fn open<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: OperationId,
+            inbox: u64,
+            _: u64,
+            _: &'a ModelContent,
+            stop: CancellationToken,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
+            Box::pin(async move {
+                self.0.send(inbox).expect("opening observer");
+                stop.cancelled().await;
+                Err(acyclic_harness_core::Error::InteractionRejected(
+                    acyclic_harness_core::InteractionRejection::Cancelled,
+                ))
+            })
+        }
+    }
+
+    let provider = Arc::new(MemoryStream::default());
+    let (starting, mut started) = mpsc::unbounded_channel();
+    let host = AgentHost::new(
+        provider.clone(),
+        ExecutorDriver::new(Opening(starting)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host
+        .create(&intent("create-opening"), adopted(id(3)))
+        .await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let original = InboxRecord::Message(Message {
+        from: user(),
+        id: intent("opening-original"),
+        body: Box::new(super::driver::file("original")?),
+        re: None,
+        attachments: None,
+    });
+    let queued = InboxRecord::FollowUp(Message {
+        from: user(),
+        id: intent("opening-queued"),
+        body: Box::new(super::driver::file("queued")?),
+        re: None,
+        attachments: None,
+    });
+    host.send(&root, &user(), &original).await?;
+    host.send(&root, &user(), &queued).await?;
+    let drain = host.runtime().drain();
+    tokio::pin!(drain);
+    for target in [1, 2] {
+        let input = tokio::select! {
+            input = started.recv() => input.expect("selected input opens"),
+            failures = &mut drain => panic!("input lost: {failures:?}"),
+        };
+        assert_eq!(input, target);
+        if target == 2 {
+            assert!(
+                values(provider.as_ref(), root.status()?)
+                    .await?
+                    .iter()
+                    .any(|bytes| {
+                        StatusRecord::decode(bytes)
+                            .is_ok_and(|status| status.cancelled_input == Some(1))
+                    }),
+                "opening cancellation did not publish its selected input"
+            );
+        }
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::Cancel(Cancellation {
+                by: user(),
+                id: intent(&format!("cancel-opening-{target}")),
+                input: target,
+                conversation: 0,
+            }),
+        )
+        .await?;
+    }
+    let failures = drain.await;
+    assert!(failures.is_empty(), "{failures:?}");
+    assert!(matches!(
+        host.reply(&root, &intent("opening-original"), 1).await?,
+        Reply::Dropped
+    ));
+    assert!(matches!(
+        host.reply(&root, &intent("opening-queued"), 2).await?,
+        Reply::Dropped
+    ));
+    Ok(())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
     use acyclic_stream::LocalStream;

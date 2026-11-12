@@ -784,10 +784,13 @@ fn opened<T>(
     }
 }
 
-fn cancelled_open() -> TurnStep {
+fn cancelled_open(agent: &AgentState, inbox: u64) -> TurnStep {
     TurnStep {
         checkpoint: None,
-        outs: Vec::new(),
+        outs: vec![Out::InputCancelled {
+            input: inbox,
+            conversation: agent.conversation_tail,
+        }],
         wait: Wait::Input,
         drops: None,
     }
@@ -1039,7 +1042,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     &cancellation,
                 )?
                 else {
-                    return Ok(cancelled_open());
+                    return Ok(cancelled_open(agent, inbox));
                 };
                 return settle_selection(agent, &open, turn, inbox, input, refusal).await;
             }
@@ -1074,7 +1077,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 &stop,
             )?
             else {
-                return Ok(cancelled_open());
+                return Ok(cancelled_open(agent, inbox));
             };
             if turn_announcements(agent)?.is_none() {
                 // Freeze even an empty delta before a model or tool can change
