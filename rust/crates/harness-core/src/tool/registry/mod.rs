@@ -59,6 +59,17 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
     fn refresh(&self) -> BoxFuture<'_, Result<()>>;
     /// The last completely admitted catalog.
     fn snapshot(&self) -> Result<ToolRegistry>;
+    /// Whether this source serves file-authored aliases on demand. Such aliases
+    /// are discovered through ordinary paged directory reads, not model schemas.
+    fn has_lazy_tools(&self) -> bool {
+        false
+    }
+    /// Load just one authored alias from its original producer. The caller must
+    /// validate its input and retain its canonical invocation before dispatch.
+    /// This observation grants no execution authority.
+    fn load<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, Result<Option<Arc<Tool>>>> {
+        Box::pin(async { Ok(None) })
+    }
     /// Names previously published by this source and subsequently revoked.
     fn was_removed(&self, _name: &str) -> Result<bool> {
         Ok(false)
@@ -79,6 +90,30 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
 }
 
 impl ToolRegistry {
+    pub(crate) fn has_lazy_tools(&self) -> bool {
+        self.sources.iter().any(|source| source.has_lazy_tools())
+    }
+
+    /// Resolve one file-authored alias without materializing a catalog. Fixed
+    /// definitions keep precedence, and a template ceiling is checked before
+    /// any source read.
+    pub async fn load(&self, name: &str) -> Result<Option<Arc<Tool>>> {
+        if !self.source_allowed(name) {
+            return Ok(None);
+        }
+        let mut selected = None;
+        for source in &self.sources {
+            if source.has_lazy_tools()
+                && let Some(tool) = source.load(name).await?
+            {
+                if selected.is_some() || self.resolve(name, None)?.is_some() {
+                    return Err(Error::Conflict("tool sources overlap".into()));
+                }
+                selected = Some(tool);
+            }
+        }
+        Ok(selected)
+    }
     pub(crate) fn restrict_sources(&mut self, allowed: &[String]) {
         let allowed = allowed
             .iter()

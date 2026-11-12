@@ -316,6 +316,22 @@ impl TurnContext for LocalContext {
                     authority.content.reader.clone(),
                 )
                 .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let executor = match local
+                .tools
+                .get(crate::tools::shell::PLATFORM.name, None, None)?
+            {
+                Some(shell) => executor.with_tool_source(Arc::new(super::programs::Programs {
+                    local: Arc::downgrade(&local),
+                    home: bindings.context.scratch.clone(),
+                    journal: bindings.context.journal.clone(),
+                    verifier: bindings.context.verifier.clone(),
+                    scope: bindings.context.scope.copy(&mut None)?,
+                    shell: Arc::new(shell.clone()),
+                    catalog: ToolRegistry::default(),
+                })),
+                None => executor,
+            };
             // Before the turn's first request: the step-0 boundary appends
             // what changed since the epoch froze.
             let through = local

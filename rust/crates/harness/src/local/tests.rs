@@ -22,6 +22,7 @@ use std::{path::Path, sync::Arc};
 mod agents;
 mod context;
 mod history_retry;
+mod programs;
 mod replay;
 pub(super) mod settings;
 mod signing;
