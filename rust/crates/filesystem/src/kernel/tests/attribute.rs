@@ -36,6 +36,7 @@ fn every_attribute_class_and_name_boundary_is_canonical() -> Result<(), Box<dyn 
         (AttributeClass::PosixXattr, 1),
         (AttributeClass::WindowsStream, 2),
         (AttributeClass::MacResourceFork, 3),
+        (AttributeClass::Annotation, 4),
     ] {
         assert_eq!(class.tag(), tag);
         assert_eq!(AttributeClass::from_tag(tag)?, class);

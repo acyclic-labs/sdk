@@ -32,7 +32,9 @@ pub struct BrowserNamedAttributePageResult {
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserNamedAttributeNameResult {
-    #[tsify(type = "\"posix-xattr\" | \"windows-stream\" | \"mac-resource-fork\"")]
+    #[tsify(
+        type = "\"posix-xattr\" | \"windows-stream\" | \"mac-resource-fork\" | \"annotation\""
+    )]
     pub(in crate::bindings) attribute_class: &'static str,
     #[serde(with = "serde_bytes")]
     #[tsify(type = "Uint8Array")]

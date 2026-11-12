@@ -369,6 +369,26 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
         let created = source
             .create_file(&original, metadata(), None, &work)?
             .lookup;
+        let annotation =
+            AttributeName::new(AttributeClass::Annotation, b"user.acyclic.handle".to_vec())?;
+        source.runtime.block_on(
+            || async {
+                source
+                    .checkout
+                    .lock()
+                    .await
+                    .change_named_attribute(
+                        created.node.file_id,
+                        &annotation,
+                        Some((b"host annotation", NamedAttributeWriteMode::Create)),
+                        WorkBudget::UNBOUNDED,
+                        source.cancellation(),
+                    )
+                    .await
+                    .map_err(|failure| failure.error)
+            },
+            None,
+        )??;
         source.resize(&original, 64)?;
         source.write_range(&original, 8, Bytes::from_static(b"visible"))?;
         let file = if detached {
@@ -387,6 +407,7 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
         file.allocate_range(16, 8, MountRangeAllocation::Preallocate { keep_size: true })?;
         let changed = FileMetadata {
             modified_ns: crate::kernel::MetadataField::Value(42),
+            named_attributes: file.lookup()?.metadata.named_attributes,
             ..metadata()
         };
         file.set_attributes(changed, Some(40), &work)?;
@@ -421,6 +442,9 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
                 Some(b"retained".as_slice())
             );
             assert_eq!(file.list_attributes(None, 8)?.names, vec![name.to_vec()]);
+            let page = file.list_attributes(Some(name), 1)?;
+            assert!(page.names.is_empty());
+            assert!(page.next_cursor.is_none());
             if !detached {
                 assert_eq!(
                     source
@@ -432,6 +456,9 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
             }
             file.remove_attribute(name, &work)?;
             assert!(file.read_attribute(name, &work)?.is_none());
+            let page = file.list_attributes(None, 1)?;
+            assert!(page.names.is_empty());
+            assert!(page.next_cursor.is_none());
         }
         if detached {
             let from = native_test_path("sparse-source");

@@ -32,9 +32,9 @@ where
     let (metadata, named_attributes) = host_metadata(metadata);
     if let Some(root) = named_attributes {
         let read = read_source!(reader, receipt, remaining, value,
-            reader.read_named_attributes(root, receipt.custody.work(), cancellation)
+            reader.read_named_attributes(root, Some(crate::kernel::AttributeClass::MacResourceFork), receipt.custody.work(), cancellation)
                 => receipt.accept_source(value.0, value.1)?,
-            reader.read_named_attributes(root, remaining, cancellation) => {
+            reader.read_named_attributes(root, Some(crate::kernel::AttributeClass::MacResourceFork), remaining, cancellation) => {
                 receipt.adopt(vec_bytes(&value))?;
                 for (name, bytes) in &value {
                     receipt.adopt(name.retained_bytes())?;
