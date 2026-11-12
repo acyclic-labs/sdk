@@ -14,6 +14,40 @@ struct Exposed {
     policy: acyclic_harness_core::context::ContextDiscoveryPolicy,
 }
 
+/// This host offers only wait and generation. Repository capabilities belong
+/// to the turn's authenticated content reader, not its fixed tool configuration.
+struct InstructionTools;
+
+impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
+    fn prepare<'a>(
+        &'a self,
+        (executor, limits): (
+            acyclic_harness_core::executor::StockExecutor,
+            acyclic_harness_core::conversation::Limits,
+        ),
+        _: &'a AgentState,
+        _: OperationId,
+        _: &'a ModelContent,
+        authority: &'a acyclic_harness_core::filesystem::TurnAuthority,
+    ) -> BoxProviderFuture<
+        'a,
+        acyclic_harness_core::Result<acyclic_harness_core::executor::StockExecutor>,
+    > {
+        Box::pin(async move {
+            executor.with_tool_authority(
+                acyclic_harness_core::runtime::RuntimeScope::new(
+                    Capabilities::new([
+                        "tool:call:wait",
+                        acyclic_harness_core::contract::capability::MODEL_GENERATE,
+                    ]),
+                    limits,
+                )?,
+                authority.approval.clone(),
+            )
+        })
+    }
+}
+
 impl TurnExecutors for Exposed {
     fn render_bytes(&self) -> Option<u64> {
         self.turns.render_bytes()
@@ -586,7 +620,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
 #[tokio::test]
 async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_source() -> Result {
     use acyclic_harness_core::{
-        filesystem::{Grants, StockExecutors},
+        filesystem::StockExecutors,
         model::{ModelEvent, ToolCall},
         test_support::ScriptedEvent,
     };
@@ -632,7 +666,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             ),
             ToolRegistry::default(),
             (projection_limits, CompactionPolicy::Disabled),
-            Arc::new(Grants(vec!["tool:call:wait".into()])),
+            Arc::new(InstructionTools),
         )
         .with_agent_tools(&["wait".into()]);
         let mut turns = exposed(Arc::new(turns))?;
