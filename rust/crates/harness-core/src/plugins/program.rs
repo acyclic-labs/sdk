@@ -13,10 +13,10 @@ use crate::{
 pub struct LoadedProgram {
     definition: ToolDefinition,
     pub(crate) run: HookRun,
-    // Retained manifest and entry bytes retire before their original credit.
-    custody: acyclic_fs::NativeCustody,
     /// The admitted source selector for a hook; absent for a tool.
     pub on: Option<config::ProgramTrigger>,
+    // Retained manifest and entry bytes retire before their original credit.
+    custody: acyclic_fs::NativeCustody,
 }
 
 impl LoadedProgram {
