@@ -46,6 +46,15 @@ with `HarnessBuilder::declared_context` or `DiscoveredContext::stage`. These are
 the existing `SourceStage`, `ContextPipeline`, and executor binding digest, not a
 second composition engine. A later builder `context` call replaces the stages.
 
+Model discovery renders `SkillSummary` entries: an opaque `id`, name,
+description and pinned body source. Callable fields and original source
+identities remain in the manifest. The identifier stays stable when a body
+version or retained path changes; same-named skills from different sources have
+different identifiers. Skill update and removal notices carry that same `id`,
+so a removal identifies one advertised entry without revealing private roots.
+The identifier grants no authority; loading the body still checks its pinned
+source and the caller's read grants.
+
 The generated browser API uses the same Rust capture and validation code.
 `captureDiscoveredContext` and `contextForRequest` receive a call-scoped
 `ContextDiscoveryReader` whose bound owner supplies authenticated directory
