@@ -78,7 +78,31 @@ async fn program_revision_pins_imports_and_entries_without_reading_siblings() ->
 
 #[tokio::test]
 async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Result<()> {
-    let tree = Files::program("tools/count");
+    struct Metered<'a> {
+        files: &'a Files,
+        io: &'a crate::filesystem::PreparationIo,
+    }
+    impl Tree for Metered<'_> {
+        fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+            Some(self.io)
+        }
+        fn read<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+            self.files.read(path)
+        }
+    }
+    let files = Files::program("tools/count");
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let tree = Metered {
+        files: &files,
+        io: &io,
+    };
     let registry = crate::tools::defaults()?;
     let shell = Arc::new(
         registry
@@ -86,7 +110,9 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
             .unwrap()
             .clone(),
     );
-    let tool = load_program(&tree, "tools/count").await?.bind(shell)?;
+    let program = load_program(&tree, "tools/count").await?;
+    let retained = program.custody.as_ref().unwrap().bytes();
+    let tool = program.bind(shell)?;
     let arguments = serde_json::json!({"text": "$(touch injected); ' \" \\ \n 🦀", "nested": [null, {"__proto__": "data"}]});
     let call = crate::tool::ToolInvocation {
         operation_id: crate::OperationId::new(),
@@ -111,6 +137,12 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     );
     assert_eq!(canonical.invocation.operation_id, call.operation_id);
     assert_eq!(canonical.invocation.call_id, call.call_id);
+    let before_drop = work.live_allocation_bytes();
+    drop(tool);
+    assert!(
+        before_drop - work.live_allocation_bytes() >= retained,
+        "dropping the last bound tool retires all transferred program ownership"
+    );
     Ok(())
 }
 

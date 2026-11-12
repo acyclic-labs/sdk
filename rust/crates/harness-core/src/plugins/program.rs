@@ -9,12 +9,14 @@ use crate::{
 /// A manifest and entry bytes selected from one caller-pinned effective tree.
 /// The revision includes imported manifest modules and both native entries.
 /// Retain this value through admission and dispatch; do not reopen entry files.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct LoadedProgram {
     /// The same declaration consumed by the stock tool registry.
     pub definition: ToolDefinition,
     /// The same command consumed by the stock hook runner.
     pub run: HookRun,
+    // Retained manifest and entry bytes retire before their original credit.
+    custody: acyclic_fs::NativeCustody,
 }
 
 impl LoadedProgram {
@@ -57,14 +59,24 @@ impl LoadedProgram {
                 )
             }
         };
-        let mut argv = vec![executable];
-        argv.extend(arguments.iter().map(|argument| (*argument).to_owned()));
-        argv.push(command);
-        crate::tools::native::alias(
-            self.definition,
-            shell,
-            serde_json::json!({"command": {"argv": argv, "stdin": {"$json": "@arguments"}}}),
-        )
+        use serde_json::{Map, Value};
+        let mut argv = vec![Value::String(executable)];
+        argv.extend(
+            arguments
+                .iter()
+                .map(|argument| Value::String((*argument).to_owned())),
+        );
+        argv.push(Value::String(command));
+        let stdin = Value::Object(Map::from_iter([(
+            "$json".into(),
+            Value::String("@arguments".into()),
+        )]));
+        let command = Value::Object(Map::from_iter([
+            ("argv".into(), Value::Array(argv)),
+            ("stdin".into(), stdin),
+        ]));
+        let template = Value::Object(Map::from_iter([("command".into(), command)]));
+        crate::tools::native::alias(self.definition, shell, template, self.custody)
     }
 }
 
@@ -101,6 +113,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         Surface::Data,
     )
     .await?;
+    let mut custody = evaluated._custody;
     let manifest: ProgramManifest = serde_json::from_value(evaluated.value)
         .map_err(|error| Error::Invalid(format!("{path}: {error}")))?;
     if manifest.version != 1 || manifest.name != name {
@@ -136,6 +149,13 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         identity.update(&(bytes.len() as u64).to_be_bytes());
         identity.update(&bytes);
         if (form == "ps1") == cfg!(windows) {
+            if let Some(custody) = &mut custody {
+                custody.grow(script.len() as u64)?;
+                custody.work().spent(acyclic_fs::WorkCounters {
+                    bytes_copied: script.len() as u64,
+                    ..acyclic_fs::WorkCounters::UNCHARGED
+                })?;
+            }
             native = Some(script.to_owned());
         }
     }
@@ -160,6 +180,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
                 Some("sh".into())
             },
         },
+        custody,
     })
 }
 
