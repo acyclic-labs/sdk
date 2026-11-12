@@ -611,6 +611,67 @@ impl PublicationCase<'_> {
             )
             .is_err()
         );
+        if !crate::conversation::is_internal_path(path) {
+            // A populated previous index can contain either historical shape.
+            // The new index owns another namespace and never reinterprets them.
+            let previous_path = metadata_path.replace("/v2/", "/v1/");
+            let directory_grant = ContentGrant::verify_directory_read(
+                &self.read.copy_verifier(&mut None)?,
+                self.read.policy_scope(),
+                self.volume,
+                "",
+                &mut None,
+            )?;
+            for (index, previous) in [
+                crate::contract::canonical_json_bytes(&(&staged, &expected))?,
+                crate::contract::canonical_json_bytes(&staged)?,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                self.host
+                    .apply(
+                        workspace,
+                        None,
+                        &[
+                            WorkspaceMutation::CreateDirectory {
+                                path: previous_path.rsplit_once('/').unwrap().0.into(),
+                            },
+                            WorkspaceMutation::PutFile {
+                                path: previous_path.clone(),
+                                bytes: previous.clone().into(),
+                            },
+                        ],
+                        &IdempotencyKey::new(format!("previous-index-{}-{index}", key.as_str()))?,
+                    )
+                    .await?;
+                let (file, bytes, _) = self
+                    .host
+                    .read_private_path_indexed(
+                        self.volume,
+                        &directory_grant,
+                        path,
+                        None,
+                        64,
+                        crate::conversation::ContentAccess {
+                            ceiling: None,
+                            io: self.io,
+                        },
+                    )
+                    .await?
+                    .ok_or_else(|| io.invalid("indexed file disappeared"))?;
+                assert_eq!(file.descriptor(), staged.descriptor());
+                assert_eq!(file.display_name(), staged.display_name());
+                assert_eq!(bytes.as_ref(), b"original");
+                assert_eq!(
+                    self.host
+                        .read(workspace, None, &previous_path, 4096, None)
+                        .await?
+                        .as_ref(),
+                    previous.as_slice()
+                );
+            }
+        }
         Ok(())
     }
 
