@@ -338,6 +338,30 @@ mod tests {
             return Err("visible parent".into());
         };
         let (parent, mut status) = (parent.clone(), status.clone());
+        small.view.expand(&parent);
+        loop {
+            small.view.frame(0);
+            if small
+                .view
+                .reader_ref()
+                .cache()
+                .listing(&parent.children()?, 0)
+                .is_some_and(|page| page.fresh && page.children.is_empty())
+            {
+                break;
+            }
+            futures::future::poll_fn(|cx| small.poll_changed(0, cx)).await;
+        }
+        let membership = parent.membership()?;
+        assert!(
+            small
+                .view
+                .reader_ref()
+                .follows()
+                .any(|(path, _)| path == &membership),
+            "an expanded empty worker lost its durable child producer"
+        );
+        status.phase = Phase::Running;
         let nested = parent.child(&AgentId::from_bytes([7; 16]))?;
         small_provider
             .append(AppendRequest {
@@ -368,15 +392,28 @@ mod tests {
                 })
                 .await?;
         }
-        status.cursor += 1;
-        small_provider
-            .append(AppendRequest {
-                path: parent.status()?,
-                records: vec![status.append_record()?],
-                if_tail: None,
-                idempotency_key: IdempotencyKey::new(b"parent-changed".to_vec())?,
-            })
-            .await?;
+        // Child creation changes only the original membership witness. The
+        // worker's unchanged phase must not be needed to reveal live work.
+        loop {
+            small.view.frame(0);
+            if small.view.rows().iter().any(|(_, row)| {
+                matches!(row, Row::Agent { path, status: Some(status), .. }
+                    if path == &nested && status.phase == Phase::Running)
+            }) {
+                break;
+            }
+            futures::future::poll_fn(|cx| small.poll_changed(0, cx)).await;
+        }
+        small.view.collapse(&parent);
+        small.view.frame(0);
+        assert!(
+            small
+                .view
+                .rows()
+                .iter()
+                .all(|(_, row)| !matches!(row, Row::Agent { path, .. } if path == &nested)),
+            "collapsed children leaked into the visible window"
+        );
         small.view.descend(true);
         loop {
             small.view.frame(0);
@@ -1754,6 +1791,13 @@ impl Explorer {
                 && let Ok(status) = agent.status()
             {
                 let tail = self.reader.cache().tail(&status).unwrap_or(0);
+                // Even an expanded empty page has a live producer. Its owner
+                // can create children without changing phase or conversation.
+                if (self.descend || self.expanded.contains_key(&agent))
+                    && let Ok(membership) = agent.membership()
+                {
+                    follows.push(membership);
+                }
                 seen.insert(status.clone(), (agent, tail));
                 follows.push(status);
             }
