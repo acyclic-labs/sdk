@@ -842,6 +842,7 @@ async fn publication_recovers_original_evidence_without_receipt_paths_for_every_
             Some(InternalContentClass::Interaction),
             Some(InternalContentClass::Execution),
             Some(InternalContentClass::ToolResult),
+            Some(InternalContentClass::Conversation),
         ] {
             // Each family checks an initially receipt-free workspace before
             // introducing caller-authored files at the former host paths.
