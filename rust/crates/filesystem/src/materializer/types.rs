@@ -185,17 +185,13 @@ impl MaterializationJournal {
         if !self.plan.edits.is_empty() || !self.preimages.is_empty() {
             return None;
         }
-        let mut copy = Self::empty(self.plan.clone(), self.root_identity)?;
-        copy.version = self.version;
-        copy.revision = self.revision;
-        copy.preparation_identity = self.preparation_identity;
-        copy.preparation_progress = self.preparation_progress;
-        copy.work = self.work;
-        copy.phase = self.phase;
-        copy.applied = self.applied;
-        copy.restored = self.restored;
-        copy.history_id = self.history_id;
-        Some(copy)
+        Some(Self {
+            plan: self.plan.clone(),
+            preimages: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
+            ..*self
+        })
     }
     /// Whether durable progress is valid for this operation.
     pub fn is_valid_for(&self, operation: OperationId) -> bool {
