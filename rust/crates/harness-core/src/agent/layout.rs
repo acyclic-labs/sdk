@@ -261,7 +261,7 @@ impl AgentPath {
         id_bytes(self.id_text())
     }
 
-    fn id_text(&self) -> &str {
+    pub(crate) fn id_text(&self) -> &str {
         &self.text[self.text.len() - ID_HEX..]
     }
 

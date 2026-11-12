@@ -117,7 +117,7 @@ impl Cut for StreamUiCut {
         let Some(InboxRecord::ForkAdopted(adopted)) = self.adoption.as_deref() else {
             return Err(Error::Pending);
         };
-        if adopted.agent != self.agent.id() {
+        if adopted.agent.as_str() != self.agent.id_text() {
             return Err(Error::Pending);
         }
         adopted

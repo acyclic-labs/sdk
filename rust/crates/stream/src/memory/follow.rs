@@ -200,7 +200,7 @@ impl MemoryStream {
         #[cfg(not(target_arch = "wasm32"))]
         let cursor = crate::native::boxed_stream(cursor, self.work.as_ref())?;
         #[cfg(target_arch = "wasm32")]
-        let cursor = cursor.boxed();
+        let cursor = cursor.boxed_local();
         Ok(crate::Opened::new(snapshot, selection, cursor))
     }
 }
