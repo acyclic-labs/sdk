@@ -419,14 +419,14 @@ test("the completed-tool recorder keeps literal arguments and evidence outside g
       ["-e", "require('node:fs').writeFileSync('hooks.jsonl', process.argv[1])", JSON.stringify(forged)],
       { cwd: join(root, "session/workspace") });
     assert.equal(overwritten.code, 0, overwritten.stderr);
-    const recorded = JSON.parse(await readFile(hook.args[1], "utf8"));
+    const recorded = JSON.parse(await readFile(hook.args[0], "utf8"));
     assert.deepEqual(recorded, original);
     requireTools([recorded], ["spawn"]);
     // A native command rejection happens before tool assertions. The actual
     // recorder's output must still reach the failed attempt's raw evidence.
     const failedRoot = join(root, "failed-answer");
     await mkdir(join(failedRoot, "shell"), { recursive: true });
-    await writeFile(join(failedRoot, "shell/hooks.jsonl"), await readFile(hook.args[1]));
+    await writeFile(join(failedRoot, "shell/hooks.jsonl"), await readFile(hook.args[0]));
     const rejected = await runCase(process.execPath, root, failedRoot, "shell", new AbortController().signal);
     assert.equal(rejected.status, "fail");
     assert.deepEqual(rejected.hooks, [original]);
@@ -445,7 +445,7 @@ test("the completed-tool recorder keeps literal arguments and evidence outside g
     // evidence: a missing result object must not suppress the unread log.
     const missingRoot = join(root, "missing-capture");
     await mkdir(join(missingRoot, "shell"), { recursive: true });
-    await writeFile(join(missingRoot, "shell/hooks.jsonl"), await readFile(hook.args[1]));
+    await writeFile(join(missingRoot, "shell/hooks.jsonl"), await readFile(hook.args[0]));
     const missing = await runCase(join(root, "absent-executable"), root, missingRoot, "shell", new AbortController().signal);
     assert.equal(missing.status, "fail");
     assert.equal(missing.code, "ENOENT");

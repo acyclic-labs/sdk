@@ -23,8 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         _ => Value::Null,
     };
-    input["fixture_action"] = json!(action);
-    input["fixture_response"] = response.clone();
+    if action.is_some() {
+        input["fixture_action"] = json!(action);
+        input["fixture_response"] = response.clone();
+    }
     let mut record = OpenOptions::new().create(true).append(true).open(record)?;
     let mut line = serde_json::to_vec(&input)?;
     line.push(b'\n');

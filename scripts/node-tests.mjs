@@ -107,7 +107,7 @@ export function bunResults(xml, reportFailure = fail, expectedFiles = []) {
 
 // Cargo's original artifact messages own executable locations, including a
 // relocated target directory. Never derive a binary path from this checkout.
-async function nativeInputs(tests, processes, env, publish) {
+async function nativeInputs(tests, root, processes, env, publish) {
  if (!tests.length) return;
  env.E2E_PROCESS_HOST ??= env.ACYCLIC_PROCESS_HOST;
  env.ACYCLIC_PROCESS_HOST ??= env.E2E_PROCESS_HOST;
@@ -116,9 +116,10 @@ async function nativeInputs(tests, processes, env, publish) {
  // compiler or engine starts; an unsafe parent-only bootstrap is forbidden.
  if (process.platform === 'win32' && (!env.E2E_PROCESS_HOST || !isAbsolute(env.E2E_PROCESS_HOST))) throw new Error(
   "step=admit native process owner; recovery command: $env:E2E_PROCESS_HOST='ABSOLUTE_INSTALLED_ACYCLIC_PROCESS_HOST'; node scripts/node-tests.mjs --all");
- const report = tests.some(test => test.file.endsWith('/termination.test.mjs')) && !env.E2E_REPORT_TEST_BINARY;
- const host = tests.some(test => test.file.endsWith('/sdk/test/process.test.mjs')) && !env.E2E_PROCESS_HOST;
- const hook = tests.some(test => test.file.endsWith('/graphcoder-e2e/hook.test.mjs')) && !env.E2E_HOOK_BINARY;
+ const files = tests.map(test => resolve(root, test.file).replaceAll('\\', '/'));
+ const report = files.some(file => file.endsWith('/termination.test.mjs')) && !env.E2E_REPORT_TEST_BINARY;
+ const host = files.some(file => file.endsWith('/sdk/test/process.test.mjs')) && !env.E2E_PROCESS_HOST;
+ const hook = files.some(file => /\/graphcoder-e2e\/(?:hook|live)\.test\.mjs$/.test(file)) && !env.E2E_HOOK_BINARY;
  const inputs = [
   ...(host ? [{kind: 'host', package: 'acyclic-native-runtime', target: 'acyclic-process-host', variable: 'E2E_PROCESS_HOST'}] : []),
   ...(report ? [{kind: 'report', package: 'acyclic-native-runtime', target: 'acyclic_native_runtime', variable: 'E2E_REPORT_TEST_BINARY', test: true}] : []),
@@ -159,7 +160,7 @@ export async function runTests(tests, {root = ROOT, selected = 'all', signal,
  signal?.addEventListener('abort', cancel, {once: true});
  try {
   signal?.throwIfAborted();
-  await nativeInputs(tests, processes, env, publish);
+  await nativeInputs(tests, root, processes, env, publish);
   signal?.throwIfAborted();
   const manifest = join(root, 'package.json');
   if (tests.length && existsSync(manifest) && JSON.parse(readFileSync(manifest, 'utf8')).scripts?.['test:prepare']) {
