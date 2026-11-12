@@ -82,6 +82,9 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
     inbox: u64,
 ) -> Result<Reply, Error> {
     let conversation = state.path.conversation()?;
+    let cancelled = super::cancellation::cancelled(provider, &state.path, inbox)
+        .await?
+        .filter(|frontier| *frontier <= state.conversation_tail);
     let (mut low, mut high) = (state.conversation_base, state.conversation_tail);
     while low < high {
         let middle = low + (high - low) / 2;
@@ -124,6 +127,9 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
     if let Some((sequence, entry)) = admitted
         && entry.admits_steering_message(inbox)
     {
+        if cancelled.is_some_and(|before| sequence >= before) {
+            return Ok(Reply::Dropped);
+        }
         // Every ordinary Message before this cursor passed a boundary;
         // reserved follow-ups and controls retain their own turns. Read
         // exactly the requested immutable source record, never the transcript.
@@ -148,6 +154,19 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
                 ));
             }
             _ => {}
+        }
+    }
+    if cancelled.is_some() {
+        // An accepted cancel does not certify physical retirement. The
+        // original active input remains pending until its entry commits.
+        let active = state
+            .turn
+            .as_ref()
+            .map(|turn| turn.inbox)
+            .or_else(|| state.queued.front().map(|input| input.inbox))
+            .unwrap_or(cursor);
+        if active != inbox || !state.input_pending(cursor, inbox) {
+            return Ok(Reply::Dropped);
         }
     }
     if !state.input_pending(cursor, inbox) {

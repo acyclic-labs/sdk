@@ -182,6 +182,8 @@ impl AttachedSession {
     pub fn prepare_cancel(
         &self,
         id: IntentId,
+        input: u64,
+        conversation: u64,
         notification: CancelNotification,
     ) -> Result<PreparedAgentInvocation<'static>, InputError<std::convert::Infallible>> {
         if notification.session_id != self.agent().as_str() {
@@ -190,6 +192,8 @@ impl AttachedSession {
         Ok(self
             .controls
             .prepare(PreparedCommand::new(&AgentCommand::Cancel {
+                input,
+                conversation,
                 agent: self.agent().clone(),
                 id,
             })?)?)

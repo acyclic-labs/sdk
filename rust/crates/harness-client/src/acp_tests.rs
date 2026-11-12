@@ -145,12 +145,15 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     )?;
     let cancelled = editor.prepare_cancel(
         IntentId::try_from("editor-cancel-1")?,
+        1,
+        0,
         serde_json::from_value(serde_json::json!({"sessionId": agent.as_str()}))?,
     )?;
     let call = AgentCall::decode(&cancelled.invocations()[0])?;
     assert!(matches!(call.command(), AgentCommand::Cancel {agent: target, ..} if target == &agent));
 
     let outcome = StatusRecord {
+        cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
         phase: Phase::Running,
@@ -170,6 +173,7 @@ async fn editor_ingress_keeps_original_target_context_and_reconnect_cursor()
     drop(editor);
     let mut editor = attachment(memory.clone(), agent.clone(), 1)?;
     let next = StatusRecord {
+        cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
         phase: Phase::Idle,
@@ -225,6 +229,7 @@ async fn pending_context(
     let mut prepared = core::pin::pin!(prepared);
     assert!(futures::poll!(&mut prepared).is_pending());
     let running = StatusRecord {
+        cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
         phase: Phase::Running,

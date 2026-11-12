@@ -72,7 +72,9 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
         ),
         (
             "cancel",
-            InboxRecord::Cancel(Control {
+            InboxRecord::Cancel(acyclic_harness_core::agent::Cancellation {
+                conversation: 0,
+                input: 1,
                 by: Sender::User {
                     principal: "user-1".into(),
                 },
@@ -150,6 +152,7 @@ pub fn seeds() -> Result<BTreeMap<&'static str, Vec<u8>>, Box<dyn std::error::Er
         let mut bytes = vec![1];
         bytes.extend(
             StatusRecord {
+                cancelled_input: None,
                 child_settlement: None,
                 child_wakes: None,
                 phase,

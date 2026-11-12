@@ -498,7 +498,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             super::machine::failed_step(&path, state, wake, cursor, failure).await?
         } else {
             super::machine::prepare_step(
-                &self.driver,
+                &super::cancellation::Driver {
+                    provider: self.agents.store.provider().as_ref(),
+                    inner: &self.driver,
+                },
                 &path,
                 state,
                 (cursor, delivery.now_unix_ms, settled_at_micros),
@@ -592,6 +595,41 @@ where
 {
     fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    fn accepts_interrupt(
+        &self,
+        delivery: &Delivery,
+        checkpoint: Option<&Checkpoint>,
+        subscription: &str,
+        record: &acyclic_stream::Record,
+    ) -> Result<bool, GuestError> {
+        if subscription != INBOX {
+            return Ok(false);
+        }
+        match InboxRecord::decode(&record.value).map_err(guest)? {
+            InboxRecord::Archive(_) => Ok(true),
+            InboxRecord::Cancel(cancel) => {
+                let head = checkpoint
+                    .map(super::checkpoint_head)
+                    .transpose()
+                    .map_err(guest)?;
+                let state = head.as_ref().map(|head| &head.state);
+                let active = state
+                    .and_then(|state| state.turn.as_ref().map(|turn| turn.inbox))
+                    .or_else(|| {
+                        state.and_then(|state| state.queued.front().map(|input| input.inbox))
+                    })
+                    .or_else(|| {
+                        delivery.record.as_ref().and_then(|record| {
+                            let input = InboxRecord::decode(&record.value).ok()?;
+                            super::input::input(record.sequence, input).map(|input| input.inbox)
+                        })
+                    });
+                Ok(active == Some(cancel.input))
+            }
+            _ => Ok(false),
+        }
     }
 
     fn on_record<'a>(

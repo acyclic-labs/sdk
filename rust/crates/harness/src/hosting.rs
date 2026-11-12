@@ -863,6 +863,7 @@ where
                 let (state, settlement) = agents.settlement_snapshot(agent).await?;
                 let profile = state.profile.as_ref();
                 Ok(AgentReply::Settlement {
+                    input: settlement.input,
                     settled: state.conversation_tail,
                     statuses: state.status_tail,
                     role: profile
@@ -1167,9 +1168,16 @@ where
             AgentCommand::Reply { agent, id, inbox } => Ok(AgentReply::Reply {
                 reply: agents.reply(self.within_tree(agent)?, id, *inbox).await?,
             }),
-            AgentCommand::Cancel { agent, id } => {
+            AgentCommand::Cancel {
+                agent,
+                id,
+                input,
+                conversation,
+            } => {
                 let agent = self.within_tree(agent)?;
-                let record = InboxRecord::Cancel(Control {
+                let record = InboxRecord::Cancel(crate::agent::Cancellation {
+                    input: *input,
+                    conversation: *conversation,
                     by: by.clone(),
                     id: id.clone(),
                 });

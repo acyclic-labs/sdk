@@ -470,7 +470,34 @@ impl Conversation {
     /// # Errors
     /// Session, host or decoding failures.
     pub async fn cancel(&self) -> Result<()> {
+        let reply = self
+            .connection
+            .execute(&AgentCommand::Settlement {
+                agent: self.agent().clone(),
+                wait: false,
+            })
+            .await?;
+        match reply {
+            AgentReply::Settlement {
+                input: Some(input),
+                settled,
+                ..
+            } => self.cancel_at(input, settled).await,
+            AgentReply::Settlement { input: None, .. } => Ok(()),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Cancel this exact accepted input. A later turn cannot inherit the cancel.
+    pub async fn cancel_input(&self, input: u64) -> Result<()> {
+        let conversation = self.settlement(false).await?.0;
+        self.cancel_at(input, conversation).await
+    }
+
+    async fn cancel_at(&self, input: u64, conversation: u64) -> Result<()> {
         let command = AgentCommand::Cancel {
+            input,
+            conversation,
             agent: self.agent().clone(),
             id: intent(&crate::OperationId::new().to_string())?,
         };

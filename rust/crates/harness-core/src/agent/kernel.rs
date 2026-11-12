@@ -99,7 +99,7 @@ pub const fn admit(control: Control, kind: Admit) -> Admitted {
                 turn: false,
                 ..control
             },
-            clear_queue: true,
+            clear_queue: false,
             enqueue: false,
         },
         Admit::Archive => Admitted {

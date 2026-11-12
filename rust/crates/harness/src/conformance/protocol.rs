@@ -416,6 +416,8 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         let refused = call(
             endpoint,
             &AgentCommand::Cancel {
+                conversation: 0,
+                input: 1,
                 agent: outside,
                 id: IntentId::try_from("outside")?,
             },

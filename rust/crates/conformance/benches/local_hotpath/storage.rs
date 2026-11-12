@@ -616,7 +616,9 @@ async fn actor_delivery(
         let by = Sender::Host {
             host: "benchmark".into(),
         };
-        let record = InboxRecord::Cancel(Control {
+        let record = InboxRecord::Cancel(acyclic_harness_core::agent::Cancellation {
+            conversation: 0,
+            input: 1,
             by: by.clone(),
             id: IntentId::try_from(format!("delivery-{index}").as_str())?,
         });

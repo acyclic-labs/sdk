@@ -39,6 +39,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         inner: &mut Inner,
         cancellation: CancellationToken,
+        accepts: impl Fn(&str, &Record) -> Result<bool, Error>,
     ) -> Error {
         let mut cancelled = false;
         // This active delivery owns a bounded, stable set of follows. Rotate
@@ -71,7 +72,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 &filter.subscription == id
                                     && !filter.value_prefix.is_empty()
                                     && record.value.starts_with(&filter.value_prefix)
-                            }) {
+                            }) && match accepts(id, &record) {
+                                Ok(accepted) => accepted,
+                                Err(error) => return Poll::Ready(error),
+                            } {
                                 cancellation.cancel();
                                 cancelled = true;
                                 // No unpolled provider future may obstruct the
@@ -183,7 +187,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         tokio::select! {
             () = cancellation.cancelled() => Ok(()),
-            error = runtime.interrupt(&mut inner, cancellation.clone()) =>
+            error = runtime.interrupt(&mut inner, cancellation.clone(), |_, _| Ok(true)) =>
                 Err(format!("interrupt observation failed: {error}")),
         }?;
         assert!(

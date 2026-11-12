@@ -1145,6 +1145,7 @@ mod tests {
         ) -> BoxProviderFuture<'a, Result<crate::agent::Settlement>> {
             let settled = self.settled.contains(child);
             let phase = crate::agent::Settlement {
+                input: None,
                 settled,
                 phase: if settled {
                     crate::agent::Phase::Done {

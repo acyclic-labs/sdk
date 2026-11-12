@@ -882,26 +882,31 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
-            let handled = self.handler.on_record(
-                Delivery {
-                    actor: actor.clone(),
-                    epoch,
-                    trigger: trigger.clone(),
-                    now_unix_ms: now,
-                    record: record.clone(),
-                    subscriptions: crate::guest::SubscriptionCuts::new(
-                        snapshot.path.clone(),
-                        snapshot
-                            .anchor
-                            .ok_or(Error::Invalid("actor state has no committed anchor"))?,
-                        state.subscriptions().clone(),
-                    ),
-                },
-                state.checkpoint(),
-                cancellation.clone(),
-            );
+            let delivery = Delivery {
+                actor: actor.clone(),
+                epoch,
+                trigger: trigger.clone(),
+                now_unix_ms: now,
+                record: record.clone(),
+                subscriptions: crate::guest::SubscriptionCuts::new(
+                    snapshot.path.clone(),
+                    snapshot
+                        .anchor
+                        .ok_or(Error::Invalid("actor state has no committed anchor"))?,
+                    state.subscriptions().clone(),
+                ),
+            };
+            let handled =
+                self.handler
+                    .on_record(delivery.clone(), state.checkpoint(), cancellation.clone());
             let result = match self
-                .handled(&mut inner, cancellation.clone(), handled)
+                .handled(
+                    &mut inner,
+                    cancellation.clone(),
+                    &delivery,
+                    state.checkpoint(),
+                    handled,
+                )
                 .await
             {
                 Ok(mut transition) => self
@@ -980,11 +985,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         ),
                     };
                     self.interrupt_follows(&mut inner, state, &trigger).await?;
-                    let handled =
-                        self.handler
-                            .on_failure(delivery, state.checkpoint(), error.to_string());
+                    let handled = self.handler.on_failure(
+                        delivery.clone(),
+                        state.checkpoint(),
+                        error.to_string(),
+                    );
                     let failure = match self
-                        .handled(&mut inner, cancellation.clone(), handled)
+                        .handled(
+                            &mut inner,
+                            cancellation.clone(),
+                            &delivery,
+                            state.checkpoint(),
+                            handled,
+                        )
                         .await
                     {
                         Ok(Some(mut transition)) => self
@@ -1040,9 +1053,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         inner: &mut Inner,
         cancellation: crate::guest::CancellationToken,
+        delivery: &Delivery,
+        checkpoint: Option<&crate::guest::Checkpoint>,
         handled: crate::guest::GuestFuture<'_, T>,
     ) -> Result<T, Error> {
-        let interrupted = self.interrupt(inner, cancellation);
+        let interrupted = self.interrupt(inner, cancellation, |subscription, record| {
+            self.handler
+                .accepts_interrupt(delivery, checkpoint, subscription, record)
+                .map_err(Error::from)
+        });
         let interrupted = core::pin::pin!(interrupted);
         let timeout: BoxProviderFuture<'_, ()> = Box::pin(async {
             match self.handler.manifest().limits.handler_timeout_millis() {

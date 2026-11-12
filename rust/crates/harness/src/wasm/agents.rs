@@ -749,9 +749,13 @@ impl WasmAgents {
         &self,
         agent: String,
         intent: String,
+        input: u64,
+        conversation: u64,
     ) -> std::result::Result<JsValue, JsValue> {
         let path = AgentPath::try_from(agent).map_err(agent_error)?;
-        let record = InboxRecord::Cancel(Control {
+        let record = InboxRecord::Cancel(crate::agent::Cancellation {
+            input,
+            conversation,
             by: self.sender.clone(),
             id: IntentId::try_from(intent).map_err(agent_error)?,
         });
