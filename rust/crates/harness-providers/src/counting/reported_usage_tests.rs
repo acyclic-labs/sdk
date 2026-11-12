@@ -63,7 +63,8 @@ async fn reported_chat_usage_counts_original_input_on_every_preparation_path() -
                     origin: provider.reasoning_origin(None, None),
                     continuity: serde_json::to_vec(&json!({
                         "reasoning_content": "retained reasoning ".repeat(4096)
-                    }))?,
+                    }))
+                    .expect("reasoning fixture JSON"),
                     outcome: ReasoningOutcome::PreservedReadable,
                 },
             }),
