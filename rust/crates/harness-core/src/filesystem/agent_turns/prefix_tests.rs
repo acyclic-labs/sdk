@@ -165,16 +165,21 @@ async fn seed(
     host: &Host,
     agent: &AgentState,
 ) -> Result<(PreparedModelRequest, serde_json::Value)> {
-    let (journal, _bindings, _files) = host
+    let (journal, bindings, _files) = host
         .journal(host.admit(agent)?, &[], &[], None, None)
         .await?;
-    let body = journal
-        .stage(
+    let (body, _hold) = bindings
+        .content
+        .writer
+        .as_ref()
+        .unwrap()
+        .stage_once(
             OperationId::new(),
-            "input",
+            "brief.txt",
             b"earlier input",
             "text/plain",
-            None,
+            "brief.txt",
+            Default::default(),
         )?
         .await?;
     let input = crate::agent::TurnInput::Brief {
@@ -192,15 +197,12 @@ async fn seed(
             &journal,
         )
         .await?;
-    let output = journal
-        .stage(
-            turn,
-            "output",
-            &crate::contract::canonical_json_bytes(&output)?,
-            "application/json",
-            None,
-        )?
-        .await?;
+    let output = crate::agent::TurnOutputs::stage(
+        bindings.journal.files.as_ref(),
+        turn,
+        &crate::contract::canonical_json_bytes(&output)?,
+    )
+    .await?;
     let entry = ConversationEntry {
         observed_through: 0,
         steering: None,
