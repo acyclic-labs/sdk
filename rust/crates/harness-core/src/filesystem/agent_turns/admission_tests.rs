@@ -322,22 +322,55 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             VolumeOperation::Write,
             &mut None,
         )?;
-        let denied = host
+        for path in ["forged.json", "inputs/forged.json"] {
+            let denied = host
+                .put_content(
+                    &journal,
+                    &guest_write,
+                    path,
+                    b"guest data",
+                    "application/json",
+                    "forged.json",
+                    4096,
+                    &crate::IdempotencyKey::new(format!("guest-forgery:{path}"))?,
+                    None,
+                    Default::default(),
+                )
+                .await
+                .expect_err("guest wrote the host journal");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+        let input = host
             .put_content(
                 &journal,
-                &guest_write,
-                "forged.json",
-                b"guest data",
-                "application/json",
-                "forged.json",
+                &control_grant,
+                "inputs/message.txt",
+                b"selected input",
+                "text/plain",
+                "message.txt",
                 4096,
-                &crate::IdempotencyKey::new("guest-forgery")?,
+                &crate::IdempotencyKey::new("selected-input")?,
                 None,
                 Default::default(),
             )
-            .await
-            .expect_err("guest wrote the host journal");
-        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            .await?;
+        let input_scope = root.bootstrap_scope(
+            "selected-input",
+            &Capabilities::new([input.read_capability(&mut None)?]),
+            Some(owner),
+            &mut None,
+        )?;
+        let input_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &input_scope,
+            4096,
+            None,
+        )?;
+        assert_eq!(
+            input_reader.read(&input, 4096, None, None)?.await?.as_ref(),
+            b"selected input"
+        );
         let announcements = AgentInternalFiles::new(
             host.clone(),
             journal.clone(),
@@ -363,6 +396,10 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"later announcement",
             )
             .await?;
+        assert_eq!(
+            input_reader.read(&input, 4096, None, None)?.await?.as_ref(),
+            b"selected input"
+        );
         assert_eq!(
             reader.read(&published, 4096, None, None)?.await?.as_ref(),
             b"published announcement"
