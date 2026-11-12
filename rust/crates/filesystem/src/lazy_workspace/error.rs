@@ -17,7 +17,7 @@ pub enum LazyWorkspaceError {
     /// Companion-store failure.
     #[error("lazy state failed: {0}")]
     Store(String),
-    /// Durable state conflicts with the requested identity or expected revision.
+    /// Durable state conflicts with the requested identity or active operation.
     #[error("lazy state changed concurrently")]
     Concurrent,
     /// The provider no longer matches the frozen source.

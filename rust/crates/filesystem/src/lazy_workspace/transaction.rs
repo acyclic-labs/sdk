@@ -123,7 +123,7 @@ impl<
         } else {
             PendingLazyRemoveKind::SourceOnly
         };
-        {
+        loop {
             let state = self.state(ctx).await?;
             let shadows = if let LazyLookup::Authored {
                 record, metadata, ..
@@ -155,12 +155,12 @@ impl<
                 }),
                 ..state
             };
-            if !self
+            if self
                 .store
                 .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
                 .await?
             {
-                return Err(LazyWorkspaceError::Concurrent);
+                break;
             }
         }
         if let PendingLazyRemoveKind::Authored { idempotency_key } = kind {
@@ -207,97 +207,98 @@ impl<
         operation: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        state.require_ready_fork()?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        if let Some(pending) = &state.pending_remove {
-            return if matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
-                && state.overlay == pending.prepared_overlay
+        loop {
+            let state = self
+                .store
+                .load_lazy_workspace(self.workspace.id(), ctx)
+                .await?
+                .ok_or(LazyWorkspaceError::NotFound)?;
+            state.require_ready_fork()?;
+            if state.schema_version != LAZY_STATE_SCHEMA
+                || state.workspace_id != self.workspace.id()
+                || state.source != self.source.reference()
             {
-                Ok(())
-            } else {
-                Err(LazyWorkspaceError::Concurrent)
-            };
-        }
-        let mut overlay = state.overlay;
-        let mut authored = None;
-        for path in paths.iter().chain(selected) {
-            if self.overlay_mode(path, ctx)? == crate::demand::SourceOverlay::Defaults {
-                if authored.is_none() {
-                    authored = Some(
-                        self.workspace
-                            .checkout_accounted(
-                                crate::model::GenerationSelector::Head,
-                                crate::model::CheckoutMode::tracking_transaction(),
-                                ctx,
-                                cancellation(ctx),
-                            )
-                            .await?,
-                    );
+                return Err(LazyWorkspaceError::StaleSource);
+            }
+            if let Some(pending) = &state.pending_remove {
+                return if matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
+                    && state.overlay == pending.prepared_overlay
+                {
+                    Ok(())
+                } else {
+                    Err(LazyWorkspaceError::Concurrent)
+                };
+            }
+            let mut overlay = state.overlay;
+            let mut authored = None;
+            for path in paths.iter().chain(selected) {
+                if self.overlay_mode(path, ctx)? == crate::demand::SourceOverlay::Defaults {
+                    if authored.is_none() {
+                        authored = Some(
+                            self.workspace
+                                .checkout_accounted(
+                                    crate::model::GenerationSelector::Head,
+                                    crate::model::CheckoutMode::tracking_transaction(),
+                                    ctx,
+                                    cancellation(ctx),
+                                )
+                                .await?,
+                        );
+                    }
+                    if self
+                        .authored_record(
+                            authored.as_mut().ok_or(LazyWorkspaceError::NotFound)?,
+                            path,
+                            ctx,
+                        )
+                        .await?
+                        .is_some()
+                    {
+                        // The DATA decision removes this authored override. Keep
+                        // the prior source observation instead of hiding its default.
+                        continue;
+                    }
                 }
-                if self
-                    .authored_record(
-                        authored.as_mut().ok_or(LazyWorkspaceError::NotFound)?,
-                        path,
+                let removed = self.removed_source_version(&state, path, ctx).await?;
+                overlay = self
+                    .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
+                    .await?;
+            }
+            let mut shadows = state.shadows;
+            for (record, metadata) in records {
+                shadows = self
+                    .insert_shadow(
+                        shadows,
+                        record.file_id,
+                        *record,
+                        crate::WorkspaceMetadata::from_engine(*metadata),
                         ctx,
                     )
-                    .await?
-                    .is_some()
-                {
-                    // The DATA decision removes this authored override. Keep
-                    // the prior source observation instead of hiding its default.
-                    continue;
-                }
+                    .await?;
             }
-            let removed = self.removed_source_version(&state, path, ctx).await?;
-            overlay = self
-                .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
-                .await?;
+            let revision = state.revision;
+            let next = LazyWorkspaceState {
+                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
+                overlay,
+                shadows,
+                pending_remove: Some(PendingLazyRemove {
+                    prior_overlay: state.overlay,
+                    prior_shadows: state.shadows,
+                    prepared_overlay: overlay,
+                    kind: PendingLazyRemoveKind::Mounted {
+                        idempotency_key: operation,
+                    },
+                }),
+                ..state
+            };
+            if self
+                .store
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
+                .await?
+            {
+                return Ok(());
+            }
         }
-        let mut shadows = state.shadows;
-        for (record, metadata) in records {
-            shadows = self
-                .insert_shadow(
-                    shadows,
-                    record.file_id,
-                    *record,
-                    crate::WorkspaceMetadata::from_engine(*metadata),
-                    ctx,
-                )
-                .await?;
-        }
-        let revision = state.revision;
-        let next = LazyWorkspaceState {
-            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-            overlay,
-            shadows,
-            pending_remove: Some(PendingLazyRemove {
-                prior_overlay: state.overlay,
-                prior_shadows: state.shadows,
-                prepared_overlay: overlay,
-                kind: PendingLazyRemoveKind::Mounted {
-                    idempotency_key: operation,
-                },
-            }),
-            ..state
-        };
-        if self
-            .store
-            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
-            .await?
-        {
-            return Ok(());
-        }
-        Err(LazyWorkspaceError::Concurrent)
     }
     /// Reads the original mounted publication decision without updating the binding.
     #[cfg(not(target_arch = "wasm32"))]

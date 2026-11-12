@@ -1,7 +1,8 @@
 //! Source-backed sparse workspaces.
 //!
-//! A binding transition publishes against one observed revision. Contention
-//! returns [`LazyWorkspaceError::Concurrent`] without rebuilding the transition.
+//! A binding transition publishes against one observed revision. A lost
+//! conditional commit reloads that revision and rebuilds its transition, keeping
+//! concurrent changes. Identity and operation conflicts remain explicit errors.
 
 use crate::demand::{
     DemandError, DemandSource, SourceCursor, SourceNode, SourceNodeKind, SourceReference,

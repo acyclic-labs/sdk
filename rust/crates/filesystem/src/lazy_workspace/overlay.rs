@@ -13,24 +13,25 @@ impl<
         change: LazyOverlayChange,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let state = self.state(ctx).await?;
-        let overlay = self
-            .insert_overlay(state.overlay, path, change, ctx)
-            .await?;
-        let revision = state.revision;
-        let next = LazyWorkspaceState {
-            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-            overlay,
-            ..state
-        };
-        if self
-            .store
-            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
-            .await?
-        {
-            return Ok(());
+        loop {
+            let state = self.state(ctx).await?;
+            let overlay = self
+                .insert_overlay(state.overlay, path, change.clone(), ctx)
+                .await?;
+            let revision = state.revision;
+            let next = LazyWorkspaceState {
+                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
+                overlay,
+                ..state
+            };
+            if self
+                .store
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
+                .await?
+            {
+                return Ok(());
+            }
         }
-        Err(LazyWorkspaceError::Concurrent)
     }
 
     pub(super) async fn insert_overlay(

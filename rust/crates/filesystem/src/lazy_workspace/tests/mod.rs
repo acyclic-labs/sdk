@@ -296,6 +296,7 @@ impl DemandSource for CountingSource {
     }
 }
 mod binding;
+mod contention;
 #[cfg(not(target_arch = "wasm32"))]
 async fn native_source(
     path: &std::path::Path,

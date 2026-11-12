@@ -119,12 +119,13 @@ impl Inner {
     }
 }
 
-/// Only a decided refusal can be replaced with a failure transition. Capacity
+/// Only a failed handler or decided refusal can become a failure transition. Capacity
 /// is backpressure; an unknown acknowledgement retains its original publication.
 fn terminal(error: &Error) -> bool {
     match error {
         Error::Stream(error) => !error.uncertain() && !matches!(error, StreamError::Capacity),
         Error::PreconditionUnchanged => true,
+        Error::Handler(_) => true,
         _ => false,
     }
 }
