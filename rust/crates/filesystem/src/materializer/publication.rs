@@ -205,6 +205,7 @@ where
             return Ok((
                 None,
                 MaterializationJournal {
+                    history_id: OperationId::new(),
                     version: JOURNAL_VERSION,
                     revision: 1,
                     plan,
@@ -228,6 +229,7 @@ where
         )
         .await?;
         let journal = MaterializationJournal {
+            history_id: OperationId::new(),
             version: JOURNAL_VERSION,
             revision: 1,
             plan,

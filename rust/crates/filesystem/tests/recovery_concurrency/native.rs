@@ -87,7 +87,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
             let backend = native_backend(directory.path(), &work).await;
             let store = CrashJournalStore::default();
             let journal = native_prepared_packet(&store, &backend, &work, 0x71).await;
-            let operation_id = journal.plan.operation_id;
+            let operation_id = journal.plan().operation_id;
             let last_durable_work = journal.work;
 
             assert!(
@@ -210,7 +210,7 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
     let backend = native_backend(directory.path(), &work).await;
     let store = CrashJournalStore::default();
     let journal = native_prepared_packet(&store, &backend, &work, 0x72).await;
-    let operation_id = journal.plan.operation_id;
+    let operation_id = journal.plan().operation_id;
 
     let completion = store
         .prepare_action(journal)

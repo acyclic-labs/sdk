@@ -80,6 +80,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         };
         self.check_plan(&plan)?;
         let journal = MaterializationJournal {
+            history_id: OperationId::new(),
             version: JOURNAL_VERSION,
             revision: 1,
             plan,
@@ -345,12 +346,11 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         &self,
         journal: &MaterializationJournal,
     ) -> Result<(), MaterializationError<S::Error, B::Error>> {
-        if self
+        if !self
             .store
-            .revision(journal.plan.operation_id)
+            .matches(journal)
             .await
             .map_err(MaterializationError::Store)?
-            != Some(journal.revision)
         {
             return Err(MaterializationError::PlanConflict);
         }

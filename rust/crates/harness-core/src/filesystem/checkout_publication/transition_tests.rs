@@ -52,12 +52,11 @@ proptest! {
         let from = from_variants[from_case];
         let to = to_variants[to_case];
         let phases = [MaterializationPhase::Preparing, MaterializationPhase::Prepared, MaterializationPhase::Applying, MaterializationPhase::Applied, MaterializationPhase::RollingBack, MaterializationPhase::RolledBack];
-        let journal = MaterializationJournal {
-            version: 1, revision: 1,
-            plan: MaterializationPlan { operation_id: OperationId::from_bytes([1; 16]), intent: MaterializationIntent::GenerationTransition { from, to }, edits: Vec::new() },
-            root_identity: Some(root), preparation_identity: None, preparation_progress: None,
-            preimages: Vec::new(), phase: phases[phase], applied: 0, restored: 0, work: WorkCounters::UNCHARGED, custody: None,
-        };
+        let mut journal = MaterializationJournal::empty(
+            MaterializationPlan { operation_id: OperationId::from_bytes([1; 16]), intent: MaterializationIntent::GenerationTransition { from, to }, edits: Vec::new() },
+            Some(root),
+        ).unwrap();
+        journal.phase = phases[phase];
         let mut actual_root = root;
         let mutate = |id: GenerationId| { let mut object = id.object_id(); let mut bytes = object.digest.into_bytes(); bytes[0] ^= 1; object.digest = Digest::from_bytes(bytes); GenerationId::from_root(object) };
         if change == 1 { actual_root[0] ^= 1; }
@@ -874,7 +873,7 @@ async fn selected_approval_never_rebuilds_a_missing_preparation() -> TestResult 
                 (&paths, "creator"),
             )
             .await?;
-        assert_eq!(journal.plan.edits.is_empty(), promoted);
+        assert_eq!(journal.plan().edits.is_empty(), promoted);
         if promoted && !unchanged {
             // A preparation response may be lost after its empty result is durable.
             let retry = publication

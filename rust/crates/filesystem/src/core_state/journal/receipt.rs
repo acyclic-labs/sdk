@@ -6,6 +6,7 @@ use super::*;
 #[serde(deny_unknown_fields)]
 pub(super) struct Receipt {
     version: u32,
+    pub(super) history_id: OperationId,
     pub(super) revision: u64,
     root_identity: Option<[u8; 16]>,
     preparation_identity: Option<crate::MaterializationPreparationIdentity>,
@@ -21,6 +22,7 @@ impl From<&MaterializationJournal> for Receipt {
     fn from(journal: &MaterializationJournal) -> Self {
         Self {
             version: journal.version,
+            history_id: journal.history_id,
             revision: journal.revision,
             root_identity: journal.root_identity,
             preparation_identity: journal.preparation_identity,
@@ -31,12 +33,6 @@ impl From<&MaterializationJournal> for Receipt {
             applied: journal.applied,
             restored: journal.restored,
         }
-    }
-}
-
-impl Receipt {
-    pub(super) fn version(&self) -> u32 {
-        self.version
     }
 }
 
@@ -129,6 +125,7 @@ pub(super) fn reconstruct(
         preimages.push(image);
     }
     Ok(MaterializationJournal {
+        history_id: receipt.history_id,
         version: receipt.version,
         revision: receipt.revision,
         plan,

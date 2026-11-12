@@ -119,19 +119,14 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         self.load_materialization(operation_id).await
     }
 
-    async fn revision(&self, operation_id: OperationId) -> Result<Option<u64>, Self::Error> {
+    async fn matches(&self, journal: &MaterializationJournal) -> Result<bool, Self::Error> {
+        let operation = journal.plan.operation_id;
+        let expected = Receipt::from(journal);
         self.transaction(move |namespace| {
-            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation.into_bytes())?;
             with_lock(&mut paths, |paths| {
-                let receipt = read_recoverable::<Receipt>(paths)?;
-                receipt
-                    .map(|(receipt, _)| {
-                        if receipt.version() != crate::materializer::JOURNAL_VERSION {
-                            return Err(LocalCoreStateStoreError::Integrity);
-                        }
-                        Ok(receipt.revision)
-                    })
-                    .transpose()
+                Ok(read_recoverable::<Receipt>(paths)?
+                    .is_some_and(|(current, _)| current == expected))
             })
         })
         .await
@@ -157,6 +152,12 @@ impl MaterializationJournalStore for LocalCoreStateStore {
             let stored = with_lock(&mut paths, |paths| {
                 let current = read_recoverable::<Receipt>(paths)?;
                 if current.as_ref().map_or(0, |(journal, _)| journal.revision) != expected_revision
+                {
+                    return Ok(false);
+                }
+                if current
+                    .as_ref()
+                    .is_some_and(|(current, _)| current.history_id != replacement.history_id)
                 {
                     return Ok(false);
                 }
@@ -312,6 +313,7 @@ impl LocalCoreStateStore {
                         receipt::reconstruct(&namespace, operation_id, receipt, allocation)
                     })
                     .transpose()?;
+
                 if let Some(allocation) = &paths.allocation {
                     allocation.work().set_original_work(
                         journal

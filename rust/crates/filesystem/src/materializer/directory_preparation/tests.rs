@@ -23,6 +23,7 @@ async fn interrupted_preparation(prefix: usize, foreign: Option<usize>) -> TestR
     let operation_id = OperationId::new();
     let root_identity = original.root_identity(&root)?.to_bytes();
     let mut journal = MaterializationJournal {
+        history_id: OperationId::new(),
         version: JOURNAL_VERSION,
         revision: 1,
         plan: MaterializationPlan {

@@ -44,9 +44,10 @@ pub(super) enum CrashStoreError {
 }
 
 impl MaterializationJournalStore for CrashJournalStore {
-    async fn revision(&self, operation: OperationId) -> Result<Option<u64>, Self::Error> {
-        self.inner.revision(operation).await.map_err(Into::into)
+    async fn matches(&self, journal: &MaterializationJournal) -> Result<bool, Self::Error> {
+        self.inner.matches(journal).await.map_err(Into::into)
     }
+
     type Error = CrashStoreError;
     #[cfg(not(target_arch = "wasm32"))]
     type ActionCompletion<'a> =
@@ -60,7 +61,7 @@ impl MaterializationJournalStore for CrashJournalStore {
         let write_gate = self.write_gate.lock().await;
         // Retain the failure packet before the physical action, on its original ledger.
         let before = if self.fails_before_next_write() {
-            self.inner.load(journal.plan.operation_id).await?
+            self.inner.load(journal.plan().operation_id).await?
         } else {
             None
         };

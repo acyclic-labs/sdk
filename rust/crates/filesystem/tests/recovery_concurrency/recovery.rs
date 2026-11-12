@@ -27,7 +27,7 @@ async fn restart_completes_from_every_forward_journal_boundary() {
                 .expect("query original journal after reopen");
             let durable_writes = boundary - usize::from(!after_write);
             if let Some(journal) = &retained {
-                assert_eq!(journal.plan, operation);
+                assert_eq!(journal.plan(), &operation);
                 if journal.phase == MaterializationPhase::Preparing {
                     assert_eq!(backend.snapshot(), source_tree());
                 }
@@ -52,7 +52,7 @@ async fn restart_completes_from_every_forward_journal_boundary() {
                     .await
                     .expect("retry undurable intent")
             };
-            assert_eq!(recovered.plan, operation);
+            assert_eq!(recovered.plan(), &operation);
             assert_eq!(recovered.phase, MaterializationPhase::Applied);
             assert_eq!(backend.snapshot(), expected);
             assert_eq!(
@@ -93,7 +93,7 @@ async fn restart_rolls_back_every_partial_forward_boundary() {
                 .expect("query partial original journal");
             let durable_writes = boundary - usize::from(!after_write);
             if let Some(journal) = &retained {
-                assert_eq!(journal.plan, operation);
+                assert_eq!(journal.plan(), &operation);
                 if journal.phase == MaterializationPhase::Preparing {
                     assert_eq!(backend.snapshot(), expected);
                 }
@@ -110,7 +110,7 @@ async fn restart_rolls_back_every_partial_forward_boundary() {
                 .expect("partial rollback recovery");
             if let Some(journal) = recovered {
                 assert!(retained.is_some());
-                assert_eq!(journal.plan, operation);
+                assert_eq!(journal.plan(), &operation);
                 assert_eq!(journal.phase, MaterializationPhase::RolledBack);
             } else {
                 assert!(retained.is_none());
@@ -156,7 +156,7 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
                 .await
                 .expect("query original rollback journal")
                 .expect("durable journal");
-            assert_eq!(retained.plan, operation);
+            assert_eq!(retained.plan(), &operation);
             let recovered = restarted
                 .recover(
                     operation.operation_id,
@@ -166,7 +166,7 @@ async fn restart_rolls_back_from_every_reverse_journal_boundary() {
                 .await
                 .expect("restart rollback")
                 .expect("durable journal");
-            assert_eq!(recovered.plan, operation);
+            assert_eq!(recovered.plan(), &operation);
             assert_eq!(recovered.phase, MaterializationPhase::RolledBack);
             assert_eq!(backend.snapshot(), expected);
             assert_eq!(

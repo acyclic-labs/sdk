@@ -527,10 +527,7 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 custody: None,
             });
             let before = work.receipt();
-            assert_eq!(
-                store.revision(operation).await.unwrap(),
-                Some(journal.revision)
-            );
+            assert!(store.matches(&journal).await.unwrap());
             let expected = journal.revision;
             journal.revision += 1;
             let (stored, updated) =
@@ -608,4 +605,76 @@ async fn journal_progress_reads_and_writes_only_the_appended_preimage() {
                 .is_none()
         );
     }
+}
+
+#[tokio::test]
+async fn journal_receipts_refuse_independently_admitted_history() {
+    let left = tempfile::tempdir().unwrap();
+    let right = tempfile::tempdir().unwrap();
+    let stores = [
+        LocalCoreStateStore::new(left.path()),
+        LocalCoreStateStore::new(right.path()),
+    ];
+    let operation = OperationId::new();
+    for (index, store) in stores.iter().enumerate() {
+        let mut journal = materialization_journal(operation);
+        journal
+            .plan
+            .edits
+            .push(crate::MaterializationEdit::Install {
+                path: "file".into(),
+                image: vec![index as u8],
+            });
+        journal.preimages.push(crate::MaterializationPreimage {
+            image: vec![index as u8 + 2],
+            custody: None,
+        });
+        assert!(MaterializationJournal::empty(journal.plan.clone(), None).is_none());
+        assert!(
+            store
+                .compare_and_swap(operation, 0, journal)
+                .await
+                .unwrap()
+                .0
+        );
+    }
+    // Identical revisions and progress do not admit another store's history.
+    // Exercise both physical-action admission and ordinary progress publication.
+    let foreign = stores[1].load(operation).await.unwrap().unwrap();
+    assert!(!stores[0].matches(&foreign).await.unwrap());
+    assert!(stores[1].matches(&foreign).await.unwrap());
+    assert!(stores[0].prepare_action(foreign).await.is_err());
+    let mut foreign = stores[1].load(operation).await.unwrap().unwrap();
+    let revision = foreign.revision;
+    foreign.revision += 1;
+    assert!(
+        !stores[0]
+            .compare_and_swap(operation, revision, foreign)
+            .await
+            .unwrap()
+            .0
+    );
+    let original = stores[0].load(operation).await.unwrap().unwrap();
+    for field in ["plan", "preimages"] {
+        let mut snapshot = serde_json::to_value(&original).unwrap();
+        if field == "plan" {
+            snapshot["plan"]["edits"][0]["Install"]["image"] = serde_json::json!([7]);
+        } else {
+            snapshot["preimages"][0]["image"] = serde_json::json!([7]);
+        }
+        let forged: MaterializationJournal = serde_json::from_value(snapshot).unwrap();
+        assert_eq!(forged.revision, original.revision);
+        assert!(!stores[0].matches(&forged).await.unwrap());
+        assert!(stores[0].prepare_action(forged).await.is_err());
+    }
+    assert_eq!(original.revision, revision);
+    let crate::MaterializationEdit::Install { image, .. } = &original.plan.edits[0] else {
+        panic!("install")
+    };
+    assert_eq!(image, &[0]);
+    assert_eq!(original.preimages[0].image, [2]);
+    assert!(stores[0].matches(&original).await.unwrap());
+    let completion = stores[0].prepare_action(original).await.unwrap();
+    let acknowledged = completion.await.unwrap();
+    assert!(stores[0].matches(&acknowledged).await.unwrap());
 }

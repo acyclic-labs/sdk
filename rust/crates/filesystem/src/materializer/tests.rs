@@ -276,8 +276,8 @@ impl MaterializationBackend for &Crashing {
 impl MaterializationJournalStore for &Crashing {
     type Error = Error;
 
-    async fn revision(&self, operation: OperationId) -> Result<Option<u64>, Error> {
-        self.journals.revision(operation).await.map_err(|_| Error)
+    async fn matches(&self, journal: &MaterializationJournal) -> Result<bool, Error> {
+        self.journals.matches(journal).await.map_err(|_| Error)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

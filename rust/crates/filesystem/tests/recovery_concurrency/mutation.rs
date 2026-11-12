@@ -22,7 +22,7 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             .await
             .expect("query original operation after unrecorded apply")
             .expect("forward journal");
-        assert_eq!(retained.plan, forward_plan);
+        assert_eq!(retained.plan(), &forward_plan);
         assert_eq!(retained.phase, MaterializationPhase::Applying);
         assert_eq!(
             retained.applied,
@@ -38,8 +38,8 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             .expect("complete after unrecorded mutation")
             .expect("forward journal");
         assert_eq!(completed.phase, MaterializationPhase::Applied);
-        assert_eq!(completed.plan, forward_plan);
-        assert_eq!(completed.preimages, retained.preimages);
+        assert_eq!(completed.plan(), &forward_plan);
+        assert_eq!(completed.preimages(), retained.preimages());
         assert_eq!(forward_tree.snapshot(), target);
 
         let rollback_store = CrashJournalStore::default();
@@ -66,7 +66,7 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             .await
             .expect("query original operation after unrecorded restore")
             .expect("rollback journal");
-        assert_eq!(retained.plan, rollback_plan);
+        assert_eq!(retained.plan(), &rollback_plan);
         assert_eq!(retained.phase, MaterializationPhase::RollingBack);
         assert_eq!(
             retained.restored,
@@ -82,8 +82,8 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
             .expect("rollback after unrecorded restoration")
             .expect("rollback journal");
         assert_eq!(rolled_back.phase, MaterializationPhase::RolledBack);
-        assert_eq!(rolled_back.plan, rollback_plan);
-        assert_eq!(rolled_back.preimages, retained.preimages);
+        assert_eq!(rolled_back.plan(), &rollback_plan);
+        assert_eq!(rolled_back.preimages(), retained.preimages());
         assert_eq!(rollback_tree.snapshot(), source);
     }
 }

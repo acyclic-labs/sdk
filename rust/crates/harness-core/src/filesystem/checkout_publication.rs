@@ -134,10 +134,10 @@ impl CheckoutPublication {
         };
         let journal = match (journal, approved) {
             (Some(journal), Some(approved)) => {
-                if journal.plan != approved.plan
+                if journal.plan() != approved.plan()
                     || journal.root_identity != approved.root_identity
                     || journal.preparation_identity != approved.preparation_identity
-                    || journal.preimages != approved.preimages
+                    || journal.preimages() != approved.preimages()
                 {
                     return Err(Error::Unauthorized(
                         "checkout differs from its approved preparation".into(),
@@ -147,25 +147,16 @@ impl CheckoutPublication {
             }
             (Some(journal), None) => journal,
             (None, Some(approved))
-                if approved.plan.edits.is_empty()
+                if approved.plan().edits.is_empty()
                     && completed(approved, self.identity, from.id(), to.id())? =>
             {
                 // This approval authorizes no physical effects. Host changes
                 // after preparation cannot expand it into a different plan.
-                MaterializationJournal {
-                    version: approved.version,
-                    revision: approved.revision,
-                    plan: approved.plan.clone(),
-                    root_identity: approved.root_identity,
-                    preparation_identity: approved.preparation_identity,
-                    preparation_progress: approved.preparation_progress,
-                    work: approved.work,
-                    preimages: Vec::new(),
-                    phase: approved.phase,
-                    applied: approved.applied,
-                    restored: approved.restored,
-                    custody: Some(work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?),
-                }
+                let mut copy = approved.copy_empty().ok_or_else(|| {
+                    Error::Unauthorized("checkout approval contains preimages".into())
+                })?;
+                copy.custody = Some(work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
+                copy
             }
             (None, Some(_)) => {
                 return Err(Error::Unauthorized(
@@ -180,7 +171,7 @@ impl CheckoutPublication {
             && let acyclic_fs::MaterializationIntent::GenerationTransition {
                 from: original,
                 to: target,
-            } = journal.plan.intent
+            } = journal.plan().intent
             && target == to.id()
         {
             Some(
@@ -264,7 +255,7 @@ fn completed(
     to: acyclic_fs::GenerationId,
 ) -> Result<bool> {
     if journal.root_identity != Some(root.to_bytes())
-        || journal.plan.intent
+        || journal.plan().intent
             != (acyclic_fs::MaterializationIntent::GenerationTransition { from, to })
     {
         return Err(Error::Storage(

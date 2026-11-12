@@ -92,6 +92,7 @@ pub(super) fn workspace_context(
 
 pub(super) fn materialization_journal(operation_id: OperationId) -> MaterializationJournal {
     MaterializationJournal {
+        history_id: OperationId::new(),
         #[cfg(not(target_arch = "wasm32"))]
         custody: None,
         version: crate::materializer::JOURNAL_VERSION,

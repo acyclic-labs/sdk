@@ -94,6 +94,8 @@ pub enum MaterializationPhase {
 }
 
 /// Complete versioned recovery journal.
+/// Effects require the original store-admitted history; decoding a snapshot
+/// mints a fresh identity and cannot impersonate an acknowledged journal.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MaterializationJournal {
     /// Serialization contract version.
@@ -101,7 +103,7 @@ pub struct MaterializationJournal {
     /// Monotonic optimistic-concurrency revision.
     pub revision: u64,
     /// Immutable plan.
-    pub plan: MaterializationPlan,
+    pub(crate) plan: MaterializationPlan,
     /// Original checkout allocation.
     pub root_identity: Option<[u8; 16]>,
     /// Original staging and backup allocations.
@@ -111,13 +113,17 @@ pub struct MaterializationJournal {
     /// Durable work prefix.
     pub work: crate::WorkCounters,
     /// Preimages in exact edit order.
-    pub preimages: Vec<MaterializationPreimage>,
+    pub(crate) preimages: Vec<MaterializationPreimage>,
     /// Current recovery phase.
     pub phase: MaterializationPhase,
     /// Number of forward edits known durable.
     pub applied: u32,
     /// Number of applied edits restored from the end.
     pub restored: u32,
+    // A fresh identity is minted only when immutable history is admitted. It
+    // survives store loads, but callers cannot construct or replace it.
+    #[serde(skip, default = "OperationId::new")]
+    pub(crate) history_id: OperationId,
     /// Capacity retained by this journal.
     #[cfg(not(target_arch = "wasm32"))]
     #[serde(skip)]
@@ -140,6 +146,53 @@ impl PartialEq for MaterializationJournal {
 }
 impl Eq for MaterializationJournal {}
 impl MaterializationJournal {
+    /// The immutable plan admitted by the journal store.
+    pub fn plan(&self) -> &MaterializationPlan {
+        &self.plan
+    }
+    /// The acknowledged preimages, in exact edit order.
+    pub fn preimages(&self) -> &[MaterializationPreimage] {
+        &self.preimages
+    }
+    /// Creates an effect-free completion. Nonempty plans require preparation.
+    pub fn empty(plan: MaterializationPlan, root_identity: Option<[u8; 16]>) -> Option<Self> {
+        if !plan.edits.is_empty() {
+            return None;
+        }
+        Some(Self {
+            version: JOURNAL_VERSION,
+            revision: 1,
+            plan,
+            root_identity,
+            preparation_identity: None,
+            preparation_progress: None,
+            work: crate::WorkCounters::UNCHARGED,
+            preimages: Vec::new(),
+            phase: MaterializationPhase::Applied,
+            applied: 0,
+            restored: 0,
+            history_id: OperationId::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
+        })
+    }
+    /// Copies an effect-free approval without broadening its immutable plan.
+    pub fn copy_empty(&self) -> Option<Self> {
+        if !self.plan.edits.is_empty() || !self.preimages.is_empty() {
+            return None;
+        }
+        let mut copy = Self::empty(self.plan.clone(), self.root_identity)?;
+        copy.version = self.version;
+        copy.revision = self.revision;
+        copy.preparation_identity = self.preparation_identity;
+        copy.preparation_progress = self.preparation_progress;
+        copy.work = self.work;
+        copy.phase = self.phase;
+        copy.applied = self.applied;
+        copy.restored = self.restored;
+        copy.history_id = self.history_id;
+        Some(copy)
+    }
     /// Whether durable progress is valid for this operation.
     pub fn is_valid_for(&self, operation: OperationId) -> bool {
         valid_journal(self, operation)
@@ -169,11 +222,11 @@ pub trait MaterializationJournalStore: Send + Sync {
         operation_id: OperationId,
     ) -> impl Future<Output = Result<Option<MaterializationJournal>, Self::Error>> + Send;
 
-    /// Reads only the concurrency receipt, without reconstructing immutable history.
-    fn revision(
+    /// Checks the complete receipt and its immutable history identity.
+    fn matches(
         &self,
-        operation_id: OperationId,
-    ) -> impl Future<Output = Result<Option<u64>, Self::Error>> + Send;
+        journal: &MaterializationJournal,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// Atomically replaces `expected_revision`; zero creates a journal.
     fn compare_and_swap(

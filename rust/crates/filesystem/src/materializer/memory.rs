@@ -48,13 +48,14 @@ impl MaterializationJournalStore for Store {
     async fn load(&self, operation: OperationId) -> Result<Option<Journal>, StoreError> {
         self.0.lock().get(&operation).map(copy).transpose()
     }
-    async fn revision(&self, operation: OperationId) -> Result<Option<u64>, StoreError> {
+    async fn matches(&self, journal: &Journal) -> Result<bool, StoreError> {
         Ok(self
             .0
             .lock()
-            .get(&operation)
-            .map(|journal| journal.revision))
+            .get(&journal.plan.operation_id)
+            .is_some_and(|current| current.history_id == journal.history_id && current == journal))
     }
+
     async fn compare_and_swap(
         &self,
         operation: OperationId,
@@ -63,7 +64,8 @@ impl MaterializationJournalStore for Store {
     ) -> Result<(bool, Journal), StoreError> {
         let mut records = self.0.lock();
         let current = records.get(&operation);
-        let stored = current.map_or(0, |journal| journal.revision) == expected;
+        let stored = current.map_or(0, |journal| journal.revision) == expected
+            && current.is_none_or(|journal| journal.history_id == replacement.history_id);
         if stored {
             records.insert(operation, copy(&replacement)?);
         }

@@ -28,8 +28,8 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                 .await
                 .expect("query same store after capture failure")
                 .expect("original intent survives before first capture");
-            assert_eq!(retained.plan, original);
-            assert_eq!(retained.preimages.len(), ordinal - 1);
+            assert_eq!(retained.plan(), &original);
+            assert_eq!(retained.preimages().len(), ordinal - 1);
             assert_eq!(retained.phase, MaterializationPhase::Preparing);
 
             let mut changed_from = original.clone();
@@ -71,16 +71,16 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                 .await
                 .expect("recover partially captured original plan")
                 .expect("original journal");
-            assert_eq!(recovered.plan, original);
+            assert_eq!(recovered.plan(), &original);
             match recovery {
                 MaterializationRecovery::Complete => {
                     assert_eq!(recovered.phase, MaterializationPhase::Applied);
                     assert_eq!(tree.snapshot(), target_tree());
-                    assert_eq!(recovered.preimages[..ordinal - 1], retained.preimages);
+                    assert_eq!(&recovered.preimages()[..ordinal - 1], retained.preimages());
                 }
                 MaterializationRecovery::RollBack => {
                     assert_eq!(recovered.phase, MaterializationPhase::RolledBack);
-                    assert_eq!(recovered.preimages, retained.preimages);
+                    assert_eq!(recovered.preimages(), retained.preimages());
                     assert_eq!(recovered.applied, 0);
                     assert_eq!(recovered.restored, 0);
                     assert_eq!(tree.snapshot(), source_tree());
