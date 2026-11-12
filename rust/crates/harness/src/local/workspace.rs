@@ -184,8 +184,8 @@ impl LocalWorkspace {
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
-        // A physical view projects no volume: its home stays unbound, as the
-        // checkout's does.
+        // Logical tool bindings do not depend on an OS projection. Physical
+        // views retain every declared auxiliary volume without mounting it.
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
@@ -195,9 +195,7 @@ impl LocalWorkspace {
                 .iter()
                 .filter_map(|binding| {
                     let volume = binding.as_volume()?;
-                    ((native || volume.class() == VolumeClass::SessionShared)
-                        && binding.name != "project"
-                        && binding.name != crate::filesystem::PRIVATE_VOLUME)
+                    (binding.name != "project" && binding.name != crate::filesystem::PRIVATE_VOLUME)
                         .then_some((binding, volume))
                 })
                 .map(|(binding, volume)| {
@@ -356,9 +354,7 @@ pub(super) struct Attach<'a> {
 
 impl Attach<'_> {
     fn auxiliary(&self) -> impl Iterator<Item = (&'static str, &VolumeRef)> {
-        self.native_mounts
-            .then_some((crate::filesystem::HOME_VOLUME, self.scratch))
-            .into_iter()
+        std::iter::once((crate::filesystem::HOME_VOLUME, self.scratch))
             .chain(self.shared.map(|volume| (super::SHARED_VOLUME, volume)))
     }
 }

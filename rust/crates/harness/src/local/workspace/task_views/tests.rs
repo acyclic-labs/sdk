@@ -103,12 +103,12 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             &authority,
         )
         .await?;
-    assert!(
-        second
-            .mounts
-            .named(Some(crate::filesystem::HOME_VOLUME))
-            .is_err()
-    );
+    let home = second.mounts.named(Some(crate::filesystem::HOME_VOLUME))?.1;
+    assert_eq!(home.view.volume, harness.scratch);
+    assert!(matches!(
+        home.native_root,
+        crate::workspace::NativeRoot::Logical
+    ));
     for selection in [&changed_bindings, &changed_mode] {
         assert!(matches!(
             workspace

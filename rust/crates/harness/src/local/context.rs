@@ -346,19 +346,7 @@ impl LocalHarness {
             ] if rules.is_empty() => "all admitted actions allowed",
             _ => "policy-controlled approvals",
         };
-        // A physical workspace projects no home volume.
-        #[cfg(any(test, not(target_arch = "wasm32")))]
-        let home = binding
-            .workspace
-            .as_ref()
-            .is_none_or(|workspace| workspace.mounting == super::WorkspaceMounting::Native);
-        #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-        let home = true;
-        let home = if home {
-            " volume:///home is your private retained home volume and is never merged into the project."
-        } else {
-            ""
-        };
+        let home = " volume:///home is your private retained home volume and is never merged into the project.";
         let sandbox = if cfg!(any(target_os = "linux", target_os = "macos")) {
             "Shell commands and lifecycle hooks run in a workspace-write OS sandbox."
         } else {

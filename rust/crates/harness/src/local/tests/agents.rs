@@ -5076,3 +5076,127 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn physical_root_and_siblings_write_their_own_logical_homes() -> Result<()> {
+    use crate::model::{ModelContent, ModelEvent, ToolCall};
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let provider = super::scripted(["root", "left", "right"].into_iter().flat_map(|owner| {
+        [
+            ScriptedTurn::Events(vec![
+                ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                    format!("{owner}-write-home"),
+                    "write".into(),
+                    serde_json::json!({"path":"volume:///home/probe.txt", "content":owner}),
+                ))),
+                ScriptedEvent::Event(ModelEvent::Completed {
+                    metadata: serde_json::json!({}),
+                }),
+            ]),
+            ScriptedTurn::Text(format!("{owner} settled")),
+        ]
+    }));
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        super::open_scripted(
+            super::checkout_config(directory.path(), (super::model()?, provider.clone()))?
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    eprintln!("logical-home: physical harness opened");
+    let mut root_observation = ObservedConversation::open(&harness).await?;
+    assert_eq!(
+        root_observation
+            .send("root-home", "write home")
+            .await?
+            .outcome,
+        crate::agent::TurnOutcome::Completed,
+    );
+    eprintln!(
+        "logical-home: root write settled ({} requests)",
+        provider.request_count()
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    let mut owners = vec![(root.clone(), "root")];
+    for name in ["left", "right"] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(name).map_err(agent)?,
+                brief: ModelContent::Text("write your own home".into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("logical-home spawn refused".into()));
+        };
+        eprintln!("logical-home: {name} spawned");
+        settled(&harness, &child).await?;
+        eprintln!(
+            "logical-home: {name} settled ({} requests)",
+            provider.request_count()
+        );
+        owners.push((child, name));
+    }
+    assert_eq!(provider.request_count(), 6);
+    let workspace = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("physical workspace".into()))?;
+    let home = workspace
+        .mounts
+        .named(Some(crate::filesystem::HOME_VOLUME))?
+        .1;
+    assert!(matches!(
+        home.native_root,
+        crate::workspace::NativeRoot::Logical
+    ));
+    let (agents, _) = harness.agents().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut volumes = Vec::new();
+    for (owner, expected) in owners {
+        let state = agents.state(&owner).await.map_err(agent)?;
+        let home = state
+            .volumes
+            .iter()
+            .find(|entry| entry.name == "home")
+            .ok_or_else(|| Error::NotFound("agent home binding".into()))?
+            .volume()?;
+        assert!(!volumes.contains(home), "siblings shared a private home");
+        volumes.push(home.clone());
+        let source = workspace
+            .filesystem
+            .open_workspace(
+                &home.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| agent(failure.error))?
+            .value;
+        let head = source
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(agent)?
+            .value;
+        let bytes = head
+            .read(
+                "/probe.txt",
+                64,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(agent)?
+            .value;
+        assert_eq!(
+            bytes.as_ref(),
+            expected.as_bytes(),
+            "another agent retargeted {owner}'s home write"
+        );
+    }
+    Ok(())
+}
