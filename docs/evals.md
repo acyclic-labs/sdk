@@ -26,6 +26,10 @@ directory pages read no descriptors. Both stream heads share the selected cut,
 and descriptor reads use its revision floor and the current authenticated reader.
 Missing or malformed descriptors fail; current generations are never substituted.
 The first case has no preceding settled checkpoint (`cut.checkpoint` is null).
+Initial-generation resolution uses the existing
+`Fs::workspace_for_creation_operation` with the original workspace name and
+creation operation. It authenticates the immutable creation receipt and returns
+the original generation, including after edits; it does not repeat creation.
 An exporter must resolve that initial state from original creation custody; null
 does not authorize using current project heads.
 
