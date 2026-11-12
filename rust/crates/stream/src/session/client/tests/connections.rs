@@ -331,7 +331,12 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
         },
     )
     .await?;
-    let client = fixture.client()?;
+    let client = fixture
+        .client()?
+        .with_request_metadata([("x-cloud-account", "account-fixture")])?;
+    client
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
     let mut records = client
         .follow(crate::FollowRequest::new(StreamPath::new("events")?, 0))
         .map_ok(crate::records_only)
@@ -374,6 +379,15 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     assert_eq!(next(&mut records).await?, tail);
     assert_eq!(next(&mut later).await?, tail);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
+    let metadata = fixture
+        .counts
+        .request_metadata
+        .lock()
+        .map_err(|_| "metadata poisoned")?;
+    assert_eq!(metadata.len(), 2);
+    for request in metadata.iter() {
+        assert_eq!(request.get("x-cloud-account").unwrap(), "account-fixture");
+    }
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 2);
     assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     assert_eq!(

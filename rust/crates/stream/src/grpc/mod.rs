@@ -161,7 +161,7 @@ impl<P> Clone for Service<P> {
 impl Client {
     /// Sets fixed ASCII metadata on every RPC, including routed sessions and
     /// reconnects. Replaces previous entries and starts a fresh session pool;
-    /// other clones retain their metadata. Credential authorization takes precedence.
+    /// other clones retain their metadata. Authorization is reserved for credentials.
     pub fn with_request_metadata<K: AsRef<str>, V: AsRef<str>>(
         mut self,
         entries: impl IntoIterator<Item = (K, V)>,
@@ -170,6 +170,9 @@ impl Client {
         for (key, value) in entries {
             let key = MetadataKey::<Ascii>::from_bytes(key.as_ref().as_bytes())
                 .map_err(|_| ConnectError::InvalidMetadata)?;
+            if key == "authorization" {
+                return Err(ConnectError::InvalidMetadata);
+            }
             let value = MetadataValue::<Ascii>::try_from(value.as_ref())
                 .map_err(|_| ConnectError::InvalidMetadata)?;
             metadata.append(key, value);

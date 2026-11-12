@@ -316,6 +316,7 @@ async fn request_metadata_reaches_unary_sessions_and_resumed_streams() -> tests:
     );
     for (key, value) in [
         ("invalid key", "value"),
+        ("authorization", "Bearer old"),
         ("x-data-bin", "value"),
         ("x-data", "bad\nvalue"),
         ("x-data", "\u{e9}"),
