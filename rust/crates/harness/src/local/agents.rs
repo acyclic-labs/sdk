@@ -625,7 +625,7 @@ impl LocalHarness {
                 &verifier,
             )
             .await?;
-        let capture = super::checkout_tools::capture::configuration(&workspace)?;
+        let capture = super::checkout_tools::capture::configuration(&workspace);
         Ok(CompletionTarget {
             scope: crate::runtime::RuntimeScope::new(authority.grants, Default::default())?,
             owner: super::workspace::owner::AgentOwner(receiver.path.clone()),
