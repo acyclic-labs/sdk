@@ -38,6 +38,7 @@ async fn held_source_keeps_former_recovery_names_and_refuses_root_replacement() 
         cancellation: &cancellation,
     };
     let reference = source.reference(&mut ctx).await.map_err(storage)?;
+
     assert!(
         source
             .lookup(reference, &prefix, &work, &cancellation)
