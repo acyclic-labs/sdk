@@ -41,7 +41,7 @@ async fn unavailable_subscription_keeps_its_cursor_and_reopens() -> TestResult {
             .generation,
         1
     );
-    assert!(sibling.next().now_or_never().is_none());
+    assert!(sibling.recv().now_or_never().is_none());
     assert_eq!(pool.retrying.next().await, Some((3, 2)));
     pool.subscribe(3)?;
     assert_eq!(
