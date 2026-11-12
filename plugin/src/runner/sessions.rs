@@ -1,6 +1,7 @@
 //! Selection is a client operation over the root directory and authored files.
 use super::{Args, Command, Connection, OperationId};
 use acyclic_harness::{
+    agent::{AgentOutcome, Phase},
     client::AgentPageRequest,
     local::sessions,
     tui::{onboarding::Input, term::Tty},
@@ -359,7 +360,8 @@ async fn choose(
                 let title: String = row
                     .title
                     .as_deref()
-                    .unwrap_or("New session")
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or("Untitled session")
                     .chars()
                     .filter(|ch| !ch.is_control())
                     .take(usize::from(
@@ -371,9 +373,24 @@ async fn choose(
                 format!(
                     "{title} · {} · {}",
                     row.agent.id(),
-                    row.status
-                        .as_ref()
-                        .map_or("new".into(), |status| format!("{:?}", status.phase))
+                    match row.status.as_ref().map(|status| &status.phase) {
+                        None | Some(Phase::Idle) => "idle",
+                        Some(Phase::Running) => "working",
+                        Some(Phase::WaitingApproval { .. }) => "approval needed",
+                        Some(Phase::WaitingUser { .. }) => "answer needed",
+                        Some(Phase::WaitingHost { .. }) => "waiting for host",
+                        Some(Phase::Waiting { input: true, .. }) => {
+                            "waiting for input or work"
+                        }
+                        Some(Phase::Waiting { .. }) => "waiting for work",
+                        Some(Phase::Done {
+                            outcome: AgentOutcome::Archived,
+                        }) => "archived",
+                        Some(Phase::Done {
+                            outcome: AgentOutcome::Succeeded { .. },
+                        }) => "completed",
+                        Some(Phase::Done { .. }) => "failed",
+                    }
                 )
             })
             .collect();

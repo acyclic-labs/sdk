@@ -13,6 +13,12 @@
         "text": [
           "PICKER_PREVIEW_ANSWER"
         ]
+      },
+      {
+        "when": {
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["PICKER_FEEDBACK_COMPLETE"]
       }
     ]
   },
@@ -54,6 +60,7 @@
             ],
             "cursor": true
           },
+          "after_request": { "path": "responses", "step": 1 },
           "send": "\u0013"
         },
         {
@@ -81,6 +88,6 @@
     }
   ],
   "assert": {
-    "requests": 1
+    "requests": 2
   }
 }

@@ -128,6 +128,7 @@
         "session-list-filter",
         "session-resume-picker",
         "session-picker-number-editing",
+        "session-picker-labels",
         "session-concurrent-same-repo"
       ]
     },

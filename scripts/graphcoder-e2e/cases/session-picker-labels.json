@@ -1,0 +1,20 @@
+{
+  "id": "session-picker-labels",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": { "steps": [
+    { "when": { "user": "picker running label" }, "text": ["PICKER_ROOT_WORKING"], "hold": true }
+  ] },
+  "inputs": [
+    { "mode": "service" },
+    { "mode": "pty", "actions": [
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "send": "\u0013" },
+      { "when": { "contains": ["1. Untitled session", "· idle", "2. New session"] }, "assert": { "absent": ["Idle", "Waiting {", "Some(", "deadline_unix_ms"] }, "send": "1\r" },
+      { "when": { "contains": ["GraphCoder"], "cursor": true }, "prompt": "picker running label" },
+      { "when": { "contains": ["PICKER_ROOT_WORKING"] }, "send": "\u0013" },
+      { "when": { "contains": ["Session", "· working", "New session"] }, "assert": { "absent": ["Running", "Waiting {", "Some(", "deadline_unix_ms"] }, "send": "1\r" },
+      { "when": { "contains": ["GraphCoder", "PICKER_ROOT_WORKING"], "cursor": true }, "send": "\u0003" },
+      { "when": { "contains": ["interaction cancelled", "○ GraphCoder"] }, "detach": true }
+    ], "exit": 2 }
+  ],
+  "assert": { "requests": 1 }
+}
