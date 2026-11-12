@@ -3,6 +3,19 @@ use crate::agent::{AgentPath, Phase, StatusRecord};
 use acyclic_stream::{StreamPath, demand::Want};
 use std::{borrow::Cow, io::Write, ops::Range};
 
+pub(super) const ROOT_NODES: [(&str, bool); 10] = [
+    ("index.md", false),
+    ("status.md", false),
+    ("children", true),
+    ("turns", true),
+    ("diagnostics", true),
+    ("title", false),
+    ("model", false),
+    ("cost", false),
+    ("age", false),
+    ("glyph", false),
+];
+
 /// The borrowed page data needed by the projection, independent of cache ownership.
 #[derive(Clone, Copy)]
 pub struct Children<'a> {
@@ -34,7 +47,7 @@ pub trait Cut {
         &self,
         _: &crate::agent::Diagnostic,
         _: u64,
-    ) -> Result<crate::agent::DiagnosticRead> {
+    ) -> Result<Cow<'_, crate::agent::DiagnosticRead>> {
         Err(Error::Pending)
     }
 }
@@ -272,20 +285,8 @@ impl View {
         }
         match dir.as_ref() {
             "" => {
-                let names = [
-                    ("index.md", false),
-                    ("status.md", false),
-                    ("children", true),
-                    ("turns", true),
-                    ("diagnostics", true),
-                    ("title", false),
-                    ("model", false),
-                    ("cost", false),
-                    ("age", false),
-                    ("glyph", false),
-                ];
                 let mut end = cursor;
-                for (name, directory) in names
+                for (name, directory) in ROOT_NODES
                     .into_iter()
                     .skip(usize::try_from(cursor).unwrap_or(usize::MAX))
                     .take(max as usize)
@@ -297,7 +298,7 @@ impl View {
                     })?;
                     end += 1;
                 }
-                Ok((end < names.len() as u64).then_some(end))
+                Ok((end < ROOT_NODES.len() as u64).then_some(end))
             }
             "children" => {
                 let page =
@@ -555,7 +556,7 @@ impl View {
     pub fn affected(&self, event: Affected) -> &'static [&'static str] {
         match event {
             Affected::Conversation => &["index.md", "turns"],
-            Affected::Status => &["index.md", "status.md", "glyph"],
+            Affected::Status => &["index.md", "status.md", "glyph", "diagnostics"],
             Affected::Children => &["children"],
             Affected::Role => &["role"],
         }
@@ -596,7 +597,7 @@ fn status(cut: &impl Cut, root: &str, sink: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn diagnostic_source(cut: &impl Cut) -> Result<Cow<'_, crate::agent::Diagnostic>> {
+pub(super) fn diagnostic_source(cut: &impl Cut) -> Result<Cow<'_, crate::agent::Diagnostic>> {
     match cut.status()? {
         Cow::Borrowed(status) => match &status.phase {
             Phase::Done {
@@ -644,7 +645,7 @@ impl<W: Write> Write for ByteRange<'_, W> {
     }
 }
 
-fn diagnostic_path(path: &str) -> Result<([u8; 32], u64)> {
+pub(super) fn diagnostic_path(path: &str) -> Result<([u8; 32], u64)> {
     let rest = path
         .strip_prefix("diagnostics/")
         .ok_or(Error::Invalid("diagnostic path"))?;
