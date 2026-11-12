@@ -66,8 +66,14 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
     }
     /// Load just one authored alias from its original producer. The caller must
     /// validate its input and retain its canonical invocation before dispatch.
-    /// This observation grants no execution authority.
-    fn load<'a>(&'a self, _name: &'a str) -> BoxFuture<'a, Result<Option<Arc<Tool>>>> {
+    /// Source reads and retained program data use the supplied original ledger;
+    /// a source must not reopen an unmeasured operation. This observation grants
+    /// no execution authority.
+    fn load<'a>(
+        &'a self,
+        _name: &'a str,
+        _io: Option<&'a crate::executor::PreparationIo>,
+    ) -> BoxFuture<'a, Result<Option<Arc<Tool>>>> {
         Box::pin(async { Ok(None) })
     }
     /// Names previously published by this source and subsequently revoked.
@@ -97,7 +103,11 @@ impl ToolRegistry {
     /// Resolve one file-authored alias without materializing a catalog. Fixed
     /// definitions keep precedence, and a template ceiling is checked before
     /// any source read.
-    pub async fn load(&self, name: &str) -> Result<Option<Arc<Tool>>> {
+    pub async fn load(
+        &self,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<Arc<Tool>>> {
         let mut selected = None;
         for source in &self.sources {
             if source.has_lazy_tools()
@@ -106,9 +116,9 @@ impl ToolRegistry {
                         .capability()
                         .and_then(|grant| grant.strip_prefix("tool:call:"))
                         .is_some_and(|capability| self.source_allowed(capability)))
-                && let Some(tool) = source.load(name).await?
+                && let Some(tool) = source.load(name, io).await?
             {
-                if selected.is_some() || self.resolve(name, None)?.is_some() {
+                if selected.is_some() || self.resolve(name, io)?.is_some() {
                     return Err(Error::Conflict("tool sources overlap".into()));
                 }
                 selected = Some(tool);

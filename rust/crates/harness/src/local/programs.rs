@@ -32,7 +32,11 @@ impl ToolSource for Programs {
         Some("tool:call:shell")
     }
 
-    fn load<'a>(&'a self, name: &'a str) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
+    fn load<'a>(
+        &'a self,
+        name: &'a str,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
         Box::pin(async move {
             if !crate::contract::is_valid_component_label(name)
                 || crate::conversation::validate_content_path(name, &mut None).is_err()
@@ -52,7 +56,7 @@ impl ToolSource for Programs {
                 journal: &self.journal,
                 maximum_bytes: local.limits.file_bytes,
             };
-            let tree = agent_settings::Tree::new(&volumes).await?;
+            let tree = agent_settings::Tree::new(&volumes, io).await?;
             let directory = format!("tools/{name}");
             match crate::plugins::load_program(&tree, &directory).await {
                 Ok(program) => program

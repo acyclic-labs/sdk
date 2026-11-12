@@ -96,7 +96,7 @@ impl StockExecution<'_> {
             let tool = self
                 .stock
                 .tools
-                .load(&invocation.name)
+                .load(&invocation.name, self.io)
                 .await?
                 .ok_or_else(|| Error::NotFound("authored tool is not available".into()))?;
             with_history_io(self.io, |work| {
