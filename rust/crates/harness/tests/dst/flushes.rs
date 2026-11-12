@@ -71,6 +71,7 @@ fn turns(
                 directory.join("filesystem"),
                 (model.clone(), provider.clone()),
             )?
+            .feedback_plugin(false)
             .without_user_settings()
             .volume(volume.clone())
             .state_directory(directory.join("state")))
