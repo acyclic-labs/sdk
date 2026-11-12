@@ -219,7 +219,7 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                 name: "read".into(),
                 arguments: json!({"path":format!("volume:///private/{path}"),"include_body":true,"selection":selection}),
             };
-            let execute = |task: Arc<crate::runtime::TaskContext>| {
+            let execute = |task: Arc<crate::runtime::TaskContext>, invocation: &ToolInvocation| {
                 let invocation = invocation.clone();
                 let tool = &tool;
                 let work = &work;
@@ -248,7 +248,8 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                     Ok::<_, Error>((projection, custody, projection_custody))
                 }
             };
-            let (projection, _custody, _projection_custody) = execute(task.clone()).await?;
+            let (projection, _custody, _projection_custody) =
+                execute(task.clone(), &invocation).await?;
             // A complete ordinary page fits exactly; the self-view marker must
             // cause pagination rather than rejection at the same credit.
             let credit = if selection.is_none() {
@@ -261,7 +262,8 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
             } else {
                 4096
             };
-            let (projection, _custody, _projection_custody) = execute(build(credit)?).await?;
+            let (projection, _custody, _projection_custody) =
+                execute(build(credit)?, &invocation).await?;
             tool.definition.validate_projection(
                 &projection,
                 Limits {
@@ -285,6 +287,34 @@ async fn own_ui_requires_explicit_body_and_never_shadows_project_source() -> Res
                 assert!(shown.len() < 2048);
                 assert_eq!(projection["value"]["page"]["next"], shown.len());
                 assert!(serde_json::to_vec(&projection).unwrap().len() as u64 <= credit);
+                let version = projection["value"]["version"].as_str().unwrap();
+                let mut assembled = shown.to_owned();
+                while assembled.len() < 2048 {
+                    let mut next = invocation.clone();
+                    next.operation_id = OperationId::new();
+                    next.arguments["version"] = json!(version);
+                    next.arguments["range"] = json!({"start":assembled.len(),"end":2048});
+                    let (page, _page_custody, _page_projection_custody) =
+                        execute(build(credit)?, &next).await?;
+                    tool.definition.validate_projection(
+                        &page,
+                        Limits {
+                            render_bytes: Some(credit),
+                            attachments: 1,
+                            ..Limits::default()
+                        },
+                        None,
+                    )?;
+                    assert_eq!(page["value"]["version"], version);
+                    assert_eq!(page["value"]["self-projection"], true);
+                    assert_eq!(page["value"]["page"]["start"], assembled.len());
+                    let text = page["value"]["text"].as_str().unwrap();
+                    assert!(!text.is_empty(), "continuation made no source progress");
+                    assembled.push_str(text);
+                    assert_eq!(page["value"]["page"]["end"], assembled.len());
+                    assert_eq!(page["value"]["page"]["eof"], assembled.len() == 2048);
+                }
+                assert_eq!(assembled.as_bytes(), vec![b'x'; 2048]);
             }
         }
     }
