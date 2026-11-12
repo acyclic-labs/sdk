@@ -111,6 +111,7 @@ async fn input_previews_pin_pending_messages_without_reading_the_whole_body() ->
             &InboxRecord::Message(Message {
                 from: by.clone(),
                 id: first,
+                re: None,
                 body: Box::new(file),
                 attachments: None,
             }),
@@ -146,6 +147,7 @@ async fn input_previews_pin_pending_messages_without_reading_the_whole_body() ->
             &InboxRecord::FollowUp(Message {
                 from: by.clone(),
                 id: later,
+                re: None,
                 body: Box::new(file),
                 attachments: None,
             }),

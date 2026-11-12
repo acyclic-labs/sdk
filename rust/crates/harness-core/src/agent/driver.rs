@@ -389,9 +389,9 @@ impl ConversationEntry {
             super::InboxRecord::Message(message) | super::InboxRecord::FollowUp(message)
                 if inbox == self.inbox
                     && matches!(&self.input,
-                    TurnInput::Message { from, id, body, attachments }
+                    TurnInput::Message { from, id, body, attachments, re }
                     if from == &message.from && id == &message.id && body == &message.body
-                        && attachments == &message.attachments) =>
+                        && attachments == &message.attachments && re == &message.re) =>
             {
                 Some(message)
             }
