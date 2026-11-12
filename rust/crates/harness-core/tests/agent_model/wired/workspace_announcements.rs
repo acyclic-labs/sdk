@@ -164,7 +164,7 @@ async fn fixture() -> Result<Fixture> {
                 &volume,
                 &grant,
                 "AGENTS.md",
-                format!("instructions for {name}").as_bytes(),
+                format!("instructions for {name}\n{}", "instruction ".repeat(3500)).as_bytes(),
                 "text/markdown",
                 "AGENTS.md",
                 LIMITS.maximum_bytes,
@@ -226,6 +226,16 @@ fn instruction_reader(
     AuthorityRoot,
     Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
 )> {
+    file_reader(files, &[&selection.manifest, &selection.content])
+}
+
+fn file_reader(
+    files: &Host,
+    references: &[&FileRef],
+) -> Result<(
+    AuthorityRoot,
+    Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
+)> {
     let issuer = AuthorityRoot::new(
         "proof",
         [8; 32],
@@ -234,10 +244,12 @@ fn instruction_reader(
             id: "proof".into(),
         },
     );
-    let grants = Capabilities::new([
-        selection.manifest.read_capability(&mut None)?,
-        selection.content.read_capability(&mut None)?,
-    ]);
+    let grants = Capabilities::new(
+        references
+            .iter()
+            .map(|file| file.read_capability(&mut None))
+            .collect::<acyclic_harness_core::Result<Vec<_>>>()?,
+    );
     let scope = issuer.bootstrap_scope("proof", &grants, None, &mut None)?;
     let reader = FilesystemContentVerifier::new(
         files.clone(),
@@ -247,6 +259,41 @@ fn instruction_reader(
         None,
     )?;
     Ok((issuer, reader))
+}
+
+async fn selected_text(files: &Host, file: &FileRef) -> Result<String> {
+    let (_custody, reader) = file_reader(files, &[file])?;
+    let bytes = reader
+        .read(file, file.descriptor().byte_length(), None, None)?
+        .await?;
+    Ok(String::from_utf8(bytes.to_vec())?)
+}
+
+fn text_parts(content: &ModelContent) -> impl Iterator<Item = &str> {
+    content.parts().iter().filter_map(|part| match part {
+        ModelContentPart::Text { text, .. } => Some(text.as_str()),
+        _ => None,
+    })
+}
+
+fn occurrences(request: &ModelRequest, text: &str) -> usize {
+    request
+        .messages
+        .iter()
+        .flat_map(|message| text_parts(&message.content))
+        .filter(|part| *part == text)
+        .count()
+}
+
+async fn announcement_text(files: &Host, documents: &[AnnouncedDocument]) -> Result<String> {
+    let mut text = String::new();
+    for document in documents {
+        text.push_str(&selected_text(files, &document.file).await?);
+        if let Some(instructions) = &document.instructions {
+            text.push_str(&selected_text(files, &instructions.content).await?);
+        }
+    }
+    Ok(text)
 }
 
 async fn large_instruction_selection(
@@ -361,7 +408,14 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.directory_read_capability("", &mut None)?,
     ]);
-    let scope = issuer.bootstrap_scope("large-document", &grants, Some(path.id()), &mut None)?;
+    let scope = issuer.bootstrap_scope(
+        "large-document",
+        &grants,
+        Some(acyclic_harness_core::AgentId::from_bytes(
+            path.id().to_bytes(),
+        )),
+        &mut None,
+    )?;
     let verifier = issuer.verifier(&mut None)?;
     let grant = ContentGrant::verify(
         &verifier,
@@ -428,7 +482,6 @@ async fn growing_workspace_document_renders_without_a_whole_file_allowance() -> 
     .await?;
     for message in &delta {
         message.validate_limits(limits, &mut None)?;
-        assert!(message.file_refs().all(|source| source == &file));
     }
     let rendered = delta
         .iter()
@@ -493,7 +546,36 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         ScriptedModelProvider::new((0..18).map(|n| ScriptedTurn::Text(format!("answer {n}"))))
             .reading_content(),
     );
-    let turns = exposed(executors(model.clone())?)?;
+    let projection_limits = acyclic_harness_core::conversation::Limits {
+        file_bytes: 64 * 1024,
+        render_bytes: 64 * 1024,
+        attachments: std::num::NonZeroUsize::new(1),
+        ..Default::default()
+    };
+    let turns = exposed(Arc::new(
+        acyclic_harness_core::filesystem::StockExecutors::new(
+            (
+                Model::new("test".into(), "text".into(), "1".into())?,
+                model.clone(),
+            ),
+            ToolRegistry::default(),
+            (projection_limits, CompactionPolicy::Disabled),
+            Arc::new(InstructionTools),
+        ),
+    ))?;
+    assert!(
+        instruction_files[..2]
+            .iter()
+            .all(|file| file.descriptor().byte_length() < projection_limits.file_bytes)
+    );
+    assert!(
+        instruction_files[..2]
+            .iter()
+            .map(|file| file.descriptor().byte_length())
+            .sum::<u64>()
+            > projection_limits.file_bytes,
+        "separately valid retained deltas must exceed the shared file credit"
+    );
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
         within(),
@@ -543,6 +625,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         assert_eq!(state.conversation_tail, turn + 1);
         let entries = super::super::values(stream.as_ref(), path.conversation()?).await?;
         let entry = ConversationEntry::decode(entries.last().ok_or("missing settled entry")?)?;
+        assert_eq!(entry.outcome, TurnOutcome::Completed);
         let document = entry
             .announcements
             .iter()
@@ -554,28 +637,14 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
         if let Some(document) = document {
             let requests = model.requests();
             let request = requests.last().ok_or("missing model request")?;
+            let text = selected_text(&files, &document.file).await?;
             // A removal can return to a document already in the prefix.
-            let prior_occurrences = requests.len().checked_sub(2).map_or(0, |at| {
-                requests[at]
-                    .messages
-                    .iter()
-                    .filter(|message| {
-                        message
-                            .content
-                            .file_refs()
-                            .any(|file| *file == document.file)
-                    })
-                    .count()
-            });
+            let prior_occurrences = requests
+                .len()
+                .checked_sub(2)
+                .map_or(0, |at| occurrences(&requests[at], &text));
             assert_eq!(
-                request
-                    .messages
-                    .iter()
-                    .filter(|message| message
-                        .content
-                        .file_refs()
-                        .any(|file| *file == document.file))
-                    .count(),
+                occurrences(request, &text),
                 prior_occurrences + 1,
                 "turn {turn} must append one delta and retain earlier uses of this document"
             );
@@ -597,25 +666,12 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
                     instructions[0].files,
                     vec![instruction_files[source].clone()]
                 );
-                let requests = model.requests();
-                let request = requests.last().ok_or("missing model request")?;
-                request
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|message| {
-                        message
-                            .content
-                            .file_refs()
-                            .any(|file| *file == document.file)
-                    })
-                    .ok_or("workspace document not rendered")?;
-                assert!(
-                    request
-                        .messages
-                        .iter()
-                        .flat_map(|message| message.content.file_refs())
-                        .any(|file| *file == document.instructions.as_ref().unwrap().content)
+                let bodies =
+                    selected_text(&files, &document.instructions.as_ref().unwrap().content).await?;
+                assert_eq!(
+                    occurrences(request, &bodies),
+                    1,
+                    "the selected instruction bytes must be rendered"
                 );
             }
             if turn == 4 {
@@ -648,6 +704,14 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
     }
     let requests = model.requests();
     assert_eq!(requests.len(), 18);
+    for request in &requests {
+        acyclic_harness_core::model::PreparedModelRequest::prepare(
+            request.clone(),
+            projection_limits,
+            None,
+        )?
+        .projected_file_bytes(Some(projection_limits.file_bytes))?;
+    }
     for (at, pair) in requests.windows(2).enumerate() {
         if at + 1 == 16 {
             continue; // The history page changes its selected base at this cut.
@@ -809,19 +873,11 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                 _ => None,
             })
             .collect::<String>();
-        let (_custody, reader) = instruction_reader(&proof_files, selection)?;
-        let original = reader
-            .read(
-                &selection.content,
-                selection.content.descriptor().byte_length(),
-                None,
-                None,
-            )?
-            .await?;
-        assert!(original.len() as u64 > projection_limits.render_bytes);
+        let original = announcement_text(&proof_files, &pinned).await?;
+        assert!(selection.content.descriptor().byte_length() > projection_limits.render_bytes);
         assert_eq!(
             rendered.as_bytes(),
-            original.as_ref(),
+            original.as_bytes(),
             "part boundaries must preserve every UTF-8 byte"
         );
         for request in &requests {
@@ -831,16 +887,6 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
                     .validate_limits(projection_limits, &mut None)?;
             }
         }
-        assert!(
-            requests[1]
-                .messages
-                .iter()
-                .flat_map(|message| message.content.file_refs())
-                .any(|file| pinned
-                    .iter()
-                    .filter_map(|document| document.instructions.as_ref())
-                    .any(|selection| *file == selection.content))
-        );
     }
     Ok(())
 }

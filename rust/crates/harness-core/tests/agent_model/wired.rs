@@ -1437,6 +1437,8 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
                 .clone(),
         )?);
         let (host, binding) = private_in(&stream, &path).await?;
+        let roster = acyclic_harness_core::runtime::TargetResolver::roster(targets.as_ref());
+        let roster_text = std::str::from_utf8(roster.canonical().0)?.to_owned();
         let driver = ExecutorDriver::new(FilesystemTurnHost::new(
             stream.clone(),
             within(),
@@ -1499,14 +1501,14 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
         }
         let requests = model.requests();
         assert_eq!(requests.len(), 6);
-        let roster_file = roster_file.ok_or("no roster staged")?;
+        roster_file.ok_or("no roster staged")?;
         for (n, request) in requests.iter().enumerate() {
             assert_eq!(
                 request
                     .messages
                     .iter()
-                    .flat_map(|message| message.content.file_parts())
-                    .filter(|(file, _)| **file == roster_file)
+                    .flat_map(|message| message.content.parts())
+                    .filter(|part| matches!(part, ModelContentPart::Text { text, .. } if *text == roster_text))
                     .count(),
                 1,
                 "request {n}, history_turns={history_turns}"

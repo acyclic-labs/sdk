@@ -162,11 +162,9 @@ async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
         requests[1].messages
     );
     assert!(
-        !requests[1]
-            .messages
-            .iter()
-            .flat_map(|message| message.content.file_parts())
-            .any(|(file, _)| file == &instructions)
+        !super::request_text(&harness, &requests[1])
+            .await?
+            .contains("Instructions from the newly added repository.")
     );
     let announced = after
         .announcements
@@ -177,12 +175,23 @@ async fn workspace_deltas_keep_local_turns_on_the_same_primary() -> Result<()> {
         .instructions
         .as_ref()
         .ok_or_else(|| Error::NotFound("instruction delta".into()))?;
+    let proof_grants = crate::Capabilities::new([selection.manifest.read_capability(&mut None)?]);
+    let proof_scope =
+        issuer.bootstrap_scope("instruction-proof", &proof_grants, None, &mut None)?;
+    let reader = crate::filesystem::FilesystemContentVerifier::new(
+        Arc::clone(&harness.files),
+        &harness.verifier,
+        &proof_scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
     assert!(
-        requests[2]
-            .messages
+        selection
+            .entries(reader.as_ref())
+            .await?
             .iter()
-            .flat_map(|message| message.content.file_parts())
-            .any(|(file, _)| file == &selection.content)
+            .flat_map(|entry| &entry.files)
+            .any(|file| file == &instructions)
     );
     assert!(
         super::request_text(&harness, &requests[2])

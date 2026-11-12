@@ -157,14 +157,14 @@ impl AnnouncedDocument {
 }
 
 /// Appended messages for this turn's changed documents and instructions.
-/// Small sources retain their original file parts. Larger sources use bounded
-/// text parts; messages are packed under the admitted attachment allowance.
+/// Immutable identities stay in the retained records. Verified document bytes
+/// use text credit, independently of the provider's aggregate attachment credit.
 pub async fn announcement_messages(
     documents: &[AnnouncedDocument],
     reader: &dyn crate::conversation::ContentResidencyVerifier,
     limits: crate::conversation::Limits,
 ) -> crate::Result<Vec<crate::model::ModelContent>> {
-    use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
+    use crate::model::ModelContent;
     let mut parts = Vec::new();
     for document in documents {
         for file in std::iter::once(&document.file).chain(
@@ -173,19 +173,6 @@ pub async fn announcement_messages(
                 .iter()
                 .map(|selection| &selection.content),
         ) {
-            let complete = file.descriptor().byte_length() <= limits.file_bytes
-                && file.descriptor().byte_length() <= limits.render_bytes;
-            parts.push(ModelContentPart::File {
-                file: file.clone(),
-                policy: if complete {
-                    FileProjectionPolicy::BoundedFull
-                } else {
-                    FileProjectionPolicy::Reference
-                },
-            });
-            if complete {
-                continue;
-            }
             let bytes = reader
                 .read(file, file.descriptor().byte_length(), None, None)?
                 .await?;
