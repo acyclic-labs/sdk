@@ -833,24 +833,26 @@ async fn publication_recovers_original_evidence_without_receipt_paths_for_every_
     for adapter in 0..3 {
         let provider =
             ProviderRef::new("batch".into(), "filesystem".into(), "1".into(), &mut None)?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
-        let agent = crate::AgentId::from_bytes([37; 16]);
-        let volume = VolumeRef::new(
-            provider.clone(),
-            "private".into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-            &mut None,
-        )?;
-        host.create_volume(&volume).await?;
-        let (write, read) = publication_grants(&volume, agent)?;
-        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         for class in [
             None,
             Some(InternalContentClass::Interaction),
             Some(InternalContentClass::Execution),
             Some(InternalContentClass::ToolResult),
         ] {
+            // Each family checks an initially receipt-free workspace before
+            // introducing caller-authored files at the former host paths.
+            let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+            let agent = crate::AgentId::from_bytes([37; 16]);
+            let volume = VolumeRef::new(
+                provider.clone(),
+                "private".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(agent),
+                &mut None,
+            )?;
+            host.create_volume(&volume).await?;
+            let (write, read) = publication_grants(&volume, agent)?;
+            let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
             let cancellation = acyclic_fs::CancellationToken::new();
             let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
             let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
