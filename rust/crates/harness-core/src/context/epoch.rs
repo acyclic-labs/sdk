@@ -220,7 +220,7 @@ impl ContextEpoch {
                 Some(("skill", identity)) => {
                     let (name, _identity): (String, String) = serde_json::from_str(identity)
                         .map_err(|error| Error::Invalid(error.to_string()))?;
-                    serde_json::json!({"version": 1, "skill": {"name": name}, "removed": true})
+                    serde_json::json!({"version": 1, "skill": {"name": name, "id": blake3::hash(key.as_bytes()).to_hex().as_str()}, "removed": true})
                 }
                 Some(("instructions", identity)) => {
                     let (volume, path): (crate::conversation::VolumeRef, String) =

@@ -52,6 +52,7 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
     );
     entry.identity = "PRIVATE_ORIGINAL_SOURCE".into();
     let expected = json!([{
+        "id":blake3::hash(b"skill:[\"inspect\",\"PRIVATE_ORIGINAL_SOURCE\"]").to_hex().as_str(),
         "name":"inspect",
         "description":"Inspect files",
         "source": entry.source
@@ -385,7 +386,20 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
         skill("skills/project/inspect/SKILL.md".into())?,
     ];
     manifest.discovery.skills[0].identity = "PRIVATE_ORIGINAL_SOURCE".into();
+    let catalog = manifest.discovery.messages(Limits::default(), None)?;
+    let ModelContent::Text(catalog) = &catalog[0].content else {
+        return Err(Error::Invalid("expected skill catalog".into()));
+    };
+    let catalog: Vec<SkillSummary> = serde_json::from_str(catalog).unwrap();
+    assert_ne!(catalog[0].id, catalog[1].id);
     let initial = ContextEpoch::changes(&BTreeMap::new(), &manifest, reader.as_ref()).await?;
+    for (notice, entry) in initial.iter().zip(&catalog) {
+        assert_eq!(notice.notice.body["skill"]["id"], entry.id);
+        assert_eq!(
+            notice.notice.coalesce_key.as_deref(),
+            Some(format!("{CONTEXT_CHANGED}:{}", entry.id).as_str())
+        );
+    }
     assert_ne!(
         initial[0].notice.coalesce_key,
         initial[1].notice.coalesce_key
@@ -398,7 +412,7 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
     assert_eq!(changed.len(), 1);
     assert_eq!(
         changed[0].notice.body["skill"],
-        json!({"name":"inspect","description":"changed user skill","source":manifest.discovery.skills[0].source})
+        json!({"id":catalog[0].id,"name":"inspect","description":"changed user skill","source":manifest.discovery.skills[0].source})
     );
     assert!(
         !serde_json::to_string(&changed[0].notice)
@@ -414,7 +428,11 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
         removed[0].notice.coalesce_key,
         changed[0].notice.coalesce_key
     );
-    assert_eq!(removed[0].notice.body["skill"], json!({"name":"inspect"}));
+    assert_eq!(
+        removed[0].notice.body["skill"],
+        json!({"id":catalog[0].id,"name":"inspect"})
+    );
+    assert_ne!(removed[0].notice.body["skill"]["id"], catalog[1].id);
     assert_eq!(removed[0].notice.body["removed"], true);
     Ok(())
 }
