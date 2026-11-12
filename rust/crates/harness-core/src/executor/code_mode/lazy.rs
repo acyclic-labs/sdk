@@ -9,6 +9,12 @@ struct Selection {
     call: std::result::Result<SelectedCall, ToolFailureCause>,
 }
 
+impl PreparationRecord for Selection {
+    fn json_value_schema() -> &'static crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::AuthoredToolSelection
+    }
+}
+
 /// A host-selected canonical capability, separate from the model's spelling.
 #[derive(Serialize, Deserialize, PartialEq, Debug, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
