@@ -17,6 +17,7 @@ pub mod protocol;
 mod publication;
 mod reply;
 mod roots;
+pub use roots::verify as verify_roots;
 mod vectors;
 mod wire;
 

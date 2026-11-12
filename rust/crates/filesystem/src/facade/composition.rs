@@ -44,6 +44,19 @@ pub struct RestoreSpec<'g, A: 'static, O: 'static> {
     pub permit: PublicationPermit,
 }
 
+/// One dirty workspace's immutable staged generation in a coupled commit.
+pub struct PublishSpec<'g, A: 'static, O: 'static> {
+    /// Original generation read by the caller. The complete commit is refused
+    /// if any workspace has advanced from its expected generation.
+    pub expected: &'g crate::Generation<A, O>,
+    /// Staged checkpoint belonging to the same workspace, without publication.
+    pub generation: GenerationId,
+    /// Stable identity of this workspace's publication in the caller's commit.
+    pub operation: OperationId,
+    /// Original filesystem publication authority, checked by the shared core.
+    pub permit: PublicationPermit,
+}
+
 /// Immutable generation created by a prepared workspace fork. It becomes
 /// readable through its workspace when the containing transaction commits.
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +80,95 @@ where
     P: crate::distributed::AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Contributes every dirty workspace head to the caller's one Streams
+    /// transaction, together with git/merge-state CAS contributions. Preparation
+    /// publishes nothing; all heads, state and caller records have one hard
+    /// commit decision. Cost is O(dirty workspaces + changed state entries).
+    ///
+    /// Immutable closures are authenticated, flushed and held by the shared
+    /// publication core. Dropping this future or returning an error removes only
+    /// this call's contributions. After an unknown submission outcome, retain
+    /// and resubmit the exact sealed commit, including its original key.
+    pub async fn prepare_publish_many<W: FsWork>(
+        &self,
+        publications: &[PublishSpec<'_, StreamAuthorityStore<P>, O>],
+        state_changes: &[crate::GitCompatCas<'_>],
+        commit: &mut FilesystemCommit,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let mut guard = commit.guard();
+        let result = async {
+            accounting.check()?;
+            if !state_changes.is_empty() {
+                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let preserved = guard.preserve_conditions(&mut authority);
+                finish_authority_work(authority)?;
+                preserved.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
+            }
+            for publication in publications {
+                let volume = &publication.expected.workspace.volume;
+                if !self.same_deployment(&volume.fs) {
+                    return Err(WorkspaceError::ForeignGeneration);
+                }
+                // The head read buys exact-generation CAS; a concurrent edit
+                // after it is fenced by the contributed Streams condition.
+                let (root, head) = volume
+                    .resolve_head_generation(&mut accounting, cancellation)
+                    .await
+                    .map_err(WorkspaceError::engine)?;
+                if GenerationId::from_root(root) != publication.expected.id() {
+                    return Err(WorkspaceError::StaleGeneration);
+                }
+                let prepared = crate::kernel::prepare_publication(
+                    self,
+                    PublishGenerationRequest {
+                        authority_id: volume_authority_id(volume.id),
+                        volume_id: volume.id,
+                        epoch: head.epoch,
+                        expected: head,
+                        operation_id: publication.operation,
+                        generation_root: publication.generation.object_id(),
+                    },
+                    publication.permit,
+                    closure_limits(volume.config),
+                    &mut accounting,
+                    cancellation,
+                )
+                .await
+                .map_err(WorkspaceError::engine)?;
+                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let contributed = self
+                    .inner
+                    .authority
+                    .contribute_publication(guard.commit(), prepared, &mut authority)
+                    .await;
+                finish_authority_work(authority)?;
+                if !contributed.map_err(|error| WorkspaceError::from(FsError::from(error)))? {
+                    return Err(WorkspaceError::StaleGeneration);
+                }
+            }
+            let store = crate::StreamGitCompatStore::new(self.inner.authority.clone());
+            for change in state_changes {
+                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let contributed = store
+                    .contribute_cas(change, guard.commit(), &mut authority)
+                    .await;
+                finish_authority_work(authority)?;
+                if !contributed.map_err(|error| WorkspaceError::GitCompat(Box::new(error)))? {
+                    return Err(WorkspaceError::StaleGeneration);
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if result.is_ok() {
+            guard.disarm();
+        }
+        work.finish(result, &accounting)
+    }
+
     /// Prepares authenticated restores with the caller's own records in one
     /// conditional transaction. No volume head changes during preparation.
     /// The commit retains all proofs and collection/projection guards through

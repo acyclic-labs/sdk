@@ -338,7 +338,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     }
 }
 
-fn clone_condition(
+pub(super) fn clone_condition(
     condition: &CommitCondition,
     work: &mut AuthorityWork<'_>,
 ) -> Result<CommitCondition, AuthorityStoreError> {

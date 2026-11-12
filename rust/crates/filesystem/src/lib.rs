@@ -237,7 +237,7 @@ pub use facade::{
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
-pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, RestoreSpec};
+pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec};
 #[cfg(not(target_arch = "wasm32"))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,
@@ -264,7 +264,7 @@ pub use git_compat::{
     git_restore_paths, git_tracked_paths_after, grep_git_generation, parse_git_public_command,
     walk_git_tree,
 };
-pub use git_compat::{StreamGitCompatStore, StreamGitCompatStoreError};
+pub use git_compat::{GitCompatCas, StreamGitCompatStore, StreamGitCompatStoreError};
 
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,

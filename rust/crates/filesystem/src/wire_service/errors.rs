@@ -48,6 +48,13 @@ fn workspace_code(error: &WorkspaceError) -> Code {
         // Engine contains an opaque diagnostic, not evidence of an outage.
         E::Engine(_) => Code::Internal,
         E::Filesystem(error) => filesystem_code(error),
+        E::GitCompat(error) => match error.as_ref() {
+            crate::StreamGitCompatStoreError::Authority(error)
+            | crate::StreamGitCompatStoreError::Unknown { error, .. } => authority_code(error),
+            crate::StreamGitCompatStoreError::Stream(error) => stream_code(error),
+            crate::StreamGitCompatStoreError::Codec(_) => Code::DataLoss,
+            crate::StreamGitCompatStoreError::Incompatible => Code::FailedPrecondition,
+        },
     }
 }
 

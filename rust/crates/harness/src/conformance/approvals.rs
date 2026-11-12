@@ -189,6 +189,10 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         PRIVATE_VOLUME,
         agent.clone(),
     )?;
+    let journal = acyclic_harness_core::conversation::journal_volume(
+        private.volume()?.provider().clone(),
+        &agent,
+    )?;
     let grants = vec![
         INTERACTION_ROUTE.to_owned(),
         private
@@ -197,6 +201,8 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         private
             .volume()?
             .capability(VolumeOperation::Write, &mut None)?,
+        journal.capability(VolumeOperation::Read, &mut None)?,
+        journal.capability(VolumeOperation::Write, &mut None)?,
     ];
     let scope = issuer.bootstrap_scope("root", &Capabilities::new(grants), None, &mut None)?;
     let objects = storage.objects().await?;

@@ -14,6 +14,9 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 mod counted;
+mod publication;
+/// Atomic publication vectors for a Streams-backed filesystem.
+pub use publication::verify as verify_coupled_publication;
 
 /// Canonical language-neutral dependency/content-range vector used by existing
 /// compatibility and proof producers. Exact bytes ship with this crate.
@@ -83,6 +86,12 @@ pub fn from_providers<S: StreamProvider, O: acyclic_objects::Blobs>(
 /// Provider refusal or a contradicted public-contract assertion.
 #[derive(Debug, thiserror::Error)]
 pub enum Failure {
+    /// Original primitive publication error.
+    #[error(transparent)]
+    Filesystem(#[from] crate::FsError),
+    /// Original caller-record stream error.
+    #[error(transparent)]
+    Stream(#[from] acyclic_stream::StreamError),
     /// Original typed workspace error.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),

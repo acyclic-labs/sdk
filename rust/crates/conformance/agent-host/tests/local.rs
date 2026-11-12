@@ -64,6 +64,11 @@ acyclic_agent_host_conformance::suite!(local_native, native);
 acyclic_agent_host_conformance::suite!(local_guest_wire, guest_wire);
 
 #[tokio::test]
+async fn root_preparation_requires_every_created_volume() -> Result {
+    acyclic_agent_host_conformance::verify_roots(&native().await?).await
+}
+
+#[tokio::test]
 async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
     // Capture a real one-call regression at the same public provider boundary.
     let directory = tempfile::tempdir()?;

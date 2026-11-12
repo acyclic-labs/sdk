@@ -32,6 +32,9 @@ pub enum WorkspaceError {
     /// The original filesystem failure.
     #[error(transparent)]
     Filesystem(FsError),
+    /// The original stream-backed git or merge-state preparation failure.
+    #[error(transparent)]
+    GitCompat(Box<crate::StreamGitCompatStoreError>),
     /// Caller cancellation stopped a measured workspace operation.
     #[error(transparent)]
     Cancelled(#[from] crate::CancellationError),

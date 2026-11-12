@@ -39,7 +39,7 @@ pub use commands::*;
 mod store;
 pub use store::*;
 mod stream_store;
-pub use stream_store::{StreamGitCompatStore, StreamGitCompatStoreError};
+pub use stream_store::{GitCompatCas, StreamGitCompatStore, StreamGitCompatStoreError};
 mod errors;
 pub use errors::*;
 mod repository;

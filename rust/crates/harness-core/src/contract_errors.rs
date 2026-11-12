@@ -553,6 +553,19 @@ impl Error {
         match source {
             WorkspaceError::AccessDenied => ErrorCode::Unauthorized,
             WorkspaceError::Filesystem(source) => filesystem_error_code(source),
+            WorkspaceError::GitCompat(source) => match source.as_ref() {
+                acyclic_fs::StreamGitCompatStoreError::Authority(
+                    acyclic_fs::AuthorityStoreError::Missing,
+                ) => ErrorCode::NotFound,
+                acyclic_fs::StreamGitCompatStoreError::Authority(
+                    acyclic_fs::AuthorityStoreError::Cancelled,
+                ) => ErrorCode::Cancelled,
+                acyclic_fs::StreamGitCompatStoreError::Unknown { .. } => ErrorCode::Indeterminate,
+                acyclic_fs::StreamGitCompatStoreError::Incompatible => ErrorCode::Conflict,
+                acyclic_fs::StreamGitCompatStoreError::Authority(_)
+                | acyclic_fs::StreamGitCompatStoreError::Stream(_)
+                | acyclic_fs::StreamGitCompatStoreError::Codec(_) => ErrorCode::Storage,
+            },
             WorkspaceError::NotFound => ErrorCode::NotFound,
             WorkspaceError::RetentionConflict
             | WorkspaceError::StaleGeneration

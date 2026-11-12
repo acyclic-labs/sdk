@@ -28,9 +28,8 @@ use crate::{
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
 use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, CreateSpec, CreationOperation, FilesystemCommit,
-    FilesystemCommitOutcome, Fs, StreamAuthorityStore, WorkBudget, WorkspaceName,
-    distributed::AuthorityProvider,
+    AsyncObjectStore, CancellationToken, FilesystemCommit, FilesystemCommitOutcome, Fs,
+    StreamAuthorityStore, WorkBudget, distributed::AuthorityProvider,
 };
 use std::sync::Arc;
 
@@ -80,7 +79,8 @@ pub struct RootRequest {
     /// The root agent.
     pub agent: AgentId,
     /// Volumes created, empty, in the root's own commit; the agent's private
-    /// volume is one of them.
+    /// volume is one of them. The journal is created implicitly, outside this
+    /// table; an admitted caller must also grant its creation and write.
     pub fresh: Vec<WorkspaceEntry>,
     /// Existing volumes the root binds as they are.
     pub retained: Vec<WorkspaceEntry>,
@@ -1269,6 +1269,18 @@ where
                 authority.authorize_volume(volume).map_err(turn)?;
             }
         }
+        let journal =
+            crate::conversation::journal_volume(self.volumes.provider.clone(), &request.agent)
+                .map_err(turn)?;
+        authority.authorize_volume(&journal).map_err(turn)?;
+        if request
+            .fresh
+            .iter()
+            .chain(&request.retained)
+            .any(|binding| binding.as_volume() == Some(&journal))
+        {
+            return Err(Error::Record("the agent journal is not a workspace"));
+        }
         Ok(())
     }
 
@@ -1350,19 +1362,16 @@ where
         }
         let fs = &self.volumes.filesystem;
         let cancellation = CancellationToken::new();
-        let mut creations = Vec::with_capacity(fresh.len());
-        for binding in &fresh {
-            let Some(volume) = binding.as_volume() else {
-                continue;
-            };
-            let (name, operation) = self.volumes.volume_creation(volume).map_err(turn)?;
-            creations.push(CreateSpec {
-                name: WorkspaceName::new(name, &WorkBudget::UNBOUNDED, &cancellation)
-                    .map_err(|failure| turn(super::map_error(failure.error)))?
-                    .value,
-                initialization: self.volumes.volume_initialization(),
-                creation: CreationOperation::populated(operation, &[]),
-            });
+        let journal =
+            crate::conversation::journal_volume(self.volumes.provider.clone(), &child.id())
+                .map_err(turn)?;
+        let mut creations = Vec::with_capacity(fresh.len() + 1);
+        for volume in fresh
+            .iter()
+            .filter_map(WorkspaceEntry::as_volume)
+            .chain(std::iter::once(&journal))
+        {
+            creations.push(self.volumes.volume_create_spec(volume).map_err(turn)?);
         }
         let mut commit = FilesystemCommit::new(request);
         fs.prepare_create_many(

@@ -44,6 +44,7 @@ enum Case {
     Covering,
     ReadOnlyPrivate,
     ReadOnlyShared,
+    ReadOnlyJournal,
     WrongAudience,
     OtherAgent,
     Expired,
@@ -53,11 +54,13 @@ enum Case {
     StructuredPrivateOnly,
 }
 
-pub(crate) async fn verify(backend: &dyn Backend) -> Result {
+/// Verify root admission and exact replay against the backend's real storage.
+pub async fn verify(backend: &dyn Backend) -> Result {
     for case in [
         Case::Covering,
         Case::ReadOnlyPrivate,
         Case::ReadOnlyShared,
+        Case::ReadOnlyJournal,
         Case::WrongAudience,
         Case::OtherAgent,
         Case::Expired,
@@ -107,6 +110,10 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     let agent = crate::conformance::fixtures::adopted().agent;
     let private = volume(WorkspaceRole::Private, PRIVATE_VOLUME, agent.clone())?;
     let shared = volume(WorkspaceRole::Shared, "shared", agent.clone())?;
+    let journal = acyclic_harness_core::conversation::journal_volume(
+        private.volume()?.provider().clone(),
+        &agent,
+    )?;
     let mut grants = vec![
         INTERACTION_ROUTE.to_owned(),
         private
@@ -115,6 +122,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         shared
             .volume()?
             .capability(VolumeOperation::Read, &mut None)?,
+        journal.capability(VolumeOperation::Read, &mut None)?,
     ];
     if case != Case::ReadOnlyPrivate {
         grants.push(
@@ -129,6 +137,9 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
                 .volume()?
                 .capability(VolumeOperation::Write, &mut None)?,
         );
+    }
+    if case != Case::ReadOnlyJournal {
+        grants.push(journal.capability(VolumeOperation::Write, &mut None)?);
     }
     if case == Case::StructuredPrivateOnly {
         grants = vec![

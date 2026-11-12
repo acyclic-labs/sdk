@@ -68,6 +68,13 @@ fn write_error(reason: &'static str, work: &crate::AuthorityWork<'_>) -> ObjectS
 }
 
 impl<O: AsyncObjectStore> SimulatedStore<O> {
+    async fn pause_if_selected(&self, fault: Option<SimulationFault>) {
+        if matches!(fault, Some(SimulationFault::PauseBefore)) {
+            self.paused.notify_one();
+            futures::future::pending::<()>().await;
+        }
+    }
+
     fn object_fault(
         &self,
         operation: SimulationOperation,
@@ -170,6 +177,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         let fault = self.object_fault(SimulationOperation::ObjectPut, work)?;
+        self.pause_if_selected(fault).await;
         if !matches!(fault, Some(SimulationFault::DelayObjectVisibility)) {
             return self.inner.put(object_id, bytes, work).await;
         }
@@ -206,6 +214,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
         let fault = self.object_fault(SimulationOperation::ObjectPut, work)?;
+        self.pause_if_selected(fault).await;
         if matches!(fault, Some(SimulationFault::DelayObjectVisibility)) {
             let (object_id, bytes) = object.into_parts();
             self.delay_object(object_id, bytes, work)
@@ -222,6 +231,8 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
+        let fault = self.object_fault(SimulationOperation::ObjectFlush, work)?;
+        self.pause_if_selected(fault).await;
         self.inner.flush_before_publish(scope, work).await
     }
 
@@ -232,6 +243,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
         let fault = self.object_fault(SimulationOperation::ObjectRead, work)?;
+        self.pause_if_selected(fault).await;
         let mut read = self.inner.read(object_id, maximum_bytes, work).await?;
         altered_read(&mut read, fault, work)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -249,6 +261,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
         let fault = self.object_fault(SimulationOperation::ObjectReadMany, work)?;
+        self.pause_if_selected(fault).await;
         let mut reads = self.inner.read_many(requests, work).await?;
         if let Some(first) = reads.0.first_mut() {
             altered_read(first, fault, work)?;
@@ -265,7 +278,8 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         if work.is_native() {
             return Err(ObjectStoreError::NativeUnavailable);
         }
-        self.object_fault(SimulationOperation::ObjectContains, work)?;
+        let fault = self.object_fault(SimulationOperation::ObjectContains, work)?;
+        self.pause_if_selected(fault).await;
         self.inner.contains(object_id, work).await
     }
 }

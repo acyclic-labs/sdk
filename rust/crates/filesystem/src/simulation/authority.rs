@@ -47,6 +47,7 @@ impl<A: AsyncAuthorityStore + 'static> AsyncAuthorityStore for SimulatedStore<A>
         group.bind(Self {
             state: Arc::clone(&self.state),
             inner: Arc::clone(&self.inner),
+            paused: Arc::clone(&self.paused),
         })
     }
 

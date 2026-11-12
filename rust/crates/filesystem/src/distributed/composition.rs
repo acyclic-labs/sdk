@@ -270,6 +270,7 @@ impl FilesystemCommit {
             holds: self.holds.len(),
             publications: self.publications.len(),
             owner: self.owner,
+            conditions: None,
         }
     }
 
@@ -281,7 +282,11 @@ impl FilesystemCommit {
         if let Some((index, conditions, mutations)) = mark.hard
             && let Some(effect) = self.request.effects.get_mut(index)
         {
-            effect.conditions.truncate(conditions);
+            if let Some(original) = mark.conditions {
+                effect.conditions = original;
+            } else {
+                effect.conditions.truncate(conditions);
+            }
             effect.mutations.truncate(mutations);
         }
         self.authorities.truncate(mark.authorities);
@@ -293,13 +298,14 @@ impl FilesystemCommit {
 }
 
 /// A position in a [`FilesystemCommit`] that a failed preparation rolls back to.
-#[derive(Clone, Copy)]
 struct CommitMark {
     deadline: Option<u64>,
     owner: Option<[u8; 16]>,
     effects: usize,
     /// The hard effect's position and lengths, when the request had one.
     hard: Option<(usize, usize, usize)>,
+    /// Funded original conditions when a contributor can strengthen them.
+    conditions: Option<Vec<CommitCondition>>,
     authorities: usize,
     contributions: usize,
     holds: usize,
@@ -313,6 +319,33 @@ pub(crate) struct CommitGuard<'c> {
 }
 
 impl CommitGuard<'_> {
+    /// Preserve caller conditions before an in-place merge can strengthen one.
+    /// Append-only contributors retain the allocation-free length marker.
+    pub(crate) fn preserve_conditions(
+        &mut self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        let Some(mark) = self.mark.as_ref() else {
+            return Ok(());
+        };
+        let Some((index, _, _)) = mark.hard else {
+            return Ok(());
+        };
+        if mark.conditions.is_some() {
+            return Ok(());
+        }
+        let original = &self.commit.request.effects[index].conditions;
+        let mut conditions = work.vec(original.len())?;
+        for condition in original {
+            conditions.push(super::state::clone_condition(condition, work)?);
+        }
+        self.commit.retain_request_custody(work)?;
+        if let Some(mark) = self.mark.as_mut() {
+            mark.conditions = Some(conditions);
+        }
+        Ok(())
+    }
+
     pub(crate) fn commit(&mut self) -> &mut FilesystemCommit {
         self.commit
     }

@@ -211,6 +211,58 @@ fn root(agent: AgentId, fresh: Vec<WorkspaceEntry>) -> RootRequest {
 }
 
 #[tokio::test]
+async fn root_admission_requires_the_implicit_journal_before_io() -> Result {
+    use super::wired::Refusing;
+    use acyclic_harness_core::{
+        Capabilities, conversation::VolumeOperation, filesystem::hosting::VerifiedCaller,
+    };
+
+    let stream = Arc::new(Refusing::default());
+    let private = volume("interface", id(1))?;
+    let journal = acyclic_harness_core::conversation::journal_volume(provider()?, &id(1))?;
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "admission".into(),
+    };
+    let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
+    for grants_journal in [false, true] {
+        let (placement, bucket) = placed(&stream)?;
+        let private_write = private
+            .volume()?
+            .capability(VolumeOperation::Write, &mut None)?;
+        let mut grants = vec![private_write];
+        if grants_journal {
+            grants.push(journal.capability(VolumeOperation::Write, &mut None)?);
+        }
+        let scope =
+            issuer.bootstrap_scope("caller", &Capabilities::new(grants), None, &mut None)?;
+        let bound = Bound::admitted(
+            issuer.clone(),
+            VerifiedCaller {
+                audience: audience.clone(),
+                scope,
+            },
+            placement,
+            turns()?,
+        )?;
+        let request = root(id(1), vec![private.clone()]);
+        assert_eq!(bound.admit_root(&request).is_ok(), grants_journal);
+        if grants_journal {
+            let mut aliased = root(id(1), vec![private.clone()]);
+            aliased.retained.push(WorkspaceEntry::initial_volume(
+                WorkspaceRole::User,
+                "ordinary".into(),
+                journal.clone(),
+            ));
+            assert!(bound.admit_root(&aliased).is_err());
+        }
+        assert_eq!(bucket.objects().await?, 0);
+    }
+    assert_eq!(stream.calls.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
     let stream = Arc::new(MemoryStream::default());
     let bound = Bound::local_root(
@@ -225,7 +277,13 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         placement(&stream)?,
         turns()?,
     )?;
-    let private = volume(PRIVATE_VOLUME, id(1))?;
+    // A display name never reserves storage or selects harness internals.
+    let private = volume("journal", id(1))?;
+    let journal = acyclic_harness_core::conversation::journal_volume(provider()?, &id(1))?;
+    let journal_ref = acyclic_harness_core::filesystem::workspace_ref(
+        provider()?,
+        &journal.storage_name(&mut None)?,
+    )?;
     let first = bound
         .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
         .await?;
@@ -233,11 +291,13 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
         .await?;
     assert_eq!(first.request(), again.request(), "preparation is exact");
+    assert!(bound.volumes().resolve(&journal_ref, None).await.is_err());
     let child = first.child().clone();
     let RootSubmission::Created(created) = bound.submit_root(first).await? else {
         return Err("the root's submission was uncertain".into());
     };
     assert_eq!(created, child);
+    bound.volumes().resolve(&journal_ref, None).await?;
     assert_eq!(
         bound.agents().state(&created).await?.volumes,
         vec![private.clone()]

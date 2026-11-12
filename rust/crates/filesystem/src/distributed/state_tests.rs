@@ -1607,9 +1607,10 @@ async fn lost_ack_and_unreadable_receipt_preserve_the_original_publication()
     let error = GitCompatStore::compare_and_swap(&store, id, 0, initial.clone())
         .await
         .expect_err("lost acknowledgement must not become success or absence");
-    let StreamGitCompatStoreError::Unknown { mut commit, error } = error else {
+    let StreamGitCompatStoreError::Unknown { commit, error } = error else {
         return Err("unresolved publication lost its owner".into());
     };
+    let mut commit = commit();
     assert!(matches!(
         error,
         AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unavailable)
