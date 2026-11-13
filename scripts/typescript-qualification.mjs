@@ -119,7 +119,7 @@ async function retainedCompilerFiles(directory, sourceSha, buildReceipt) {
       const path = `${item.directory}/${entry.path.slice(8)}`;
       if (files.has(path)) fail("retained archive contains duplicate compiler files");
       files.set(path, { path, sha256: `sha256:${await hashBody(entry)}`, bytes: entry.size });
-    });
+     }).catch(cause => { throw new Error("retained compiler provenance archive admission failed", { cause }); });
     verifyArtifact(expected, observedDigest);
   }
   return files;

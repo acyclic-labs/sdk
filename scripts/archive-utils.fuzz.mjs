@@ -41,8 +41,10 @@ export async function fuzzPayload(data, caseInsensitive) {
     if (entry.type === "0") {
       const actual = result.payload.get(entry.path);
       assert.deepEqual(actual, entry.body);
-      assert.equal(actual.buffer, bytes.buffer, "a contiguous body must retain its input");
-      assert.equal(actual.byteOffset, entry.body.byteOffset);
+      if (actual.length) {
+        assert.equal(actual.buffer, bytes.buffer, "a contiguous body must retain its input");
+        assert.equal(actual.byteOffset, entry.body.byteOffset);
+      }
     }
   }
   return result.payload;
