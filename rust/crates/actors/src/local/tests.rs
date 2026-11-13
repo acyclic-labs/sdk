@@ -8,6 +8,7 @@ use proptest::prelude::*;
 mod disposition;
 mod hot_path;
 mod overlay;
+mod subscriptions;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

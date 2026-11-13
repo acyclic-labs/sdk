@@ -223,6 +223,21 @@ pub fn validate_add_subscription(
     Ok(())
 }
 
+/// Validates subscription removal with the same scope and retry identity rules as addition.
+pub fn validate_remove_subscription(
+    request: &wire::RemoveSubscriptionRequest,
+) -> Result<(), ContractError> {
+    if !valid_actor_scope(
+        &request.account_id,
+        request.namespace.as_deref(),
+        &request.actor_id,
+    ) || !valid_idempotency_key(&request.idempotency_key)
+        || request.subscription_id.is_empty()
+    {
+        return Err(ContractError::InvalidArgument);
+    }
+    Ok(())
+}
 /// Validates a fork: both Actors share one account and namespace, the child
 /// differs from the parent, and each child subscription id occurs once.
 pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractError> {

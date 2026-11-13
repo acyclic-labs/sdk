@@ -179,7 +179,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
 /// One Streams fork of `source`'s exact cut into `destination`, with the
 /// overlay as the fork commit's own state record. The record's anchor is the
-/// fork commit, which is how the first claim recognises funding the forker
+/// fork commit, which is how the first own state write recognises funding the forker
 /// wrote for this branch (see [`Snapshot::overlaid`]).
 fn fork(
     source: &Snapshot,

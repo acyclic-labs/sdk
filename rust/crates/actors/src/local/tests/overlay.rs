@@ -308,6 +308,136 @@ async fn branch_escrow_is_zero_unless_allocated_and_never_double_spent() -> Test
     Ok(())
 }
 
+async fn subscription_edit_before_placement_keeps_funding(remove: bool) -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let store = Store::new(provider.clone(), state_root()?);
+    let parent = actor("parent")?;
+    let template = actor("template")?;
+    let child = actor("child")?;
+    let parent_cut = created(&store, &parent, Some(Escrow::new(Some(5)))).await?;
+    let template_cut = created(&store, &template, None).await?;
+    {
+        let mut binding = store.bind_state(parent_cut, 1)?;
+        let allocated = binding.transaction(|state| state.allocate_escrow(Some(3)))?;
+        let mut update = transition(1, AlarmChange::Keep);
+        update.effects.push(store.branch(
+            &template_cut,
+            &child,
+            branched(&template_cut, allocated)?,
+        )?);
+        store
+            .submit(binding.prepare_publish(&record(0), None, update, key("parent/allocate")?)?)
+            .await?;
+    }
+    let edit = |address: &ActorReference| {
+        let add = crate::wire::AddSubscriptionRequest {
+            namespace: Some(address.namespace().as_str().into()),
+            account_id: address.account().as_bytes().to_vec(),
+            actor_id: address.id().into(),
+            subscription: Some(crate::wire::SubscriptionSpec {
+                subscription_id: "events".into(),
+                stream_path: "events/input".into(),
+                start: Some(crate::wire::SubscriptionStart {
+                    start: Some(crate::wire::subscription_start::Start::Cursor(0)),
+                }),
+                placement_anchor: false,
+            }),
+            idempotency_key: "add".into(),
+        };
+        let remove = crate::wire::RemoveSubscriptionRequest {
+            namespace: add.namespace.clone(),
+            account_id: add.account_id.clone(),
+            actor_id: add.actor_id.clone(),
+            subscription_id: "inbox".into(),
+            idempotency_key: "remove".into(),
+        };
+        (add, remove)
+    };
+    let born = store.load(&child).await?;
+    assert!(born.overlaid());
+    let (add, removal) = edit(&child);
+    if remove {
+        store.remove_subscription(&[], &removal).await?;
+    } else {
+        store.add_subscription(&[], &add).await?;
+    }
+    assert!(!store.load(&child).await?.overlaid());
+    drop(store);
+    drop(provider);
+
+    // The administrative write must durably bind the allocation before its
+    // new state record hides the original overlay from the first placement.
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let store = Store::new(provider.clone(), state_root()?);
+    let placed = resume(&store, &child).await?;
+    let epoch = placed.state().ok_or("missing child")?.epoch();
+    {
+        let mut binding = store.bind_state(placed, epoch)?;
+        binding.transaction(|state| state.debit_escrow(3))?;
+        assert!(matches!(
+            binding.transaction(|state| state.debit_escrow(1)),
+            Err(Error::Escrow(EscrowError::Exhausted))
+        ));
+        binding.flush(key("child/spend")?).await?;
+    }
+    let parent_cut = store.load(&parent).await?;
+    assert_eq!(
+        parent_cut
+            .state()
+            .and_then(State::escrow)
+            .map(Escrow::remaining),
+        Some(Some(2))
+    );
+
+    // An actor-blind copy has no allocation overlay. The same edit must not
+    // turn the parent's remaining funds into spendable money on that copy.
+    let copy = actor("copy")?;
+    let commit = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: store.path(&copy)?,
+                }],
+                vec![CommitMutation::Fork {
+                    source: parent_cut.path().clone(),
+                    destination: store.path(&copy)?,
+                    at_tail: parent_cut.tail,
+                    exclude: Vec::new(),
+                    records: Vec::new(),
+                }],
+            )],
+            idempotency_key: key("copy/fork")?,
+        })
+        .await?;
+    PreparedPublish::settle(&commit)?;
+    let (add, removal) = edit(&copy);
+    if remove {
+        store.remove_subscription(&[], &removal).await?;
+    } else {
+        store.add_subscription(&[], &add).await?;
+    }
+    let placed = resume(&store, &copy).await?;
+    let epoch = placed.state().ok_or("missing copy")?.epoch();
+    let mut binding = store.bind_state(placed, epoch)?;
+    assert!(matches!(
+        binding.transaction(|state| state.debit_escrow(1)),
+        Err(Error::Escrow(EscrowError::ForeignBranch))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn funded_fork_add_before_placement_keeps_escrow() -> TestResult {
+    subscription_edit_before_placement_keeps_funding(false).await
+}
+
+#[tokio::test]
+async fn funded_fork_remove_before_placement_keeps_escrow() -> TestResult {
+    subscription_edit_before_placement_keeps_funding(true).await
+}
+
 /// A branch never resumed is a pinned cut: a later fork from it sees the
 /// source as it was, while a fork from a cut the source has left refuses
 /// and changes nothing.

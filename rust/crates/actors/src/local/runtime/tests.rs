@@ -777,6 +777,112 @@ async fn an_externally_placed_event_host_serves_only_after_its_command() -> Test
 }
 
 #[tokio::test]
+async fn placement_observation_tracks_committed_commands_and_runtime_replacement() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let address;
+    {
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let store = Store::new(provider.clone(), root()?);
+        address = actor("placed")?;
+        let mut create = PreparedPublish::foreign(key("create-placed")?);
+        create.join(store.create(None, &address, crate::local::Creation::default())?)?;
+        store.submit(create).await?;
+        let runtime = Runtime::new(
+            Store::new(provider.clone(), root()?),
+            Arc::new(Package::new()?),
+            Arc::new(SystemClock),
+        )
+        .with_external_placement();
+        let replacement = Runtime::new(
+            Store::new(provider.clone(), root()?),
+            Arc::new(Package::new()?),
+            Arc::new(SystemClock),
+        )
+        .with_external_placement();
+        // A directory reservation that never reaches publication changes no index.
+        assert_eq!(runtime.placement_state(&address).await?, (0, false));
+        assert_eq!(replacement.placement_state(&address).await?, (0, false));
+        runtime.place(address.clone(), 1).await?;
+        assert_eq!(runtime.placement_state(&address).await?, (1, true));
+        assert_eq!(replacement.placement_state(&address).await?, (1, false));
+        replacement.place(address.clone(), 2).await?;
+        assert_eq!(replacement.placement_state(&address).await?, (2, true));
+        assert_eq!(runtime.placement_state(&address).await?, (2, false));
+    }
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let restored = Runtime::new(
+        Store::new(provider, root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement();
+    assert_eq!(restored.placement_state(&address).await?, (2, false));
+    restored.place(address.clone(), 3).await?;
+    assert_eq!(restored.placement_state(&address).await?, (3, true));
+    Ok(())
+}
+
+#[tokio::test]
+async fn first_fork_placement_resumes_once_and_preserves_later_pause() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(provider.clone(), root()?);
+    let parent = actor("parent")?;
+    let mut create = PreparedPublish::foreign(key("create-parent")?);
+    create.join(store.create(None, &parent, crate::local::Creation::default())?)?;
+    store.submit(create).await?;
+    let query = crate::wire::ForkActorRequest {
+        actor_id: parent.id().into(),
+        child_actor_id: "child".into(),
+        namespace: Some(parent.namespace().as_str().into()),
+        account_id: parent.account().as_bytes().to_vec(),
+        idempotency_key: "fork-child".into(),
+        subscriptions: Vec::new(),
+    };
+    let child = store
+        .fork_actor(parent.account().as_bytes(), &query)
+        .await?;
+    assert!(store.load(&child).await?.state().unwrap().paused());
+    let runtime = Runtime::new(
+        Store::new(provider.clone(), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement();
+    runtime.place_fork(child.clone(), 1).await?;
+    assert!(!store.load(&child).await?.state().unwrap().paused());
+    runtime.pause(&child, true).await?;
+    let replay = store
+        .fork_actor(parent.account().as_bytes(), &query)
+        .await?;
+    let (index, current) = runtime.placement_state(&replay).await?;
+    runtime
+        .place_fork(replay.clone(), if current { index } else { index + 1 })
+        .await?;
+    assert!(store.load(&replay).await?.state().unwrap().paused());
+    let replacement = Runtime::new(
+        Store::new(provider.clone(), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement();
+    let (index, current) = replacement.placement_state(&child).await?;
+    assert!(!current);
+    replacement.place_fork(child.clone(), index + 1).await?;
+    assert!(store.load(&child).await?.state().unwrap().paused());
+    let query = crate::wire::ForkActorRequest {
+        child_actor_id: "parked".into(),
+        idempotency_key: "fork-parked".into(),
+        ..query
+    };
+    let parked = store
+        .fork_actor(parent.account().as_bytes(), &query)
+        .await?;
+    replacement.place(parked.clone(), 1).await?;
+    assert!(store.load(&parked).await?.state().unwrap().paused());
+    Ok(())
+}
+
+#[tokio::test]
 async fn generic_event_host_runs_the_original_package_over_strict_wire() -> TestResult {
     use crate::{guest::wire, hosting::Host};
     let provider = Arc::new(MemoryStream::default());

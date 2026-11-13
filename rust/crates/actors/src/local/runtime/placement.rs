@@ -20,11 +20,60 @@ struct Placement {
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
+    /// Observe the committed actor-local command index and whether it still
+    /// names this runtime's incarnation and epoch. Zero means no command.
+    /// This observation grants no ownership; `place` rechecks its conditional
+    /// cut. A host directory can reconcile a command interrupted before its
+    /// publication without guessing an index or inspecting the store format.
+    pub async fn placement_state(&self, actor: &ActorReference) -> Result<(u64, bool), Error> {
+        let path = self.store.path(actor)?;
+        let placement = StreamPath::new(format!("{path}/placement"))?;
+        let request = acyclic_stream::HeadsRequest {
+            retained: Default::default(),
+            durable_through: None,
+            projection: acyclic_stream::HeadProjection::History,
+            paths: [path.clone(), placement].into_iter().collect(),
+            children: None,
+            limit: 2,
+            at_least: Default::default(),
+        };
+        let view = self.store.provider().heads(request.clone()).await?;
+        view.validate_for(&request)?;
+        let mut heads = view.heads.into_iter();
+        let snapshot = Snapshot::from_head(path, heads.next().flatten())?;
+        let Some(head) = heads.next().flatten() else {
+            return Ok((0, false));
+        };
+        let placed = decode_placement(head.last.as_ref())?;
+        let current = placed.as_ref().is_some_and(|placed| {
+            snapshot
+                .state()
+                .is_some_and(|state| placed.current(head.tail, self.instance, state, &snapshot))
+        });
+        Ok((head.tail, current))
+    }
+
     /// Admit this node through one explicit host placement command. The index
     /// belongs to this actor: first is one, then each successor is contiguous.
     /// Exact replay admits the recorded cut; an older index, another node's
     /// command at this index or a gap refuses with [`Error::Conflict`].
     pub async fn place(&self, actor: ActorReference, index: u64) -> Result<(), Error> {
+        self.place_control(actor, index, None).await
+    }
+
+    /// Admit and resume a fork's initial, unmodified overlay in one fenced
+    /// publication. Replays and later placement commands preserve subsequent
+    /// controls; ordinary `place` continues to preserve the paused state.
+    pub async fn place_fork(&self, actor: ActorReference, index: u64) -> Result<(), Error> {
+        self.place_control(actor, index, Some(false)).await
+    }
+
+    async fn place_control(
+        &self,
+        actor: ActorReference,
+        index: u64,
+        paused: Option<bool>,
+    ) -> Result<(), Error> {
         if index == 0 {
             return Err(Error::Invalid("invalid actor placement"));
         }
@@ -34,7 +83,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // ownership. Cancellation after commit leaves the old local epoch
         // fenced; replay of this exact command admits the recorded cut.
         let mut inner = slot.inner.lock().await;
-        self.command(&actor, Some(index), &mut inner).await?;
+        command_control(
+            &self.store,
+            Owner {
+                node: self.instance,
+                places: self.places,
+            },
+            &actor,
+            Some(index),
+            &mut inner,
+            paused,
+        )
+        .await?;
         slot.refresh.store(false, Ordering::Release);
         slot.waker.wake_by_ref();
         Ok(())
@@ -86,6 +146,17 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
     index: Option<u64>,
     inner: &mut Inner,
 ) -> Result<(), Error> {
+    command_control(store, owner, actor, index, inner, None).await
+}
+
+async fn command_control<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    owner: Owner,
+    actor: &ActorReference,
+    index: Option<u64>,
+    inner: &mut Inner,
+    paused: Option<bool>,
+) -> Result<(), Error> {
     if inner.pending.is_some() {
         return Err(Error::Invalid(
             "placement has unsettled publication custody",
@@ -105,18 +176,10 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
         Err(error) => return Err(error.into()),
     };
     let tail = head.as_ref().map_or(0, |head| head.tail);
-    let placed = head
+    let placed = decode_placement(head.as_ref().and_then(|head| head.last.as_ref()))?;
+    let current = placed
         .as_ref()
-        .and_then(|head| head.last.as_ref())
-        .map(|record| serde_json::from_slice::<Placement>(&record.value))
-        .transpose()
-        .map_err(|_| Error::Invalid("invalid placement record"))?;
-    let current = placed.as_ref().is_some_and(|placed| {
-        placed.index == tail
-            && placed.node == *owner.node.as_bytes()
-            && placed.epoch == state.epoch()
-            && previous.owns_epoch(placed.epoch)
-    });
+        .is_some_and(|placed| placed.current(tail, owner.node, state, &previous));
     let index = match index {
         Some(index) if index == tail => {
             // Exact replay of the latest command, or a stale duplicate.
@@ -169,7 +232,7 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
                 .claim_control(
                     &previous,
                     epoch,
-                    None,
+                    paused.filter(|_| previous.overlaid()),
                     vec![effect],
                     key(&previous, &format!("placement/{index}/{}", owner.node))?,
                 )
@@ -182,6 +245,22 @@ pub(super) async fn command<P: StreamProvider + ?Sized>(
     inner.epoch = snapshot.state().ok_or(Error::Conflict)?.epoch();
     inner.observed = Some(Arc::new(snapshot));
     Ok(())
+}
+
+fn decode_placement(record: Option<&acyclic_stream::Record>) -> Result<Option<Placement>, Error> {
+    record
+        .map(|record| serde_json::from_slice::<Placement>(&record.value))
+        .transpose()
+        .map_err(|_| Error::Invalid("invalid placement record"))
+}
+
+impl Placement {
+    fn current(&self, tail: u64, node: uuid::Uuid, state: &State, snapshot: &Snapshot) -> bool {
+        self.index == tail
+            && self.node == *node.as_bytes()
+            && self.epoch == state.epoch()
+            && snapshot.owns_epoch(self.epoch)
+    }
 }
 
 #[cfg(all(test, loom))]

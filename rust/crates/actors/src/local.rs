@@ -4,6 +4,7 @@ mod state_binding;
 pub use state_binding::{ActorStateBinding, ActorStateTransaction};
 mod disposition;
 mod invoke;
+mod subscriptions;
 pub use disposition::{FailedDelivery, FailureDisposition, FailureEntry, FailureResolution};
 pub use invoke::{CommittedInvocation, InvocationReceipt, InvocationTicket};
 mod overlay;
@@ -1140,11 +1141,6 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 }
                 state.epoch = epoch;
                 state.placement_branch = previous.placement_branch();
-                if previous.overlaid() {
-                    state.escrow = state
-                        .escrow
-                        .map(|escrow| escrow.in_branch(state.placement_branch));
-                }
                 if let Some(paused) = paused {
                     state.paused = paused;
                 }
@@ -1560,6 +1556,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         composed: bool,
     ) -> Result<PreparedPublish, Error> {
         state.custody = composed;
+        // The overlay allocated this branch's funding. Bind it before any
+        // own write hides that overlay, including an edit before placement.
+        // An actor-blind inherited record has no allocation to bind.
+        if previous.overlaid() {
+            state.escrow = state
+                .escrow
+                .map(|escrow| escrow.in_branch(previous.placement_branch()));
+        }
         let (own, created) = match previous.anchor {
             Some(commit_id) => (
                 CommitCondition::Head {

@@ -244,7 +244,7 @@ pub(super) fn seeds() -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, d::D
     );
     seed!(
         RemoveSubscriptionRequest,
-        d::RemoveSubscriptionRequest::new(actor.clone(), "inbox".into(), "remove".into())
+        d::RemoveSubscriptionRequest::new(actor.clone(), "inbox".into(), "remove".into())?
     );
     seed!(
         ResumeSubscriptionRequest,

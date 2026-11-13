@@ -414,8 +414,8 @@ impl AddSubscriptionRequest {
     }
 }
 
-/// Removal has no canonical validator yet, so subscription and idempotency
-#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
+/// Remove subscription request after canonical scope, identifier and retry admission.
+#[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = RemoveSubscriptionRequest::validate_from_proto)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -436,15 +436,22 @@ pub struct RemoveSubscriptionRequest {
 }
 
 impl RemoveSubscriptionRequest {
-    /// Creates a removal request; no additional canonical validator exists yet.
-    pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
-        Self {
+    /// Creates and validates a removal through the canonical request validator.
+    pub fn new(
+        actor_id: ActorId,
+        subscription_id: String,
+        idempotency_key: String,
+    ) -> Result<Self, DomainError> {
+        Self::try_from(wire::RemoveSubscriptionRequest {
             namespace: None,
             account_id: Vec::new(),
-            actor_id,
+            actor_id: actor_id.as_str().to_owned(),
             subscription_id,
             idempotency_key,
-        }
+        })
+    }
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        crate::validate_remove_subscription(&self.clone().into()).map_err(DomainError::Contract)
     }
     /// Returns the Actor identity.
     pub fn actor_id(&self) -> &ActorId {
