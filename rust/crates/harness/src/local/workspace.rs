@@ -164,18 +164,12 @@ impl LocalWorkspace {
             .mount_options(
                 workspace,
                 Some(&primary.view.volume),
+                &primary.view.root,
                 !primary.mode.read_only(),
                 &work,
             )
             .await
-            .map(|options| {
-                let options = if primary.view.root.is_empty() {
-                    options
-                } else {
-                    options.subdirectory(format!("/{}", primary.view.root))
-                };
-                options.publication(acyclic_fs::MountPublication::Manual)
-            })
+            .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
     }
     pub(in crate::local) fn held_task_mount_root(&self) -> Result<acyclic_fs::HeldRoot> {
         acyclic_fs::hold_root(&self.mount_directory).map_err(storage)

@@ -55,6 +55,7 @@ impl LocalWorkspace {
                         .mount_options(
                             source.workspace.workspace(),
                             Some(&mount.view.volume),
+                            &mount.view.root,
                             !mount.mode.read_only(),
                             &work,
                         )

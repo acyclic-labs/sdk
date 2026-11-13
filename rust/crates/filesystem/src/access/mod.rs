@@ -273,6 +273,7 @@ pub struct ResourcePattern {
     /// Permitted generations.
     pub generations: Generations,
     /// Canonical volume-relative glob; `**` includes the volume root.
+    /// Backslash escapes literal `*`, `?`, `[`, `]`, `{` and `}` characters.
     pub path: String,
 }
 

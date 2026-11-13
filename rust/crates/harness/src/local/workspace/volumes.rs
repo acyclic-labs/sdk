@@ -106,15 +106,11 @@ pub(super) async fn attach(
                 .mount_options(
                     &source,
                     Some(&mount.view.volume),
+                    &mount.view.root,
                     !mount.mode.read_only(),
                     &work,
                 )
                 .await?;
-            let options = if mount.view.root.is_empty() {
-                options
-            } else {
-                options.subdirectory(format!("/{}", mount.view.root))
-            };
             Some(options.publication(MountPublication::Manual))
         } else {
             None

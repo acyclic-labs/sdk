@@ -311,7 +311,7 @@ where
         let options = match authority {
             Some(authority) => {
                 authority
-                    .mount_options(&workspace, Some(&volume), writable, work)
+                    .mount_options(&workspace, Some(&volume), "", writable, work)
                     .await?
             }
             None => {

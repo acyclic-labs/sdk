@@ -77,7 +77,7 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let grants = mount_capabilities(workspace, writable)?;
+    let grants = mount_capabilities(workspace, "", writable)?;
     let io = PreparationIo::from_native_work(work)?;
     let scope = issuer.bootstrap_scope(
         "native-volume",
@@ -103,6 +103,7 @@ where
 
 pub(super) fn mount_capabilities<A, O>(
     workspace: &Workspace<A, O>,
+    root: &str,
     writable: bool,
 ) -> Result<crate::Capabilities>
 where
@@ -115,10 +116,12 @@ where
     } else {
         ActionSet::MountRead
     };
-    let capability = Capability::whole_volume(
+    let capability = Capability::subtree(
         Some(uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string()),
+        root,
         actions.actions(),
-    );
+    )
+    .map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(crate::Capabilities::new([capability
         .to_scope_label()
         .map_err(|error| Error::Invalid(error.to_string()))?]))

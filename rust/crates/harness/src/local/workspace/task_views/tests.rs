@@ -324,13 +324,19 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let now = harness.clock.now_unix_millis() / 1000;
     assert!(
         access
-            .decide(acyclic_fs::access::Action::Read, "file", now)
+            .decide(acyclic_fs::access::Action::Read, "selected/file", now)
             .allowed
     );
     assert!(
         !access
-            .decide(acyclic_fs::access::Action::Write, "file", now)
+            .decide(acyclic_fs::access::Action::Write, "selected/file", now)
             .allowed
+    );
+    assert!(
+        !access
+            .decide(acyclic_fs::access::Action::Read, "file", now)
+            .allowed,
+        "the authenticated source view must not admit a peer of the selected root"
     );
     {
         let selected = &second;

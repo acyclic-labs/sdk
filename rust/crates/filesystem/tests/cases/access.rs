@@ -856,6 +856,48 @@ fn glob_strategy() -> impl Strategy<Value = String> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
+    fn literal_subtree_capabilities_do_not_interpret_root_globs(
+        parts in prop::collection::vec("[abAé*?\\[\\]{}]{1,6}", 1..3),
+        candidate in prop::collection::vec("[abAé*?\\[\\]{}]{1,6}", 0..4),
+    ) {
+        let root = parts.join("/");
+        let caller = principal();
+        let policy = policy(vec![rule("all", Effect::Allow, &Action::ALL, "**")]);
+        let cap = Capability::subtree(Some("project".into()), &root, &[Action::Read])?;
+        let encoded = cap.to_scope_label()?;
+        let cap = Capability::from_scope_label(&encoded)?.unwrap();
+        let context = Context { now: 100, approvals: 0 };
+        let mut res = resource(&caller.lineage, "", 10);
+        res.config.profile = acyclic_fs::model::FilesystemProfile::Posix;
+        res.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::Sensitive;
+        let view = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+        let mut remaining = usize::MAX;
+        let program = std::sync::Arc::new(CompiledPolicy::compile_with_work(
+            &policy, res.config, &mut remaining, |_| Ok(()))?);
+        let shared = program.bind_with_work(&caller, res, context, &cap, &mut remaining, |_| Ok(()))?;
+        for path in [root.clone(), format!("{root}/child"), format!("{root}-peer/child"), candidate.join("/")] {
+            let admitted = path == root || path.strip_prefix(&root).is_some_and(|suffix| suffix.starts_with('/'));
+            for action in [Action::Read, Action::Write] {
+                let expected = admitted && action == Action::Read;
+                prop_assert_eq!(view.decide(action, &path, 100).allowed, expected);
+                prop_assert_eq!(shared.decide(action, &path, 100).allowed, expected);
+                prop_assert_eq!(decide(&policy, &caller, action, Resource {path: &path, ..res}, context, &cap).allowed, expected);
+            }
+        }
+        // Negative control: the former unescaped construction grants peer names.
+        let unsafe_path = root.replace('*', "x").replace('?', "x");
+        if unsafe_path != root && !root.contains(['[', ']', '{', '}']) {
+            let mut old = capability();
+            old.layers[0][0].resource.path = format!("{root}/**");
+            if old.validate().is_ok() {
+                prop_assert!(decide(&policy, &caller, Action::Read,
+                    Resource {path: &unsafe_path, ..res}, context, &old).allowed);
+            }
+            prop_assert!(!view.decide(Action::Read, &unsafe_path, 100).allowed);
+        }
+    }
+
+    #[test]
     fn trie_agrees_with_reference(
         rules in prop::collection::vec((any::<bool>(), any::<u16>(), glob_strategy()), 0..8),
         path in prop::collection::vec(prop_oneof![Just("a"), Just("A"), Just("b"), Just("aa"), Just("é"), Just("É"), Just("ΟΣ"), Just("ος")], 0..5),

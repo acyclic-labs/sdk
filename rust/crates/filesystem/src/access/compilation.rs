@@ -46,21 +46,14 @@ pub(super) fn preparation(
             .layers
             .iter()
             .flatten()
-            .map(|rule| {
-                rule.resource
-                    .path
-                    .bytes()
-                    .filter(|byte| *byte == b'?')
-                    .count()
-            })
-            .chain(capability.layers.iter().flatten().map(|grant| {
-                grant
-                    .resource
-                    .path
-                    .bytes()
-                    .filter(|byte| *byte == b'?')
-                    .count()
-            })))?
+            .map(|rule| super::glob::question_count(&rule.resource.path))
+            .chain(
+                capability
+                    .layers
+                    .iter()
+                    .flatten()
+                    .map(|grant| super::glob::question_count(&grant.resource.path)),
+            ))?
     } else {
         0
     };

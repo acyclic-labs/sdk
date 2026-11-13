@@ -53,11 +53,13 @@ impl NativeMountAuthority {
         WorkspaceAccess::new(&self.verifier, scope, ceiling, Some(volume))
     }
 
-    /// The runtime issues only the exact selected native volume's filesystem grant.
+    /// Admit one canonical source subtree and project that same root natively.
+    /// The resulting capability cannot expose peers even if options are re-rooted.
     pub async fn mount_options<A, O>(
         &self,
         workspace: &acyclic_fs::Workspace<A, O>,
         volume: Option<&VolumeRef>,
+        root: &str,
         writable: bool,
         work: &NativeMaterializationWork,
     ) -> Result<acyclic_fs::MountOptions>
@@ -66,6 +68,9 @@ impl NativeMountAuthority {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         let io = PreparationIo::from_native_work(work)?;
+        if !root.is_empty() {
+            crate::conversation::validate_content_path(root, &mut Some(&mut io.history_io()))?;
+        }
         self.verifier
             .verify(&self.scope, &mut Some(&mut io.history_io()))?;
         if !self.bootstrap
@@ -74,22 +79,20 @@ impl NativeMountAuthority {
             let volume = volume.ok_or(Error::FilesystemAccessConfiguration(
                 "native volume binding",
             ))?;
-            // Legacy path labels cannot be expanded into a whole-volume mount.
-            // The typed path capability is the only representation for partial views.
-            for operation in [VolumeOperation::Read]
-                .into_iter()
-                .chain(writable.then_some(VolumeOperation::Write))
+            if !crate::core::directory_read_granted_with_work(
+                self.scope.capabilities(),
+                volume,
+                root,
+                &mut Some(&mut io.history_io()),
+            )? || (writable
+                && !self.scope.capabilities().contains(
+                    &volume.capability(VolumeOperation::Write, &mut Some(&mut io.history_io()))?,
+                ))
             {
-                if !self
-                    .scope
-                    .capabilities()
-                    .contains(&volume.capability(operation, &mut None)?)
-                {
-                    return Err(Error::FilesystemAccessConfiguration("native path grant"));
-                }
+                return Err(Error::FilesystemAccessConfiguration("native path grant"));
             }
         }
-        let exact = super::access::mount_capabilities(workspace, writable)?;
+        let exact = super::access::mount_capabilities(workspace, root, writable)?;
         let grants = intersect_mount_ceiling(self.scope.capabilities(), exact, &io)?;
         let scope = self.verifier.admit_native_descendant(
             &self.scope,
@@ -111,6 +114,13 @@ impl NativeMountAuthority {
             work,
         )
         .await
+        .map(|options| {
+            if root.is_empty() {
+                options
+            } else {
+                options.subdirectory(format!("/{root}"))
+            }
+        })
     }
 }
 
@@ -177,7 +187,8 @@ mod tests {
         };
         let issuer = crate::core::AuthorityRoot::new("mount-port", [63; 32], audience.clone());
         let port = NativeMountAuthority::new(&issuer, crate::AgentId::from_bytes([4; 16]))?;
-        port.mount_options(&workspace, None, true, &work).await?;
+        port.mount_options(&workspace, None, "", true, &work)
+            .await?;
         let limited = crate::Capabilities::new([acyclic_fs::access::Capability {
             layers: vec![vec![acyclic_fs::access::Grant {
                 actions: acyclic_fs::access::Action::ALL.into_iter().collect(),
@@ -200,7 +211,7 @@ mod tests {
             narrow.copy(&mut Some(&mut io.history_io()))?,
         );
         let options = admitted
-            .mount_options(&workspace, None, true, &work)
+            .mount_options(&workspace, None, "", true, &work)
             .await?;
         let view = options
             .require_access_view()
@@ -231,14 +242,103 @@ mod tests {
         )?;
         assert!(
             port.for_scope(&legacy)?
-                .mount_options(&workspace, None, true, &work)
+                .mount_options(&workspace, None, "", true, &work)
                 .await
                 .is_err(),
             "a legacy directory grant became a whole-volume mount"
         );
+        {
+            let volume = VolumeRef::new(
+                crate::resources::ProviderRef::new(
+                    "mount-port".into(),
+                    "filesystem".into(),
+                    "1".into(),
+                    &mut None,
+                )?,
+                "selected-volume".into(),
+                crate::conversation::VolumeClass::AgentPrivate,
+                crate::conversation::VolumeOwner::Agent(port.scope.agent().expect("fixture agent")),
+                &mut None,
+            )?;
+            let root = "selected[1]{}";
+            let scope = issuer.bootstrap_scope(
+                "selected-directory",
+                &crate::Capabilities::new([volume.directory_read_capability(root, &mut None)?]),
+                port.scope.agent(),
+                &mut None,
+            )?;
+            let selected = port.for_scope(&scope)?;
+            let options = selected
+                .mount_options(&workspace, Some(&volume), root, false, &work)
+                .await?;
+            let view = options
+                .require_access_view()
+                .map_err(|e| Error::Invalid(e.to_string()))?
+                .current()
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            assert!(
+                view.decide(
+                    acyclic_fs::access::Action::Read,
+                    &format!("{root}/file"),
+                    now
+                )
+                .allowed
+            );
+            for path in ["", "private/key", "selected1{}", "selected[1]{}-peer/file"] {
+                assert!(
+                    !view
+                        .decide(acyclic_fs::access::Action::Read, path, now)
+                        .allowed
+                );
+            }
+            assert!(
+                !view
+                    .decide(
+                        acyclic_fs::access::Action::Write,
+                        &format!("{root}/file"),
+                        now
+                    )
+                    .allowed
+            );
+            // The volume root exists: changing projection options must still
+            // fail the authenticated selection, independently of path spelling.
+            assert!(matches!(
+                workspace
+                    .native_source(&options.clone().subdirectory("/"))
+                    .await,
+                Err(acyclic_fs::MountLifecycleError::Source(
+                    acyclic_fs::MountSourceError::AccessDenied
+                ))
+            ));
+            assert!(
+                selected
+                    .mount_options(&workspace, Some(&volume), "", false, &work)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                selected
+                    .mount_options(&workspace, Some(&volume), "selected-peer", false, &work)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                selected
+                    .mount_options(&workspace, Some(&volume), root, true, &work)
+                    .await
+                    .is_err()
+            );
+            issuer.revoke_workload(&scope)?;
+            assert!(
+                selected
+                    .mount_options(&workspace, Some(&volume), root, false, &work)
+                    .await
+                    .is_err()
+            );
+        }
         let caller = issuer.bootstrap_scope(
             "guest-caller",
-            &super::super::access::mount_capabilities(&workspace, true)?,
+            &super::super::access::mount_capabilities(&workspace, "", true)?,
             port.scope.agent(),
             &mut Some(&mut io.history_io()),
         )?;
@@ -247,7 +347,7 @@ mod tests {
             caller.copy(&mut Some(&mut io.history_io()))?,
         );
         let caller_options = caller_authority
-            .mount_options(&workspace, None, true, &work)
+            .mount_options(&workspace, None, "", true, &work)
             .await?;
         let caller_source = workspace.native_source(&caller_options).await?;
         use acyclic_fs::native_mount::MountFilesystem;
@@ -270,7 +370,9 @@ mod tests {
         );
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while admitted above only retains the authenticated narrow workload.
-        let bootstrap = port.mount_options(&workspace, None, true, &work).await?;
+        let bootstrap = port
+            .mount_options(&workspace, None, "", true, &work)
+            .await?;
         let source = workspace.native_source(&bootstrap).await?;
         let original = source
             .native_original_work()?
@@ -292,7 +394,7 @@ mod tests {
         );
         issuer.revoke_workload(&port.scope)?;
         assert!(
-            port.mount_options(&workspace, None, true, &work)
+            port.mount_options(&workspace, None, "", true, &work)
                 .await
                 .is_err()
         );
@@ -313,10 +415,11 @@ mod tests {
             foreign.bootstrap_scope("forged", &crate::Capabilities::default(), None, &mut None)?;
         assert!(port.for_scope(&forged).is_err());
         let live = NativeMountAuthority::new(&foreign, crate::AgentId::from_bytes([4; 16]))?;
-        live.mount_options(&workspace, None, true, &work).await?;
+        live.mount_options(&workspace, None, "", true, &work)
+            .await?;
         drop(foreign);
         assert!(
-            live.mount_options(&workspace, None, true, &work)
+            live.mount_options(&workspace, None, "", true, &work)
                 .await
                 .is_err()
         );
