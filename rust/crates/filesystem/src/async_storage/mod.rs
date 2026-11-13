@@ -41,7 +41,7 @@ pub(crate) use authority::MAX_AUTHORITY_GROUP_MEMBERS;
 pub use authority::{AppendGroupOutcome, AsyncAuthorityStore, AuthorityGroupCost};
 pub use owned_group::{OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask};
 mod policy;
-pub(crate) use policy::ScopedCuts;
+pub(crate) use policy::{CutEvidence, ScopedCuts};
 pub use policy::{PolicyCut, PolicyGroup, PolicyOwner};
 mod objects;
 pub use objects::{AsyncObjectStore, PublicationScope};
