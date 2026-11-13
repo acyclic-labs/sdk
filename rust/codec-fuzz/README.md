@@ -76,6 +76,11 @@ expanded oracle to reject both mutations, then captures and replays the original
 writers. Captures include zero, ordinary and maximum unsigned deadlines through
 the shared transition encoder. Refresh only these Actors captures with
 `cargo run --locked --example capture -- --only-actors --extend-goldens`.
+To retain one new case without recapturing unrelated historical writers, add
+`--actor-seed=transition-paused`. This selects the same original producer and
+golden checks; all other corpus frames and provenance remain retained.
+Use `python3 actor-negative-control.py --capture` to capture and replay without
+repeating source mutations already qualified on unchanged decoder/oracle paths.
 On a POSIX host, run `node capture-actors.mjs` to refresh the actual Runtime socket deliveries,
 capture current Actors writers and replay the retained corpus. The temporary
 socket observer is restored before codec capture, including on SIGINT and SIGTERM

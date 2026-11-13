@@ -833,9 +833,37 @@ mod tests {
                 .is_none(),
             "a writable lookalike declaration bypassed the original publication"
         );
-        let interleaved = conversation
-            .send("interleaved-user", "Independent user input")
-            .await?;
+        // Ordinary messages during a live turn are steering. Reserve a real
+        // follow-up so B owns an independent turn between A and its continuation.
+        let by = crate::agent::Sender::User {
+            principal: "interleaved-user".into(),
+        };
+        let id = crate::agent::IntentId::try_from("interleaved-user").map_err(failed)?;
+        let body = bound
+            .stage_text(
+                conversation.agent(),
+                "message",
+                &by,
+                &id,
+                ("Independent user input", "Independent user input"),
+            )
+            .await
+            .map_err(failed)?;
+        let input = crate::agent::InboxRecord::FollowUp(crate::agent::Message {
+            from: by.clone(),
+            id,
+            re: None,
+            body: Box::new(body),
+            attachments: None,
+        });
+        let crate::agent::Delivered::Committed { inbox: interleaved } = bound
+            .agents()
+            .send(conversation.agent(), &by, &input)
+            .await
+            .map_err(failed)?
+        else {
+            return Err(Error::Conflict("independent follow-up was closed".into()));
+        };
         release.send(()).unwrap();
         tokio::select! {
             result = &mut run => panic!("run ended before the independent input: {result:?}"),
