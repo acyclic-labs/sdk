@@ -20,8 +20,17 @@ export async function sharedProviderTree(port: OwnedStreamProviderPort): Promise
   const encode = new TextEncoder();
   const record = (text: string) => ({ value: encode.encode(text) });
   const read = async (stream: WasmStream, path: string, atLeast: Revision[] = []) => {
-    const chunks = await stream.read(toBinary(ReadRequestSchema,
+    // A finite read is one request owning one cursor of ReadResponse frames.
+    const request = stream.read(toBinary(ReadRequestSchema,
       create(ReadRequestSchema, { path, from: 0n, limit: 8, atLeast })));
+    const chunks: Uint8Array[] = [];
+    try {
+      const cursor = await request.next();
+      if (cursor === null || cursor instanceof Uint8Array) throw new Error("read omitted its cursor");
+      try {
+        for (let chunk = await cursor.next(); chunk !== null; chunk = await cursor.next()) chunks.push(chunk);
+      } finally { cursor.close(); cursor.free(); }
+    } finally { request.close(); request.free(); }
     return chunks.flatMap((bytes: Uint8Array) => {
       const page = fromBinary(ReadResponseSchema, bytes);
       return fromBinary(RecordBatchSchema, decodeReadResponse(page.codec, page.data, page.decodedLength)).records;

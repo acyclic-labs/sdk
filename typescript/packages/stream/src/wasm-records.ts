@@ -1,10 +1,14 @@
 import { fromBinary } from "@bufbuild/protobuf";
-import { WasmOpened, type WasmProviderRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import type { WasmOpened, WasmProviderRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { SessionOpenedSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
 import { streamError } from "./wasm-error.js";
 import { StreamError, type ReadOptions } from "./types.js";
+
+const isOpened = (value: unknown): value is WasmOpened =>
+  typeof value === "object" && value !== null && !(value instanceof Uint8Array)
+  && typeof (value as WasmOpened).next === "function" && typeof (value as WasmOpened).opened === "function";
 
 /** Keeps registration and the selected cursor under one cancellation owner. */
 export async function openWasmCursor(
@@ -31,7 +35,8 @@ export async function openWasmCursor(
     signal.throwIfAborted();
     const result = await pending.next();
     pending.close(); pending.free(); pending = undefined;
-    if (!(result instanceof WasmOpened)) {
+    // Class identity is per wasm-bindgen module; a cursor is recognised by shape.
+    if (!isOpened(result)) {
       signal.throwIfAborted();
       throw new StreamError("invalid_response", "Rust stream open omitted its selected cursor");
     }
