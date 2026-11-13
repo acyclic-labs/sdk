@@ -5,6 +5,11 @@
   "type": "module",
   "description": "Shared transport observation and caller-owned deadlines",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/core"
+  },
   "sideEffects": false,
   "exports": {
     ".": {
@@ -21,7 +26,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
   ],
   "dependencies": {
     "@connectrpc/connect": "2.3.0"

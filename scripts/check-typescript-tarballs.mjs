@@ -281,8 +281,8 @@ const main = async () => {
     run("bun", ["inference-widths.mjs"], { cwd: tempRoot });
     const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
       `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
-    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";'];
-    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createObjectsV1GrpcClients];\nconst actors = new package0({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
+    const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";', 'import { ActorsClient } from "@acyclic-labs/actors";'];
+    await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createObjectsV1GrpcClients];\nconst actors = new ActorsClient({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
     await writeFile(join(tempRoot, "tsconfig.types.json"), JSON.stringify({
       compilerOptions: {
         target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext",
