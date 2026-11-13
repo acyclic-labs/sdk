@@ -782,7 +782,7 @@ mod tests {
         };
         let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
         let control = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
-        let loaded = source.load("budget", Some(&control)).await?.unwrap();
+        let loaded = source.load("budget", Some(&control))?.await?.unwrap();
         assert!(Arc::ptr_eq(
             loaded.executor.capability().unwrap(),
             &source.shell,
@@ -800,11 +800,32 @@ mod tests {
                 .all(|(_, contents)| (contents.len() as u64) < allowance.output_bytes)
         );
         let limited = crate::executor::PreparationIo::from_budget(allowance, &cancellation)?;
+        let refused = match source.load("budget", Some(&limited)) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
         assert!(
-            source.load("budget", Some(&limited)).await.is_err(),
+            refused.is_err(),
             "a source must not reopen an unmeasured ledger for its imports"
         );
         assert!(limited.receipt().output_bytes <= allowance.output_bytes);
+        let native = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes:
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::executor::PreparationIo::from_native_work(&native)?;
+        let baseline = native.live_allocation_bytes();
+        match source.load("budget", Some(&io)) {
+            Err(Error::NativeWork { .. }) => {}
+            Err(error) => return Err(error),
+            Ok(_) => panic!("program source future allocated before original admission"),
+        }
+        assert_eq!(native.live_allocation_bytes(), baseline);
         Ok(())
     }
 
