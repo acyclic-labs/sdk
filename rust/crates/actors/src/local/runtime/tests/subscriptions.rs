@@ -115,6 +115,7 @@ async fn shared_dynamic_interests<P: StreamProvider>(provider: P) -> TestResult 
     );
     let mut serving = Box::pin(runtime.run(|_, error| panic!("restored delivery failed: {error}")));
     observe_while_running(serving.as_mut(), async {
+        runtime.restored().await?;
         runtime.complete().await?;
         Ok(())
     })

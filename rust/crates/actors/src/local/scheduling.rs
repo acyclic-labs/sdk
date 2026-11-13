@@ -7,6 +7,11 @@
 //! finds its earliest pending window with one bounded children page after its
 //! consumed watermark, never by scanning actors. A due window wakes its
 //! actors; each delivery then installs its exact deadline as a resident wake.
+//!
+//! `interests-v1/<shard>` holds one marker child per actor that has held
+//! guest-added interests. Their producers do not know their observers, so a
+//! dormant holder has no activation entry; a placing host restores holders
+//! from these markers at startup, one paged credit at a time.
 use super::{ActorReference, Error, Store, StreamPath, StreamProvider};
 use acyclic_stream::{
     ChildrenPageRequest, CommitEffect, CommitMutation, ReadRequest, StreamError,
@@ -17,6 +22,11 @@ use sha2::{Digest, Sha256};
 
 /// Records read per deadline-window page.
 const WINDOW_PAGE: u32 = 256;
+/// Interest holders restored per page; the next page waits for this one's
+/// wakes to settle.
+const INTEREST_PAGE: u32 = 256;
+/// The versioned root child holding each shard's interest markers.
+const INTERESTS: &str = "interests-v1";
 /// Width of one deadline window.
 const WINDOW_MS: u64 = 60_000;
 /// Scheduling partitions of a store unless its deployment sets its own.
@@ -281,5 +291,101 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             })
             .collect();
         Ok((actors, next))
+    }
+
+    /// The interest markers of `shard`: one child per actor that has held
+    /// guest-added interests, named by its hex-encoded address.
+    fn interests_path(&self, shard: u16) -> Result<StreamPath, Error> {
+        Ok(StreamPath::new(format!(
+            "{}/{SCHEDULE}/{INTERESTS}/{shard:04x}",
+            self.root()
+        ))?)
+    }
+
+    /// Mark `publication`'s actor as an interest holder when its new state
+    /// subscribes beyond `manifest`. Producers into a guest-added interest do
+    /// not know its observers, and nothing enforces their activation pairing
+    /// (see [`Store::activation_record`]), so a dormant interest holder has no
+    /// other wake after a restart: a placing host restores it from this
+    /// marker. The marker rides soft in the same commit and is skipped once it
+    /// exists, so it costs one condition and is written once per actor.
+    pub(super) fn mark_interests(
+        &self,
+        publication: &mut super::PreparedPublish,
+        actor: &ActorReference,
+        manifest: &crate::guest::Manifest,
+    ) -> Result<(), Error> {
+        if publication.state.as_ref().is_none_or(|state| {
+            state
+                .subscriptions()
+                .keys()
+                .all(|id| manifest.subscriptions.contains(id))
+        }) {
+            return Ok(());
+        }
+        let name: String = actor
+            .encode()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let path = StreamPath::new(format!(
+            "{}/{name}",
+            self.interests_path(self.scheduling_shard(actor))?
+        ))?;
+        publication.join_host(CommitEffect {
+            conditions: vec![acyclic_stream::CommitCondition::Absent { path: path.clone() }],
+            mutations: vec![CommitMutation::Append {
+                path,
+                records: vec![actor.encode().into()],
+            }],
+            soft: true,
+        })
+    }
+
+    /// One page of `shard`'s interest holders after `after`, and where the
+    /// next page starts. A malformed marker refuses only itself.
+    pub(super) async fn interest_holders(
+        &self,
+        shard: u16,
+        after: Option<StreamPath>,
+    ) -> Result<(Vec<ActorReference>, Option<StreamPath>), Error> {
+        let request = ChildrenPageRequest {
+            tail_stream: None,
+            parent: Some(self.interests_path(shard)?),
+            after,
+            hierarchy_version: None,
+            limit: INTEREST_PAGE,
+        };
+        let page = match self.provider().children_page(request.clone()).await {
+            Ok(page) => page,
+            Err(error) if error.category() == StreamError::NotFound => {
+                return Ok((Vec::new(), None));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        page.validate_for(&request)?;
+        let actors = page
+            .children
+            .iter()
+            .filter_map(|child| {
+                refused(
+                    child
+                        .path
+                        .as_str()
+                        .rsplit_once('/')
+                        .map(|(_, name)| name)
+                        .filter(|name| name.len() % 2 == 0)
+                        .and_then(|name| {
+                            (0..name.len())
+                                .step_by(2)
+                                .map(|at| u8::from_str_radix(name.get(at..at + 2)?, 16).ok())
+                                .collect::<Option<Vec<u8>>>()
+                        })
+                        .and_then(|bytes| ActorReference::decode(&bytes).ok())
+                        .ok_or(Error::Invalid("invalid interest marker")),
+                )
+            })
+            .collect();
+        Ok((actors, page.next_after))
     }
 }

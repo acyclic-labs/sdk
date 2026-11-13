@@ -164,6 +164,8 @@ enum Event {
     /// Every consumer's deliveries settled while a checkpoint waited.
     Quiet,
     Opened(Result<Opened, Error>),
+    /// One page of a shard's interest holders, and where the next starts.
+    Restored(Result<(u16, Vec<ActorReference>, Option<StreamPath>), Error>),
     Failed(StreamError),
     Completion(Completion),
     CompletionCancelled,
@@ -211,6 +213,8 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
     subscriptions: SyncMutex<subscriptions::Subscriptions>,
     requests: crate::guest::Requests,
+    /// Set once this host has paged every interest marker of its shards.
+    restored: tokio::sync::watch::Sender<bool>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -234,7 +238,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             completions: OnceLock::new(),
             subscriptions: SyncMutex::new(subscriptions::Subscriptions::default()),
             requests: crate::guest::Requests::default(),
+            restored: tokio::sync::watch::Sender::new(false),
         }
+    }
+
+    /// Wait until the running host has woken every dormant interest holder
+    /// of its shards. Serving never waits on this: restoration pages in the
+    /// background through ordinary admission, and its woken deliveries are
+    /// queued work that [`Self::complete`] then covers.
+    pub async fn restored(&self) -> Result<(), Error> {
+        self.restored
+            .subscribe()
+            .wait_for(|restored| *restored)
+            .await
+            .map(|_| ())
+            .map_err(|_| Error::CompletionStopped)
     }
 
     /// The live `request -> (actor, epoch)` bindings of this runtime's handler
@@ -691,6 +709,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         > = FuturesUnordered::new();
         let mut opening: FuturesUnordered<BoxProviderFuture<'_, Result<Opened, Error>>> =
             FuturesUnordered::new();
+        // A placing host restores dormant interest holders, one page at a
+        // time: the next page is read only after this page's wakes settle,
+        // through the same ready index and admission as every delivery.
+        let mut restoring: Option<
+            BoxProviderFuture<'_, Result<(u16, Vec<ActorReference>, Option<StreamPath>), Error>>,
+        > = None;
+        let mut restore: Vec<(u16, Option<StreamPath>)> = if self.places {
+            self.scheduling_shards
+                .iter()
+                .map(|&shard| (shard, None))
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Windows whose reads are in flight, as `(shard, window)`: a shard's
         // watermark never passes one of its windows still being read.
         let mut reading = BTreeSet::new();
@@ -707,6 +739,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if steps == self.limits.work {
                 limits::yield_now().await;
                 steps = 0;
+            }
+            if restoring.is_none() {
+                if restore.is_empty() {
+                    // The last page's wakes are already queued work.
+                    self.restored
+                        .send_if_modified(|restored| !std::mem::replace(restored, true));
+                } else if !self.ready.busy()
+                    && let Some((shard, after)) = restore.pop()
+                {
+                    restoring = Some(Box::pin(async move {
+                        let (actors, next) = self.store.interest_holders(shard, after).await?;
+                        Ok((shard, actors, next))
+                    }));
+                }
             }
             let event = poll_fn(|context: &mut Context<'_>| {
                 // Alarm changes must wake us even when active admission is
@@ -736,6 +782,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                             if let Poll::Ready(Some(opened)) = opening.poll_next_unpin(context) {
                                 return Poll::Ready(Event::Opened(opened));
+                            }
+                            if let Some(page) = restoring.as_mut()
+                                && let Poll::Ready(page) = page.poll_unpin(context)
+                            {
+                                restoring = None;
+                                return Poll::Ready(Event::Restored(page));
                             }
                             match created.poll_next_unpin(context) {
                                 Poll::Ready(Some((shard, Ok(record)))) => {
@@ -926,6 +978,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             (shard, window),
                             next,
                         )?,
+                    }
+                }
+                Event::Restored(page) => {
+                    let (shard, actors, next) = page?;
+                    for actor in actors {
+                        if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
+                            self.track(actor.clone())?;
+                            self.wake(&actor);
+                        }
+                    }
+                    if next.is_some() {
+                        restore.push((shard, next));
                     }
                 }
                 Event::Failed(error) => return Err(error.into()),
@@ -1414,6 +1478,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     Err(error) => return Err(error),
                 };
                 publication.require(self.handler.publication_conditions())?;
+                self.store
+                    .mark_interests(&mut publication, actor, self.handler.manifest())?;
                 Ok(publication)
             })();
             let subscription = match &trigger {
