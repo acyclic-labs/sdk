@@ -29,8 +29,6 @@ pub(crate) fn validate_operation(
             }
             return Ok(());
         }
-        crate::addressing::validate_dns_label(deployment.name.as_bytes())
-            .map_err(|e| Error::Configuration(e.to_string()))?;
         if deployment.worker_limits.is_none()
             || deployment.limits.is_some()
             || !deployment.subscriptions.is_empty()

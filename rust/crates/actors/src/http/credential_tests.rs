@@ -171,6 +171,16 @@ async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
         client.deploy_worker(&namespace).await,
         Err(Error::InvalidArgument)
     ));
+    for name in ["My_Worker", "a.b", "svc_1", "-worker", "worker-"] {
+        let invalid = wire::DeploymentRequest {
+            name: name.into(),
+            ..worker.clone()
+        };
+        assert!(matches!(
+            client.deploy_worker(&invalid).await,
+            Err(Error::InvalidArgument)
+        ));
+    }
     assert_eq!(calls.load(Ordering::Relaxed), 0);
     // Correct operation alternatives proceed as far as credential admission.
     assert!(matches!(
