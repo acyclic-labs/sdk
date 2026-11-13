@@ -146,6 +146,8 @@ pub fn prepare<T>(
         standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
     if invocation.execution_grant.is_none() {
         invocation.execution_grant = workspace_grant(mounts, &mut invocation.environment)?;
+    } else {
+        workspace_environment(mounts, &mut invocation.environment)?;
     }
     super::invocation::validate(
         &invocation.executable,
@@ -157,6 +159,52 @@ pub fn prepare<T>(
     Ok(invocation)
 }
 
+/// Selects process-local directories independently of execution-grant selection.
+/// The private home projection owns temporary files; host scratch is reserved
+/// for process output custody when no private home is projected.
+#[doc(hidden)]
+pub fn workspace_environment<T>(
+    mounts: &MountTable<T>,
+    environment: &mut std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    let home = mounts
+        .native_mounts()
+        .find(|(relative, _, mount)| *relative == "volume:///home" && !mount.mode.read_only());
+    let temporary = home
+        .map(|(_, root, _)| {
+            acyclic_fs::hold_root(root)
+                .and_then(|root| {
+                    root.create_directories(Path::new("tmp"), acyclic_fs::NativeDurability::Durable)
+                })
+                .map_err(|error| Error::Storage(error.to_string()))
+        })
+        .transpose()?;
+    let home_root = home.map_or(mounts.root.as_path(), |(_, root, _)| root);
+    #[cfg(unix)]
+    if let std::collections::btree_map::Entry::Vacant(home) = environment.entry("HOME".into()) {
+        home.insert(
+            home_root
+                .to_str()
+                .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
+                .into(),
+        );
+    }
+    let temporary = temporary.as_ref().map_or_else(
+        || mounts.scratch_root.as_deref().unwrap_or(home_root),
+        |temporary| temporary.path(),
+    );
+    let temporary = temporary
+        .to_str()
+        .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?;
+    environment.insert("TMPDIR".into(), temporary.into());
+    #[cfg(windows)]
+    {
+        environment.insert("TEMP".into(), temporary.into());
+        environment.insert("TMP".into(), temporary.into());
+    }
+    Ok(())
+}
+
 /// Host-owned workspace boundary shared by shell and lifecycle hooks. Explicit
 /// execution grants retain their existing, separately authenticated authority.
 /// Native enforcement failures refuse launch, never retry unconfined. Linux
@@ -166,6 +214,7 @@ pub fn workspace_grant<T>(
     mounts: &MountTable<T>,
     environment: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
+    workspace_environment(mounts, environment)?;
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant};
@@ -195,38 +244,6 @@ pub fn workspace_grant<T>(
             if root.try_exists().map_err(io)? {
                 scoped_read.push((root.clone(), ceiling.clone()));
             }
-        }
-        // A closed environment must not rediscover the owner's home through
-        // host NSS IPC. Ordinary tools use the same workspace as their home.
-        #[cfg(unix)]
-        if let std::collections::btree_map::Entry::Vacant(home) = environment.entry("HOME".into()) {
-            home.insert(
-                primary
-                    .to_str()
-                    .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
-                    .into(),
-            );
-        }
-        // Harness-bound processes put temporary files in host scratch.
-        let temporary = if let Some(scratch) = &mounts.scratch_root {
-            scratch
-        } else if access == ExecutionAccess::ReadOnly {
-            write.first().unwrap_or(&primary)
-        } else {
-            &primary
-        };
-        environment.insert(
-            "TMPDIR".into(),
-            temporary
-                .to_str()
-                .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?
-                .into(),
-        );
-        #[cfg(windows)]
-        {
-            let temporary = environment["TMPDIR"].clone();
-            environment.insert("TEMP".into(), temporary.clone());
-            environment.insert("TMP".into(), temporary);
         }
         ExecutionGrant::workspace_default_with_optional_read_scopes(
             &primary,

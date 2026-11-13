@@ -369,7 +369,7 @@ impl LocalHarness {
         #[cfg(not(any(test, not(target_arch = "wasm32"))))]
         let home = true;
         let home = if home {
-            " volume:///home is your private retained home volume and is never merged into the project."
+            " volume:///home is your private retained home volume and is never merged into the project. Use volume:///home/tmp for scratch files; shells and lifecycle hooks set TMPDIR to its native projection. Use volume paths in child instructions, since native paths belong to one task view."
         } else {
             ""
         };
