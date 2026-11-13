@@ -19,6 +19,10 @@ pub struct Settlement {
     /// Exact conversation position of the agent's last own turn, if any.
     /// Inherited history is never an answer. Read this position with [`answer`].
     pub answer: Option<u64>,
+    /// Current input's latest journal activity, when the host observes it.
+    /// None means unobserved, not idle or stalled. A new input never reuses
+    /// progress from the agent's preceding answer.
+    pub activity: Option<crate::executor::ExecutionActivity>,
 }
 
 /// `agent`'s phase and whether it has settled every inbox record committed before
@@ -41,7 +45,7 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     Ok(observe(provider, within, agent).await?.1)
 }
 
-pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static>(
+pub(crate) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static>(
     provider: &Arc<P>,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
@@ -120,6 +124,7 @@ async fn observe<P: crate::store::JournalProvider + ?Sized + 'static>(
         phase,
         answer: (settled && state.conversation_tail > state.conversation_base)
             .then(|| state.conversation_tail - 1),
+        activity: None,
     };
     Ok((head, settlement))
 }

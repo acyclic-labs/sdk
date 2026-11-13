@@ -975,10 +975,14 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let (journal, _, _) = self
-            .journal(self.admit(agent)?, &[], &[], None, None)
-            .await?;
-        Ok(journal)
+        query_journal(
+            &self.stream,
+            &self.host,
+            &self.issuer,
+            &self.admission,
+            agent,
+        )
+        .await
     }
 
     pub(super) async fn journal_authority<'a>(
@@ -2358,6 +2362,7 @@ where
                     self.limits.maximum_bytes,
                 )) as Arc<dyn crate::agent::TurnEffects>;
                 let children = Arc::new(FilesystemTurnChildren {
+                    clock: Arc::clone(&self.clock),
                     files: Arc::clone(&files),
                     stream: Arc::clone(&self.stream),
                     within: self.within.clone(),
@@ -2499,9 +2504,38 @@ where
     }
 }
 
+// One host-only journal binding for queries; it grants no model-content scope,
+// opens no model executor and does not reread policy or history payloads.
+async fn query_journal<P, A, O>(
+    stream: &Arc<P>,
+    host: &Arc<FilesystemHost<A, O>>,
+    issuer: &RuntimeAuthority,
+    admission: &TurnAdmission,
+    agent: &AgentState,
+) -> Result<FilesystemExecutionJournal<P, A, O>>
+where
+    P: crate::store::JournalProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let admitted = AdmittedAgent::verify(issuer, admission, &agent.path, &agent.volumes)?;
+    let (volume, authority) = admitted.journal_authority(host, &[], &[]).await?;
+    FilesystemExecutionJournal::new(
+        Arc::clone(stream),
+        Arc::clone(host),
+        FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &authority.verifier,
+            scope: &authority.scope,
+            io: None,
+        },
+    )
+}
+
 /// What one agent turn's `wait` observes: each child's status and, once it
 /// settled, its last answer, read under a grant of exactly that output.
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     files: Arc<AgentInternalFiles<A, O>>,
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
@@ -2642,13 +2676,52 @@ where
         child: &'a AgentPath,
     ) -> BoxFuture<'a, Result<crate::agent::Settlement>> {
         Box::pin(async move {
-            match crate::agent::settled(&self.stream, &self.within, child).await {
-                Ok(settled) => Ok(settled),
-                Err(crate::agent::Error::NoSuchAgent) => {
-                    Err(Error::NotFound(child.as_str().to_owned()))
-                }
-                Err(error) => Err(Error::from(error)),
+            if !child.is_child_of(&self.agent) {
+                return Err(Error::Unauthorized(
+                    "activity is outside the selected child relationship".into(),
+                ));
             }
+            let (state, mut settled) =
+                match crate::agent::observed_settlement(&self.stream, &self.within, child).await {
+                    Ok(observed) => observed,
+                    Err(crate::agent::Error::NoSuchAgent) => {
+                        return Err(Error::NotFound(child.as_str().to_owned()));
+                    }
+                    Err(error) => return Err(Error::from(error)),
+                };
+            if let Some(input) = settled.input {
+                let mut records = self
+                    .stream
+                    .read(acyclic_stream::ReadRequest {
+                        key: None,
+                        path: child.inbox().map_err(Error::from)?,
+                        from: input,
+                        limit: 1,
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                let record = records
+                    .try_next()
+                    .await?
+                    .filter(|record| record.sequence == input)
+                    .ok_or_else(|| Error::Storage("activity input is unavailable".into()))?;
+                let record =
+                    crate::agent::InboxRecord::decode(&record.value).map_err(Error::from)?;
+                if let Some(queued) = crate::agent::turn_input(input, record) {
+                    let operation =
+                        crate::agent::turn_id(&state, &queued.input).map_err(Error::from)?;
+                    let journal = query_journal(
+                        &self.stream,
+                        &self.host,
+                        &self.issuer,
+                        &self.admission,
+                        &state,
+                    )
+                    .await?;
+                    settled.activity = journal.activity(operation, &*self.clock).await?;
+                }
+            }
+            Ok(settled)
         })
     }
 

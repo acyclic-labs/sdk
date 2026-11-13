@@ -29,6 +29,8 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+mod activity_tests;
 mod cancellation;
 mod canonical;
 mod checkpoint;
