@@ -173,16 +173,12 @@ impl HostSession {
         };
         let packet = input.get(..length).ok_or(libc::EPROTO)?;
         let request = PacketRequest::parse(packet)?;
-        let pending = std::cell::RefCell::new(Some(PendingReply::new(&self.io, &request)));
+        let pending = PendingReply::new(&self.io, &request);
         #[cfg(test)]
         let sequence = self.capture.as_ref().map(|capture| capture.begin());
         let publish = |reply: PacketResponse<'_>| {
             let outcome = match reply.slices() {
-                Some(slices) => pending
-                    .borrow_mut()
-                    .as_mut()
-                    .ok_or(libc::EPROTO)?
-                    .publish(&slices)?,
+                Some(slices) => pending.publish(&slices)?,
                 None => acyclic_native_runtime::PacketDevicePublication::Published,
             };
             #[cfg(test)]
@@ -215,7 +211,7 @@ impl HostSession {
                     reply,
                     packet,
                     response,
-                    pending.borrow_mut().take().ok_or(libc::EPROTO)?,
+                    pending.transfer(),
                     #[cfg(test)]
                     self.capture.as_ref().cloned().zip(sequence),
                 )
@@ -249,7 +245,7 @@ impl Drop for HostSession {
         self.io.stop();
         self.protocol.close();
         // Every reader has exited: `run` joins them before the session drops.
-        if let Some(connection) = self.io.connection.get()
+        if let Some(connection) = self.io.as_ref().connection.get()
             && let Err(error) = connection.abort()
         {
             tracing::error!(%error, "aborting an unserved FUSE connection failed");
@@ -271,28 +267,31 @@ impl Drop for HandshakeStop<'_> {
 /// Own the kernel's reply obligation before buffer preparation or dispatch.
 /// PacketReply only exists after dispatch; protocol closure alone cannot finish
 /// a received request while another worker or notifier retains the device.
-pub(super) struct PendingReply {
-    io: Arc<HostIo>,
-    unique: Option<u64>,
+pub(super) struct PendingReply<I: AsRef<HostIo>> {
+    io: I,
+    unique: std::cell::Cell<Option<u64>>,
 }
 
-impl PendingReply {
-    fn new(io: &Arc<HostIo>, request: &PacketRequest<'_>) -> Self {
+impl<I: AsRef<HostIo>> PendingReply<I> {
+    fn new(io: I, request: &PacketRequest<'_>) -> Self {
         Self {
-            io: Arc::clone(io),
-            unique: (!matches!(request.opcode, 2 | 42)).then_some(request.unique),
+            io,
+            unique: std::cell::Cell::new(
+                (!matches!(request.opcode, 2 | 42)).then_some(request.unique),
+            ),
         }
     }
 
     pub(super) fn publish(
-        &mut self,
+        &self,
         slices: &[std::io::IoSlice<'_>],
     ) -> std::io::Result<acyclic_native_runtime::PacketDevicePublication> {
         // ENOENT confirms that this request is already gone (for example,
         // interrupted). It completes this obligation without disconnecting
         // unrelated requests. Other failures do not certify request retirement.
-        self.unique = None;
+        self.unique.set(None);
         self.io
+            .as_ref()
             .publish_packet(slices)
             .and_then(|outcome| match outcome {
                 acyclic_native_runtime::PacketDevicePublication::Published
@@ -307,11 +306,11 @@ impl PendingReply {
     }
 
     pub(super) fn owes_reply(&self) -> bool {
-        self.unique.is_some()
+        self.unique.get().is_some()
     }
 
     fn abort(&self) {
-        if let Some(connection) = self.io.connection.get()
+        if let Some(connection) = self.io.as_ref().connection.get()
             && let Err(error) = connection.abort()
         {
             tracing::error!(%error, "aborting a failed FUSE reply failed");
@@ -319,7 +318,15 @@ impl PendingReply {
     }
 }
 
-impl Drop for PendingReply {
+impl PendingReply<&Arc<HostIo>> {
+    fn transfer(&self) -> PendingReply<Arc<HostIo>> {
+        PendingReply {
+            io: Arc::clone(self.io),
+            unique: std::cell::Cell::new(self.unique.take()),
+        }
+    }
+}
+impl<I: AsRef<HostIo>> Drop for PendingReply<I> {
     fn drop(&mut self) {
         if let Some(unique) = self.unique.take() {
             let mut error = [0; super::packet::OUTPUT_HEADER];
@@ -340,7 +347,7 @@ pub(super) fn publish_expired_packet_for_test(
     response: &mut [u8],
     old_delivery: bool,
 ) -> Result<(), NativeMountError> {
-    let mut pending = PendingReply::new(io, request);
+    let pending = PendingReply::new(io, request);
     protocol
         .publish_with_outcome(request, response, |reply| {
             let slices = reply.slices().ok_or(libc::EPROTO)?;
@@ -373,7 +380,7 @@ pub(super) fn publish_expired_reply_for_test(
     input[8..16].copy_from_slice(&u64::MAX.to_ne_bytes());
     input[16..24].copy_from_slice(&ROOT_INODE.to_ne_bytes());
     let request = PacketRequest::parse(&input).map_err(std::io::Error::from_raw_os_error)?;
-    let mut pending = PendingReply::new(io, &request);
+    let pending = PendingReply::new(io, &request);
     let mut reply = [0; super::packet::OUTPUT_HEADER];
     acyclic_native_runtime::fuse_protocol::reply_header(
         &mut reply,

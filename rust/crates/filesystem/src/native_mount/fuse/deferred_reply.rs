@@ -1,5 +1,6 @@
 //! A reply whose prerequisite cache notification must physically complete first.
 
+use super::host_io::HostIo;
 use super::host_session::PendingReply;
 use super::invalidation::KernelCacheItem;
 use super::packet::PacketRequest;
@@ -10,7 +11,7 @@ use super::*;
 use acyclic_native_runtime::PacketDevicePublication;
 
 pub(super) struct DeferredReply {
-    pending: Option<PendingReply>,
+    pending: Option<PendingReply<Arc<HostIo>>>,
     completion: Option<PacketCompletion>,
     request: FuseOwned<Vec<u8>>,
     response: FuseOwned<Vec<u8>>,
@@ -31,7 +32,7 @@ impl DeferredReply {
         reply: &mut PacketReply<'_>,
         request: &[u8],
         response: &[u8],
-        pending: PendingReply,
+        pending: PendingReply<Arc<HostIo>>,
         #[cfg(test)] capture: Option<(Arc<super::tests::packets::Capture>, u64)>,
     ) -> Result<bool, NativeMountError> {
         let core = Arc::clone(reply.core().ok_or(libc::EPROTO)?);
