@@ -5216,6 +5216,8 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
                     super::ScriptedTurn::Text("parent still running".into()),
                 ]),
             )?
+            .without_default_tools()
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
             .compaction(crate::context::CompactionPolicy::Disabled),
         )
         .await?,

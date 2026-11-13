@@ -419,7 +419,7 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
         cancellation: super::CancellationToken,
     ) -> GuestFuture<'a, Transition>;
 
-    /// Settle a definitively refused publication from its original delivery and
+    /// Settle a failed handler or definitively refused publication from its original delivery and
     /// checkpoint. The runtime publishes this transition once under a distinct
     /// retry identity, with the same admission fences. Unknown outcomes and
     /// backpressure never enter this hook. The original manifest deadline and

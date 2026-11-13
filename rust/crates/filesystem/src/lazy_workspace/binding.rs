@@ -213,16 +213,24 @@ impl<
         Ok(state)
     }
 
-    /// Loads the ready binding at the source's current epoch. A source
-    /// shared by several workspaces advances its epoch when any of them
-    /// observes a change; that invalidates source cursors, not this
-    /// workspace's authored or observed state, so every reader of the
-    /// binding follows the newer epoch rather than treating it as stale.
+    /// Projects the current source epoch without publishing read bookkeeping.
+    /// The next workspace mutation persists it with that mutation's state.
     pub(crate) async fn current_binding(
         &self,
         missing: fn() -> LazyWorkspaceError,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
+        let (mut state, source) = self.recorded_binding(missing, ctx).await?;
+        state.source = source;
+        Ok(state)
+    }
+
+    /// Validates the saved binding against the current source without rebinding it.
+    pub(super) async fn recorded_binding(
+        &self,
+        missing: fn() -> LazyWorkspaceError,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyWorkspaceState, SourceReference), LazyWorkspaceError> {
         let state = self
             .store
             .load_lazy_workspace(self.workspace.id(), ctx)
@@ -237,23 +245,7 @@ impl<
             return Err(LazyWorkspaceError::StaleSource);
         }
         state.require_ready_fork()?;
-        if state.source == source {
-            return Ok(state);
-        }
-        let revision = state.revision;
-        let next = LazyWorkspaceState {
-            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-            source,
-            ..state
-        };
-        if self
-            .store
-            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next.clone(), ctx)
-            .await?
-        {
-            return Ok(next);
-        }
-        Err(LazyWorkspaceError::Concurrent)
+        Ok((state, source))
     }
 
     /// Selects companion indexes for a retained mounted checkout without mutation.
@@ -266,20 +258,9 @@ impl<
         if checkout.volume_id() != self.workspace.volume.id() {
             return Err(crate::FsError::VolumeMismatch.into());
         }
-        let mut state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        let source = self.source.reference();
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source.identity != source.identity
-            || state.source.epoch > source.epoch
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        state.require_ready_fork()?;
+        let (mut state, source) = self
+            .recorded_binding(|| LazyWorkspaceError::NotFound, ctx)
+            .await?;
         if let Some(pending) = &state.pending_remove {
             if state.source != source {
                 return Err(LazyWorkspaceError::StaleSource);

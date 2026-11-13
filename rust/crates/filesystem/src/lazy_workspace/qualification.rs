@@ -188,19 +188,15 @@ impl<
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
         };
-        let state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-        state.require_ready_fork()?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || cut.workspace_id != self.workspace.id()
+        let (state, source) = self
+            .recorded_binding(|| LazyWorkspaceError::OriginalSnapshotUnavailable, ctx)
+            .await?;
+        if cut.workspace_id != self.workspace.id()
             || cut.config != self.workspace.volume.config
             || state.workspace_id != cut.workspace_id
             || state.source.identity != cut.source.identity
-            || state.source.epoch < cut.source.epoch
-            || cut.source.identity != self.source.reference().identity
+            || source.epoch < cut.source.epoch
+            || cut.source.identity != source.identity
             || state.overlay != cut.overlay
             || state.shadows != cut.shadows
         {
@@ -237,18 +233,13 @@ impl<
         operation: Option<crate::OperationId>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyPublicationCut, LazyWorkspaceError> {
-        let state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-        state.require_ready_fork()?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
+        let (mut state, source) = self
+            .recorded_binding(|| LazyWorkspaceError::OriginalSnapshotUnavailable, ctx)
+            .await?;
+        if operation.is_some() && state.source != source {
             return Err(LazyWorkspaceError::StaleSource);
         }
+        state.source = source;
         match (operation, state.pending_remove.as_ref()) {
             (Some(op), Some(pending))
                 if state.overlay == pending.prepared_overlay

@@ -172,9 +172,18 @@ pub enum Error {
 }
 
 impl Error {
+    /// Preserve undecided host work across the guest boundary.
+    pub(crate) fn into_guest(self) -> acyclic_actors::guest::GuestError {
+        if matches!(self, Self::IncompatibleCheckpointCodec) {
+            acyclic_actors::guest::GuestError::IncompatibleCodec
+        } else {
+            crate::Error::guest(self)
+        }
+    }
     /// Whether the failed work may yet succeed unchanged: a commit whose
-    /// outcome is unknown, or a store that left its outcome undecided however
-    /// that failure is wrapped. Only these retry; every other driver failure
+    /// outcome is unknown, a store that left its outcome undecided, or a handler
+    /// retaining Pending work, however wrapped. Only these retry; every other
+    /// driver failure
     /// settles the agent as failed. A definitive failure inside an opened turn
     /// (executor, model or tool) is no driver failure: it settles only its
     /// turn (see [`TurnOutcome::Failed`]).
@@ -187,6 +196,9 @@ impl Error {
             Self::Actor(error) => match &**error {
                 acyclic_actors::local::Error::Unknown { .. } => true,
                 acyclic_actors::local::Error::Stream(error) => error.uncertain(),
+                acyclic_actors::local::Error::Handler(
+                    acyclic_actors::guest::GuestError::Pending(_),
+                ) => true,
                 _ => false,
             },
             Self::Path(_)
@@ -264,6 +276,22 @@ mod uncertain_tests {
                 .uncertain()
             );
         }
+        assert!(
+            Error::Actor(Box::new(acyclic_actors::local::Error::Handler(
+                acyclic_actors::guest::GuestError::Pending("undecided".into())
+            )))
+            .uncertain()
+        );
+        assert!(
+            !Error::Actor(Box::new(acyclic_actors::local::Error::Handler(
+                acyclic_actors::guest::GuestError::Handler("definitive".into())
+            )))
+            .uncertain()
+        );
+        assert!(matches!(
+            Error::IncompatibleCheckpointCodec.into_guest(),
+            acyclic_actors::guest::GuestError::IncompatibleCodec
+        ));
         // A harness failure is classified by its wire class, whichever
         // variant carries it: a storage failure's outcome is undecided.
         assert!(Error::Turn(Box::new(crate::Error::Storage("unavailable".into()))).uncertain());

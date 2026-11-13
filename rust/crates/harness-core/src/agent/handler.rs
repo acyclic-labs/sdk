@@ -939,11 +939,7 @@ where
         Box::pin(async move {
             self.transition(delivery, checkpoint, cancellation, None)
                 .await
-                .map_err(|error| match error {
-                    Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
-                    Error::Stream(error) => guest(format!("reading agent inbox replay: {error}")),
-                    error => guest(error),
-                })
+                .map_err(Error::into_guest)
         })
     }
 
@@ -967,7 +963,7 @@ where
             )
             .await
             .map(Some)
-            .map_err(guest)
+            .map_err(Error::into_guest)
         })
     }
 }

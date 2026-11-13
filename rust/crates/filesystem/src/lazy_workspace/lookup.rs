@@ -114,8 +114,13 @@ impl<
             return Ok(());
         }
         let state = self.state(ctx).await?;
-        if self.tombstoned(state.overlay, path, ctx).await? {
-            return Err(LazyWorkspaceError::Concurrent);
+        // The caller already owns its original read. Retaining that knowledge
+        // must not replace a newer source cut or resurrect a removed path.
+        if matches!(lookup, LazyLookup::Source { source, .. } | LazyLookup::Shadow { source, .. }
+            if *source != state.source)
+            || self.tombstoned(state.overlay, path, ctx).await?
+        {
+            return Ok(());
         }
         let overlay = self
             .observed_overlay(state.overlay, path, lookup, ctx)

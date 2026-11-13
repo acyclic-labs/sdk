@@ -27,6 +27,7 @@ use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 const DIRECTORY_PROMOTION_PAGE: u32 = 256;
@@ -105,6 +106,8 @@ pub struct LazyMountSource<A: 'static, O: 'static, D, S> {
     root: String,
     runtime: Arc<CallbackRuntime>,
     source_view: Arc<ViewGate>,
+    // The epoch this mount adopted, independent of write-free read projections.
+    source_epoch: AtomicU64,
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,

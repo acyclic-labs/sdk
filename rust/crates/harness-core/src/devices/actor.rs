@@ -421,7 +421,7 @@ impl<P: StreamProvider + ?Sized + 'static> Handler for TargetActor<P> {
             let response = self
                 .transition(&delivery, &mut state, &mut effects)
                 .await
-                .map_err(guest)?;
+                .map_err(Error::guest)?;
             Ok(Transition {
                 pause: false,
                 response,

@@ -295,6 +295,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         if matches!(cause, GuestError::PreconditionChanged) {
             return Err(Error::PreconditionChanged(Vec::new()));
         }
+        if matches!(cause, GuestError::Pending(_)) {
+            return Err(Error::Handler(cause.clone()));
+        }
         let original = super::owned(previous, epoch)?;
         let (subscription, sequence) = trigger
             .record_position()
