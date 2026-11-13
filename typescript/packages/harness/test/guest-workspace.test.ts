@@ -29,6 +29,8 @@ test("one guest heap admits distinct Machines for two actors and re-admits every
   const fixture = await agentsFixture("00112233-4455-6677-8899-aabbccddeeff", async function* () {
     yield { kind: "content", delta: "completed on admitted workspace" };
   }, initializeClientQueries, hostFixtureWorkspaceGrants(volume));
+  // Root agents select the seeded orchestrator model; script that selection.
+  fixture.configure({ provider: "morph", name: "morph-kimik31", revision: "1" });
   const { authority, credential } = await localSessionAuthority([{ name: "actors:/agents", prefix: false, actions: ["actors/invoke"] }]);
   const codec = await loadWasmModule();
   const attempts = new Map<bigint, number>(), machines = new Map<string, number>();
