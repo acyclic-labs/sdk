@@ -201,7 +201,8 @@ mod tests {
         )
         .await?;
         assert_eq!(evaluated.value, base);
-        serde_json::from_value::<crate::config::AgentConfig>(evaluated.value).unwrap();
+        serde_json::from_value::<crate::config::AgentConfig>(evaluated.value.into_unbounded()?)
+            .unwrap();
         Ok(())
     }
 }
