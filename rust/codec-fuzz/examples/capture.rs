@@ -930,7 +930,7 @@ fn full_capture_retains_original_actor_inputs_once() {
         .collect::<Vec<_>>();
     let current = original
         .iter()
-        .find(|line| line.starts_with("actor_codecs/invocation-committed-v1\t"))
+        .find(|line| line.starts_with("actor_codecs/invocation-committed-v2\t"))
         .expect("original Store invocation capture");
     let mut manifest = format!("{current}\n");
     retain_historical(&mut manifest, previous);

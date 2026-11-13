@@ -338,8 +338,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let Some(marker) = self.interest_marker(actor, state, manifest)? else {
             return Ok(());
         };
+        // Bounded and rooted: the marker's own path names exactly one write.
         let mut key = b"interests/".to_vec();
-        key.extend(actor.encode());
+        key.extend(Sha256::digest(self.interest_marker_path(actor)?.as_str()));
         self.provider()
             .commit(CommitRequest {
                 deadline_unix_millis: None,
@@ -365,15 +366,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         {
             return Ok(None);
         }
-        let name: String = actor
-            .encode()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let path = StreamPath::new(format!(
-            "{}/{name}",
-            self.interests_path(self.scheduling_shard(actor))?
-        ))?;
+        let path = self.interest_marker_path(actor)?;
         Ok(Some(CommitEffect {
             conditions: vec![acyclic_stream::CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
@@ -382,6 +375,19 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             }],
             soft: true,
         }))
+    }
+
+    /// `actor`'s marker under its shard, named by its hex-encoded address.
+    fn interest_marker_path(&self, actor: &ActorReference) -> Result<StreamPath, Error> {
+        let name: String = actor
+            .encode()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok(StreamPath::new(format!(
+            "{}/{name}",
+            self.interests_path(self.scheduling_shard(actor))?
+        ))?)
     }
 
     /// One page of `shard`'s interest holders after `after`, and where the

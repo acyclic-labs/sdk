@@ -1493,9 +1493,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                     Err(error) => return Err(error),
                 };
-                publication.require(self.handler.publication_conditions())?;
-                self.store
-                    .mark_interests(&mut publication, actor, self.handler.manifest())?;
+                self.finish_publication(&mut publication, actor)?;
                 Ok(publication)
             })();
             let subscription = match &trigger {
@@ -1561,7 +1559,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     transition,
                                     key(&snapshot, "failure")?,
                                 )?;
-                                publication.require(self.handler.publication_conditions())?;
+                                self.finish_publication(&mut publication, actor)?;
                                 Ok(publication)
                             })
                             .transpose()
@@ -1642,6 +1640,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(error)
             }
         }
+    }
+
+    /// Every handler publication (a transition, a failed input, an
+    /// `on_failure` transition) carries the handler's conditions and, when its
+    /// state holds guest-added interests, the marker that restores them.
+    fn finish_publication(
+        &self,
+        publication: &mut PreparedPublish,
+        actor: &ActorReference,
+    ) -> Result<(), Error> {
+        publication.require(self.handler.publication_conditions())?;
+        self.store
+            .mark_interests(publication, actor, self.handler.manifest())
     }
 
     fn prepare_transition(
