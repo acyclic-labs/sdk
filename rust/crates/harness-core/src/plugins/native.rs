@@ -57,6 +57,20 @@ impl Event {
 #[derive(Debug)]
 pub struct Enabled(crate::javascript_allocator::EngineResult<EnabledData>);
 
+impl Enabled {
+    /// Shares this admitted set on its original allocation ledger. The shared
+    /// wrapper retains that credit until its final consumer retires the set.
+    pub fn into_shared(self) -> Result<std::sync::Arc<Self>> {
+        let work = self
+            .0
+            .custody
+            .as_ref()
+            .or(self.0.value.custody.as_deref())
+            .map(|custody| custody.work().clone());
+        self.0.share_as(Self, work.as_ref())
+    }
+}
+
 impl std::ops::Deref for Enabled {
     type Target = EnabledData;
     fn deref(&self) -> &Self::Target {

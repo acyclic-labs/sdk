@@ -60,21 +60,33 @@ impl<T> EngineResult<T> {
     }
 
     pub(crate) fn share<R>(
-        mut self,
+        self,
         tag: R,
         work: acyclic_fs::NativeWork<'_>,
     ) -> crate::Result<std::sync::Arc<(Self, R)>> {
+        self.share_as(|result| (result, tag), work)
+    }
+
+    /// Wrap the original result without copying its value or replacing its ledger.
+    pub(crate) fn share_as<R>(
+        mut self,
+        wrap: impl FnOnce(Self) -> R,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> crate::Result<std::sync::Arc<R>> {
         if let Some(work) = work {
-            let bytes =
-                acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<(Self, R)>()?
-                    - size_of::<T>() as u64;
+            let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<R>()?
+                .checked_sub(size_of::<T>() as u64)
+                .ok_or(crate::Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "shared engine result layout underflows",
+                })?;
             let mut metadata = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
             match &mut self.custody {
                 Some(custody) => custody.absorb(&mut metadata)?,
                 None => self.custody = Some(metadata),
             }
         }
-        Ok(std::sync::Arc::new((self, tag)))
+        Ok(std::sync::Arc::new(wrap(self)))
     }
 }
 

@@ -87,18 +87,17 @@ pub async fn seed() -> Result<Arc<Enabled>> {
                     })
                 }
             }
-            Ok::<_, Error>(Arc::new(
-                load(
-                    &Seed,
-                    &[Layer {
-                        name: "seed",
-                        generation: "",
-                        bytes: crate::seed::file(MANIFEST),
-                    }],
-                    "seed",
-                )
-                .await?,
-            ))
+            load(
+                &Seed,
+                &[Layer {
+                    name: "seed",
+                    generation: "",
+                    bytes: crate::seed::file(MANIFEST),
+                }],
+                "seed",
+            )
+            .await?
+            .into_shared()
         })
         .await?,
     ))
