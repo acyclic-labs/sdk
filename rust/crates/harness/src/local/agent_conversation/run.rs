@@ -457,24 +457,35 @@ mod tests {
     #[tokio::test]
     async fn unattended_output_loop_pauses_before_another_dispatch() -> Result<()> {
         for tool_calls in [false, true] {
-            let responses = ["first-transport-id", "second-transport-id"].map(|call_id| {
-                if tool_calls {
-                    ScriptedTurn::Events(vec![
-                        ScriptedEvent::Event(crate::model::ModelEvent::ToolCall(
-                            crate::model::ToolCall::new(
-                                call_id.into(),
-                                "unavailable_for_this_test".into(),
-                                serde_json::json!({"value":1}),
-                            ),
-                        )),
-                        ScriptedEvent::Event(crate::model::ModelEvent::Completed {
-                            metadata: serde_json::Value::Null,
-                        }),
-                    ])
-                } else {
-                    ScriptedTurn::Text("same response".into())
-                }
-            });
+            let responses = ["first-transport-id", "second-transport-id"]
+                .into_iter()
+                .enumerate()
+                .flat_map(|(turn, call_id)| {
+                    let response = if tool_calls {
+                        ScriptedTurn::Events(vec![
+                            ScriptedEvent::Event(crate::model::ModelEvent::ToolCall(
+                                crate::model::ToolCall::new(
+                                    call_id.into(),
+                                    "unavailable_for_this_test".into(),
+                                    serde_json::json!({"value":1}),
+                                ),
+                            )),
+                            ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                                metadata: serde_json::Value::Null,
+                            }),
+                        ])
+                    } else {
+                        ScriptedTurn::Text("same response".into())
+                    };
+                    // A tool reply alone does not finish its turn. Complete the
+                    // first turn before repeating its tool output in the next one.
+                    std::iter::once(response).chain(
+                        (tool_calls && turn == 0)
+                            .then(|| ScriptedTurn::Text("Complete the first turn".into())),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let accepted_requests = responses.len();
             let provider = Arc::new(ScriptedModelProvider::new(responses));
             let directory = tempfile::tempdir().map_err(failed)?;
             let project = volume(directory.path()).await?;
@@ -495,9 +506,9 @@ mod tests {
                     signal: Some(Kind::LoopOutput)
                 }
             ));
-            assert!(provider.request(1).is_some());
+            assert!(provider.request(accepted_requests - 1).is_some());
             assert!(
-                provider.request(2).is_none(),
+                provider.request(accepted_requests).is_none(),
                 "repeated output admitted another model request"
             );
             let mut feed = conversation.connection.supervision_own().await?;
