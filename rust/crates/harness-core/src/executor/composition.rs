@@ -263,8 +263,11 @@ impl StockExecutor {
         execution_operation: OperationId,
     ) -> Result<Self> {
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
+        // Children render their parent's prefix, so the whole agent tree
+        // shares one placement: a child's first request reads what its
+        // ancestors cached.
         let conversation = context.agent().map_or(execution_operation, |(agent, _)| {
-            OperationId::from_bytes(agent.id_bytes())
+            OperationId::from_bytes(agent.root_id_bytes())
         });
         if let Some(provider) = self.provider.bind_conversation(conversation) {
             self.provider = provider;
