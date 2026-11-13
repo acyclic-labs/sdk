@@ -98,6 +98,17 @@ fn history_rebuilds_and_pinned_pages_exclude_later_appends() -> Result<()> {
     let reopened: ConversationState =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(reopened, state);
+    let bounded = ConversationState::from_wire(
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?,
+        Some(1),
+        &mut None,
+    );
+    assert_eq!(
+        bounded
+            .expect_err("explicit message encoding bound was ignored")
+            .code(),
+        crate::wire::ErrorCode::Invalid,
+    );
     let mut after = 0;
     let mut visited = Vec::new();
     loop {
