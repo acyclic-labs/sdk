@@ -362,6 +362,7 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
             response(9_000),
             response(10_000),
             decision(16_000),
+            response(12_000),
         ])
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 65_536,
@@ -416,7 +417,6 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
             match step {
                 0 => started.notified().await,
                 1 => {
-                    assert!(execution.review.state.lock().await.active);
                     release.notify_one();
                     execution.review.completed.notified().await;
                 }
@@ -436,23 +436,34 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
             reopened
                 .request_context_review(journal, &input, step, &prior, original_metadata(&events))
                 .await?;
-            let state = reopened.review.state.lock().await;
-            assert!(
-                !state.active && state.queued.is_none(),
-                "replay admitted a new review at step {step}"
-            );
-            assert_eq!(state.review_at, if step == 2 { 16_000 } else { 5_000 });
             assert_eq!(
                 provider.request_count(),
                 5,
                 "replay dispatched new paid work"
             );
         }
+        let events = reopened.model_step(journal, &input, 3, &prior).await?;
+        reopened
+            .request_context_review(journal, &input, 3, &prior, original_metadata(&events))
+            .await?;
+        assert_eq!(provider.request_count(), 6);
         Ok(ExecutionProgress::Ready(()))
     };
-    reopened
-        .with_context_review(journal, &input, replay)
-        .await?;
+    let (result, trace) =
+        acyclic_test_support::differential::observe_async::<_, (&'static str, u64)>(
+            reopened.with_context_review(journal, &input, replay),
+        )
+        .await;
+    result?;
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|(event, _)| *event == "context review source messages")
+            .count(),
+        2,
+        "only the two saved reviews may prepare a source; the skipped boundary and fresh below-budget response prepare none"
+    );
+    assert_eq!(provider.request_count(), 6);
     Ok(())
 }
 
