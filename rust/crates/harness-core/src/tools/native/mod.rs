@@ -24,7 +24,7 @@ pub(crate) fn alias(
     mut definition: ToolDefinition,
     original: Arc<Tool>,
     template: Value,
-    custody: acyclic_fs::NativeCustody,
+    mut custody: acyclic_fs::NativeCustody,
 ) -> Result<Tool> {
     let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.tool-alias.v2");
     for revision in [&definition.revision, &original.definition.revision] {
@@ -38,7 +38,15 @@ pub(crate) fn alias(
         }
     };
     identity.update(&io.canonical_digest(&template)?);
+    let original_revision_bytes = definition.revision.capacity() as u64;
+    if let Some(custody) = &mut custody {
+        custody.grow(64)?;
+    }
     definition.revision = identity.finalize().to_hex().to_string();
+    if let Some(custody) = &mut custody {
+        custody.release(original_revision_bytes)?;
+    }
+    reserve_shared::<arguments::Arguments>(&mut custody)?;
     let arguments = Arc::new(arguments::Arguments::new(template, Vec::new())?);
     adapted(
         definition,
@@ -59,6 +67,7 @@ fn adapted(
     definition.output_schema = copy_schema(&original.definition.output_schema, &mut custody)?;
     definition.projection_schema =
         copy_schema(&original.definition.projection_schema, &mut custody)?;
+    reserve_shared::<adapter::Adapter>(&mut custody)?;
     let adapter = Arc::new(adapter::Adapter {
         arguments,
         capability,
@@ -71,6 +80,22 @@ fn adapted(
         executor: adapter.clone(),
         projection: adapter,
     })
+}
+
+fn reserve_shared<T>(custody: &mut acyclic_fs::NativeCustody) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(custody) = custody {
+        let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<T>().map_err(
+            |_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "shared native tool layout overflow",
+            },
+        )?;
+        custody.grow(bytes)?;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = custody;
+    Ok(())
 }
 
 fn copy_schema(value: &Value, custody: &mut acyclic_fs::NativeCustody) -> Result<Value> {

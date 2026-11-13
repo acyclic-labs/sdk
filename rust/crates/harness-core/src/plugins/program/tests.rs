@@ -187,9 +187,14 @@ async fn program_revision_pins_imports_and_entries_without_reading_siblings() ->
 async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Result<()> {
     let files = Files::program("tools/count");
     let cancel = acyclic_fs::CancellationToken::new();
-    let work =
-        acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancel)
-            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 16 * 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let tree = Metered {
         files: &files,
@@ -204,7 +209,7 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     );
     let program = load_program(&tree, "tools/count").await?;
     let retained = program.custody.as_ref().unwrap().bytes();
-    let tool = program.bind(shell)?;
+    let tool = program.bind(Arc::clone(&shell))?;
     for arguments in [
         serde_json::json!({"text": "$(touch injected); ' \" \\ \n 🦀", "nested": [null, {"__proto__": "data"}]}),
         serde_json::json!([null, "$(touch injected)", {"text": "🦀"}]),
@@ -252,6 +257,41 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         before_drop - work.live_allocation_bytes() >= retained,
         "dropping the last bound tool retires all transferred program ownership"
     );
+    let baseline = work.live_allocation_bytes();
+    let program = load_program(&tree, "tools/count").await?;
+    let occupied = work.claim(
+        work.remaining()?.peak_allocation_bytes,
+        1,
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
+    let error = program
+        .bind(Arc::clone(&shell))
+        .err()
+        .expect("binding must admit its retained template before allocating");
+    assert!(matches!(
+        error,
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }
+            ),
+            ..
+        }
+    ));
+    drop(error);
+    drop(occupied);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    let program = load_program(&tree, "tools/count").await?;
+    cancel.cancel();
+    let error = program
+        .bind(shell)
+        .err()
+        .expect("binding retains the loader's original cancellation");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Cancelled);
+    drop(error);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 
