@@ -159,7 +159,7 @@ pub fn fixture_models(
             if selection == selected {
                 return Ok(model.clone());
             }
-            crate::model::selection::validate(selection)?;
+            crate::model::validate_selection(selection)?;
             let (provider, name) = selection
                 .split_once('/')
                 .ok_or_else(|| crate::Error::Invalid("fixture model key".into()))?;
