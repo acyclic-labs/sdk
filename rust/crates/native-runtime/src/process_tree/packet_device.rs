@@ -4,6 +4,7 @@
 //! readiness queue watches a mount-free thread's pidfd, rather than waiting
 //! for the entire owner process (which may contain a blocked device caller).
 
+use super::packet_device_receipt::Receipt;
 use super::runner;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -199,15 +200,15 @@ impl PacketDeviceRetirement {
     /// Joins one physical reply publication. Callers retain the original
     /// payload and work until this receipt, not merely until socket acceptance.
     pub fn publication(&self) -> io::Result<()> {
-        let mut receipt = [0];
+        let mut receipt = [0; Receipt::SIZE];
         (&self.control).read_exact(&mut receipt)?;
-        match receipt[0] {
-            1 => Ok(()),
-            0 => {
+        match Receipt::try_from(receipt).map_err(|()| io::ErrorKind::InvalidData)? {
+            Receipt::Published => Ok(()),
+            Receipt::Rejected(errno) => Err(io::Error::from_raw_os_error(errno)),
+            Receipt::Retired => {
                 self.retired.store(true, Ordering::Release);
                 Err(io::Error::from_raw_os_error(libc::ENODEV))
             }
-            _ => Err(io::ErrorKind::InvalidData.into()),
         }
     }
 
@@ -228,14 +229,13 @@ impl PacketDeviceRetirement {
         }
         self.request_stop()?;
         loop {
-            let mut byte = [0];
-            self.control.read_exact(&mut byte)?;
-            match byte[0] {
-                0 => break,
+            let mut receipt = [0; Receipt::SIZE];
+            self.control.read_exact(&mut receipt)?;
+            match Receipt::try_from(receipt).map_err(|()| io::ErrorKind::InvalidData)? {
+                Receipt::Retired => break,
                 // Stop may interrupt the publisher after the host has already
                 // completed its reply. Drain that receipt before retirement.
-                1 => {}
-                _ => return Err(io::ErrorKind::InvalidData.into()),
+                Receipt::Published | Receipt::Rejected(_) => {}
             }
         }
         self.retired.store(true, Ordering::Release);

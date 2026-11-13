@@ -62,6 +62,31 @@ fn current_thread_embedder_writes_through_its_own_view() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[test]
+fn missing_cached_inode_reports_errno_and_keeps_the_mount_live()
+-> Result<(), Box<dyn std::error::Error>> {
+    if acyclic_native_runtime::private_file::with_isolated_user_runtime(
+        "native_mount::fuse::tests::owner::missing_cached_inode_reports_errno_and_keeps_the_mount_live",
+    )? {
+        return Ok(());
+    }
+    crate::initialize_native_mount_services()?;
+    let (source, _) = shared_sources(posix_config())?;
+    let volume = source.volume_id()?;
+    let temporary = tempfile::tempdir()?;
+    let mut session = mount(Arc::new(source), volume, temporary.path())?;
+    let notifier = super::super::notification::CacheNotifier::new(transport(&session));
+    let error = notifier
+        .inval_attributes(u64::MAX)
+        .expect_err("inode is not cached");
+    assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+    let path = temporary.path().join("after-cache-miss");
+    std::fs::write(&path, b"connection remains live")?;
+    assert_eq!(std::fs::read(path)?, b"connection remains live");
+    assert!(session.stop()?);
+    Ok(())
+}
+
 const OWNER_CASE: &str = "ACYCLIC_FUSE_OWNER_DEATH_CASE";
 const OWNER_ROOT: &str = "ACYCLIC_FUSE_OWNER_DEATH_ROOT";
 const OWNER_TEST: &str =

@@ -88,6 +88,8 @@ mod storage;
 pub use storage::{ProcessDrain, ProcessTreeIo, ProcessTreeStorage};
 #[cfg(target_os = "linux")]
 mod packet_device;
+#[cfg(target_os = "linux")]
+mod packet_device_receipt;
 #[cfg(unix)]
 mod record;
 #[cfg(target_os = "linux")]
