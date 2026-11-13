@@ -257,6 +257,22 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             node: NodeId::new(b"source")?,
         };
         let destination = NodeId::new(b"destination")?;
+        let registration = route::Registration {
+            placement: route::Placement {
+                actor: within.clone(),
+                node: routing.node.clone(),
+            },
+            intent: intent_key("root-placement", &[])?,
+        };
+        submit(
+            &local,
+            CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: registration.intent.clone(),
+                effects: registration.effects(&routing.paths)?.into(),
+            },
+        )
+        .await?;
         let admission =
             session_peer_admission(&local, &Capabilities::new([SEND_PEER]), &sender, &recipient)
                 .await?
@@ -298,7 +314,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
         };
         submit(&local, request).await?;
         let outbox = routing.paths.outbox(&routing.node)?;
-        assert_eq!(local.tail(outbox.clone()).await?, 2);
+        assert_eq!(local.tail(outbox.clone()).await?, 3);
         assert_eq!(
             local.tail(recipient.inbox()?).await?,
             1,
@@ -311,7 +327,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 .last
                 .ok_or("marker missing")?;
             let record = local
-                .record_at(outbox.clone(), sequence as u64)
+                .record_at(outbox.clone(), sequence as u64 + 1)
                 .await?
                 .ok_or("outbox missing")?;
             assert_eq!(record.commit_id, marker.commit_id);
@@ -342,7 +358,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                     .delivery,
                 SentDelivery::Pending {
                     source: routing.paths.outbox_cursor(&routing.node)?,
-                    from: sequence as u64
+                    from: sequence as u64 + 1
                 }
             );
         }
@@ -351,7 +367,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             local
                 .follow(FollowRequest {
                     when_absent: WhenAbsent::Wait,
-                    ..FollowRequest::new(cursor, 1)
+                    ..FollowRequest::new(cursor, 2)
                 })
                 .await?,
         );
@@ -359,7 +375,20 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             &local,
             &routing.paths,
             &routing.node,
-            async |_| Err(route::Error::InvalidRecord),
+            async |actual| {
+                assert_eq!(actual, registration);
+                let outcome = account
+                    .commit(CommitRequest {
+                        deadline_unix_millis: None,
+                        idempotency_key: actual.intent.clone(),
+                        effects: vec![actual.placement.effect(&routing.paths)?],
+                    })
+                    .await?;
+                if !matches!(outcome, CommitOutcome::Committed(_)) {
+                    return Err(route::Error::InvalidRecord);
+                }
+                Ok(())
+            },
             async |envelope| {
                 envelope
                     .publish_relay(&account, &routing.paths, &destination, Vec::new())
@@ -374,9 +403,21 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 return Err(format!("forward stopped: {result:?}").into());
             }
         }
+        assert!(
+            route::receipt(
+                &local,
+                &routing.paths,
+                &routing.node,
+                0,
+                &registration.intent,
+            )
+            .await
+            .is_err(),
+            "placement acknowledgment is not a message receipt"
+        );
         for (sequence, name) in names.iter().enumerate() {
             let record = local
-                .record_at(outbox.clone(), sequence as u64)
+                .record_at(outbox.clone(), sequence as u64 + 1)
                 .await?
                 .ok_or("outbox missing")?;
             let envelope = route::Publication::decode(&record.value)?.delivery()?;
