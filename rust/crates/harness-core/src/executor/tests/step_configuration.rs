@@ -27,6 +27,21 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             json!({"value": "change configuration"}),
         )])]));
         let second = Arc::new(ScriptedModelProvider::new([done_turn()]));
+        let models = crate::model::ModelResolver::new("fixture/first", {
+            let first = Arc::clone(&first);
+            let second = Arc::clone(&second);
+            move |selection| {
+                let (name, provider): (_, Arc<dyn ModelProvider>) = match selection {
+                    "fixture/first" => ("first", first.clone()),
+                    "fixture/second" => ("second", second.clone()),
+                    _ => return Err(Error::NotFound(selection.into())),
+                };
+                Ok((
+                    Model::new("fixture".into(), name.into(), "1".into())?,
+                    provider,
+                ))
+            }
+        });
         let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
         let tools = echo_tools(
             tool.clone(),
@@ -34,13 +49,9 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             json!({"type": "object"}),
             crate::tool::json_projection_schema(json!({"type": "object"})),
         )?;
-        let bind = |name: &str,
-                    provider: Arc<dyn ModelProvider>,
-                    temperature,
-                    instruction: Option<&str>| {
-            uncompacted_executor(
-                Model::new("fixture".into(), name.into(), "1".into())?,
-                provider,
+        let bind = |selection: &str, temperature, instruction: Option<&str>| {
+            StockExecutor::from_binding(
+                models.resolve_shared(selection)?,
                 instruction.map_or_else(ContextPipeline::default, |text| {
                     ContextPipeline::default().with(Arc::new(crate::context::SourceStage::new(
                         "instructions",
@@ -57,6 +68,7 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
                 }),
                 tools.clone(),
             )
+            .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
             .with_tool_authority(
                 RuntimeScope::new(
                     Capabilities::new(["tool:call:example.echo"]),
@@ -69,10 +81,9 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
                 ..Default::default()
             })
         };
-        let initial = Arc::new(bind("first", first.clone(), 0.1, instruction)?);
+        let initial = Arc::new(bind("fixture/first", 0.1, instruction)?);
         let next = Arc::new(bind(
-            "second",
-            second.clone(),
+            "fixture/second",
             0.8,
             instruction.map(|_| "rewritten instruction"),
         )?);

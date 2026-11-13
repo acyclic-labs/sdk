@@ -347,7 +347,7 @@ impl StockExecution<'_> {
                 request.tools == tools
             };
         if request.summary != self.summary.is_some()
-            || request.model != self.stock.model
+            || request.model != *self.stock.model
             || (!request.compose_tools && !definitions_match)
             || request.compose_tools != self.code_composition(tools)?
             || request.sampling != self.sampling()?

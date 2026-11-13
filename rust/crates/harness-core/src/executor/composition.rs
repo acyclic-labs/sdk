@@ -55,10 +55,27 @@ impl StockExecutor {
         context: ContextPipeline,
         tools: ToolRegistry,
     ) -> Self {
+        Self::from_binding(
+            Arc::new(crate::model::ResolvedModel::new((model, provider))),
+            context,
+            tools,
+        )
+    }
+
+    /// Retains a protected catalog's immutable model/provider pair. Model
+    /// metadata is borrowed until request preparation copies it on the
+    /// execution's original allowance.
+    #[must_use]
+    pub fn from_binding(
+        binding: Arc<crate::model::ResolvedModel>,
+        context: ContextPipeline,
+        tools: ToolRegistry,
+    ) -> Self {
+        let provider = Arc::clone(&binding.1);
         Self {
             step_configuration: None,
             intervention: None,
-            model,
+            model: ExecutorModel(binding),
             sampling: Default::default(),
             resolved_sampling: once_cell::sync::OnceCell::new(),
             provider,
@@ -80,6 +97,17 @@ impl StockExecutor {
             compaction: None,
             reconciliation_only: false,
         }
+    }
+
+    pub(crate) fn bind_content(
+        mut self,
+        reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        maximum: Option<u64>,
+    ) -> Self {
+        if let Some(provider) = self.provider.bind_content(reader, maximum) {
+            self.provider = provider;
+        }
+        self
     }
 
     /// Injects one instruction or replaces the first response step. The ordinary
