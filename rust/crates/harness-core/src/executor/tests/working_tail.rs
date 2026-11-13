@@ -69,6 +69,17 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         .await?;
     assert!(compacted.bytes().len() < 17_000);
     assert_eq!(provider.request_count(), 1);
+    let replacement = Arc::new(
+        StockExecutor::new(
+            Model::new("synthetic".into(), "replacement".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(crate::context::CompactionPolicy::Capacity(
+            crate::context::CapacityCompaction::default(),
+        )),
+    );
     for step in 2..4 {
         prior.push(ModelMessage {
             role: ModelRole::Assistant,
@@ -79,7 +90,9 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
             }),
         });
         // A new execution has no in-memory working checkpoint to rely on.
-        let session = StockExecution::ordinary(&executor);
+        let mut session = StockExecution::ordinary(&executor);
+        session.stock = ExecutionConfiguration::Shared(Arc::clone(&replacement));
+        session.ensure_started(&journal, &input).await?;
         let (context_input, base, working) = session
             .response_base(&journal, &input, step, &prior)
             .await?;
