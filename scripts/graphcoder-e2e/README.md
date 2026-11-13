@@ -3,9 +3,12 @@
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
 `pty-first-run` also requires `E2E_CREDENTIALS_FIXTURE`, the prebuilt
 `acyclic-harness-providers` example `credential-fixture`. It uses a unique
-service in the real OS keychain and requires both launches to send the role model
-`morph-kimik31`, even though the catalog default is `tiny`. It proves
-headless refusal, early startup keys and cancellation, cancellation at hidden-key entry,
+service in the real OS keychain. The first launch selects the generic `e2e/alternate`
+provider/model from the visible numbered menus; the next launch must reuse that
+selection and its saved key over the catalog default `e2e/tiny`. Both model
+requests must name `alternate`. It proves
+headless refusal with a remedy, early invalid numeric input and correction,
+cancellation before credentials and at hidden-key entry,
 empty/multiline key correction, and the first answer's delta
 before turn settlement. Cancelled input never reaches storage or the model. It then
 removes that isolated service entry through the shared credentials API. On Linux run in

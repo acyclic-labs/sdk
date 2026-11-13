@@ -29,7 +29,7 @@
       "<os>",
       "<current_date>",
       "<timezone>",
-      "<model>morph-kimik31</model>"
+      "<model>tiny</model>"
     ]
   },
   "adapter": "responses"

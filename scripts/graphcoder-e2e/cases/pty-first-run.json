@@ -4,21 +4,29 @@
   "keychain": true,
   "first_run": true,
   "authentication": "api_key",
-  "models": ["tiny"],
+  "models": ["tiny", "alternate"],
   "model": { "steps": [
     { "when": { "user": "first configured prompt" }, "text": ["FIRST_CONFIGURED_ANSWER"], "hold": true },
     { "when": { "user": "next configured prompt" }, "text": ["NEXT_CONFIGURED_ANSWER"] }
   ] },
   "inputs": [
     { "mode": "headless", "args": ["-p", "must not prompt"], "exit": 1,
-      "stderr_contains": ["model provider API key is unavailable"],
+      "stderr_contains": ["model provider API key is unavailable", "recovery:"],
       "stdout_absent": ["GraphCoder first run", "API key (hidden)"] },
     { "mode": "pty", "text": "\u0003", "exit": 1, "actions": [] },
+    { "mode": "pty", "text": "0\r", "exit": 1, "actions": [
+      { "when": { "contains": ["Choose a listed number.", "Provider:", "e2e"] }, "choose": "e2e" },
+      { "when": { "contains": ["Model:", "e2e/alternate"] }, "assert": { "absent": ["API key (hidden)"] }, "send": "\u0003" }
+    ] },
     { "mode": "pty", "exit": 1, "actions": [
-      { "when": { "contains": ["credentials for role model morph/morph-kimik31", "API key (hidden):"] }, "assert": { "absent": ["Provider:", "Model:"] }, "send": "CANCELLED_KEY_NONSECRET\u0004" }
+      { "when": { "contains": ["GraphCoder first run: choose a provider", "Provider:", "e2e"] }, "choose": "e2e" },
+      { "when": { "contains": ["Model:", "e2e/alternate"] }, "choose": "e2e/alternate" },
+      { "when": { "contains": ["API key (hidden):"] }, "send": "CANCELLED_KEY_NONSECRET\u0004" }
     ] },
     { "mode": "pty", "actions": [
-      { "when": { "contains": ["credentials for role model morph/morph-kimik31", "API key (hidden):"] }, "assert": { "absent": ["Provider:", "Model:"] }, "send": " \r" },
+      { "when": { "contains": ["GraphCoder first run: choose a provider", "Provider:", "e2e"] }, "choose": "e2e" },
+      { "when": { "contains": ["Model:", "e2e/alternate"] }, "choose": "e2e/alternate" },
+      { "when": { "contains": ["API key (hidden):"] }, "send": " \r" },
       { "when": { "contains": ["API key is empty."] }, "assert": { "raw": ["\u001b[?2004h"] }, "send": "\u001b[200~bad\nkey\u001b[201~\r" },
       { "when": { "contains": ["API key must be a single line."] }, "send": "E2E_FIRST_RUN_NONSECRET\r" },
       { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "prompt": "first configured prompt" },
@@ -32,7 +40,7 @@
   ],
   "assert": {
     "requests": 2,
-    "http": [{ "step": 0, "body": { "model": "morph-kimik31" } }, { "step": 1, "body": { "model": "morph-kimik31" } }],
+    "http": [{ "step": 0, "body": { "model": "alternate" } }, { "step": 1, "body": { "model": "alternate" } }],
     "wire_absent": ["E2E_FIRST_RUN_NONSECRET", "CANCELLED_KEY_NONSECRET"],
     "each_model_absent": ["E2E_FIRST_RUN_NONSECRET", "CANCELLED_KEY_NONSECRET"]
   }
