@@ -912,7 +912,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         let skipped_index =
             u32::try_from(inbox_effect).map_err(|_| Error::Record("too many delivery effects"))?;
         let actor = self.actor(to)?;
-        let activation = self.runtime.store().activation(&actor).map_err(actor_error)?;
+        let activation = self
+            .runtime
+            .store()
+            .activation(&actor)
+            .map_err(actor_error)?;
         // The wake belongs to this same guarded write. A skipped inbox effect
         // must not publish an activation for work that was never admitted.
         request.effects[inbox_effect]
