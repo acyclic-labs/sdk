@@ -8,16 +8,34 @@ proptest! {
     #[test]
     fn staged_lookup_preserves_identity_and_requires_read(
         identity in any::<[u8; 16]>(),
-        key in prop_oneof!["[a-z]{1,12}", "tool:[0-9]:[a-z]{1,12}:result", "tool:[0-9]:[a-z]{1,12}:result:[0-9a-f]{64}", "summary:[0-9]:output", "summary:[0-9]:part:[0-9]:rewrite", "summary:[0-9]:part:[0-9]:output", "summary:[0-9]:output:[0-9a-f]{64}"],
+        key in prop_oneof!["[a-z]{1,12}", "summary:[0-9]:output", "backstop:[0-9]:marker", "summary:[0-9]:part:[0-9]:rewrite", "summary:[0-9]:part:[0-9]:output", "summary:[0-9]:output:[0-9a-f]{64}", "tool:[0-9]:[a-z]{1,12}:result", "tool:[0-9]:[a-z]{1,12}:result:[0-9a-f]{64}"],
         bytes in proptest::collection::vec(any::<u8>(), 0..128),
+        published in any::<bool>(),
+        text in any::<bool>(),
     ) {
         tokio::runtime::Builder::new_current_thread()
             .enable_all().build().unwrap()
-            .block_on(check(identity, &key, &bytes)).unwrap();
+            .block_on(check(identity, &key, &bytes, published, text)).unwrap();
     }
 }
 
-async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
+async fn check(
+    identity: [u8; 16],
+    key: &str,
+    bytes: &[u8],
+    published: bool,
+    text: bool,
+) -> Result<()> {
+    let media_type = if text {
+        "text/plain"
+    } else {
+        "application/octet-stream"
+    };
+    let display_name = if text {
+        "execution.txt"
+    } else {
+        "execution.json"
+    };
     let provider = ProviderRef::new(
         "staged-lookup".into(),
         "filesystem".into(),
@@ -34,7 +52,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = crate::core::AuthorityRoot::new(
+    let issuer = crate::core::AuthorityRoot::host_owned(
         "staged-lookup",
         [81; 32],
         crate::core::Authority {
@@ -63,18 +81,71 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         },
     )?;
     let operation = OperationId::from_bytes(identity);
-    if key.starts_with("summary:") {
-        check_summary_namespace(&journal, operation, key, bytes).await?;
-    }
+    let original = if published {
+        let (identity, _) = journal.stage_identity_with_io(operation, key, None)?;
+        let path = format!(".system/execution/{operation}/retained.json");
+        let grant = ContentGrant::verify(
+            &journal.verifier,
+            &scope,
+            &volume,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        Some(
+            journal
+                .host
+                .put_internal_content(
+                    &volume,
+                    &grant,
+                    &path,
+                    bytes,
+                    media_type,
+                    display_name,
+                    Some(4096),
+                    &identity,
+                    InternalContentClass::Execution,
+                    None,
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
     let expected = journal
-        .stage(operation, key, bytes, "application/octet-stream", None)?
+        .stage(operation, key, bytes, media_type, None)?
         .await?;
+    if let Some(original) = original {
+        assert_eq!(
+            expected, original,
+            "retry must preserve the original receipt"
+        );
+    }
     assert_eq!(
         journal
-            .stage(operation, key, bytes, "application/octet-stream", None)?
+            .stage(operation, key, bytes, media_type, None)?
             .await?,
         expected
     );
+    let mut changed = bytes.to_vec();
+    changed.push(0);
+    for (bytes, media_type) in [
+        (changed.as_slice(), media_type),
+        (
+            bytes,
+            if text {
+                "application/octet-stream"
+            } else {
+                "text/plain"
+            },
+        ),
+    ] {
+        assert!(matches!(
+            journal
+                .stage(operation, key, bytes, media_type, None)?
+                .await,
+            Err(Error::Conflict(_))
+        ));
+    }
     let recovered = (&journal as &dyn ExecutionJournal)
         .staged_ref(operation, key, None)?
         .await?
@@ -135,7 +206,8 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
     ));
     // The original authenticated reader still sees the retained payload, so
     // the writer's denial above cannot pass because the payload is absent.
-    let (identity, path) = journal.stage_identity_with_io(operation, key, None)?;
+    let (identity, _) = journal.stage_identity_with_io(operation, key, None)?;
+    let path = expected.path();
     assert_eq!(
         journal
             .host
@@ -145,7 +217,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                     key: &identity,
                     expected_path: Some(&path),
                     maximum_bytes: Some(4096),
-                    internal_class: Some(super::super::content::payload_class(&path)),
+                    internal: true,
                     purpose: super::super::super::PublicationPurpose::Content,
                     scope: &scope,
                     ceiling: None,
@@ -156,8 +228,9 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             .map(|(file, body)| {
                 assert_eq!(body.expect("authorized payload").as_ref(), bytes);
                 file
-            }),
-        Some(expected)
+            })
+            .as_ref(),
+        Some(&expected)
     );
     // Projection cannot return payload bytes through a metadata-only request,
     // and asking for payload independently requires Read in the same compiler.
@@ -199,7 +272,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
                         key: &identity,
                         expected_path: Some(&path),
                         maximum_bytes: Some(4096),
-                        internal_class: Some(super::super::content::payload_class(&path)),
+                        internal: true,
                         purpose: if read_content {
                             super::super::super::PublicationPurpose::Content
                         } else {
@@ -225,64 +298,5 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-async fn check_summary_namespace<P, A, O>(
-    journal: &FilesystemExecutionJournal<P, A, O>,
-    operation: OperationId,
-    key: &str,
-    bytes: &[u8],
-) -> Result<()>
-where
-    P: crate::store::JournalProvider + ?Sized,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    let digest = super::super::content::operation_digest(operation, key, None)?;
-    let original_key = IdempotencyKey::new(format!("journal-{}", digest.to_hex()))?;
-    let original_path = format!(".system/execution/{operation}/{}.json", digest.to_hex());
-    let grant = ContentGrant::verify(
-        &journal.verifier,
-        &journal.scope,
-        &journal.volume,
-        VolumeOperation::Write,
-        &mut None,
-    )?;
-    journal
-        .host
-        .put_internal_content(
-            &journal.volume,
-            &grant,
-            &original_path,
-            bytes,
-            "application/octet-stream",
-            "execution.json",
-            Some(super::super::MAXIMUM_PAYLOAD_BYTES),
-            &original_key,
-            InternalContentClass::Execution,
-            None,
-        )
-        .await?;
-    let (_, path) = journal.stage_identity_with_io(operation, key, None)?;
-    // Negative control: reusing the old upload key at the new path conflicts.
-    assert!(matches!(
-        journal
-            .host
-            .put_internal_content(
-                &journal.volume,
-                &grant,
-                &path,
-                bytes,
-                "application/octet-stream",
-                "execution.json",
-                Some(super::super::MAXIMUM_PAYLOAD_BYTES),
-                &original_key,
-                InternalContentClass::Summary,
-                None,
-            )
-            .await,
-        Err(Error::Conflict(_))
-    ));
     Ok(())
 }

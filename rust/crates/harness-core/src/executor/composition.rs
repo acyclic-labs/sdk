@@ -176,6 +176,7 @@ impl StockExecutor {
             inherited_prefix: None,
             task_context: None,
             compaction: None,
+            context_management: false,
             reconciliation_only: false,
         }
     }
@@ -223,6 +224,10 @@ impl StockExecutor {
                 self.provider.as_ref(),
             )?);
         }
+        self.context_management = !matches!(
+            self.compaction,
+            Some(crate::context::CompactionPolicy::Disabled)
+        );
         Ok(self)
     }
     /// Appends one validated context stage to the existing ordered pipeline.
