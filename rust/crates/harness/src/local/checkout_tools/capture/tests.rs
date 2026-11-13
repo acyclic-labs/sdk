@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub(super) struct Injection {
     stage: &'static str,
     remaining: usize,
+    invalidate: bool,
     delivered: Arc<AtomicUsize>,
     path: PathBuf,
 }
@@ -28,8 +29,13 @@ pub(super) fn inject(
         injection.remaining -= 1;
         injection.delivered.fetch_add(1, Ordering::Relaxed);
         std::fs::write(&injection.path, b"after").map_err(storage)?;
-        // Mark the same lost continuity as a dropped OS batch without I/O.
-        watcher.invalidate().map_err(storage)?;
+        if injection.invalidate {
+            // Mark the same lost continuity as a dropped OS batch without I/O.
+            watcher.invalidate().map_err(storage)?;
+        } else {
+            // Deliver the actual new event before this replay step returns.
+            watcher.fence().map_err(storage)?;
+        }
     }
     Ok(())
 }
@@ -114,6 +120,10 @@ async fn arriving_descendant_under_a_replaced_directory_is_absent() -> Result<()
 }
 
 async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
+    contents_at(tools, "marker").await
+}
+
+async fn contents_at(tools: &CheckoutTools, relative: &str) -> Result<Vec<u8>> {
     let cancellation = CancellationToken::new();
     let workspace = tools.workspace.view().workspace();
     let checkout = workspace
@@ -128,7 +138,7 @@ async fn contents(tools: &CheckoutTools) -> Result<Vec<u8>> {
         .value;
     let config = workspace.volume_config();
     let path = acyclic_fs::native_capture::host_path_to_namespace(
-        Path::new("marker"),
+        Path::new(relative),
         config.profile,
         config.limits,
     )
@@ -314,6 +324,7 @@ async fn recovers(stage: &'static str) -> Result<()> {
     cursor.injection = Some(Injection {
         stage,
         remaining: 1,
+        invalidate: true,
         delivered: Arc::new(AtomicUsize::new(0)),
         path: directory.path().join("marker"),
     });
@@ -379,6 +390,7 @@ async fn repeated_invalidation_is_bounded_and_never_publishes_a_candidate() -> R
     cursor.injection = Some(Injection {
         stage: "baseline",
         remaining: usize::MAX,
+        invalidate: true,
         delivered: delivered.clone(),
         path: directory.path().join("marker"),
     });
@@ -978,4 +990,47 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
         [capture, owed].into_iter().all(|bytes| bytes <= 512),
         "capture embeds concrete owed-write and publication futures"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn capture_finishes_its_ready_interval_while_later_native_changes_remain_queued() -> Result<()>
+{
+    let (directory, harness, tools) = fixture().await?;
+    let mut slot = Some(Cursor::initial(&tools.workspace)?);
+    run(&tools, &mut slot).await?;
+    std::fs::write(directory.path().join("marker"), b"first").map_err(storage)?;
+    let delivered = Arc::new(AtomicUsize::new(0));
+    slot.as_mut()
+        .ok_or_else(|| Error::NotFound("capture cursor".into()))?
+        .injection = Some(Injection {
+        stage: "poll",
+        remaining: 3,
+        invalidate: false,
+        delivered: Arc::clone(&delivered),
+        path: directory.path().join("later"),
+    });
+    // Each observed page causes another genuine OS event before replay returns.
+    // Waiting for global idleness would consume every producer allowance.
+    run(&tools, &mut slot).await?;
+    let injection = slot
+        .as_mut()
+        .and_then(|cursor| cursor.injection.take())
+        .ok_or_else(|| Error::NotFound("capture event producer".into()))?;
+    assert!(
+        injection.remaining > 0,
+        "capture chased events beyond its entry interval"
+    );
+    assert!(delivered.load(Ordering::Relaxed) > 0);
+    assert_eq!(contents(&tools).await?, b"first");
+    assert!(matches!(
+        contents_at(&tools, "later").await,
+        Err(Error::NotFound(_))
+    ));
+    // The next capture owns all those later events; none were lost at settlement.
+    run(&tools, &mut slot).await?;
+    assert_eq!(contents_at(&tools, "later").await?, b"after");
+    drop(slot);
+    drop(tools);
+    harness.disconnect().await
 }
