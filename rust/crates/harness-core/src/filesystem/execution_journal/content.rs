@@ -97,7 +97,7 @@ where
                 .map_or(idempotency_key, |(key, _)| key);
             // A summary is model input: it lives where the agent's own reader
             // may read it, beside the host-private execution records.
-            if crate::executor::summary_identity::is_summary_key(kind_key) {
+            if crate::executor::summary_identity::is_output_key(kind_key) {
                 return crate::executor::preparation_format(
                     format_args!(
                         "{}{operation_id}/{}.json",

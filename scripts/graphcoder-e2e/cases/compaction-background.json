@@ -54,8 +54,7 @@
       {
         "when": {
           "tool_result": "recent",
-          "user": "continue BACKGROUND_FACT",
-          "contains": "BACKGROUND_SAVED_FACT"
+          "user": "continue BACKGROUND_FACT"
         },
         "tools": [
           {
@@ -95,6 +94,7 @@
       {
         "when": {
           "user": "continue BACKGROUND_FACT",
+          "tool_result": "BACKGROUND_RECENT_CHILD_DONE",
           "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
         },
         "text": ["none"]
