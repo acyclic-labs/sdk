@@ -659,7 +659,7 @@ mod tests {
                             selected: Some(super::super::ApprovalSelection {
                                 source: path.clone(),
                                 range: 0..super::super::MAX_QUEUED as u64,
-                                policy: None,
+                                policy: Some(file()),
                             }),
                         }),
                         dropped_before: u64::MAX,

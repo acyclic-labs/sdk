@@ -569,8 +569,7 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
         host.send(
             agent,
             &sender,
-            &InboxRecord::ApprovalRequested(ApprovalRequested {
-                child: agent.clone(),
+            &InboxRecord::Approval(Approval {
                 id: IntentId::try_from("input")?,
             }),
         )
