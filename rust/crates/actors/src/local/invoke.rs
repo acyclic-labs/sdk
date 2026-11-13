@@ -301,6 +301,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 let call = journal
                     .receipt(path.log())
                     .ok_or(Error::Invalid("call terminal receipt is missing"))?;
+                // A follow can observe acceptance while the writer is still
+                // confirming persistence. Certify this observer's own reply.
+                if let Err(source) = self.confirm_durability().await {
+                    return Err(Error::InvocationDurabilityUnknown {
+                        receipt: Box::new(call),
+                        source,
+                    });
+                }
                 if matches!(outcome, Outcome::Cancelled(_) | Outcome::Indeterminate(_)) {
                     return Err(Error::InvocationTerminated {
                         receipt: Box::new(call),

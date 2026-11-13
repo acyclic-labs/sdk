@@ -77,31 +77,37 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
         {
             return Ok(false);
         }
-        store
-            .publish(
-                &store.load(&actor).await?,
-                1,
-                &Trigger::Record {
-                    subscription: "inbox".into(),
-                    sequence: ticket.record().sequence,
+        let before = store.load(&actor).await?;
+        let publication = store.prepare_publish(
+            &before,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: ticket.record().sequence,
+            },
+            Some(ticket.record()),
+            Transition {
+                response: Some(Bytes::from_static(b"completed")),
+                participant: None,
+                checkpoint: checkpoint(1),
+                alarm: AlarmChange::Set {
+                    deadline_unix_ms: 10,
                 },
-                Some(ticket.record()),
-                Transition {
-                    response: Some(Bytes::from_static(b"completed")),
-                    participant: None,
-                    checkpoint: checkpoint(1),
-                    alarm: AlarmChange::Set {
-                        deadline_unix_ms: 10,
-                    },
-                    effects: Vec::new(),
-                    subscriptions: Vec::new(),
-                },
-                IdempotencyKey::new(b"complete".to_vec())?,
-            )
-            .await?;
+                effects: Vec::new(),
+                subscriptions: Vec::new(),
+            },
+            IdempotencyKey::new(b"complete".to_vec())?,
+        )?;
+        // Stop at the real provider acceptance between Store's write and its
+        // durability confirmation. A response observer runs at this cut.
+        PreparedPublish::settle(&provider.commit(publication.request.clone()).await?)?;
+        assert!(
+            !durable(&provider, store.path(&actor)?, before.tail + 1).await?,
+            "the simulation must hold the publisher before its durable cut"
+        );
         let call = ticket.call()?;
         let completed = store.wait_invocation(ticket).await?;
-        Ok(durable(
+        let observed_durable = durable(
             &provider,
             store.path(&actor)?,
             completed.receipt().revision(),
@@ -112,7 +118,11 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
                 call.log().clone(),
                 completed.receipt().terminal().sequence + 1,
             )
-            .await?)
+            .await?;
+        // Resume the original publisher with its exact request. Its later
+        // acknowledgement cannot retroactively certify the observer's reply.
+        store.submit(publication).await?;
+        Ok(observed_durable)
     })
     .await
 }

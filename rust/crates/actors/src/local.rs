@@ -86,6 +86,15 @@ pub enum Error {
         /// The original uncertain provider response or transport failure.
         source: StreamError,
     },
+    /// A terminal was observed, but its durable cut could not be confirmed.
+    /// This retains the original outcome; it is not a refusal of that call.
+    #[error("actor invocation durability is unknown: {source}")]
+    InvocationDurabilityUnknown {
+        /// The observed original terminal, including its result bytes.
+        receipt: Box<crate::call::Receipt>,
+        /// Why its persistence could not be confirmed.
+        source: StreamError,
+    },
     /// Publication has a terminal outcome, but participant settlement failed.
     #[error("actor participant settlement failed: {source}")]
     Settlement {
@@ -153,7 +162,7 @@ impl Error {
             Self::CompletionFailed(_) => "completion_failed",
             Self::Escrow(_) => "escrow",
             Self::Stream(error) => error.code(),
-            Self::Unknown { .. } => "unknown",
+            Self::Unknown { .. } | Self::InvocationDurabilityUnknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
             Self::Conflict => "conflict",
             Self::PreconditionChanged(_) => "precondition_changed",
@@ -1399,9 +1408,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         mut prepared: PreparedPublish,
     ) -> Result<PreparedPublish, Error> {
-        if self.provider.context().deferred_durability()
-            && let Err(source) = self.provider.durability_barrier().await
-        {
+        if let Err(source) = self.confirm_durability().await {
             prepared.acknowledgement_unknown = true;
             return Err(Error::Unknown {
                 publication: Box::new(prepared),
@@ -1409,6 +1416,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             });
         }
         Ok(prepared)
+    }
+
+    /// Writers and observers certify the same provider-owned durable prefix.
+    async fn confirm_durability(&self) -> Result<(), StreamError> {
+        if self.provider.context().deferred_durability() {
+            self.provider.durability_barrier().await?;
+        }
+        Ok(())
     }
 
     /// Submit once and return the exact authored state confirmed by the original

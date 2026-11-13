@@ -15,6 +15,9 @@ conditionally committed history:
   invocation admission covers a device-durable cut, including when its caller
   defers Stream writes or selects ordering-only local publication. A flush
   failure after acceptance retains `Error::Unknown` and the original request.
+  Response observers confirm the same cut, even if they see a terminal before
+  its publisher returns. If confirmation fails, `InvocationDurabilityUnknown`
+  retains the observed call outcome instead of reporting refusal.
 * **Success never reported as refusal, nor refusal as success.** An uncertain
   publication retains its exact request and participant. A later retry refusal
   cannot settle an earlier possible success. A conditional refusal consumes
