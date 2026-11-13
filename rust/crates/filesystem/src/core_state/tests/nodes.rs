@@ -487,3 +487,64 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
         );
     }
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_held_immutable_publication_does_not_exclude_another_address() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let cancellation = crate::CancellationToken::new();
+    let empty = LazyOverlayId::from_bytes([0; 32]);
+    let (first_id, first_node) = linked_overlay("/held", empty, empty);
+    let (second_id, second_node) = linked_overlay("/independent", empty, empty);
+    let namespace = store.namespace().unwrap();
+    let mut held =
+        crate::core_state::nodes::publication_pause::hold(&namespace.root, first_id.into_bytes());
+    let mut first_accounting = unbounded_accounting(&cancellation);
+    let allocation = first_accounting
+        .claim_owned(first_node.owned_bytes(), 0)
+        .unwrap();
+    let mut first = Box::pin(store.put_lazy_overlay(
+        first_id,
+        (first_node.clone(), allocation),
+        &mut first_accounting,
+    ));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    // Wait for the actual post-rename publication cut, not just worker admission.
+    tokio::time::timeout(std::time::Duration::from_secs(2), held.entered())
+        .await
+        .expect("first publisher never reached its physical publication cut");
+    let mut second_accounting = unbounded_accounting(&cancellation);
+    let allocation = second_accounting
+        .claim_owned(second_node.owned_bytes(), 0)
+        .unwrap();
+    let mut second = Box::pin(store.put_lazy_overlay(
+        second_id,
+        (second_node.clone(), allocation),
+        &mut second_accounting,
+    ));
+    let independent =
+        tokio::time::timeout(std::time::Duration::from_secs(2), second.as_mut()).await;
+    // Always release and finish both real producers before reporting a failure.
+    drop(held);
+    first.await.unwrap();
+    match independent {
+        Ok(result) => result.unwrap(),
+        Err(_) => {
+            second.await.unwrap();
+            panic!("an unrelated immutable address waited for the held publisher");
+        }
+    }
+    let mut accounting = unbounded_accounting(&cancellation);
+    for (id, expected) in [(first_id, first_node), (second_id, second_node)] {
+        assert_eq!(
+            store
+                .load_lazy_overlay(id, &mut accounting)
+                .await
+                .unwrap()
+                .as_ref()
+                .map(|(node, _)| node),
+            Some(&expected)
+        );
+    }
+}

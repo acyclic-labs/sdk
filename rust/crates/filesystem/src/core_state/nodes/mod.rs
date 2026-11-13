@@ -200,6 +200,8 @@ impl LocalCoreStateStore {
                     serde_json::to_writer(&mut encoded, &owned.value)?;
                     // Immutable records need atomic no-replace publication,
                     // not exclusion between unrelated content addresses.
+                    #[cfg(all(test, target_os = "linux"))]
+                    publication_pause::install(&namespace.root, T::address(id));
                     let mut original = work.clone();
                     let mut publish = || -> Result<(), crate::DemandError> {
                         let root =
@@ -236,3 +238,79 @@ impl LocalCoreStateStore {
 }
 
 mod store;
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) mod publication_pause {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, PoisonError, mpsc};
+    struct Pause {
+        root: PathBuf,
+        address: [u8; 32],
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    static PAUSE: Mutex<Option<Pause>> = Mutex::new(None);
+
+    pub(in crate::core_state) struct Held {
+        root: PathBuf,
+        address: [u8; 32],
+        entered: tokio::sync::oneshot::Receiver<()>,
+        release: mpsc::Sender<()>,
+    }
+    impl Held {
+        pub(in crate::core_state) async fn entered(&mut self) {
+            (&mut self.entered)
+                .await
+                .expect("original publisher reached its physical cut");
+        }
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let mut slot = PAUSE.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot
+                .as_ref()
+                .is_some_and(|pause| pause.root == self.root && pause.address == self.address)
+            {
+                slot.take();
+            }
+            let _ = self.release.send(());
+        }
+    }
+    pub(in crate::core_state) fn hold(root: &Path, address: [u8; 32]) -> Held {
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (release, released) = mpsc::channel();
+        let mut slot = PAUSE.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(slot.is_none(), "only one publication fixture owns this cut");
+        *slot = Some(Pause {
+            root: root.to_owned(),
+            address,
+            entered,
+            release: released,
+        });
+        Held {
+            root: root.to_owned(),
+            address,
+            entered: observed,
+            release,
+        }
+    }
+    pub(super) fn install(root: &Path, address: [u8; 32]) {
+        let pause = {
+            let mut slot = PAUSE.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot
+                .as_ref()
+                .is_some_and(|pause| pause.root == root && pause.address == address)
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = pause {
+            crate::native_host::publish_probe::before_directory_sync(move || {
+                let _ = pause.entered.send(());
+                let _ = pause.release.recv();
+            });
+        }
+    }
+}
