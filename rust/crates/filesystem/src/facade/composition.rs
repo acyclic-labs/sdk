@@ -576,6 +576,8 @@ where
     /// Conditions the same caller commit on every original source head, using
     /// one supplied accounting frame. Native preparation retains the original
     /// invocation and allocation owner; standalone callers spend one budget.
+    /// Each source must remain live at submission, including when retirement
+    /// leaves its generation lineage unchanged.
     /// This neither submits nor seals the commit. On refusal its caller still
     /// owns the same partially conditioned commit and original retry identity.
     pub async fn require_heads<W: FsWork>(

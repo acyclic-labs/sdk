@@ -473,10 +473,67 @@ async fn a_head_conditioned_fork_of_an_unchanged_source_commits() -> Result<(), 
     Ok(())
 }
 
+/// Retirement withdraws a required source without publishing a new generation.
+#[tokio::test]
+async fn a_retired_required_source_refuses_the_consuming_commit() -> Result<(), Box<dyn Error>> {
+    for retired in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let fs = placed(&stream)?;
+        let source = parent(&fs, &stream).await?;
+        let destination = StreamPath::new("observations/accepted")?;
+        let mut commit = FilesystemCommit::new(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![],
+                vec![CommitMutation::Append {
+                    path: destination.clone(),
+                    records: vec![record(b"accepted")],
+                }],
+            )],
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"consume-source".to_vec())?,
+        });
+        unbounded!(fs, require_head(&source, &mut commit))?;
+        let tails: Vec<_> = commit
+            .request()
+            .conditions()
+            .filter_map(|condition| match condition {
+                CommitCondition::Tail { path, expected } => Some((path.clone(), *expected)),
+                _ => None,
+            })
+            .collect();
+        assert!(!tails.is_empty());
+        if retired {
+            assert_eq!(
+                fs.delete_workspace("root-project", crate::IdempotencyKey::new())
+                    .await?,
+                crate::WorkspaceDelete::Deleted
+            );
+            for (path, expected) in tails {
+                assert_eq!(
+                    stream.tail(path).await?,
+                    expected,
+                    "retirement did not publish another generation"
+                );
+            }
+        }
+        let outcome = unbounded!(fs, submit_commit(commit))?;
+        if retired {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Rejected(_)));
+            assert_eq!(
+                stream.tail(destination).await,
+                Err(acyclic_stream::StreamError::NotFound)
+            );
+        } else {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
+            assert_eq!(stream.tail(destination).await?, 1);
+        }
+    }
+    Ok(())
+}
 /// Two children forking one source require its head once, and commit; one
 /// commit requiring two different heads of a source is refused.
 #[tokio::test]
-async fn one_source_required_twice_adds_one_condition() -> Result<(), Box<dyn Error>> {
+async fn repeated_source_requirements_do_not_duplicate_conditions() -> Result<(), Box<dyn Error>> {
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
