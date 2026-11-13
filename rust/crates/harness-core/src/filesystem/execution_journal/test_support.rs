@@ -35,13 +35,7 @@ where
     )?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = crate::AgentId::from_bytes([81; 16]);
-    let volume = VolumeRef::new(
-        provider,
-        "journal".into(),
-        VolumeClass::AgentPrivate,
-        crate::conversation::VolumeOwner::Agent(agent),
-        &mut None,
-    )?;
+    let volume = crate::conversation::journal_volume(provider, &agent)?;
     host.create_volume(&volume).await?;
     let issuer = crate::core::AuthorityRoot::host_owned(
         "append-cost",
