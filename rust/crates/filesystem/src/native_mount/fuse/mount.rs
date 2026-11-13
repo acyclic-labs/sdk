@@ -1,4 +1,6 @@
 use acyclic_native_runtime::PacketDevice;
+#[cfg(test)]
+use acyclic_native_runtime::receive_packet_device_reply_for_test as receive_device;
 use nix::mount::MntFlags;
 use std::{
     ffi::CStr,
@@ -11,9 +13,9 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
-mod reply;
 #[cfg(test)]
-use reply::receive_device;
+#[path = "mount/reply_check.rs"]
+mod reply_check;
 #[cfg(test)]
 mod tests;
 

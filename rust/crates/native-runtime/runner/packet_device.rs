@@ -221,13 +221,15 @@ impl Session {
     fn helper_ready(&mut self, queue: Fd) -> Result<(), Errno> {
         let mut body = [0; 5];
         let request = receive_handles(self.device, &mut body)?.ok_or(Errno(sys::EPIPE))?;
-        if request.count != 1 {
-            request.close();
-            return Err(Errno(sys::EINVAL));
+        let device = super::ancillary::Handles {
+            descriptors: request.descriptors,
+            count: request.count,
         }
+        .one(sys::close)
+        .map_err(|()| Errno(sys::EINVAL))?;
         sys::unwatch(queue, self.device);
         sys::close(self.device);
-        self.device = request.descriptors[0];
+        self.device = device;
         self.device_registered = false;
         self.waiting_helper = false;
         self.mounted = true;

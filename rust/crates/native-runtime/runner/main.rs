@@ -18,6 +18,7 @@
 #![no_std]
 #![no_main]
 
+mod ancillary;
 #[path = "../src/execution/linux/device.rs"]
 mod device;
 #[path = "../src/execution/linux/entry.rs"]
@@ -27,7 +28,7 @@ mod packet_device;
 mod record;
 mod request;
 mod sys;
-use request::{DESCRIPTORS, Mapped, Received, Slot, Spec, array4, spec, word};
+use request::{DESCRIPTORS, Mapped, Received, Slot, Spec, array4, spec};
 #[path = "../src/process_tree/warden.rs"]
 mod warden;
 
@@ -242,8 +243,6 @@ fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
     }
 }
 fn receive_handles(socket: Fd, bytes: &mut [u8]) -> Result<Option<Received>, Errno> {
-    // A control message header, then the descriptors.
-    const HEADER: usize = 16;
     let mut space = ControlSpace([0; 64]);
     let mut vector = sys::IoVector {
         base: bytes.as_mut_ptr(),
@@ -265,47 +264,20 @@ fn receive_handles(socket: Fd, bytes: &mut [u8]) -> Result<Option<Received>, Err
             Err(error) => return Err(error),
         }
     };
+    let handles = ancillary::decode::<DESCRIPTORS>(
+        &space.0[..header.control_length.min(space.0.len())],
+        header.flags,
+        sys::close,
+    )
+    .map_err(|()| Errno(sys::EINVAL))?;
     let mut received = Received {
-        descriptors: [-1; DESCRIPTORS],
-        count: 0,
+        descriptors: handles.descriptors,
+        count: handles.count,
         length: 0,
     };
-    // Each control message: its length, level and type, then its data, the
-    // next one aligned to eight bytes.
-    let control = &space.0;
-    let filled = header.control_length.min(control.len());
-    let mut offset = 0;
-    while let Some(message) = control
-        .get(offset..filled)
-        .filter(|rest| rest.len() >= HEADER)
-    {
-        let message_length = message.get(..8).map_or(0, word).min(message.len());
-        let level = i32::from_ne_bytes(message.get(8..12).map(array4).unwrap_or_default());
-        let kind = i32::from_ne_bytes(message.get(12..16).map(array4).unwrap_or_default());
-        if message_length < HEADER {
-            break;
-        }
-        if level == sys::SOL_SOCKET && kind == sys::SCM_RIGHTS {
-            let data = message.get(HEADER..message_length).unwrap_or_default();
-            for fd in data.chunks_exact(4) {
-                let fd = Fd::from_ne_bytes(array4(fd));
-                if let Some(slot) = received.descriptors.get_mut(received.count) {
-                    *slot = fd;
-                    received.count += 1;
-                } else {
-                    sys::close(fd);
-                }
-            }
-        }
-        offset += message_length.next_multiple_of(8);
-    }
     if read == 0 {
         received.close();
         return Ok(None);
-    }
-    if header.flags & (sys::MSG_CTRUNC | 32) != 0 {
-        received.close();
-        return Err(Errno(sys::EINVAL));
     }
     received.length = read;
     Ok(Some(received))

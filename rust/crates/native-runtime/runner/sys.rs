@@ -751,10 +751,6 @@ pub struct IoVector {
     pub length: usize,
 }
 
-pub const MSG_CTRUNC: i32 = 8;
-pub const SOL_SOCKET: i32 = 1;
-pub const SCM_RIGHTS: i32 = 1;
-
 /// Receives one message, closing received descriptors on exec.
 pub fn receive(socket: Fd, header: &mut MessageHeader) -> Result<usize, Errno> {
     // SAFETY: a header naming writable buffers of its stated lengths.
