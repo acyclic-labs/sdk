@@ -233,7 +233,7 @@ impl Observer {
                 kind: Some(wire::session_subscription::Kind::Follow(
                     wire::SessionFollow {
                         resource: resource.clone(),
-                        delivery: wire::SessionDelivery::Latest as i32,
+                        delivery: wire::SessionDelivery::All as i32,
                         ..Default::default()
                     },
                 )),
