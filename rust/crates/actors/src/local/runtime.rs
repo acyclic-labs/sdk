@@ -160,7 +160,7 @@ enum Event {
     Created(u16, Record),
     Dispatched(u16, Result<Snapshot, Error>),
     Work(Work<ActorReference>),
-    Done(Result<(), (ActorReference, Error)>),
+    Done(Result<(), (ActorReference, Error, Option<Work<ActorReference>>)>),
     Rearm(Option<u64>),
     Due(Result<(), ClockError>),
     Armed(Vec<(u64, ActorReference)>),
@@ -533,7 +533,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             })
             .await;
             match result {
-                Some(Err(failure)) => failures.push(failure),
+                Some(Err((actor, error, _work))) => failures.push((actor, error)),
                 Some(Ok(())) => {}
                 None => break,
             }
@@ -559,7 +559,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .pin(actor)?
                     .ok_or(Error::Invalid("actor is not tracked"))?;
                 let result = loop {
-                    match self.deliver(actor, &delivery.0, None).await {
+                    match self.deliver(actor, &delivery.0, &mut None).await {
                         Ok(true) => break Ok(()),
                         Ok(false) => {
                             // Drop both locks before queueing the next finite batch.
@@ -743,6 +743,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
         let mut running = FuturesUnordered::new();
+        // Backoff retains the original work without occupying active admission.
+        let mut retrying: FuturesUnordered<BoxProviderFuture<'_, Work<ActorReference>>> =
+            FuturesUnordered::new();
         // A checkpoint is waiting for deliveries to settle.
         let mut held = false;
         let mut timer: Option<(u64, BoxProviderFuture<'static, Result<(), ClockError>>)> = None;
@@ -776,9 +779,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 if held && !self.ready.busy() {
                     return Poll::Ready(Event::Quiet);
                 }
-                for _ in 0..6 {
+                for _ in 0..7 {
                     let class = next_class;
-                    next_class = (next_class + 1) % 6;
+                    next_class = (next_class + 1) % 7;
                     match class {
                         0 => {
                             // Provider I/O owned by an active delivery must keep
@@ -860,9 +863,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Completion(completion));
                             }
                         }
-                        _ => {
+                        5 => {
                             if let Poll::Ready(result) = self.poll_subscriptions(context) {
                                 return Poll::Ready(Event::Subscription(result));
+                            }
+                        }
+                        _ => {
+                            if self
+                                .limits
+                                .active
+                                .is_none_or(|active| running.len() < active)
+                                && let Poll::Ready(Some(work)) = retrying.poll_next_unpin(context)
+                            {
+                                return Poll::Ready(Event::Work(work));
                             }
                         }
                     }
@@ -911,7 +924,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
                     running.push(execution);
                 }
-                Event::Done(Err((actor, error))) => {
+                Event::Done(Err((_, error, Some(work)))) if transport::unavailable(&error) => {
+                    retrying.push(Box::pin(async move {
+                        sleep(10).await;
+                        work
+                    }));
+                }
+                Event::Done(Err((actor, error, _work))) => {
                     report(&actor, &error);
                     failure.get_or_insert_with(|| Arc::new(error));
                 }
@@ -1165,19 +1184,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         })
     }
 
-    async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
+    async fn execute(
+        &self,
+        work: Work<ActorReference>,
+    ) -> Result<(), (ActorReference, Error, Option<Work<ActorReference>>)> {
         let actor = work.key().clone();
         // Released before it ran: the work drops unsettled, so its input
         // keeps the failure mark and the one carried entry it hands off.
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot, Some(work)).await;
+        let mut work = Some(work);
+        let result = self.deliver(&actor, &slot, &mut work).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);
         }
-        result.map(|_| ()).map_err(|error| (actor, error))
+        result.map(|_| ()).map_err(|error| (actor, error, work))
     }
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
@@ -1185,7 +1208,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         actor: &ActorReference,
         slot: &Arc<Slot>,
-        work: Option<Work<ActorReference>>,
+        work: &mut Option<Work<ActorReference>>,
     ) -> Result<bool, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.deliver",
@@ -1203,7 +1226,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let mut settlement = Settlement {
                     slot,
                     flight: Some(self.ready.flight(actor)),
-                    work,
+                    work: work.take(),
                     failed: true,
                 };
                 let result = match &self.admission {
@@ -1218,12 +1241,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     self.handler.manifest().validate_interrupts()?;
                     Ok(admission)
                 }) {
-                    Ok(_admission) => loop {
-                        match self.deliver_retained(actor, slot, &mut inner).await {
-                            Err(error) if transport::unavailable(&error) => sleep(10).await,
-                            result => break result,
-                        }
-                    },
+                    Ok(_admission) => self.deliver_retained(actor, slot, &mut inner).await,
                     Err(error) => Err(error),
                 };
                 // Every failure keeps a wake, a conflict's included: one that
@@ -1233,6 +1251,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // A released slot delivered nothing: its input belongs to
                 // the next placer.
                 settlement.failed = result.is_err() || inner.released;
+                if result
+                    .as_ref()
+                    .is_err_and(|error| transport::unavailable(error))
+                {
+                    *work = settlement.work.take();
+                }
                 drop(settlement);
                 drop(inner);
                 result

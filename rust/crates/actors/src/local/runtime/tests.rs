@@ -1958,7 +1958,7 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
     runtime.host(address.clone())?;
     for expected in 0..64 {
         let work = runtime.ready.take().ok_or("rotation work disappeared")?;
-        runtime.execute(work).await.map_err(|(_, error)| error)?;
+        runtime.execute(work).await.map_err(|(_, error, _)| error)?;
         let snapshot = runtime.store().load(&address).await?;
         let state = snapshot.state().ok_or("rotation state disappeared")?;
         assert_eq!(state.cursor(&format!("input-{expected:02}")), Some(1));
@@ -1989,7 +1989,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     runtime.host(cold.clone())?;
     let work = runtime.ready.take().ok_or("missing initial hot work")?;
     assert_eq!(work.key(), &hot);
-    runtime.execute(work).await.map_err(|(_, error)| error)?;
+    runtime.execute(work).await.map_err(|(_, error, _)| error)?;
     assert_eq!(
         store
             .load(&hot)
@@ -2000,7 +2000,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     );
     let work = runtime.ready.take().ok_or("missing cold work")?;
     assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
-    runtime.execute(work).await.map_err(|(_, error)| error)?;
+    runtime.execute(work).await.map_err(|(_, error, _)| error)?;
     assert_eq!(
         records(&*provider, "out/cold").await?,
         vec![Bytes::from_static(b"r0")]

@@ -19,6 +19,104 @@ struct UnavailableOnce {
     attempts: AtomicUsize,
 }
 
+struct UnavailableUntilRecovery {
+    package: Package,
+    recovered: AtomicBool,
+    attempted: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl Handler for UnavailableUntilRecovery {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        Box::pin(async move {
+            if delivery
+                .invocation()?
+                .is_some_and(|invocation| invocation.request().as_ref() == b"offline")
+                && !self.recovered.load(Ordering::SeqCst)
+            {
+                if let Some(attempted) = self.attempted.lock().unwrap().take() {
+                    let _ = attempted.send(());
+                }
+                return Err(GuestError::Unavailable("connection interrupted".into()));
+            }
+            self.package
+                .on_record(delivery, checkpoint, cancellation)
+                .await
+        })
+    }
+}
+
+#[tokio::test]
+async fn unavailable_actor_releases_the_only_active_slot_until_recovery() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let unavailable = spawn_with(&store, "unavailable", &[b"clear"]).await?;
+    let healthy = spawn_with(&store, "healthy", &[b"clear"]).await?;
+    let invocation = |target, request: &'static [u8]| {
+        Invocation::new(
+            StreamPath::new("caller/recovery")?,
+            target,
+            "inbox".into(),
+            Bytes::from_static(request),
+            Bytes::from_static(b"emit"),
+        )
+    };
+    let original = store
+        .enqueue_invoke(&invocation(unavailable, b"offline")?)
+        .await?;
+    let (attempted, observed) = tokio::sync::oneshot::channel();
+    let handler = Arc::new(UnavailableUntilRecovery {
+        package: Package::new()?,
+        recovered: AtomicBool::new(false),
+        attempted: std::sync::Mutex::new(Some(attempted)),
+    });
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 64)?);
+    let mut serving =
+        Box::pin(runtime.run(|actor, error| panic!("unexpected failure for {actor:?}: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        observed.await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?;
+    let sibling = store
+        .enqueue_invoke(&invocation(healthy, b"online")?)
+        .await?;
+    observe_while_running(serving.as_mut(), async {
+        store.wait_invocation(sibling).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?;
+    assert!(!handler.recovered.load(Ordering::SeqCst));
+    assert!(records(&*provider, "out/unavailable").await?.is_empty());
+    handler.recovered.store(true, Ordering::SeqCst);
+    observe_while_running(serving.as_mut(), async {
+        store.wait_invocation(original).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })
+    .await?;
+    for path in ["out/healthy", "out/unavailable"] {
+        assert_eq!(
+            records(&*provider, path).await?,
+            vec![Bytes::from_static(b"r1")]
+        );
+    }
+    Ok(())
+}
+
 impl Handler for UnavailableOnce {
     fn manifest(&self) -> &Manifest {
         self.package.manifest()
