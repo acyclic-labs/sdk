@@ -25,7 +25,6 @@ impl Accounting {
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
-    pub(crate) conversation: acyclic_harness_core::OperationId,
     // A selected model can use the registry's host, but cannot extend its lifetime.
     pub(crate) resolver: Option<Weak<dyn crate::CredentialResolver>>,
     // Retain a separate original only when binding changed its identity.
@@ -69,7 +68,6 @@ impl ResolvedModel {
         files: crate::files::Files,
     ) -> Self {
         Self {
-            conversation: self.conversation,
             resolver: self.resolver.clone(),
             unbound_transport: self.unbound_transport.clone(),
             inputs: self.inputs.clone(),
@@ -322,14 +320,6 @@ impl ResolvedModel {
 }
 
 impl ModelProvider for ResolvedModel {
-    fn bind_conversation(
-        &self,
-        conversation: acyclic_harness_core::OperationId,
-    ) -> Option<Arc<dyn ModelProvider>> {
-        let mut bound = self.derived(self.model.clone(), self.profile, self.files.clone());
-        bound.conversation = conversation;
-        Some(Arc::new(bound))
-    }
     #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
     fn admit_profile(
         &self,

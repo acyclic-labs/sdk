@@ -5,9 +5,6 @@ use crate::{
     resources::ProviderRef,
 };
 
-#[path = "prefix_tests.rs"]
-mod prefix_tests;
-
 #[tokio::test]
 async fn announcement_publication_preserves_workload_and_delegated_authority() -> Result<()> {
     struct NoDispatch;
@@ -754,7 +751,6 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
 struct OpeningRead {
     inner: acyclic_stream::MemoryStream,
     pending: std::sync::Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
-    index_reads: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -768,14 +764,6 @@ impl StreamProvider for OpeningRead {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
-        self.index_reads.fetch_add(
-            request
-                .paths
-                .iter()
-                .filter(|path| path.as_str().starts_with("harness/v1/execution-index/"))
-                .count(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
         self.inner.heads(request).await
     }
 
@@ -801,14 +789,6 @@ impl StreamProvider for OpeningRead {
         &self,
         request: ReadRequest,
     ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
-        if request
-            .path
-            .as_str()
-            .starts_with("harness/v1/execution-index/")
-        {
-            self.index_reads
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
         let pending = self.pending.lock().expect("read gate").take();
         if let Some(pending) = pending {
             pending
@@ -895,7 +875,6 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
         let stream = Arc::new(OpeningRead {
             inner: Default::default(),
             pending: std::sync::Mutex::new(Some(pending)),
-            index_reads: Default::default(),
         });
         let host = FilesystemTurnHost::new(
             stream.clone(),

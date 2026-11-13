@@ -354,7 +354,6 @@ pub(super) fn provider_with(
     transport: Arc<dyn HttpTransport>,
 ) -> ResolvedModel {
     ResolvedModel {
-        conversation: acyclic_harness_core::OperationId::from_bytes([0; 16]),
         resolver: None,
         unbound_transport: None,
         #[cfg(not(target_arch = "wasm32"))]

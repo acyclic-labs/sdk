@@ -231,7 +231,6 @@ impl Registry {
         )?;
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
-            conversation: acyclic_harness_core::OperationId::new(),
             resolver: self.resolver.as_ref().map(Arc::downgrade),
             unbound_transport: (!Arc::ptr_eq(&transport, &self.transport))
                 .then(|| self.transport.clone()),

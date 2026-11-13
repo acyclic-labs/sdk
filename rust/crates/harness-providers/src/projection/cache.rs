@@ -49,18 +49,11 @@ pub(crate) fn control(provider: &ResolvedModel) -> serde_json::Value {
     serde_json::json!({"type":"ephemeral","ttl":ttl})
 }
 
-/// Chat placement follows the original conversation across turns and retries.
-/// Other protocols retain the admitted profile's frozen prefix, otherwise the
+/// Stable prefix identity: the admitted profile's frozen prefix, otherwise the
 /// header the provider renders before any message (model, tools, instructions).
 /// It is never derived from messages, so history paging, eviction and forks
 /// keep it, and a mid-run delta (appended, never declared) cannot change it.
 fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
-    if provider.config.adapter == Family::Chat {
-        return key(
-            "conversation-v1:",
-            *blake3::hash(&provider.conversation.into_bytes()).as_bytes(),
-        );
-    }
     if let Some(binding) = provider.profile_binding() {
         return super::profile::cache_key(binding);
     }
@@ -88,25 +81,27 @@ fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
 ///   system render first), and the top-level automatic breakpoint follows the
 ///   growing conversation. Two of the four slots; no marker ever touches a
 ///   message, so native thinking blocks stay byte-identical.
-/// - Responses and Chat: `prompt_cache_key` routes each stable prefix together.
+/// - Responses: `prompt_cache_key` routes every turn of the prefix together.
 /// - Routed Chat (OpenRouter): both forms; the gateway applies the routed
 ///   model's own one.
-/// - Gemini: implicit caching over the stable order.
+/// - Gemini and generic Chat: implicit caching over the stable order.
 pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
-    match provider.config.adapter {
-        Family::Anthropic => fields.insert(Field::CacheControl, control(provider)),
-        Family::Responses | Family::Chat => {
+    match (provider.config.adapter, provider.config.prompt_cache) {
+        (Family::Anthropic, _) => fields.insert(Field::CacheControl, control(provider)),
+        (Family::Responses, _) => {
             fields.insert(
                 Field::PromptCacheKey,
                 serde_json::Value::String(prefix_key(provider, fields)),
             );
-            if provider.config.adapter == Family::Chat
-                && provider.config.prompt_cache == crate::PromptCache::Routed
-            {
-                fields.insert(Field::CacheControl, control(provider));
-            }
         }
-        Family::Gemini => {}
+        (Family::Chat, crate::PromptCache::Routed) => {
+            fields.insert(
+                Field::PromptCacheKey,
+                serde_json::Value::String(prefix_key(provider, fields)),
+            );
+            fields.insert(Field::CacheControl, control(provider));
+        }
+        (Family::Chat, crate::PromptCache::Native) | (Family::Gemini, _) => {}
     }
 }
 
@@ -279,150 +274,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
-
-    #[tokio::test]
-    async fn chat_conversations_keep_distinct_affinity_across_turns_and_credential_refresh() {
-        use acyclic_harness_core::{
-            OperationId,
-            model::{ModelEvent, ModelProvider},
-        };
-        use futures::TryStreamExt as _;
-
-        let (provider, transport) = crate::tests::provider(Family::Chat, 200);
-        let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
-        let conversation = OperationId::new();
-        let first = provider.bind_conversation(conversation).unwrap();
-        let reopened = provider.bind_conversation(conversation).unwrap();
-        let other = provider.bind_conversation(OperationId::new()).unwrap();
-        for selected in [first, reopened, other] {
-            let events: Vec<ModelEvent> = selected
-                .generate(
-                    &prepared,
-                    acyclic_harness_core::model::ModelDispatch {
-                        operation_id: OperationId::new(),
-                        ..dispatch
-                    },
-                )
-                .try_collect()
-                .await
-                .unwrap();
-            assert!(
-                events
-                    .iter()
-                    .any(|event| matches!(event, ModelEvent::Completed { .. }))
-            );
-        }
-        let sent = transport.sent.lock().unwrap();
-        let bodies: Vec<serde_json::Value> = sent
-            .iter()
-            .map(|request| serde_json::from_slice(&request.body).unwrap())
-            .collect();
-        assert_eq!(bodies.len(), 3);
-        assert_eq!(bodies[0]["prompt_cache_key"], bodies[1]["prompt_cache_key"]);
-        assert_ne!(bodies[0]["prompt_cache_key"], bodies[2]["prompt_cache_key"]);
-        assert_eq!(bodies[0]["messages"], bodies[2]["messages"]);
-        eprintln!(
-            "affinity_keys={}",
-            json!([bodies[0]["prompt_cache_key"], bodies[2]["prompt_cache_key"]])
-        );
-    }
-
-    #[tokio::test]
-    async fn native_chat_affinity_preserves_append_prefix_and_reported_cache_misses() {
-        use acyclic_harness_core::model::{
-            ModelContent, ModelDispatch, ModelEvent, ModelMessage, ModelRole, PreparedModelRequest,
-        };
-        use futures::TryStreamExt as _;
-
-        let (provider, _) = crate::tests::provider(Family::Chat, 200);
-        let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
-        let mut request = prepared.request().clone();
-        request.messages[0].content = ModelContent::Text("stable instructions ".repeat(2_600));
-        let origin = provider.reasoning_origin(provider.key.as_deref(), None);
-        let mut header = None;
-        let mut key = None;
-        let mut previous_prefix = Vec::new();
-        for step in 0..3 {
-            if step > 0 {
-                request.messages.extend([
-                    ModelMessage {
-                        role: ModelRole::Assistant,
-                        content: ModelContent::Text("answer".into()),
-                    },
-                    ModelMessage {
-                        role: ModelRole::User,
-                        content: ModelContent::Text("continue".into()),
-                    },
-                ]);
-            }
-            let prepared =
-                PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
-            let names = crate::tool_names::Names::new(prepared.request());
-            let body = super::super::body_named(
-                &provider,
-                prepared.request(),
-                &names,
-                &origin,
-                &mut crate::files::FileText::default(),
-            )
-            .unwrap();
-            let encoded = encode(&body, &provider, &origin).unwrap();
-            let actual: serde_json::Value = serde_json::from_slice(&encoded.bytes).unwrap();
-            let affinity = actual["prompt_cache_key"]
-                .as_str()
-                .expect("native Chat needs an affinity key");
-            assert!(!affinity.is_empty());
-            assert_eq!(
-                key.get_or_insert_with(|| affinity.to_owned()).as_str(),
-                affinity
-            );
-            let current_header = body.header().unwrap();
-            assert_eq!(
-                header
-                    .get_or_insert_with(|| current_header.bytes().to_vec())
-                    .as_slice(),
-                current_header.bytes()
-            );
-            assert!(
-                encoded.bytes.starts_with(&previous_prefix),
-                "earlier wire bytes changed at step {step}"
-            );
-            previous_prefix =
-                encoded.bytes[..encoded.bytes.len() - body.tail().unwrap().bytes().len()].to_vec();
-            assert!(actual.get("cache_control").is_none());
-
-            // Routing is a request, never evidence of a hit. Preserve a real
-            // endpoint's zero cached-token observation without inventing reuse.
-            let reply = crate::fixtures::CHAT.replace(
-                "\"prompt_tokens\":5",
-                "\"prompt_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":0}",
-            );
-            let events: Vec<_> = crate::stream::events(
-                Family::Chat,
-                crate::tests::chunks(reply, 7),
-                4096,
-                ModelDispatch {
-                    step,
-                    request_digest: prepared.request_digest(),
-                    ..dispatch
-                },
-            )
-            .try_collect()
-            .await
-            .unwrap();
-            let metadata = events
-                .iter()
-                .find_map(|event| match event {
-                    ModelEvent::Completed { metadata } => Some(metadata),
-                    _ => None,
-                })
-                .unwrap();
-            assert_eq!(
-                metadata["usage"]["prompt_tokens_details"]["cached_tokens"],
-                0
-            );
-        }
-    }
 
     proptest! {
         #[test]

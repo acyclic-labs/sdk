@@ -1817,10 +1817,6 @@ mod tests {
 }
 
 impl ModelProvider for RecordedModel {
-    fn bind_conversation(&self, conversation: OperationId) -> Option<Arc<dyn ModelProvider>> {
-        let live = self.live.bind_conversation(conversation)?;
-        Some(Arc::new(self.with_live(live)))
-    }
     fn bind_content(
         &self,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,

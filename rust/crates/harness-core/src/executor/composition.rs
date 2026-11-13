@@ -263,12 +263,6 @@ impl StockExecutor {
         execution_operation: OperationId,
     ) -> Result<Self> {
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
-        let conversation = context.agent().map_or(execution_operation, |(agent, _)| {
-            OperationId::from_bytes(agent.id_bytes())
-        });
-        if let Some(provider) = self.provider.bind_conversation(conversation) {
-            self.provider = provider;
-        }
         self.task_context = Some((Arc::new(context), execution_operation));
         StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
         Ok(self)

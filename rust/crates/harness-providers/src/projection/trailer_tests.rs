@@ -220,7 +220,7 @@ proptest! {
                     prop_assert_eq!(actual.pointer(effort), Some(&json!("high")));
                     let mut expected = match family {
                         Adapter::Responses => vec!["model", "stream", "include", "store", "prompt_cache_key", "reasoning"],
-                        Adapter::Chat => vec!["model", "stream", "stream_options", "prompt_cache_key", "reasoning_effort"],
+                        Adapter::Chat => vec!["model", "stream", "stream_options", "reasoning_effort"],
                         Adapter::Anthropic => vec!["model", "stream", "system", "cache_control", "thinking", "output_config"],
                         Adapter::Gemini => vec!["systemInstruction"],
                     };

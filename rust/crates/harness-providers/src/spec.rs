@@ -108,8 +108,8 @@ pub struct ProviderSpec {
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum PromptCache {
     /// The protocol's own form: Anthropic breakpoints, the Responses
-    /// and Chat `prompt_cache_key`, and implicit caching on Gemini. Chat's key
-    /// requests stable placement; cache admission and retention remain automatic.
+    /// `prompt_cache_key`, and implicit caching on Gemini and compatible Chat
+    /// endpoints (for example Fireworks). Generic Chat has no universal cache flag.
     #[default]
     Native,
     /// A routing Chat gateway (OpenRouter): the automatic `cache_control`
