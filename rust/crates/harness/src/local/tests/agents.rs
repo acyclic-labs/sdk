@@ -1385,8 +1385,12 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
         super::open_scripted(
-            volume_config(directory.path(), volume(directory.path()).await?, Arc::new(provider))?
-                .compaction(crate::context::CompactionPolicy::Disabled),
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                Arc::new(provider),
+            )?
+            .compaction(crate::context::CompactionPolicy::Disabled),
         )
         .await?,
     );

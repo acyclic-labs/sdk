@@ -47,7 +47,14 @@ impl<
             publication_closure: None,
         };
         let (generation, overlay) = self
-            .exactify_into(root, cut, paths, start, Exactification::Publish(permit), ctx)
+            .exactify_into(
+                root,
+                cut,
+                paths,
+                start,
+                Exactification::Publish(permit),
+                ctx,
+            )
             .await?;
         if let Some((source, node)) = observation {
             let state = self.state(ctx).await?;
@@ -106,7 +113,8 @@ impl<
             publication_closure: None,
         };
         self.exactify_into("/", cut, paths, start, Exactification::Detached, ctx)
-            .await.map(|(generation, _)| generation)
+            .await
+            .map(|(generation, _)| generation)
     }
 
     /// Materializes `paths` of an immutable cut of this view, with their
@@ -484,7 +492,8 @@ impl<
             let mut overlay = cut.overlay;
             for (batch, chunk) in paths.value.chunks(maximum).enumerate() {
                 ctx.check()?;
-                let live = matches!(mode, Exactification::Publish(_)) && workspace.id() == self.workspace.id();
+                let live = matches!(mode, Exactification::Publish(_))
+                    && workspace.id() == self.workspace.id();
                 let current = if live {
                     let current = self.state(ctx).await?;
                     if current.overlay != overlay
@@ -501,11 +510,22 @@ impl<
                 let checkout = workspace
                     .checkout_accounted(
                         crate::model::GenerationSelector::Exact(generation.id()),
-                        crate::model::CheckoutMode::tracking_transaction(),
+                        match mode {
+                            Exactification::Publish(_) => {
+                                crate::model::CheckoutMode::tracking_transaction()
+                            }
+                            Exactification::Detached => {
+                                crate::model::CheckoutMode::read_only_pinned()
+                            }
+                        },
                         ctx,
                         cancellation(ctx),
                     )
                     .await?;
+                let checkout = match mode {
+                    Exactification::Publish(_) => checkout,
+                    Exactification::Detached => checkout.into_unpublishable_candidate(),
+                };
                 let mut transaction = crate::Transaction::from_checkout(
                     &workspace,
                     checkout,
@@ -559,15 +579,31 @@ impl<
                 generation = match mode {
                     Exactification::Publish(permit) => {
                         let committed = match current {
-                            Some(current) => self.commit_overlay(&mut transaction, current, overlay, key, permit, ctx).await?,
+                            Some(current) => {
+                                self.commit_overlay(
+                                    &mut transaction,
+                                    current,
+                                    overlay,
+                                    key,
+                                    permit,
+                                    ctx,
+                                )
+                                .await?
+                            }
                             None => self.commit(&mut transaction, permit, ctx).await?,
                         };
                         match committed {
-                            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+                            TransactionCommit::Committed(generation)
+                            | TransactionCommit::AlreadyCommitted(generation) => generation,
                             _ => return Err(LazyWorkspaceError::Concurrent),
                         }
                     }
-                    Exactification::Detached => transaction.checkout.into_checkpoint_generation(&workspace, ctx).await?,
+                    Exactification::Detached => {
+                        transaction
+                            .checkout
+                            .into_checkpoint_generation(&workspace, ctx)
+                            .await?
+                    }
                 };
             }
             Ok((generation, overlay))
