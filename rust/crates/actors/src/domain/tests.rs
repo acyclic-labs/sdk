@@ -668,6 +668,37 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
     namespace.limits = Some(ActorLimits::new(1, 2, 3)?.into());
     assert!(crate::client::validate_operation("DeployNamespace", &namespace).is_ok());
     assert!(crate::client::validate_operation("DeployWorker", &namespace).is_err());
+    for name in ["worker", "worker-1", "a"] {
+        let mut deployment: wire::DeploymentRequest = namespace.clone();
+        deployment.name = name.into();
+        deployment.limits = None;
+        deployment.worker_limits = Some(WorkerLimits::new(2, 3, 4)?.into());
+        assert!(crate::validate_deployment(&deployment).is_ok());
+        assert!(DeploymentRequest::try_from(deployment).is_ok());
+    }
+    for name in ["My_Worker", "a.b", "svc_1", "-worker", "worker-"] {
+        let mut deployment = namespace.clone();
+        deployment.name = name.into();
+        // Namespace identifiers retain their broader public grammar.
+        assert!(crate::validate_deployment(&deployment).is_ok());
+        deployment.limits = None;
+        deployment.worker_limits = Some(WorkerLimits::new(2, 3, 4)?.into());
+        assert_eq!(
+            crate::validate_deployment(&deployment),
+            Err(crate::ContractError::InvalidArgument)
+        );
+        assert!(DeploymentRequest::try_from(deployment).is_err());
+        assert!(
+            DeploymentRequest::worker(
+                ActorNamespace::new(name.into())?,
+                CodeSha256::new(vec![1; 32])?,
+                vec![],
+                WorkerLimits::new(2, 3, 4)?,
+                "deploy".into(),
+            )
+            .is_err()
+        );
+    }
     Ok(())
 }
 #[test]
