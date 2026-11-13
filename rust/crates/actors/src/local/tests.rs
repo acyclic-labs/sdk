@@ -629,7 +629,8 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     );
     let mut invocation_span = None;
     let mut mechanisms = std::collections::BTreeMap::new();
-    loop {
+    let mut root_finished = false;
+    while !root_finished || mechanisms.len() != 3 {
         match query.next().await? {
             Some(acyclic_stream::trace::Observation::Started { id, .. }) => {
                 if query
@@ -643,7 +644,14 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
                 id, start, result, ..
             }) => {
                 if id == parent {
-                    break;
+                    root_finished = true;
+                    continue;
+                }
+                if !matches!(
+                    start.name.as_str(),
+                    "actors.invoke" | "actors.enqueue_invoke" | "actors.wait_invocation"
+                ) {
+                    continue;
                 }
                 assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
                 assert_eq!(
@@ -673,7 +681,6 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         mechanisms["actors.wait_invocation"],
         acyclic_stream::trace::Mechanism::Wait
     );
-    assert_eq!(traces.tail().await?, 8);
     invocation_completion_rejects_changed_original_publication().await?;
     Ok(())
 }

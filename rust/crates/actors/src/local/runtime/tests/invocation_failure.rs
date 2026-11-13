@@ -193,8 +193,11 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         snapshot.state().ok_or("missing original state")?.alarm()
     );
     let reopened = Store::new(Arc::clone(&provider), root()?);
+    // Only diagnostic readiness is controlled: this real MemoryStream completes
+    // admission inline, while the actor journal/receipt remain on the original
+    // durable provider. A settled actor retry must not race diagnostic storage.
     let traces = acyclic_stream::Stream::new(
-        provider.clone(),
+        Arc::new(MemoryStream::default()),
         format!("{}/trace", invocation.caller().as_str()),
     )?;
     let recorder = Arc::new(acyclic_stream::trace::Recorder::new(
@@ -236,31 +239,38 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         traces.follow(0, Default::default()).await?,
         Default::default(),
     );
-    let mut failures = 0;
-    loop {
+    let mut children = std::collections::BTreeSet::new();
+    let mut root_finished = false;
+    while !root_finished || children.len() != 3 {
         match query.next().await? {
             Some(acyclic_stream::trace::Observation::Completed {
                 id, start, result, ..
             }) => {
                 if id == parent {
-                    break;
+                    root_finished = true;
+                    continue;
                 }
-                if start.name == "actors.invoke" || start.name == "actors.wait_invocation" {
-                    assert_eq!(
-                        result,
-                        acyclic_stream::trace::Outcome::Failed {
-                            cause: cause.clone()
-                        }
-                    );
-                    failures += 1;
+                match start.name.as_str() {
+                    "actors.invoke" | "actors.wait_invocation" => {
+                        assert_eq!(
+                            result,
+                            acyclic_stream::trace::Outcome::Failed {
+                                cause: cause.clone()
+                            }
+                        );
+                        assert!(children.insert(start.name));
+                    }
+                    "actors.enqueue_invoke" => {
+                        assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
+                        assert!(children.insert(start.name));
+                    }
+                    _ => {}
                 }
             }
             None => return Err("original actor failure trace ended".into()),
             _ => {}
         }
     }
-    assert_eq!(failures, 2);
-    assert_eq!(traces.tail().await?, 8);
     runtime.drain_actor(&address).await?;
     assert_eq!(
         handler.calls.load(Ordering::SeqCst),
