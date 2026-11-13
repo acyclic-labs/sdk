@@ -1,6 +1,59 @@
 //! Rebinding a captured publication must reuse its authenticated content.
 use super::*;
 
+#[tokio::test]
+async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
+    let (_directory, _state, harness, publisher) = seeded_cost_fixture(|root| {
+        for index in 0..128 {
+            std::fs::write(root.join(format!("source-{index}.txt")), b"source\n")
+                .map_err(storage)?;
+        }
+        Ok(())
+    })
+    .await?;
+    for prefix in ["volume:///home/", ""] {
+        let results = futures::future::join_all((0..8).map(|index| {
+            let publisher = &publisher;
+            async move {
+                let path = format!("{prefix}concurrent-{index}.txt");
+                let bytes = format!("writer {index}\n");
+                let started = std::time::Instant::now();
+                let (file, _) = publisher
+                    .stage(
+                        OperationId::new(),
+                        &path,
+                        bytes.as_bytes(),
+                        "text/plain",
+                        &path,
+                        Default::default(),
+                    )?
+                    .await?;
+                let elapsed = started.elapsed();
+                let (mount, relative) = publisher.tools.workspace.mounts.file(None, &path)?;
+                let native = mount
+                    .native_root
+                    .override_path()
+                    .unwrap_or(&publisher.tools.workspace.path)
+                    .join(relative);
+                assert_eq!(std::fs::read(native).map_err(storage)?, bytes.as_bytes());
+                assert_eq!(file.descriptor().byte_length(), bytes.len() as u64);
+                Ok::<_, Error>(elapsed)
+            }
+        }))
+        .await;
+        let mut elapsed = results.into_iter().collect::<Result<Vec<_>>>()?;
+        elapsed.sort_unstable();
+        eprintln!(
+            "PUBLICATION_LATENCY volume={} writers=8 p50_us={} max_us={}",
+            if prefix.is_empty() { "project" } else { "home" },
+            elapsed[elapsed.len() / 2].as_micros(),
+            elapsed.last().expect("eight writers").as_micros(),
+        );
+    }
+    harness.disconnect().await?;
+    Ok(())
+}
+
 pub(super) async fn cost_fixture() -> Result<(
     tempfile::TempDir,
     tempfile::TempDir,
