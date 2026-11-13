@@ -128,6 +128,11 @@ without consuming records or estimating delivered bytes. Replay-page spans remai
 the separate delivery boundary and parent these admission spans. Diagnostic
 admission races original work, and completion submission adds no wait after a
 cursor becomes available.
+`Stream::fork` and bounded `children` inherit this same producer. The commit span
+names the immutable selected prefix and its origin; the child-page I/O span names
+the bounded direct-child page at its namespace cut. Both return the original
+receipt or page unchanged, report unknown bytes, and add no diagnostic wait after
+the original result. Requests without an active owner use the original futures.
 A registry-bound producer also carries its own admitted lease count. The final
 lease retires new inherited child observations even when the original request
 still retains its recorder or another agent remains followed. This is an inline

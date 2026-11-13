@@ -524,6 +524,29 @@ mod replay_tests {
             original_row
         );
         assert!(selected.next().await.is_none());
+        let original_children = data.children(None, 1).await?;
+        assert_eq!(
+            root.within(data.children(None, 1)).await?,
+            original_children
+        );
+        let fork_key = IdempotencyKey::unique();
+        let forked = root
+            .within(data.fork("agents/worker/copy", Some(1), vec![], fork_key.clone()))
+            .await?;
+        let retried = data
+            .fork("agents/worker/copy", Some(1), vec![], fork_key)
+            .await?;
+        assert_eq!(forked.fork_receipt(), retried.fork_receipt());
+        assert_eq!(
+            forked
+                .read(0, 1)
+                .await?
+                .next()
+                .await
+                .ok_or("fork lost its original selected prefix")??
+                .value,
+            original_row.value
+        );
         let mut diagnostic = root.within(trace.read(0, 1)).await?;
         assert!(
             diagnostic
@@ -546,6 +569,12 @@ mod replay_tests {
             ("stream.seek_open", "bounded_header_key_selection", None),
             ("stream.record_delivery", "ordered_cursor_delivery", Some(8)),
             ("stream.record_delivery", "ordered_cursor_delivery", Some(0)),
+            (
+                "stream.children_page",
+                "bounded_direct_children_at_namespace_cut",
+                None,
+            ),
+            ("stream.fork", "immutable_selected_prefix_and_origin", None),
         ] {
             query.next().await?;
             assert!(
@@ -559,14 +588,14 @@ mod replay_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            16,
+            20,
             "diagnostic publication recursively traced its own head check"
         );
         assert_eq!(data.head().await?, original);
         drop(data.read(0, 1).await?);
         assert_eq!(
             trace.tail().await?,
-            16,
+            20,
             "completed scope leaked its owner into unrelated work"
         );
         Ok(())
