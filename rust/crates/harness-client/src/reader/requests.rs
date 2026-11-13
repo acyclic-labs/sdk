@@ -11,6 +11,11 @@ pub(super) struct Requests {
 }
 
 impl Requests {
+    pub(super) fn has_children(&self) -> bool {
+        self.keys
+            .last_key_value()
+            .is_some_and(|(key, _)| matches!(key, OpKey::Children(..)))
+    }
     pub(super) fn len(&self) -> usize {
         self.by_id.len()
     }

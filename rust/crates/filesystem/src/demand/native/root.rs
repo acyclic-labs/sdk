@@ -165,6 +165,9 @@ impl NativeDemandSource {
                                 identity: *crate::identity::fresh_uuid().as_bytes(),
                                 epoch: 0,
                             });
+                            if !reference.components.is_empty() {
+                                return Err(DemandError::InvalidRequest);
+                            }
                             let root = CachedRoot::new(root, &path, &mut context)?;
                             context.check()?;
                             Ok(Self {

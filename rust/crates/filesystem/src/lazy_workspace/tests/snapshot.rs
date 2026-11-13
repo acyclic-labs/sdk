@@ -161,7 +161,29 @@ async fn fork_retains_available_source_and_authored_cuts() {
         )
         .await
         .unwrap();
+    child.publication_cut(None, accounting!()).await.unwrap();
+    for offset in [b"source before".len() as u64, u64::MAX] {
+        assert!(
+            child
+                .read_at_snapshot(
+                    &cut,
+                    "/source.txt",
+                    Some(crate::ByteRange { offset, length: 16 }),
+                    16,
+                    accounting!()
+                )
+                .await
+                .unwrap()
+                .0
+                .bytes
+                .is_empty()
+        );
+    }
     source.replace(Bytes::from_static(b"source after"));
+    assert!(matches!(
+        child.publication_cut(None, accounting!()).await,
+        Err(LazyWorkspaceError::StaleSource)
+    ));
     root.workspace()
         .write_text("/authored.txt", "authored after")
         .await

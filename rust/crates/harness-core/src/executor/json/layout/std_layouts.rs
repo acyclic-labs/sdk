@@ -321,7 +321,12 @@ impl HeapLayout for acyclic_fs::demand::SourceReference {
 }
 impl HeapLayout for acyclic_fs::LazySnapshotRef {
     const LAYOUT: &'static JsonLayout = &record!(
-        "source" => <acyclic_fs::demand::SourceReference as HeapLayout>::LAYOUT
+        "id" => <[u8; 32] as HeapLayout>::LAYOUT,
+        "workspace_id" => <[u8; 16] as HeapLayout>::LAYOUT,
+        "authored_generation" => <acyclic_fs::GenerationId as HeapLayout>::LAYOUT,
+        "source" => <acyclic_fs::demand::SourceReference as HeapLayout>::LAYOUT,
+        "overlay" => <[u8; 32] as HeapLayout>::LAYOUT,
+        "shadows" => <[u8; 32] as HeapLayout>::LAYOUT
     );
 }
 #[cfg(not(target_arch = "wasm32"))]

@@ -51,6 +51,19 @@ async fn input_revisions_follow_only_own_history_membership_and_grafts_across_re
         } else {
             memory.clone()
         };
+        // Rejected decisions are retained for idempotency but do not advance
+        // publication revisions, including when derived indexes are rebuilt.
+        assert_eq!(
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("stable/source")?,
+                    records: vec![Bytes::from_static(b"rejected").into()],
+                    if_tail: Some(1),
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
+                .await?,
+            crate::AppendOutcome::TailConflict { actual_tail: 0 }
+        );
         let created = put(&*provider, "stable/source").await?;
         let initial = observe(&*provider, &["stable", "stable/source"]).await?;
         assert_eq!(indexes(&initial), vec![Some(created); 2]);

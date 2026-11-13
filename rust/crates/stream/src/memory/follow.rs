@@ -64,12 +64,15 @@ impl MemoryStream {
         let signals = registration.value();
         let interest = crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?;
         drop(state);
-        let mut cursor =
-            HistoryCursor::initial(snapshot.as_ref(), from, anchor, when_absent).await?;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            cursor = cursor.with_native_work(self.work.clone());
-        }
+        let mut cursor = HistoryCursor::initial(
+            snapshot.as_ref(),
+            from,
+            anchor,
+            when_absent,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.work.clone(),
+        )
+        .await?;
         cursor.registration = Some(registration);
         cursor.end = selection.end;
         Ok((revision, selection, interest, cursor))

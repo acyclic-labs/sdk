@@ -126,6 +126,7 @@ pub use model::{
 };
 pub use store::{LazyWorkspaceStore, MemoryLazyWorkspaceStore};
 pub(crate) use work::retained_directory_page_bytes;
+pub(crate) use work::source_file_metadata;
 use work::*;
 
 #[cfg(test)]

@@ -636,6 +636,37 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
     assert_eq!(selected.generation.as_resource().version(), Some("lazy-v1"));
     let selected: acyclic_harness_core::conversation::FilePathSelection =
         serde_json::from_slice(&serde_json::to_vec(&selected)?)?;
+    // A lazy selection remains readable without claiming that a digest-bearing
+    // authored descriptor names the same namespace generation.
+    let key = selected.generation.as_resource().key();
+    let key_version = key
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let authored = acyclic_harness_core::conversation::FileRef::new(
+        selected.volume.clone(),
+        selected.path.clone(),
+        key_version,
+        acyclic_harness_core::conversation::FileDescriptor::from_bytes(
+            &projected,
+            "text/markdown",
+            &mut None,
+        )?,
+        "status.md".into(),
+        &mut None,
+    )?;
+    assert!(!selected.matches_content(&authored));
+    let authored_selection = acyclic_harness_core::conversation::FilePathSelection {
+        generation: acyclic_harness_core::resources::GenerationRef::new(
+            selected.volume.provider(),
+            key,
+            None,
+            None,
+        )?
+        .0,
+        ..selected.clone()
+    };
+    assert!(authored_selection.matches_content(&authored));
     let directory_lookup = child.lookup("/ui", &mut ctx).await?;
     assert_eq!(
         child
@@ -1430,6 +1461,21 @@ async fn computed_diagnostic_navigation_pages_root_and_preserves_utf8_and_frozen
             .is_some()
     );
     let current = source.reference(&mut ctx).await?;
+    let empty = source
+        .list_page(
+            current.clone(),
+            &namespace("/diagnostics"),
+            None,
+            1,
+            &native,
+            &cancellation,
+        )
+        .await?;
+    assert!(
+        empty.entries.is_empty(),
+        "nonterminal diagnostics must be an empty directory"
+    );
+    assert!(empty.next.is_none());
     assert!(
         source
             .lookup(current, &old_page, &native, &cancellation)

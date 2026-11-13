@@ -1840,6 +1840,77 @@ mod tests {
     }
 
     #[test]
+    fn cold_indexed_pages_establish_one_hierarchy_before_parallel_reads() {
+        use super::super::{Priority, ReaderPolicy, Want};
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            for path in ["parent/a", "parent/b", "parent/c"] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(path).unwrap(),
+                        records: vec![b"value".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let parent = StreamPath::new("parent").unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                listing_limit: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            reader.plan([1, 2].map(|index| {
+                (
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index,
+                        tail: None,
+                        witness: None,
+                    },
+                    Priority::Visible,
+                )
+            }));
+            let mut initial = reader.poll(0);
+            assert_eq!(
+                initial.len(),
+                1,
+                "unfenced pages could select different cuts"
+            );
+            let first = initial.pop().unwrap();
+            let id = first.id();
+            let outcome = execute(&provider, first).await;
+            reader.complete(id, outcome, 0);
+            let second = reader.poll(0).pop().unwrap();
+            assert!(matches!(
+                &second,
+                Op::Children {
+                    version: Some(_),
+                    ..
+                }
+            ));
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("parent/aa").unwrap(),
+                    records: vec![b"new".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+            let id = second.id();
+            let outcome = execute(&provider, second).await;
+            assert!(matches!(
+                &outcome,
+                Outcome::Failed(StreamError::HierarchyChanged)
+            ));
+            reader.complete(id, outcome, 0);
+            assert!(reader.cache().listings(&parent).next().is_none());
+        });
+    }
+
+    #[test]
     fn changed_hierarchy_abandons_old_pages_before_another_driver_wake() {
         use super::super::{Priority, ReaderPolicy, Want};
 
@@ -1920,7 +1991,11 @@ mod tests {
             );
             reader.plan(parents.iter().map(|parent| want(parent, 1)));
             let fresh = reader.poll(0);
-            assert_eq!(fresh.len(), 2);
+            assert_eq!(
+                fresh.len(),
+                1,
+                "one unfenced request establishes the new hierarchy"
+            );
             assert!(fresh.iter().all(|op| matches!(
                 op,
                 Op::Children {

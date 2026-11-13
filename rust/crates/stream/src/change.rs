@@ -111,7 +111,8 @@ fn dispatch(mut waiters: FixedIndex<Option<Waker>, (), 8>) {
     }
 }
 
-// Registration backing belongs to the shared notification service. Radix
+// Registration nodes are unmetered host observation metadata, shared by the
+// subscriptions of this event, with no configured admission limit. Radix
 // extraction keeps each waker alive until after the lock is released;
 // retirement never allocates or runs a waker under that lock.
 struct RegistrationWork;

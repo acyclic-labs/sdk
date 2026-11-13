@@ -6,6 +6,7 @@ pub(crate) use admission::{
     AdmissionState, CapacityWaiter, capacity_waiter, notify_capacity_released, poll_submission,
     prepay_capacity_waiter, remove_capacity_waiter, wake_capacity_waiter,
 };
+pub(crate) use job::DeferredPoll;
 pub(crate) use job::NativeJob;
 
 mod admission;

@@ -47,6 +47,9 @@ impl KernelAccounting<'_> {
     /// Runs a serde decoder through the one funded destination visitor.
     /// The codec supplies its own admitted scratch and checks its input's end;
     /// the returned value keeps the original destination allocation credit.
+    /// This consumes exactly one value, not necessarily the entire input. Use
+    /// `decode_json` for a complete JSON document; streaming codecs must check
+    /// their own end after the value (serde's generic trait has no end method).
     pub fn deserialize<'de, T, D>(
         &mut self,
         deserializer: D,
