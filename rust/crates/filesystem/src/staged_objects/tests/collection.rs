@@ -181,7 +181,7 @@ async fn cancelled_collection_keeps_native_deallocation_before_extent_reuse()
         .pop()
         .ok_or("missing physical replacement")?;
         assert_eq!(
-            actual == expected,
+            actual.as_slice() == expected.as_slice(),
             !bypass_order,
             "physical-byte oracle missed the unfenced-reuse negative control"
         );
@@ -253,7 +253,7 @@ async fn collection_deallocates_private_blocks_without_moving_a_live_peer()
             "physical allocation oracle missed omitted-collection negative control"
         );
         let recovered = read_spilled(file, &[(peer, peer_offset, peer_bytes.len() as u64)]).await?;
-        assert_eq!(recovered[0], peer_bytes);
+        assert_eq!(recovered[0].as_slice(), peer_bytes.as_slice());
     }
     Ok(())
 }
