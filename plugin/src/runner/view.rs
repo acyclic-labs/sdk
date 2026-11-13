@@ -2134,6 +2134,7 @@ mod tests {
                 ScriptedTurn::Text("before".into()),
                 ScriptedTurn::Text("after".into()),
                 ScriptedTurn::Text("fork ready".into()),
+                ScriptedTurn::Text("child settlement observed".into()),
             ])
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
@@ -2171,6 +2172,9 @@ mod tests {
         };
         let forked = conversation.select(child).await?;
         forked.wait_current_input().await?;
+        // The child's committed settlement wakes its parent. Fence that
+        // input too, so restoration cannot be blamed for its model turn.
+        conversation.wait_current_input().await?;
         let inherited = forked.entries(0, 1).await?;
         assert!(
             forked.turn(1, &inherited[0]).await.is_err(),
@@ -2262,8 +2266,8 @@ mod tests {
         }
         assert_eq!(
             provider.request_count(),
-            3,
-            "task and fork initialization must consume only the three scripted turns"
+            4,
+            "task, fork initialization and parent settlement must finish before restoration"
         );
         drop(events);
         let (mut events, phase) = conversation.observe_current().await?;
@@ -2303,7 +2307,7 @@ mod tests {
         }
         assert_eq!(
             provider.request_count(),
-            3,
+            4,
             "restoration must not redispatch the model"
         );
         Ok(())
