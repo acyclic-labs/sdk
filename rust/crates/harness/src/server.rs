@@ -107,6 +107,7 @@ pub struct Hosted<P: AuthorityProvider + 'static, O: 'static, L> {
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
     pub(crate) completion: Option<BoxProviderFuture<'static, Result<()>>>,
+    pub(crate) shutdown: Option<Box<dyn FnOnce() -> Result<()> + Send + Sync>>,
     _owner: L,
 }
 
@@ -131,6 +132,7 @@ where
             clock,
             resources,
             completion: None,
+            shutdown: None,
             _owner: owner,
         }
     }
@@ -227,6 +229,7 @@ pub async fn serve<C: Composition>(
     );
     let (lifetime, ended) = tokio::sync::watch::channel(());
     let completion = host.completion.take();
+    let shutdown_result = host.shutdown.take();
     let mut completion = std::pin::pin!(async move {
         match completion {
             Some(completion) => completion.await,
@@ -285,7 +288,10 @@ pub async fn serve<C: Composition>(
     };
     let completion_shutdown = async move {
         tokio::select! {
-            _ = shutdown => {},
+            _ = shutdown => {
+                let outcome = shutdown_result.map_or(Ok(()), |publish| publish());
+                let _ = completed.send(outcome);
+            },
             outcome = &mut completion => { let _ = completed.send(outcome); },
         }
         drop(lifetime);

@@ -196,6 +196,8 @@ impl<C: Composition<Error = Error>> Composition for Recorded<C> {
                 Ok(host) => host,
                 Err(error) => return journal.complete(Err(error)),
             };
+            let stopped = Arc::clone(&journal);
+            host.shutdown = Some(Box::new(move || stopped.complete(Ok(()))));
             if let Some(completion) = host.completion.take() {
                 host.completion = Some(Box::pin(async move { journal.complete(completion.await) }));
             }
@@ -218,7 +220,20 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn owner_failure_is_durable_before_session_closure_and_survives_restart() -> Result<()> {
+    async fn owner_completion_is_durable_before_session_closure_and_survives_restart() -> Result<()>
+    {
+        for fail_owner in [false, true] {
+            assert_owner_completion(fail_owner).await?;
+        }
+        Ok(())
+    }
+
+    async fn assert_owner_completion(fail_owner: bool) -> Result<()> {
+        let expected = if fail_owner {
+            "open original journal"
+        } else {
+            "local owner stopped"
+        };
         let workspace = tempfile::tempdir().map_err(failed)?;
         let state = tempfile::tempdir().map_err(failed)?;
         let provider = Arc::new(ScriptedModelProvider::new([]).with_context_capacity(
@@ -268,6 +283,7 @@ mod tests {
             composition: hosted,
             journal,
         });
+        let (stop, stopping) = tokio::sync::oneshot::channel();
         let (ready, readiness) = tokio::sync::oneshot::channel();
         let serving = tokio::spawn(async move {
             let result = crate::server::serve(
@@ -280,7 +296,9 @@ mod tests {
                         .map(|value| value.credential.clone());
                     let _ = ready.send(owner.publish(endpoint).map(|()| credential));
                 },
-                std::future::pending(),
+                async move {
+                    let _ = stopping.await;
+                },
             )
             .await;
             drop(owner);
@@ -293,30 +311,32 @@ mod tests {
         let connection = directory.connect().await?;
         let conversation = Conversation::open(connection.clone());
         let mut events = conversation.observe(None).await?;
-        fail.send(())
-            .map_err(|_| Error::Invalid("completion receiver ended".into()))?;
+        if fail_owner {
+            fail.send(())
+                .map_err(|_| Error::Invalid("completion receiver ended".into()))?;
+        } else {
+            stop.send(())
+                .map_err(|_| Error::Invalid("shutdown receiver ended".into()))?;
+        }
         let error = loop {
             match events.next().await {
                 Ok(_) => {}
                 Err(error) => break error,
             }
         };
-        assert!(
-            error.to_string().contains("open original journal"),
-            "{error}"
-        );
+        assert!(error.to_string().contains(expected), "{error}");
         let mut source = std::error::Error::source(&error);
         let mut retained = false;
         while let Some(cause) = source {
             if let Some(refusal) = cause.downcast_ref::<Refusal>() {
                 retained |= refusal
                     .original()
-                    .is_some_and(|parts| parts.message.contains("open original journal"));
+                    .is_some_and(|parts| parts.message.contains(expected));
             }
             source = cause.source();
         }
         assert!(retained, "client lost the typed retained owner status");
-        assert!(serving.await.map_err(failed)?.is_err());
+        assert_eq!(serving.await.map_err(failed)?.is_err(), fail_owner);
         let bytes = std::fs::read(&original.path).map_err(failed)?;
         assert!(!String::from_utf8_lossy(&bytes).contains(&credential));
         let mut malformed: serde_json::Value = serde_json::from_slice(&bytes).map_err(failed)?;
@@ -326,14 +346,11 @@ mod tests {
         let error = selected
             .err()
             .ok_or_else(|| Error::Invalid("closed owner selected an agent".into()))?;
-        assert!(
-            error.to_string().contains("open original journal"),
-            "{error}"
-        );
+        assert!(error.to_string().contains(expected), "{error}");
         let next = directory.own()?;
         assert_ne!(next.exit.incarnation(), original.incarnation);
         let old = connection.stream_failure(acyclic_stream::StreamError::Unavailable);
-        assert!(old.to_string().contains("open original journal"));
+        assert!(old.to_string().contains(expected));
         assert!(original.cause()?.original().is_some());
         Ok(())
     }

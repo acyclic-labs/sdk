@@ -54,7 +54,9 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             local.clock.clone(),
         )
         .await
-        .map_err(exchange)?;
+        .map_err(|error| {
+            Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+        })?;
     let directory_credential =
         acyclic_auth::credential::capability_text(&directory_credential.credential);
     let credential = server
@@ -292,7 +294,9 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             Some(&endpoint),
             Some(&directory_credential),
         )
-        .map_err(exchange)?;
+        .map_err(|error| {
+            Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+        })?;
         let directory = Connection::connect(&options).await?;
         assert!(!directory.directory);
         assert_eq!(directory.select(foreign.clone()).await?.root(), &foreign);
@@ -828,7 +832,9 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         server::{Hosted, ServerConfig},
         supervision::Lifecycle,
     };
-    let directory = tempfile::tempdir().map_err(exchange)?;
+    let directory = tempfile::tempdir().map_err(|error| {
+        Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+    })?;
     let project = volume(directory.path()).await?;
     let provider = text();
     // The model only answers; file and spawn operations use the normal client.
@@ -851,7 +857,9 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         .agents
         .get()
         .ok_or_else(|| Error::Conflict("test host missing".into()))?;
-    let changes = hosted.server().bound().changes().map_err(exchange)?;
+    let changes = hosted.server().bound().changes().map_err(|error| {
+        Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+    })?;
     let composition = Hosted::new(
         hosted.server().clone(),
         harness.clock.clone(),
@@ -861,7 +869,9 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     .with_completion(hosted.runtime.completion());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(exchange)?;
+        .map_err(|error| {
+            Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+        })?;
     let (ready, announced) = tokio::sync::oneshot::channel();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let mut tasks = tokio::task::JoinSet::new();
@@ -879,15 +889,22 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
             let _ = stopped.await;
         },
     ));
-    let (url, credential) = announced.await.map_err(exchange)?;
+    let (url, credential) = announced.await.map_err(|error| {
+        Error::exchange(crate::ExchangeStep::Step("await remote endpoint"), error)
+    })?;
     let credential = credential
         .ok_or_else(|| Error::Conflict("server did not publish a client credential".into()))?;
     let options =
         acyclic_harness_client::ConnectionOptions::from_env(Some(&url), Some(&credential))
-            .map_err(exchange)?;
+            .map_err(|error| {
+                Error::exchange(
+                    crate::ExchangeStep::Step("configure remote endpoint"),
+                    error,
+                )
+            })?;
     let remote_connection = super::Connection::connect(&options)
         .await
-        .map_err(|error| exchange(format_args!("remote admission: {error}")))?;
+        .map_err(|error| Error::exchange(crate::ExchangeStep::Step("remote admission"), error))?;
     let remote = Conversation::open(remote_connection.clone());
     assert_eq!(local.task(), remote.task());
     let paths = vec!["control/pause".to_owned(), "notes/steer.md".to_owned()];
@@ -896,7 +913,12 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         let initial = remote
             .files(root, paths.clone(), None)
             .await
-            .map_err(|error| exchange(format_args!("remote initial files {root:?}: {error}")))?;
+            .map_err(|error| {
+                Error::exchange(
+                    crate::ExchangeStep::Step("read remote initial files"),
+                    error,
+                )
+            })?;
         assert!(initial.files.values().all(Option::is_none));
         let operation = crate::OperationId::new();
         let changes = vec![
@@ -1109,7 +1131,9 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         let AgentReply::Spawned { agent, .. } = from
             .execute(&AgentCommand::Spawn {
                 parent: from.root().clone(),
-                id: crate::agent::IntentId::try_from(name).map_err(exchange)?,
+                id: crate::agent::IntentId::try_from(name).map_err(|error| {
+                    Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+                })?,
                 brief: crate::model::ModelContent::Text(format!("{name} task")),
                 role: "worker".into(),
             })
@@ -1315,7 +1339,10 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         value.original().is_none(),
         "query invented an authored precondition"
     );
-    let signal: crate::supervision::Signal = serde_json::from_str(&value.text).map_err(exchange)?;
+    let signal: crate::supervision::Signal =
+        serde_json::from_str(&value.text).map_err(|error| {
+            Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+        })?;
     assert_eq!(signal.kind, crate::supervision::Kind::Spend);
     assert!(
         matches!(&value.source, crate::client_files::FileSource::Query { input, .. }
@@ -1332,16 +1359,23 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         };
         let reply = remote_connection.execute(&command).await?;
         let mut bytes = acyclic_harness_client::PreparedCommand::new(&command)
-            .map_err(exchange)?
+            .map_err(|error| {
+                Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+            })?
             .command()
             .to_vec();
         bytes.push(0);
         bytes.extend(
-            acyclic_harness_client::encode_agent_reply(&Ok(reply), &command).map_err(exchange)?,
+            acyclic_harness_client::encode_agent_reply(&Ok(reply), &command).map_err(|error| {
+                Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+            })?,
         );
         println!(
             "CLIENT_FILES_QUERY_CORPUS {}",
-            serde_json::to_string(&bytes).map_err(exchange)?
+            serde_json::to_string(&bytes).map_err(|error| Error::exchange(
+                crate::ExchangeStep::Step("endpoint test operation"),
+                error
+            ))?
         );
     }
     let selected = local
@@ -1417,6 +1451,8 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         .join_next()
         .await
         .ok_or_else(|| Error::Conflict("serving task absent".into()))?
-        .map_err(exchange)??;
+        .map_err(|error| {
+            Error::exchange(crate::ExchangeStep::Step("endpoint test operation"), error)
+        })??;
     Ok(())
 }
