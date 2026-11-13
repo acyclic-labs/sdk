@@ -1090,6 +1090,16 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     );
     // Trace demand is held by this same authenticated file wait, including
     // before the original trace stream has its first publication.
+    let journal = bound.turns().query_journal(&state).await?;
+    let operation = OperationId::from_bytes([74; 16]);
+    let event = ExecutionEvent::Started {
+        request_digest: [75; 32],
+    };
+    journal.append(operation, "start", &event, None)?.await?;
+    assert_eq!(
+        journal.replay(operation, 0, 1, None)?.await?[0].event,
+        event
+    );
     let requested = "live/agents/self/trace/0/2.json".to_owned();
     let trace_paths = vec![requested.clone()];
     let before = bound.files(&agent, root, &trace_paths, None).await?;
@@ -1097,17 +1107,10 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     assert!(bound.trace_recorder(&agent)?.is_none());
     let mut watching = Box::pin(bound.files(&agent, root, &trace_paths, Some(&before.cut)));
     assert!(futures::poll!(&mut watching).is_pending());
-    let recorder = bound
-        .trace_recorder(&agent)?
-        .ok_or("file wait did not retain demand")?;
-    let span = recorder
-        .start(
-            "original_file_request",
-            acyclic_stream::trace::Mechanism::Io,
-            None,
-            Some("original_authenticated_file_cut"),
-        )
-        .await?;
+    assert!(bound.trace_recorder(&agent)?.is_some());
+    let records = journal.replay(operation, 0, 1, None)?.await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].event, event);
     let changed = watching.await?;
     assert!(
         bound.trace_recorder(&agent)?.is_none(),
@@ -1120,10 +1123,9 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             .text,
     )?;
     assert_eq!(value["coveredFrom"], 0);
-    assert_eq!(value["coveredThrough"], 1);
-    assert_eq!(value["activeSpans"], 1);
-    span.finish(Some(0), acyclic_stream::trace::Outcome::Succeeded)
-        .await?;
+    assert_eq!(value["coveredThrough"], 2);
+    assert_eq!(value["activeSpans"], 0);
+
     let completed = bound.files(&agent, root, &trace_paths, None).await?;
     let value: serde_json::Value = serde_json::from_str(
         &completed.files[&requested]
