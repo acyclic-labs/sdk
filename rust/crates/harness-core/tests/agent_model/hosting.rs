@@ -630,6 +630,35 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                     headers: RecordHeaders::new(vec![call.into_bytes().to_vec().into()], vec![])?,
                 }], if_tail: None, idempotency_key: IdempotencyKey::new("quiet-finish")? }).await?;
             }
+            // B starts after A's tool admission; A's later pause still owns resume.
+            let independent = OperationId::from_bytes([237; 16]);
+            stream
+                .append(AppendRequest {
+                    path: acyclic_harness_core::supervision::streams::path(&agent)?,
+                    records: vec![AppendRecord::latest(
+                        serde_json::to_vec(&acyclic_harness_core::supervision::Event {
+                            version: 1,
+                            agent: agent.clone(),
+                            run: Some(independent),
+                            source: acyclic_harness_core::supervision::Position {
+                                stream: agent.inbox()?,
+                                sequence: 1,
+                            },
+                            event: Lifecycle::Started { input: 1 },
+                        })?,
+                        acyclic_harness_core::supervision::RUN_KEY,
+                        false,
+                    )?],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new("independent-run-before-pause")?,
+                })
+                .await?;
+            assert_eq!(
+                acyclic_harness_core::supervision::streams::active_run(&*stream, &agent)
+                    .await?
+                    .0,
+                Some(independent)
+            );
             time.advance_to(115)?;
             if finish {
                 wait(&mut states, None, true).await?;
@@ -742,6 +771,17 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                         .ok_or("resumed query missing")?
                         .source,
                     resumed.source
+                );
+                assert!(
+                    acyclic_harness_core::supervision::streams::Queries::new(
+                        &*stream,
+                        &agent,
+                        independent,
+                    )
+                    .checkpoint()
+                    .await?
+                    .is_none(),
+                    "resume changed the independent run"
                 );
                 let checkpoint = stream
                     .latest(
