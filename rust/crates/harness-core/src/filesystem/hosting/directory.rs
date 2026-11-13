@@ -172,7 +172,13 @@ where
             crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())
                 .map_err(turn)?;
         let source = ledger
-            .reserve_decode(generation.logical_owned_bytes().map_err(turn)?)
+            .reserve_decode(
+                generation.logical_owned_bytes().map_err(turn)?
+                    + page
+                        .next
+                        .as_ref()
+                        .map_or(0, |token| token.capacity() as u64),
+            )
             .map_err(turn)?;
         let (mut page, _custody) =
             PrivateDirectoryPage::from_filesystem(generation, page, source, &ledger)

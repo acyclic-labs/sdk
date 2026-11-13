@@ -332,10 +332,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             page.next_residency = None;
             let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
-            page_hold.adopt(
-                (std::mem::size_of::<AuthorizedDirectoryPage>()
-                    - std::mem::size_of::<DirectoryPage>()) as u64,
-            )?;
+            let wrapper_bytes = (std::mem::size_of::<AuthorizedDirectoryPage>()
+                - std::mem::size_of::<DirectoryPage>()) as u64;
+            io.retain_owned(wrapper_bytes)?;
+            page_hold.adopt(wrapper_bytes)?;
             Ok::<_, Error>(Some((
                 (
                     reference,
