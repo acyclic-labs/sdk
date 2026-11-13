@@ -692,10 +692,13 @@ mod tests {
         let (finish, finishing) = oneshot::channel();
         let (intervened, intervening) = oneshot::channel();
         let (release_input, input_released) = oneshot::channel();
+        let (independent_continued, independent_continuing) = oneshot::channel();
+        let (finish_independent, independent_finishing) = oneshot::channel();
         let gate = Mutex::new(std::collections::VecDeque::from([
             (entered, released),
             (intervened, input_released),
             (continued, finishing),
+            (independent_continued, independent_finishing),
         ]));
         let provider = Arc::new(
             ScriptedModelProvider::new(
@@ -838,6 +841,13 @@ mod tests {
             result = &mut run => panic!("run ended before the independent input: {result:?}"),
             result = intervening => result.map_err(failed)?,
         }
+        release_input.send(()).unwrap();
+        tokio::select! {
+            result = &mut run => panic!("run ended before the continued model admission: {result:?}"),
+            result = continuing => result.map_err(failed)?,
+        }
+        // While A's continuation is held, B's completed actor transition is
+        // the committed state. In-flight driver state is not observable here.
         assert!(
             bound
                 .agents()
@@ -846,22 +856,7 @@ mod tests {
                 .map_err(failed)?
                 .run_admission
                 .is_none(),
-            "independent input inherited another run's admission"
-        );
-        release_input.send(()).unwrap();
-        tokio::select! {
-            result = &mut run => panic!("run ended before the continued model admission: {result:?}"),
-            result = continuing => result.map_err(failed)?,
-        }
-        assert_eq!(
-            bound
-                .agents()
-                .state(conversation.agent())
-                .await
-                .map_err(failed)?
-                .run_admission,
-            Some(operation),
-            "continuation lost its original owner admission"
+            "independent input inherited another run's admission",
         );
         let goal = conversation
             .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
@@ -885,7 +880,22 @@ mod tests {
             )
             .await?;
         finish.send(()).unwrap();
-        assert!(matches!(run.await?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
+        let (outcome, independent) = tokio::join!(&mut run, independent_continuing);
+        independent.map_err(failed)?;
+        assert!(matches!(outcome?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
+        // B's continuation is held after A committed its own restored
+        // admission, so this reads A's actual preceding transition.
+        assert_eq!(
+            bound
+                .agents()
+                .state(conversation.agent())
+                .await
+                .map_err(failed)?
+                .run_admission,
+            Some(operation),
+            "continuation lost its original owner admission",
+        );
+        finish_independent.send(()).unwrap();
         let mut interleaved_events = conversation.observe(None).await?;
         assert!(matches!(
             conversation
