@@ -414,7 +414,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                             )?
                             .effects,
                         );
-                        effects.push(self.store.activation(&target));
+                        effects.push(
+                            self.store
+                                .activation(&target)
+                                .map_err(|error| Error::Actor(Box::new(error)))?,
+                        );
                     }
                     Ok(Some(generation.clone()))
                 }
@@ -621,7 +625,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                     },
                 )
                 .map_err(|error| Error::Actor(Box::new(error)))?,
-            self.store.activation(&actor),
+            self.store
+                .activation(&actor)
+                .map_err(|error| Error::Actor(Box::new(error)))?,
         ])
     }
 }
