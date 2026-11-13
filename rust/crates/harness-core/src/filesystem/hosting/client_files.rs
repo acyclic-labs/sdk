@@ -96,50 +96,50 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         if after.is_some_and(|cut| cut.version != 1) {
             return Err(Error::Record("client file cut version"));
         }
-        let minimum = after.map(|cut| cut.revision.clone()).unwrap_or_default();
-        let (snapshot, sources) = self
-            .files_snapshot(agent, root, paths, minimum, after.is_some())
-            .await?;
-        if after.is_none_or(|cut| !cut.same_inputs(&snapshot.cut)) {
-            return Ok(snapshot);
+        let mut minimum = after.map(|cut| cut.revision.clone()).unwrap_or_default();
+        loop {
+            let (snapshot, sources) = self
+                .files_snapshot(agent, root, paths, minimum, after.is_some())
+                .await?;
+            if after.is_none_or(|cut| !cut.same_inputs(&snapshot.cut)) {
+                return Ok(snapshot);
+            }
+            let provider = self.agents.provider();
+            let minimum = snapshot.cut.revision.clone();
+            let mut waiting = sources
+                .into_iter()
+                .map(|(path, from)| {
+                    let minimum = minimum.clone();
+                    async move {
+                        let updates = provider
+                            .follow(acyclic_stream::FollowRequest {
+                                path,
+                                from,
+                                preceding: None,
+                                bootstrap_head: false,
+                                until: None,
+                                when_absent: acyclic_stream::WhenAbsent::Wait,
+                                filter: Default::default(),
+                                progress: false,
+                                at_least: minimum,
+                            })
+                            .await
+                            .map_err(Error::Stream)?;
+                        acyclic_stream::records_only(updates)
+                            .try_next()
+                            .await
+                            .map_err(Error::Stream)?
+                            .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
+                        Ok::<_, Error>(())
+                    }
+                })
+                .collect::<futures::stream::FuturesUnordered<_>>();
+            waiting
+                .try_next()
+                .await?
+                .ok_or(Error::Record("client file wait has no producer"))?;
+            minimum = snapshot.cut.revision;
         }
-        let provider = self.agents.provider();
-        let minimum = snapshot.cut.revision.clone();
-        let mut waiting = sources
-            .into_iter()
-            .map(|(path, from)| {
-                let minimum = minimum.clone();
-                async move {
-                    let updates = provider
-                        .follow(acyclic_stream::FollowRequest {
-                            path,
-                            from,
-                            preceding: None,
-                            bootstrap_head: false,
-                            until: None,
-                            when_absent: acyclic_stream::WhenAbsent::Wait,
-                            filter: Default::default(),
-                            progress: false,
-                            at_least: minimum,
-                        })
-                        .await
-                        .map_err(Error::Stream)?;
-                    acyclic_stream::records_only(updates)
-                        .try_next()
-                        .await
-                        .map_err(Error::Stream)?
-                        .ok_or(Error::Stream(acyclic_stream::StreamError::Unavailable))?;
-                    Ok::<_, Error>(())
-                }
-            })
-            .collect::<futures::stream::FuturesUnordered<_>>();
-        waiting
-            .try_next()
-            .await?
-            .ok_or(Error::Record("client file wait has no producer"))?;
-        self.files_snapshot(agent, root, paths, snapshot.cut.revision.clone(), false)
-            .await
-            .map(|(snapshot, _)| snapshot)
     }
 
     /// Read explicit members of one protected original conditional publication.
