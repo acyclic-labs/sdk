@@ -38,7 +38,15 @@ pub(crate) struct BoundHooks {
 
 fn shared<T>(value: T, io: Option<&crate::filesystem::PreparationIo>) -> Result<Arc<T>> {
     if let Some(io) = io {
-        let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<T>()?;
+        let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<T>().map_err(
+            |_| {
+                crate::executor::stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Invalid,
+                    "shared hook layout overflow",
+                )
+            },
+        )?;
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
