@@ -187,6 +187,28 @@ async fn refusals_precede_spawn_and_return_the_original_handler() -> io::Result<
         assert_eq!(handler.retired, Some(true));
         assert!(!marker.exists(), "{kind:?} reached the process");
     }
+    let foreign = tempfile::tempdir()?;
+    let mut request = command(root.path());
+    request.command.env_clear();
+    request.execution_grant = Some(crate::execution::ExecutionGrant::new(
+        foreign.path(),
+        crate::execution::ExecutionAccess::ReadOnly,
+        Vec::new(),
+        crate::execution::ExecutionNetwork::Off,
+    )?);
+    let Err(LaunchFailure::Refused { failure, handler }) =
+        request.capture(Recorder::default()).await
+    else {
+        panic!("foreign working directory was not refused before spawn");
+    };
+    assert_eq!(failure.error.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        failure.error.to_string(),
+        "execution working directory escapes the granted workspace"
+    );
+    assert!(failure.cleanup_completed && failure.status.is_none());
+    assert_eq!(handler.retired, Some(true));
+    assert!(!marker.exists(), "grant refusal reached the process");
     let Ok(capture) = command(root.path()).capture(Recorder::default()).await else {
         panic!("negative control was refused");
     };

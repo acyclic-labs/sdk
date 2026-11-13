@@ -261,12 +261,14 @@ impl CaptureRequest {
                 return Ok(owner.answered(CaptureOutcome::new(handler, result)));
             }
         }
-        let tree = match (&self.execution_grant, &self.custody) {
-            (Some(grant), custody) => {
-                ProcessTree::spawn_granted(command, grant, custody.as_deref())
-            }
-            (None, Some(custody)) => ProcessTree::spawn_in_custody(&mut command, custody),
-            (None, None) => ProcessTree::spawn(&mut command),
+        if let Some(grant) = &self.execution_grant
+            && let Err(error) = ProcessTree::prepare_granted_command(&mut command, grant, None)
+        {
+            return refused(error, handler);
+        }
+        let tree = match &self.custody {
+            Some(custody) => ProcessTree::spawn_in_custody(&mut command, custody),
+            None => ProcessTree::spawn(&mut command),
         };
         let tree = match tree {
             Ok(tree) => tree,
