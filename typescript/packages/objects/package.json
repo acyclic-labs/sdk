@@ -16,22 +16,6 @@
   },
   "type": "module",
   "exports": {
-    "./v1": {
-      "types": "./dist/v1.d.ts",
-      "default": "./dist/v1.js"
-    },
-    "./v1/proto": {
-      "types": "./generated/proto/objects/v1/objects_pb.d.ts",
-      "default": "./generated/proto/objects/v1/objects_pb.js"
-    },
-    "./v1/http": {
-      "types": "./dist/v1-http.d.ts",
-      "default": "./dist/v1-http.js"
-    },
-    "./v1/grpc": {
-      "types": "./dist/v1-grpc.d.ts",
-      "default": "./dist/v1-grpc.js"
-    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

@@ -8,7 +8,7 @@
 ## 0.2.0 - Unreleased
 
 - Expose the sole logical Objects v1 contract through canonical Rust, protobuf, HTTP, Node/Bun gRPC and browser exports. Remove historical implementations, readers and compatibility artifacts. Local roots with obsolete format discriminators fail closed without upgrade or overwrite.
-- Export current clients at the default package entry point and `./v1`, `./v1/http`, `./v1/grpc` and `./v1/proto`. The candidate version is 0.2.0; released 0.1.5 remains unchanged.
+- Export current clients at the default package entry point and `./http`, `./grpc` and `./proto`. The candidate version is 0.2.0; released 0.1.5 remains unchanged.
 - Enforce caller download limits while framing HTTP responses and cancel oversized selections before reading their bodies. Codec zero is invalid; ZSTD is 1 and NONE is 2.
 - Bind the default v1 browser fetch receiver. Browser and Cloud acceptance require qualification of this candidate.
 
