@@ -117,7 +117,7 @@ async fn rejoining_requires_original_display_metadata() -> Result<(), Box<dyn st
         let mut effects = vec![row.effect(original.clone())?];
         if inherited {
             effects.push(acyclic_stream::CommitEffect::hard(
-                Vec::new(),
+                vec![acyclic_stream::CommitCondition::Absent { path: path.clone() }],
                 vec![CommitMutation::Fork {
                     source: original.clone(),
                     destination: path.clone(),

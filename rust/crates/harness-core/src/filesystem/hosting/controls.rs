@@ -38,15 +38,15 @@ struct State {
 }
 
 impl State {
-    fn private(&self) -> Result<&WorkspaceEntry, Error> {
-        self.sources
+    fn private(sources: &crate::agent::WorkspaceTable) -> Result<&WorkspaceEntry, Error> {
+        sources
             .entries()
             .iter()
             .find(|entry| entry.role == crate::agent::WorkspaceRole::Private)
             .ok_or(Error::Record("control private binding missing"))
     }
-    fn home(&self) -> Option<&WorkspaceEntry> {
-        self.sources
+    fn home(sources: &crate::agent::WorkspaceTable) -> Option<&WorkspaceEntry> {
+        sources
             .entries()
             .iter()
             .find(|entry| entry.role == crate::agent::WorkspaceRole::Home)
@@ -238,13 +238,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         let mut retired = subscription == CLOSED;
         if !retired {
             let selected = if subscription == GOAL {
-                state
-                    .home()
-                    .ok_or(Error::Record("goal has no home binding"))?
+                State::home(&state.sources).ok_or(Error::Record("goal has no home binding"))?
             } else {
-                state.private()?
+                State::private(&state.sources)?
             };
-            let private_source = selected.as_volume() == state.private()?.as_volume();
+            let private_source =
+                selected.as_volume() == State::private(&state.sources)?.as_volume();
             let source = self.source(selected.volume()?).map_err(turn)?;
             if record.origin != source {
                 return Err(Error::Record("control record origin differs"));
@@ -282,7 +281,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             };
             if through.is_none_or(|through| sequence > through) {
                 let bindings = if private_source {
-                    std::slice::from_ref(state.private()?)
+                    std::slice::from_ref(State::private(&state.sources)?)
                 } else {
                     state.sources.entries()
                 };
@@ -339,7 +338,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     present[index] = self
                         .volumes
                         .stat_private_path(
-                            state.private()?.volume()?,
+                            State::private(&state.sources)?.volume()?,
                             &grant,
                             path,
                             Some(&generation),
@@ -449,7 +448,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     let Some(delta) = self
                         .volumes
                         .read_private_append(
-                            state.private()?.volume()?,
+                            State::private(&state.sources)?.volume()?,
                             &grant,
                             "control/steer.md",
                             &generation,
@@ -750,7 +749,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                 .collect();
         if agent.depth() == 0
             && self.routing.is_some()
-            && let Some(home) = state.home()
+            && let Some(home) = State::home(&state.sources)
         {
             subscriptions.insert(
                 GOAL.into(),

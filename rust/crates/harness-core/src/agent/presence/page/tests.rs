@@ -450,7 +450,9 @@ async fn account_pages_reject_inherited_session_and_presence_records() -> TestRe
         publish(
             directory.provider.as_ref(),
             vec![CommitEffect::hard(
-                Vec::new(),
+                vec![CommitCondition::Absent {
+                    path: other.presence(&directory.nodes[0])?,
+                }],
                 vec![CommitMutation::Fork {
                     source: directory.routes.presence(&directory.nodes[0])?,
                     destination: other.presence(&directory.nodes[0])?,

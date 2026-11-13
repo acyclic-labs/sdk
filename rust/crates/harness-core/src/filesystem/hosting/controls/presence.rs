@@ -53,7 +53,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 .is_ok()
         };
         let volume = selected.volume()?;
-        if selected.as_volume() == state.private()?.as_volume() && changed(b"ui/title") {
+        if selected.as_volume() == State::private(&state.sources)?.as_volume()
+            && changed(b"ui/title")
+        {
             let title = self
                 .volumes
                 .read_private_path_indexed(
@@ -78,9 +80,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 Err(error) => return Err(turn(error)),
             };
         }
-        if state
-            .home()
-            .is_some_and(|home| home.as_volume() == selected.as_volume())
+        if State::home(&state.sources).is_some_and(|home| home.as_volume() == selected.as_volume())
             && changed(b"GOAL.md")
         {
             let goal = self

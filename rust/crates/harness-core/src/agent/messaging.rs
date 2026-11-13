@@ -332,8 +332,8 @@ mod provenance_tests {
     use super::*;
     use crate::agent::{AgentId, AgentRecord};
     use acyclic_stream::{
-        CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream,
-        StreamProviderExt as _,
+        CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest,
+        IdempotencyKey, MemoryStream, StreamProviderExt as _,
     };
 
     #[tokio::test]
@@ -355,36 +355,44 @@ mod provenance_tests {
                 &sender
             };
             let enabled = PeerMembership { enabled: true };
-            let publish = async |mutations| {
+            let publish = async |effect| {
                 let outcome = provider
                     .commit(CommitRequest {
                         deadline_unix_millis: None,
                         idempotency_key: IdempotencyKey::unique(),
-                        effects: vec![CommitEffect::hard(Vec::new(), mutations)],
+                        effects: vec![effect],
                     })
                     .await
                     .map_err(super::super::Error::Stream)?;
                 assert!(matches!(outcome, CommitOutcome::Committed(_)));
                 Ok::<_, super::super::Error>(())
             };
-            publish(vec![
-                CommitMutation::Append {
-                    path: original.peer_membership()?,
-                    records: vec![enabled.encode()?.into()],
-                },
-                CommitMutation::Append {
-                    path: direct.peer_membership()?,
-                    records: vec![enabled.encode()?.into()],
-                },
-            ])
+            publish(CommitEffect::hard(
+                Vec::new(),
+                vec![
+                    CommitMutation::Append {
+                        path: original.peer_membership()?,
+                        records: vec![enabled.encode()?.into()],
+                    },
+                    CommitMutation::Append {
+                        path: direct.peer_membership()?,
+                        records: vec![enabled.encode()?.into()],
+                    },
+                ],
+            ))
             .await?;
-            publish(vec![CommitMutation::Fork {
-                source: original.peer_membership()?,
-                destination: inherited.peer_membership()?,
-                at_tail: 1,
-                exclude: Vec::new(),
-                records: Vec::new(),
-            }])
+            publish(CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: inherited.peer_membership()?,
+                }],
+                vec![CommitMutation::Fork {
+                    source: original.peer_membership()?,
+                    destination: inherited.peer_membership()?,
+                    at_tail: 1,
+                    exclude: Vec::new(),
+                    records: Vec::new(),
+                }],
+            ))
             .await?;
             let grants = crate::Capabilities::new([SEND_PEER.to_owned()]);
             // Identical enabled bytes on their original streams are admitted.
