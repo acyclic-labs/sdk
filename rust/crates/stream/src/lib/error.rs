@@ -48,6 +48,9 @@ pub enum StreamError {
     /// follows [`Self::category`]; diagnostics never grant retry permission.
     #[error("stream member refused{0}")]
     Refused(#[source] StreamRefusal),
+    /// Original local source, retained independently of its public classification.
+    #[error("{0}")]
+    Caused(#[source] acyclic_auth::failure::Failure<Self>),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
@@ -117,6 +120,11 @@ impl<'de> serde::Deserialize<'de> for StreamError {
 const NOT_BEFORE: &str = "not_before";
 
 impl StreamError {
+    /// Preserve the original concrete error without rendering or changing its category.
+    #[must_use]
+    pub fn with_source(self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Caused(acyclic_auth::failure::Failure::new(self, source))
+    }
     /// Attach original diagnostics without changing this failure's category.
     #[must_use]
     pub fn with_refusal(self, diagnostic: acyclic_auth::refusal::Refusal) -> Self {
@@ -221,6 +229,7 @@ impl StreamError {
     #[must_use]
     pub fn category(&self) -> Self {
         match self {
+            Self::Caused(failure) => failure.classification().category(),
             Self::Refused(refusal) => Self::from_code(refusal.category)
                 .expect("retained refusal category comes from StreamError::code"),
             error => error.clone(),
@@ -266,6 +275,7 @@ impl StreamError {
             Self::AccessDenied => "access_denied",
             Self::Unavailable => "unavailable",
             Self::Refused(refusal) => refusal.category,
+            Self::Caused(failure) => failure.classification().code(),
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",

@@ -114,6 +114,7 @@ async fn acknowledged_cuts(
             Transition {
                 pause: false,
                 response: Some(Bytes::from_static(b"completed")),
+                pause: false,
                 participant: None,
                 checkpoint: checkpoint(1),
                 alarm: AlarmChange::Set {

@@ -87,7 +87,10 @@ async fn stop_checks_writes_from_settlement_continuations() -> Result<()> {
         }
         assert_eq!(entry.outcome, crate::agent::TurnOutcome::Completed);
         assert_eq!(
-            observed.conversation.output_text(&entry).await?,
+            observed
+                .conversation
+                .output_text_at(observed.observer.seen() - 1, &entry)
+                .await?,
             "task complete"
         );
         assert_eq!(provider.request_count(), 5);

@@ -139,3 +139,52 @@ fn unfunded_cancellation_refuses_before_constructing_the_stream() {
     drop(result);
     assert_eq!(work.live_allocation_bytes(), baseline);
 }
+
+#[test]
+fn native_span_decode_admits_tagged_records_and_retires_retained_paths() -> Result<()> {
+    use acyclic_stream::trace::{Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
+    let id = SpanId {
+        process: [1; 16],
+        sequence: 2,
+    };
+    for record in [
+        TraceRecord::V1(SpanEvent::Started {
+            id,
+            parent: Some(SpanId { sequence: 1, ..id }),
+            name: "model.response_headers".into(),
+            mechanism: Mechanism::RoundTrip,
+            at_ns: 10,
+            guarantee: Some("receive_response_headers".into()),
+        }),
+        TraceRecord::V1(SpanEvent::Finished {
+            id,
+            at_ns: 20,
+            bytes: Some(12),
+            result: Outcome::Failed {
+                cause: acyclic_stream::RetainedRecord {
+                    commit_id: acyclic_stream::CommitId::from_bytes([3; 32]),
+                    path: acyclic_stream::StreamPath::new("agents/worker/errors")?,
+                    sequence: 4,
+                },
+            },
+        }),
+    ] {
+        let original = ModelEvent::Trace { record };
+        let bytes = crate::contract::canonical_json_bytes(&original)?;
+        let work = NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 4_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .expect("original work");
+        let baseline = work.live_allocation_bytes();
+        let (decoded, custody) = ModelEvent::decode_with_native_work(&bytes, &work)?;
+        assert_eq!(decoded, original);
+        drop((decoded, custody));
+        assert_eq!(
+            work.live_allocation_bytes(),
+            baseline,
+            "bounded span decode retained tagged scratch or original path custody"
+        );
+    }
+    Ok(())
+}

@@ -222,7 +222,7 @@ impl HostModel {
                     .map_err(|_| Error::Invalid("host model event is invalid".into()))?;
                 if dispatch.is_none() {
                     match &event {
-                        ModelEvent::Wait(_) => {}
+                        ModelEvent::Wait(_) | ModelEvent::Trace { .. } => {}
                         ModelEvent::Counted { count } => {
                             count.validate(request, &mut None)?;
                         }

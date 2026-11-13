@@ -141,6 +141,26 @@ proptest! {
 }
 
 #[test]
+fn value_serialization_requires_encoding_credit() {
+    let value = serde_json::json!({"value": ["complete", 1, true]});
+    for credit in [0, 100_000] {
+        let cancellation = CancellationToken::new();
+        let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+        budget.bytes_encoded = credit;
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+        let io = PreparationIo::from_native_work(&original).unwrap();
+        let result = io.value_json(&value, None);
+        if credit == 0 {
+            assert!(matches!(result, Err(Error::NativeWork { .. })));
+            assert_eq!(io.receipt().bytes_encoded, 0);
+        } else {
+            assert_eq!(result.unwrap(), value);
+            assert!(io.receipt().bytes_encoded > 0);
+        }
+    }
+}
+
+#[test]
 fn codec_accounting_negative_controls() {
     for native in [false, true] {
         for (fault, limits, event) in [

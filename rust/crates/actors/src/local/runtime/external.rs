@@ -5,6 +5,8 @@ use crate::guest::Subscription;
 use futures::task::AtomicWaker;
 use std::collections::VecDeque;
 use tokio::sync::watch;
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, PartialEq, Eq)]
 struct Selection {
@@ -115,6 +117,7 @@ impl Registry {
                     let (send, receive) = watch::channel(selection.clone());
                     entries.insert(id.clone(), send);
                     registrations.pending.push_back(Watch {
+                        actor: actor.clone(),
                         receive,
                         next: selection.subscription.cursor,
                         selected: selection,
@@ -143,6 +146,7 @@ impl Registry {
 }
 
 pub(super) struct Watch {
+    actor: ActorReference,
     receive: watch::Receiver<Selection>,
     selected: Selection,
     next: u64,
@@ -152,7 +156,7 @@ pub(super) struct Watch {
 
 pub(super) struct Outcome {
     pub(super) watch: Option<Watch>,
-    pub(super) result: Result<(), StreamError>,
+    pub(super) result: Result<(), (ActorReference, StreamError)>,
 }
 
 impl Watch {
@@ -222,7 +226,7 @@ impl Watch {
                 },
                 Err(error) => Outcome {
                     watch: None,
-                    result: Err(error),
+                    result: Err((self.actor, error)),
                 },
             }
         })

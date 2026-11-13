@@ -231,6 +231,7 @@ impl Connection {
             ),
             None => Error::exchange(ExchangeStep::Session, error),
         }
+        Error::exchange(ExchangeStep::Session, error)
     }
 
     /// Executes `command` once on this connection's tree.
@@ -321,7 +322,8 @@ impl Connection {
 
     /// Connects to the endpoint the one connection policy selects: an
     /// explicit `endpoint`, else `ACYCLIC_ENDPOINT`, else the managed
-    /// default, with `ACYCLIC_API_KEY` as the credential. There is no config
+    /// default, with `ACYCLIC_API_KEY` as the credential. `ACYCLIC_CA_FILE`
+    /// replaces the platform roots for a private endpoint. There is no config
     /// file and no local fallback.
     ///
     /// # Errors
@@ -345,13 +347,23 @@ impl Connection {
             .session_credential()
             .map_err(|_| Error::Unauthorized("credential is not a capability".into()))?;
         let client = match options.transport() {
-            EndpointTransport::Tls => {
-                acyclic_stream::grpc::Client::connect_eager(
-                    options.endpoint(),
-                    options.credential(),
-                )
-                .await
-            }
+            EndpointTransport::Tls => match options.ca_certificate() {
+                Some(ca) => {
+                    acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
+                        options.endpoint(),
+                        options.credential(),
+                        ca,
+                    )
+                    .await
+                }
+                None => {
+                    acyclic_stream::grpc::Client::connect_eager(
+                        options.endpoint(),
+                        options.credential(),
+                    )
+                    .await
+                }
+            },
             EndpointTransport::Loopback => {
                 acyclic_stream::grpc::Client::connect_loopback(
                     options.endpoint(),

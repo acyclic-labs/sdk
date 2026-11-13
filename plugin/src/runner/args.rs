@@ -201,7 +201,8 @@ pub struct Args {
     pub inline: bool,
     /// Drive the agent tree an endpoint serves instead of this machine's
     /// harness: the given URL, else `ACYCLIC_ENDPOINT`, else the managed
-    /// default, with `ACYCLIC_API_KEY` as the credential.
+    /// default, with `ACYCLIC_API_KEY` as the credential. `ACYCLIC_CA_FILE`
+    /// names a PEM CA bundle that replaces the platform roots.
     #[arg(global = true, long, num_args = 0..=1, conflicts_with = "host_workspace")]
     pub endpoint: Option<Option<String>>,
     /// Optional operation in place of the default conversation.

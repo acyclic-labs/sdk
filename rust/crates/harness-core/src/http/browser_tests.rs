@@ -28,7 +28,10 @@ export function httpFixture(mode) {
       controller.enqueue(new TextEncoder().encode('first'));
       if (mode === 'complete') { controller.close(); controller = undefined; }
     } });
-    return Promise.resolve(new Response(stream, { status: mode === 'error' ? 503 : 200 }));
+    return Promise.resolve(new Response(stream, {
+      status: mode === 'error' ? 503 : 200,
+      headers: { 'x-request-id': 'provider-request' }
+    }));
   };
   return state;
 }
@@ -167,6 +170,7 @@ async fn fetch_streams_bytes_and_preserves_request_security_options()
     let transport = transport(&fixture)?;
     let mut response = transport.send(request()).await.map_err(js_error)?;
     assert_eq!(response.status, 200);
+    assert_eq!(response.request_id.as_ref().unwrap(), "provider-request");
     assert_eq!(
         response.body.next().await.transpose().map_err(js_error)?,
         Some(Bytes::from_static(b"first"))

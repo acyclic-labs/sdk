@@ -683,3 +683,158 @@ mod write_tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod indexed_trace_tests {
+    use super::*;
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn indexed_lookup_preserves_original_record_cut_and_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(MemoryStream::default());
+        let data = Stream::new(provider.clone(), "agents/worker/data")?;
+        data.append(
+            AppendRecord::latest(
+                bytes::Bytes::from_static(b"original"),
+                bytes::Bytes::from_static(b"selected"),
+                false,
+            )?,
+            IdempotencyKey::unique(),
+        )
+        .await?;
+        let original = provider
+            .latest(
+                data.path().clone(),
+                bytes::Bytes::from_static(b"selected"),
+                Default::default(),
+            )
+            .await?;
+        let trace = Stream::new(provider.clone(), "agents/worker/trace")?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [51; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        let parent = root.id();
+        let (selected, condition) = root
+            .within(provider.latest_fenced(
+                data.path().clone(),
+                Some(bytes::Bytes::from_static(b"selected")),
+                Default::default(),
+            ))
+            .await?;
+        assert_eq!(selected, original);
+        assert_eq!(
+            condition,
+            CommitCondition::Tail {
+                path: data.path().clone(),
+                expected: 1
+            }
+        );
+        assert!(
+            root.within(provider.latest(
+                data.path().clone(),
+                bytes::Bytes::from_static(b"absent"),
+                Default::default()
+            ))
+            .await?
+            .is_none()
+        );
+        assert!(
+            root.within(provider.latest_before(data.path().clone(), None, 0, Default::default()))
+                .await?
+                .is_none()
+        );
+        assert!(
+            root.within(provider.latest(
+                trace.path().clone(),
+                bytes::Bytes::from_static(b"absent"),
+                Default::default()
+            ))
+            .await?
+            .is_none()
+        );
+        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut fence = false;
+        let mut request = false;
+        let mut indexed_bytes = Vec::new();
+        while completed < 4 {
+            let Some(observation) = query.next().await? else {
+                return Err("trace ended before original request hops settled".into());
+            };
+            if let Observation::Completed {
+                id,
+                start,
+                bytes,
+                result,
+                ..
+            } = observation
+            {
+                completed += 1;
+                assert_eq!(result, Outcome::Succeeded);
+                if id == parent {
+                    assert!(!request);
+                    request = true;
+                    continue;
+                }
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::ProviderCall);
+                match start.name.as_str() {
+                    "stream.latest_fence" => {
+                        assert!(!fence);
+                        fence = true;
+                        assert_eq!(bytes, None);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("original_head_cut_for_optimistic_publication_fence")
+                        );
+                    }
+                    "stream.latest_before" => {
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("indexed_record_strictly_before_original_cut")
+                        );
+                        indexed_bytes.push(bytes);
+                    }
+                    name => panic!("unexpected indexed request hop: {name}"),
+                }
+            }
+        }
+        assert!(fence && request);
+        indexed_bytes.sort();
+        assert_eq!(indexed_bytes, [Some(0), Some(8)]);
+        assert_eq!(
+            trace.tail().await?,
+            8,
+            "zero cuts and diagnostic reads must not emit provider work"
+        );
+        assert_eq!(
+            provider
+                .latest(
+                    data.path().clone(),
+                    bytes::Bytes::from_static(b"selected"),
+                    Default::default()
+                )
+                .await?,
+            original
+        );
+        assert_eq!(
+            trace.tail().await?,
+            8,
+            "the request owner must not leak into unrelated work"
+        );
+        Ok(())
+    }
+}

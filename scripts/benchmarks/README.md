@@ -81,10 +81,13 @@ the task workspace's `.agents/skills`, including auxiliary and hidden files.
 The harness discovers them through the ordinary volume path. Copy failures
 reject setup and revoke execution authority; task MCP servers remain unsupported.
 
-The environment must already admit native FUSE mounts: a usable `/dev/fuse`,
-`fusermount3`, the binary's runtime libraries, mount authority, and a task working
-directory other than `/`. Host Docker/FUSE availability alone does not prove
-container readiness. Setup runs `graphcoder doctor` with the run's exact flags:
+The environment needs the binary's runtime libraries and a task working directory
+other than `/`. The CLI defaults to `--workspace-mounting auto`: it selects native
+projection when the host probe admits it, otherwise reports the reason and uses
+physical directories with capture at each tool boundary. Native Linux projection
+additionally needs a usable `/dev/fuse`, `fusermount3` and mount authority.
+Host Docker/FUSE availability alone does not prove container readiness.
+Setup runs `graphcoder doctor` with the run's exact flags:
 it checks read-only prerequisites without opening state, creating signing authority
 or starting MCP children. Doctor and execution share the same explicit private-file
 custody under the trial state directory. Storage and credential-service access

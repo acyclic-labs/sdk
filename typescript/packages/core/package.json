@@ -1,0 +1,44 @@
+{
+  "name": "@acyclic-labs/core",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "description": "Shared transport observation and caller-owned deadlines",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/core"
+  },
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./observe": {
+      "types": "./dist/observe.d.ts",
+      "default": "./dist/observe.js"
+    },
+    "./deadline": {
+      "types": "./dist/deadline.d.ts",
+      "default": "./dist/deadline.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dependencies": {
+    "@connectrpc/connect": "2.3.0"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "bun run build && bun test test/observe.test.ts && node --test test/deadline.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  }
+}

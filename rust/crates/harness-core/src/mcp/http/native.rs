@@ -6,6 +6,34 @@ use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
 use std::time::Duration;
 
+fn exchange_failure(
+    operation: OperationId,
+    read: bool,
+    code: crate::wire::ErrorCode,
+    source: impl std::error::Error + Send + Sync + 'static,
+) -> Error {
+    let decision = if read {
+        Error::Boundary {
+            code,
+            reason: "MCP HTTP read failed",
+        }
+    } else {
+        // A failed POST may have reached the server. Its transport cause never
+        // authorizes replay or changes the original uncertain operation.
+        Error::Indeterminate(operation)
+    };
+    Error::external_for_request(operation, decision.classification(), source)
+}
+
+fn transport_failure(operation: OperationId, read: bool, error: reqwest::Error) -> Error {
+    let code = if read {
+        crate::http::transport_failure(&error).0
+    } else {
+        crate::wire::ErrorCode::Indeterminate
+    };
+    exchange_failure(operation, read, code, error.without_url())
+}
+
 /// Native network capability with explicit host credentials.
 pub struct NativeMcpHttpProvider(reqwest::Client);
 
@@ -49,8 +77,15 @@ impl McpHttpProvider for NativeMcpHttpProvider {
                 builder.send(),
             )
             .await
-            .map_err(|_| Error::Indeterminate(operation))?
-            .map_err(|_| Error::Indeterminate(operation))?;
+            .map_err(|error| {
+                exchange_failure(
+                    operation,
+                    streaming,
+                    crate::wire::ErrorCode::Unavailable,
+                    error,
+                )
+            })?
+            .map_err(|error| transport_failure(operation, streaming, error))?;
             let status = response.status().as_u16();
             let headers = response
                 .headers()
@@ -62,9 +97,9 @@ impl McpHttpProvider for NativeMcpHttpProvider {
                         .map_err(|e| Error::Invalid(e.to_string()))
                 })
                 .collect::<Result<_>>()?;
-            let body = response
-                .bytes_stream()
-                .map(move |chunk| chunk.map_err(|_| Error::Indeterminate(operation)));
+            let body = response.bytes_stream().map(move |chunk| {
+                chunk.map_err(|error| transport_failure(operation, streaming, error))
+            });
             Ok(McpHttpResponse {
                 status,
                 headers,
@@ -93,10 +128,37 @@ mod tests {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    #[tokio::test]
-    async fn notification_eof_reconnects_and_invalidates_the_disconnected_gap() -> Result<()> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+    async fn notification_request(
+        listener: &tokio::net::TcpListener,
+    ) -> Result<tokio::net::TcpStream> {
         use tokio::io::{AsyncBufReadExt as _, BufReader};
+        let (socket, _) = listener.accept().await.map_err(Error::process_io)?;
+        let mut socket = BufReader::new(socket);
+        let mut line = String::new();
+        socket
+            .read_line(&mut line)
+            .await
+            .map_err(Error::process_io)?;
+        assert!(line.starts_with("GET "));
+        loop {
+            line.clear();
+            assert_ne!(
+                socket
+                    .read_line(&mut line)
+                    .await
+                    .map_err(Error::process_io)?,
+                0
+            );
+            if line == "\r\n" {
+                break;
+            }
+        }
+        Ok(socket.into_inner())
+    }
+
+    #[tokio::test]
+    async fn notification_transients_reconnect_and_invalidate_the_disconnected_gap() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(Error::process_io)?;
@@ -104,40 +166,17 @@ mod tests {
         let connections = Arc::new(AtomicUsize::new(0));
         let accepted = connections.clone();
         let server = tokio::spawn(async move {
-            for index in 0..3 {
-                let (socket, _) = listener.accept().await.map_err(Error::process_io)?;
+            for index in 0..4 {
+                let mut socket = notification_request(&listener).await?;
                 accepted.fetch_add(1, Ordering::SeqCst);
-                let mut socket = BufReader::new(socket);
-                let mut line = String::new();
-                socket
-                    .read_line(&mut line)
-                    .await
-                    .map_err(Error::process_io)?;
-                assert!(line.starts_with("GET "));
-                loop {
-                    line.clear();
-                    assert_ne!(
-                        socket
-                            .read_line(&mut line)
-                            .await
-                            .map_err(Error::process_io)?,
-                        0
-                    );
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
-                let status = if index == 2 {
-                    "405 Method Not Allowed"
-                } else {
-                    "200 OK"
+                let status = match index {
+                    0 => "503 Service Unavailable",
+                    3 => "405 Method Not Allowed",
+                    _ => "200 OK",
                 };
-                socket.get_mut().write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(Error::process_io)?;
-                socket
-                    .get_mut()
-                    .shutdown()
-                    .await
-                    .map_err(Error::process_io)?;
+                let body = if index == 2 { "data: {" } else { "" };
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.map_err(Error::process_io)?;
+                socket.shutdown().await.map_err(Error::process_io)?;
             }
             Ok::<_, Error>(())
         });
@@ -156,22 +195,188 @@ mod tests {
         let mut watch = Arc::try_unwrap(transport.notifications.take().expect("watch armed"))
             .ok()
             .expect("one watch owner");
-        (&mut watch.0)
+        (&mut watch.task)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
             connections.load(Ordering::SeqCst),
-            3,
-            "EOF must reconnect until the server declines GET"
+            4,
+            "transient HTTP and EOF reconnect until the server declines GET"
         );
         assert_eq!(
             transport.tools_generation(),
-            4,
+            5,
             "both EOF and resubscription invalidate each disconnected interval"
         );
         server
             .await
             .map_err(|error| Error::Storage(error.to_string()))??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn notification_permanent_failures_are_retained_without_reconnecting() -> Result<()> {
+        use crate::wire::ErrorCode;
+        use std::sync::atomic::Ordering;
+        for (status, media, body, code) in [
+            (
+                "401 Unauthorized",
+                "text/event-stream",
+                "",
+                ErrorCode::Unauthorized,
+            ),
+            (
+                "404 Not Found",
+                "text/event-stream",
+                "",
+                ErrorCode::NotFound,
+            ),
+            (
+                "200 OK",
+                "text/event-stream",
+                "data: not-json\n\n",
+                ErrorCode::Invalid,
+            ),
+            ("200 OK", "application/json", "{}", ErrorCode::Invalid),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(Error::process_io)?;
+            let address = listener.local_addr().map_err(Error::process_io)?;
+            let server = tokio::spawn(async move {
+                let mut socket = notification_request(&listener).await?;
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.map_err(Error::process_io)?;
+                Ok::<_, Error>(())
+            });
+            let provider = Arc::new(ObservedProvider {
+                inner: NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?,
+                exchanges: Default::default(),
+            });
+            let mut transport = HttpMcpTransport::new(
+                provider.clone(),
+                format!("http://{address}/mcp"),
+                Some("session".into()),
+                8192,
+                1000,
+                None,
+            )?;
+            transport.watch_tools()?;
+            let mut watch = Arc::try_unwrap(transport.notifications.take().expect("watch armed"))
+                .ok()
+                .expect("one watch owner");
+            // Wait for actual completion, then observe the retained cause
+            // through ordinary catalog reads without another exchange.
+            (&mut watch.task)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            let watch = Arc::new(watch);
+            transport.notifications = Some(watch.clone());
+            let (_, original) = watch.failure.get().expect("terminal cause retained");
+            for _ in 0..2 {
+                let error = transport
+                    .list_tools(OperationId::new(), None)
+                    .await
+                    .expect_err("watch failure reaches catalog refresh");
+                assert_eq!(error.code(), code);
+                let Error::Command(error) = error else {
+                    panic!("retained local cause expected");
+                };
+                assert!(std::ptr::eq(
+                    error.original().expect("local cause"),
+                    original.as_ref()
+                ));
+            }
+            assert!(transport.tools_generation() > 0);
+            assert_eq!(provider.exchanges.load(Ordering::SeqCst), 1);
+            server
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))??;
+        }
+        Ok(())
+    }
+
+    async fn failed_exchange(
+        scheme: &'static str,
+        method: &'static str,
+        reply: &'static [u8],
+    ) -> Result<Error> {
+        use futures::TryStreamExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(Error::process_io)?;
+        let address = listener.local_addr().map_err(Error::process_io)?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.map_err(Error::process_io)?;
+            // Receive the request or ClientHello before replying, then drain
+            // after write-half closure so the reply is not reset away.
+            let mut input = [0; 4096];
+            assert_ne!(socket.read(&mut input).await.map_err(Error::process_io)?, 0);
+            socket.write_all(reply).await.map_err(Error::process_io)?;
+            socket.shutdown().await.map_err(Error::process_io)?;
+            tokio::io::copy(&mut socket, &mut tokio::io::sink())
+                .await
+                .map_err(Error::process_io)?;
+            Ok::<_, Error>(())
+        });
+        let provider = NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?;
+        let operation = OperationId::new();
+        let result = provider
+            .exchange(
+                operation,
+                McpHttpRequest {
+                    endpoint: format!("{scheme}://{address}/mcp?opaque=query-marker"),
+                    method: method.into(),
+                    headers: Default::default(),
+                    body: Vec::new(),
+                    timeout_ms: None,
+                    maximum_response_bytes: Some(8192),
+                },
+            )
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(response) => response
+                .body
+                .try_collect::<Vec<_>>()
+                .await
+                .expect_err("body was cut off"),
+        };
+        if method == "POST" {
+            assert_eq!(error.operation_id(), Some(operation));
+            assert!(error.leaves_effect_uncertain());
+        } else {
+            assert!(!error.leaves_effect_uncertain());
+        }
+        assert!(!error.to_string().contains("query-marker"));
+        drop(provider);
+        server
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
+        Ok(error)
+    }
+
+    #[tokio::test]
+    async fn native_read_failures_keep_their_causes_without_authorizing_write_replay() -> Result<()>
+    {
+        use crate::wire::ErrorCode;
+        for (scheme, reply, code) in [
+            ("http", b"not an HTTP status\r\n\r\n".as_slice(), ErrorCode::Invalid),
+            ("https", b"not a TLS record\r\n\r\n".as_slice(), ErrorCode::Unauthorized),
+            ("http", b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1024\r\nConnection: close\r\n\r\ndata: {".as_slice(), ErrorCode::Unavailable),
+        ] {
+            for method in ["GET", "POST"] {
+                let error = failed_exchange(scheme, method, reply).await?;
+                assert_eq!(error.code(), if method == "GET" { code } else { ErrorCode::Indeterminate });
+                let mut cause: &(dyn std::error::Error + 'static) = &error;
+                loop {
+                    if let Some(cause) = cause.downcast_ref::<reqwest::Error>() {
+                        assert!(cause.url().is_none(), "transport URL must not enter diagnostics");
+                        break;
+                    }
+                    cause = cause.source().expect("original reqwest cause retained");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -459,7 +664,10 @@ mod tests {
                 };
                 assert_eq!(result?.content, [rmcp::model::ContentBlock::text(expected)]);
             } else {
-                assert!(matches!(result, Err(Error::Indeterminate(_))));
+                let error = result.expect_err("the original POST reply was lost");
+                assert_eq!(error.code(), crate::wire::ErrorCode::Indeterminate);
+                assert_eq!(error.operation_id(), Some(operation));
+                assert!(error.leaves_effect_uncertain());
             }
         }
         Ok(())

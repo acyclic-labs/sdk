@@ -446,7 +446,9 @@ where
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
         let maximum_bytes = turns.limits.maximum_bytes;
-        let model = turns.executors.model_selection();
+        // A composition that cannot serve the root role's model is refused
+        // here, before any root records it.
+        let model = turns.executors.model_selection().map_err(turn)?;
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
         let turner = FilesystemTurnHost::new(

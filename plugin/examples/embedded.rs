@@ -27,7 +27,9 @@ async fn receive(conversation: Arc<Conversation>, operation: &str, prompt: &str)
     let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(operation, prompt).await?;
     match conversation.settle(operation, inbox, &mut events).await? {
-        Settlement::Reply(Reply::Answered { entry, .. }) => conversation.output_text(&entry).await,
+        Settlement::Reply(Reply::Answered {
+            sequence, entry, ..
+        }) => conversation.output_text_at(sequence, &entry).await,
         Settlement::Reply(_) => Err(Error::Conflict(conversation.dropped().await?)),
         Settlement::Ended(reason) => Err(Error::Conflict(reason)),
         Settlement::Approval { .. } => Err(Error::Unsupported(

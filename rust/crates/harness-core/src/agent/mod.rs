@@ -67,6 +67,7 @@ mod settled;
 mod ui_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use settled::SELECTED_IDENTITIES;
+pub(crate) use settled::snapshot as observed_settlement;
 pub use settled::{Settlement, TurnChildren, answer, settled};
 pub(crate) use settled::{named_child, select_children};
 pub(crate) mod spawn_names;

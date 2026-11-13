@@ -58,11 +58,9 @@ pub(super) async fn delay(duration: std::time::Duration) -> crate::Result<()> {
     Ok(())
 }
 
-/// The platform's monotonic clock, `performance.now()`, in the realm's own origin. A realm
-/// without it falls back to the wall clock, which still only grows in practice.
-pub(super) fn now() -> std::time::Duration {
+fn performance_millis() -> Option<f64> {
     let global = js_sys::global();
-    let millis = Reflect::get(&global, &JsValue::from_str("performance"))
+    Reflect::get(&global, &JsValue::from_str("performance"))
         .ok()
         .and_then(|performance| {
             let now = Reflect::get(&performance, &JsValue::from_str("now"))
@@ -71,7 +69,17 @@ pub(super) fn now() -> std::time::Duration {
                 .ok()?;
             now.call0(&performance).ok()?.as_f64()
         })
-        .unwrap_or_else(js_sys::Date::now);
+}
+
+/// Span coordinates must never substitute a wall clock for a monotonic one.
+pub(super) fn monotonic_now() -> Option<std::time::Duration> {
+    std::time::Duration::try_from_secs_f64(performance_millis()? / 1000.0).ok()
+}
+
+/// Original timer clock, with the existing wall-clock fallback for realms
+/// without `performance.now`. Span capture uses `monotonic_now` instead.
+pub(super) fn now() -> std::time::Duration {
+    let millis = performance_millis().unwrap_or_else(js_sys::Date::now);
     // `max` maps NaN to zero and `min` keeps the conversion finite.
     std::time::Duration::from_secs_f64(millis.max(0.0).min(1e15) / 1000.0)
 }

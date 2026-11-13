@@ -54,6 +54,8 @@ pub(crate) enum InternalContentClass {
     ToolResult,
     /// Files and streams published by the tool-output writer.
     ToolOutput,
+    /// Original model text, shared by replay and live output observation.
+    ModelText,
     /// Settled turn outputs, inherited by an agent's forks.
     Conversation,
     /// Compaction summaries, which the agent's own model provider reads back.
@@ -66,7 +68,18 @@ impl InternalContentClass {
         path: &str,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if class.is_none_or(|class| class.contains_path(path)) {
+        let permitted = match class {
+            Some(class) => class.contains_path(path),
+            None => {
+                path != ".system"
+                    && !path.starts_with(".system/")
+                    && path != "tools/.results"
+                    && !path.starts_with(Self::ToolResult.prefix())
+                    && path != "tools/.model"
+                    && !path.starts_with(Self::ModelText.prefix())
+            }
+        };
+        if permitted {
             Ok(())
         } else {
             Err(crate::executor::stock_boundary(
@@ -87,6 +100,7 @@ impl InternalContentClass {
             Self::Execution => ".system/execution/",
             Self::ToolResult => "tools/.results/",
             Self::ToolOutput => "tools/",
+            Self::ModelText => "tools/.model/",
             Self::Conversation => ".system/inherited-conversation/",
             Self::Summary => ".system/summaries/",
         }

@@ -506,11 +506,7 @@ impl WasmAgentServer {
         credential: Bytes,
     ) -> std::result::Result<Vec<u8>, JsValue> {
         self.client(credential)?
-            .actor_call(
-                &invocation,
-                0,
-                acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
-            )
+            .actor_call(&invocation, 0, None)
             .await
             .map(|reply| Vec::from(reply.as_ref()))
             .map_err(stream_error)

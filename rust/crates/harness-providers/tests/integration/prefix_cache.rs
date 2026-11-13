@@ -163,6 +163,13 @@ fn text(answer: &str) -> Step {
     }
 }
 
+/// The stock feedback plugin asks for a retrospective after every settled
+/// answer. Its reply sits in the script right after that answer, so it can
+/// never consume another agent's next action.
+fn retrospective() -> Step {
+    text("none")
+}
+
 fn program(id: &str, code: &str) -> Step {
     call(id, "code", json!({ "code": code }))
 }
@@ -198,6 +205,9 @@ impl Changing {
 }
 
 impl TurnExecutors for Changing {
+    fn model_selection(&self) -> acyclic_harness::Result<Option<String>> {
+        self.current().model_selection()
+    }
     fn content_limits(&self) -> Limits {
         self.current().content_limits()
     }
@@ -258,13 +268,18 @@ fn executors(
         ..Bindings::default()
     }
     .build()?;
+    // Role policy wins at admission: the fixture catalog serves the shipped
+    // role models with this one recorded binding.
+    let binding: acyclic_harness::model::ModelBinding = (model.model().clone(), model);
+    let models = acyclic_harness::test_support::role_models(binding.clone())?;
     Ok(Arc::new(
         acyclic_harness::filesystem::StockExecutors::new(
-            (model.model().clone(), model),
+            binding,
             tools,
             (limits, CompactionPolicy::Capacity(CapacityCompaction {})),
             Arc::new(Tasks(bindings)),
         )
+        .with_models(Arc::new(models))
         .with_agent_tools(&selected)
         .with_templates(),
     ))
@@ -452,8 +467,10 @@ async fn run(
                 // Turn 1: a tool call and its continuation.
                 program("call-1", "1 + 1"),
                 text("one"),
+                retrospective(),
                 // Turn 2: a waking notice.
                 text("noticed"),
+                retrospective(),
                 // Turn 3: the tool table changed; the parent forks a child.
                 call(
                     "call-2",
@@ -461,9 +478,11 @@ async fn run(
                     json!({"task":"Count to two","name":"kid","role":"worker"}),
                 ),
                 text("spawned"),
+                retrospective(),
                 // The child continues from the fork with its own tool call.
                 program("call-3", "2 + 2"),
                 text("kid done"),
+                retrospective(),
                 // Asked again, the child forks a grandchild.
                 call(
                     "call-4",
@@ -471,6 +490,7 @@ async fn run(
                     json!({"task":"Count to three","name":"grandkid","role":"worker"}),
                 ),
                 text("spawned again"),
+                retrospective(),
             ]),
             Vec::new(),
         )),
@@ -549,12 +569,25 @@ async fn run(
     // A fork with the same directive preserves the entire admitted prefix.
     // Use the same real template reader as production, with a home override.
     let root_template = acyclic_harness::seed::file("templates/orchestrator/AGENT.md").unwrap();
+    // Rewrite the context by its key: a shipped template change must fail
+    // here, not silently leave the child without a fork.
+    let mut forked = false;
     let child_template = std::str::from_utf8(root_template)?
-        .replace("context: top_level", "context: fork")
         .lines()
         .filter(|line| !line.starts_with("allowed_tools:"))
+        .map(|line| {
+            if line.starts_with("context:") {
+                forked = true;
+                "context: fork"
+            } else {
+                line
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
+    if !forked {
+        return Err("the shipped orchestrator template declares no context".into());
+    }
     let set_template = |agent: AgentPath| {
         let filesystem = filesystem.clone();
         let provider = &provider;
@@ -655,11 +688,10 @@ async fn run(
         )
         .await?;
     agents.drain(&child).await?;
-    let grandchild = agents
-        .resolve_spawn_name(&child, "grandkid")
-        .await?
-        .live()
-        .ok_or("missing grandkid")?;
+    let Some(grandchild) = agents.resolve_spawn_name(&child, "grandkid").await?.live() else {
+        let state = agents.state(&child).await?;
+        return Err(format!("missing grandkid; child phase {:?}", state.phase).into());
+    };
     transport.label("grandchild");
     agents.drain(&grandchild).await?;
     transport.label("child");
@@ -680,12 +712,13 @@ async fn run(
     // overflow remains reachable when no count request is necessary.
     let pressure = "x".repeat(CONTEXT_TOKENS as usize * 3 / 5);
     for name in ["m12", "m13"] {
-        transport
-            .state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .1
-            .extend([program(name, "3 + 3"), text("filled")]);
+        let start = {
+            let mut state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
+            state
+                .1
+                .extend([program(name, "3 + 3"), text("filled"), retrospective()]);
+            state.2.len()
+        };
         let acyclic_harness::agent::Delivered::Committed { inbox } = agents
             .send(&root, &user(), &message(&root, name, &pressure).await?)
             .await?
@@ -710,7 +743,9 @@ async fn run(
             }
         }
         let state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
-        let reported = &state.2[state.2.len() - 2..];
+        // The turn's call, its answer and the settlement's retrospective.
+        let reported = &state.2[start..];
+        assert_eq!(reported.len(), 3, "{family}: pressure turn requests");
         assert_eq!(
             observed.len(),
             reported.len(),
@@ -759,7 +794,14 @@ async fn run(
     let (parent, child, grandchild) = (bodies("parent"), bodies("child"), bodies("grandchild"));
     assert!(parent.len() >= 5, "{family}: parent sent {}", parent.len());
     assert!(child.len() >= 4, "{family}: child sent {}", child.len());
-    assert_eq!(grandchild.len(), 1, "{family}: grandchild requests");
+    // The grandchild's answer and its settlement's retrospective.
+    assert_eq!(grandchild.len(), 2, "{family}: grandchild requests");
+    extends(
+        family,
+        "grandchild retrospective",
+        grandchild[0],
+        grandchild[1],
+    )?;
     // The window advances only at its page cut: exactly one request starts
     // a new prefix, and every other one extends the request before it.
     let mut cut = None;
@@ -781,8 +823,9 @@ async fn run(
         "{family}: nothing follows the page cut"
     );
     // The child forks the parent's settled conversation: the turn before the
-    // spawning one, whose last request was the parent's third.
-    extends(family, "child request 0", parent[2], child[0])?;
+    // spawning one, whose last request was its retrospective, the parent's
+    // fifth (two turns of an answer and a retrospective, after one tool call).
+    extends(family, "child request 0", parent[4], child[0])?;
     for (index, pair) in child.windows(2).enumerate() {
         extends(
             family,
@@ -792,8 +835,9 @@ async fn run(
         )?;
     }
     // The grandchild forks the child's settled first turn, whose last request
-    // was the child's second, and keeps the child's directive where it was.
-    extends(family, "grandchild request 0", child[1], grandchild[0])?;
+    // was its retrospective, the child's third, and keeps the child's
+    // directive where it was.
+    extends(family, "grandchild request 0", child[2], grandchild[0])?;
     // R44 negative controls mutate valid semantic prefix fields in the actual
     // second request. The same byte-extension guard must reject every change.
     let later: Value = serde_json::from_slice(parent[1])?;
@@ -844,7 +888,7 @@ async fn run(
     assert!(departure(b"{\"messages\":[]}", parent[1]).is_some());
 
     let tight: Vec<&Bytes> = tight.iter().map(|sent| &sent.body).collect();
-    let [near, before, evicted, continued] = tight[..] else {
+    let [near, before, retrospect, evicted, continued, last] = tight[..] else {
         return Err(format!("{family}: {} requests near the window", tight.len()).into());
     };
     // Within the window nothing is evicted.
@@ -853,6 +897,19 @@ async fn run(
         "{family}: evicted within the window"
     );
     extends(family, "the step near the window", near, before)?;
+    // Each retrospective extends its settled answer in place.
+    extends(
+        family,
+        "the retrospective near the window",
+        before,
+        retrospect,
+    )?;
+    extends(
+        family,
+        "the retrospective after the backstop",
+        continued,
+        last,
+    )?;
     // The backstop replaces the oldest messages with its marker: the bytes
     // before the message array stay cached, and the turn's next step extends
     // the evicted request.

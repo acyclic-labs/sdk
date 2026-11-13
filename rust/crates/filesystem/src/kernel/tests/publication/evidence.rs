@@ -25,7 +25,7 @@ fn publication_payload_keeps_original_credit_until_the_last_retained_bytes_drop(
             WorkBudget::UNBOUNDED,
             &cancel,
         );
-        prepare_publication_commit(request, None, None, None, &mut accounting, &cancel)?
+        prepare_publication_commit(request, None, None, (None, None), &mut accounting, &cancel)?
     };
     let retained = ledger.live_bytes();
     assert!(retained >= commit.payload.len() as u64);
@@ -121,7 +121,7 @@ async fn evidence_fixture() -> TestResult<(
         request,
         None,
         None,
-        None,
+        (None, None),
         &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
         &cancellation,
     )?;
@@ -210,7 +210,7 @@ async fn publication_evidence_codec_preserves_the_complete_sealed_root_reference
         request,
         None,
         None,
-        None,
+        (None, None),
         &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel),
         &cancel,
     )?;

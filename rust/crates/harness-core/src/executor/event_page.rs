@@ -1,6 +1,21 @@
 //! Bounded projections of the original authenticated execution journal.
 use super::*;
 
+/// Latest authenticated activity at one execution's observed stream tail.
+/// This is metadata only; no private request, tool arguments or output is exposed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionActivity {
+    /// Original one-based journal position.
+    pub sequence: u64,
+    /// Zero-based executor step, absent before the first step starts.
+    pub step: Option<u32>,
+    /// Original publication time, absent when the source supplies no timestamp.
+    pub committed_at_micros: Option<u64>,
+    /// Age at observation on the owning host's clock, never a guessed timestamp.
+    pub age_ms: Option<u64>,
+}
+
 /// Eight maximum-sized source records leave space for the reply envelope.
 /// This is a page size, never an execution or history limit.
 pub const EXECUTION_EVENT_PAGE_RECORDS: u32 = 8;

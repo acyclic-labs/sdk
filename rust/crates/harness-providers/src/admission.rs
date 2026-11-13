@@ -60,6 +60,7 @@ impl Endpoints {
 /// Original gate observations followed by the value they admitted.
 pub(crate) enum Event<T> {
     Wait(ModelWait),
+    Trace(acyclic_stream::trace::TraceRecord),
     Ready(T),
 }
 
@@ -81,15 +82,27 @@ pub(crate) fn send<'a>(
         let mut permit = loop {
             match admission.next().await {
                 Some(Ok(Event::Wait(wait))) => yield Event::Wait(wait),
+                Some(Ok(Event::Trace(record))) => yield Event::Trace(record),
                 Some(Ok(Event::Ready(permit))) => break permit,
                 Some(Err(error)) => Err(error)?,
                 None => Err(crate::invalid("endpoint admission ended without a permit"))?,
             }
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let trace_custody = work.map(|work| work.claim(
+            (crate::http::phase::NAME.len() + crate::http::phase::GUARANTEE.len()) as u64,
+            2, acyclic_fs::WorkCounters::UNCHARGED,
+        )).transpose()?;
+        let phase = crate::http::phase::HeadersPhase::new();
+        if let Some(phase) = &phase { yield Event::Trace(phase.started()); }
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(trace_custody);
         let response = crate::http::send(transport, request, work)?.await?;
+        let finished = phase.as_ref().and_then(crate::http::phase::HeadersPhase::finished);
         if permit.observe(response.status, response.retry_after, transport.now()) {
             *held = Some(permit);
         }
+        if let Some(finished) = finished { yield Event::Trace(finished); }
         yield Event::Ready(response);
     }
 }

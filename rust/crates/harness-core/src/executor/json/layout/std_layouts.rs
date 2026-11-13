@@ -79,6 +79,65 @@ static VALUE: JsonLayout = JsonLayout::Node {
 impl HeapLayout for Value {
     const LAYOUT: &'static JsonLayout = &VALUE;
 }
+
+// The stream owns the span schema; the bounded decoder describes only the
+// fixed records, tagged-enum scratch and shared path storage it allocates.
+impl HeapLayout for acyclic_stream::trace::TraceRecord {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::Node {
+        seq: Some(Alloc::INLINE),
+        map: Some(Alloc::INLINE),
+        tagged: true,
+        fields: &[("version", &JsonLayout::Scalar), ("span", &TRACE_SPAN)],
+        elements: &[],
+        flatten: &[],
+    };
+}
+static TRACE_SPAN_ID: JsonLayout = JsonLayout::Node {
+    seq: Some(Alloc::INLINE),
+    map: Some(Alloc::INLINE),
+    tagged: false,
+    fields: &[("process", <[u8; 16]>::LAYOUT), ("sequence", u64::LAYOUT)],
+    elements: &[],
+    flatten: &[],
+};
+static TRACE_CAUSE: JsonLayout = JsonLayout::Node {
+    seq: Some(Alloc::INLINE),
+    map: Some(Alloc::INLINE),
+    tagged: false,
+    fields: &[
+        ("commit_id", <[u8; 32]>::LAYOUT),
+        ("path", <Arc<str>>::LAYOUT),
+        ("sequence", u64::LAYOUT),
+    ],
+    elements: &[],
+    flatten: &[],
+};
+static TRACE_OUTCOME: JsonLayout = JsonLayout::Node {
+    seq: Some(Alloc::INLINE),
+    map: Some(Alloc::INLINE),
+    tagged: true,
+    fields: &[("outcome", &JsonLayout::Scalar), ("cause", &TRACE_CAUSE)],
+    elements: &[],
+    flatten: &[],
+};
+static TRACE_SPAN: JsonLayout = JsonLayout::Node {
+    seq: Some(Alloc::INLINE),
+    map: Some(Alloc::INLINE),
+    tagged: true,
+    fields: &[
+        ("event", &JsonLayout::Scalar),
+        ("id", &TRACE_SPAN_ID),
+        ("parent", &TRACE_SPAN_ID),
+        ("name", String::LAYOUT),
+        ("mechanism", &JsonLayout::Scalar),
+        ("at_ns", u64::LAYOUT),
+        ("guarantee", String::LAYOUT),
+        ("bytes", u64::LAYOUT),
+        ("result", &TRACE_OUTCOME),
+    ],
+    elements: &[],
+    flatten: &[],
+};
 impl HeapLayout for serde_json::Map<String, Value> {
     const LAYOUT: &'static JsonLayout = &VALUE;
 }

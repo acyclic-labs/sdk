@@ -529,7 +529,35 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
     let operation = OperationId::new();
     initialize(&journal, operation).await?;
     let payload = "x".repeat(4 * 1024 * 1024);
-    let file = crate::executor::stage_json(&journal, operation, "range", &payload, None).await?;
+    let content = ModelEvent::Content { delta: payload };
+    crate::executor::append_model_event(
+        &journal,
+        operation,
+        &format!("model-live:{operation}:model:0:0"),
+        (0, ModelPurpose::Response),
+        &content,
+        None,
+        None,
+    )
+    .await?;
+    let ModelEvent::Content { delta: payload } = content else {
+        unreachable!()
+    };
+    let records = journal.records(operation, 0, 8, None).await?;
+    let Some(ExecutionRecord {
+        event: ExecutionEvent::Model { event: file, .. },
+        ..
+    }) = records.last()
+    else {
+        return Err(Error::Storage(
+            "original model observation is absent".into(),
+        ));
+    };
+    let file = file.clone();
+    assert!(
+        file.path()
+            .starts_with(InternalContentClass::ModelText.prefix())
+    );
     let stop = acyclic_fs::CancellationToken::new();
     let range = acyclic_fs::ByteRange {
         offset: 65530,
@@ -812,11 +840,9 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         model: "inline",
         agent_path: None,
         sampling: Default::default(),
-        #[cfg(feature = "research")]
         provider_request_id: None,
         #[cfg(feature = "research")]
         system_fingerprint: None,
-        #[cfg(feature = "research")]
         ttft_ns: None,
         #[cfg(feature = "research")]
         cache: None,
@@ -1159,6 +1185,33 @@ async fn private_payloads_reject_inline_bodies_at_every_append_entry_point() -> 
                 .is_err()
         );
     }
+    for (index, (media, bytes)) in [
+        ("text/vnd.acyclic.model-content.v1", b"\xff".as_slice()),
+        (
+            "text/vnd.acyclic.model-restarted.v1",
+            b"not empty".as_slice(),
+        ),
+        ("text/plain", b"untyped event".as_slice()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = journal
+            .stage(operation, &format!("invalid:{index}"), bytes, media, None)?
+            .await?;
+        let invalid = ExecutionEvent::Model {
+            step: 0,
+            purpose: ModelPurpose::Response,
+            event: file,
+            usage: None,
+        };
+        assert!(
+            journal
+                .append_if_tail(operation, 2, &format!("invalid:{index}"), &invalid, None)?
+                .await
+                .is_err()
+        );
+    }
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
     Ok(())
 }
@@ -1223,6 +1276,41 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
     }
     journal.scope = original;
     assert!(journal.records(operation, 0, 64, None).await.is_ok());
+    for (index, event) in [
+        ModelEvent::Reasoning {
+            delta: "thought π".into(),
+        },
+        ModelEvent::Restarted,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            &format!("model-live:{operation}:model:0:{}", index + 1),
+            (0, ModelPurpose::Response),
+            &event,
+            None,
+            None,
+        )
+        .await?;
+        let records = journal.records(operation, 0, 64, None).await?;
+        let Some(ExecutionRecord {
+            event: ExecutionEvent::Model { event: file, .. },
+            ..
+        }) = records.last()
+        else {
+            return Err(Error::Storage(
+                "original model observation is absent".into(),
+            ));
+        };
+        let bytes = journal.load(file, None)?.await?;
+        assert_eq!(
+            crate::executor::decode_model_payload(file.descriptor().media_type(), &bytes, None)?,
+            event,
+        );
+    }
     original_issuer.revoke_workload(&journal.scope)?;
     assert!(matches!(
         journal.records(operation, 0, 64, None).await,
@@ -1232,7 +1320,7 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
         crate::executor::append_model_event(
             &journal,
             operation,
-            "model:0:1",
+            "model:0:3",
             (0, ModelPurpose::Response),
             &events().remove(0),
             None,

@@ -524,46 +524,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         ContentChange::CreateAbsent { bytes, .. } => {
                             // Creating parent directories is itself conditional
                             // on the policy at the same cut, before any commit.
-                            if let Some((parent, _)) = change.path().rsplit_once('/') {
-                                let mut candidate = parent;
-                                loop {
-                                    let prefix = &absolute[..candidate.len() + 1];
-                                    match io.sdk_if_present(
-                                        selected.stat(prefix, io, io.cancellation()).await,
-                                    )? {
-                                        Some(_) => break,
-                                        None => {
-                                            access::require(
-                                                &view.0,
-                                                Action::Create,
-                                                candidate,
-                                                io,
-                                            )?;
-                                            if let Some(root_view) = &root_view {
-                                                access::require(
-                                                    &root_view.0,
-                                                    Action::Create,
-                                                    candidate,
-                                                    io,
-                                                )?;
-                                            }
-                                            if let Some(check) = check {
-                                                check(Action::Create, candidate)?;
-                                            }
-                                        }
-                                    }
-                                    if let Some((parent, _)) = candidate.rsplit_once('/') {
-                                        candidate = parent;
-                                    } else {
-                                        break;
-                                    }
-                                }
+                            if change.path().contains('/') {
                                 let (parent, _) = absolute
                                     .rsplit_once('/')
                                     .ok_or_else(|| io.invalid("missing parent"))?;
                                 io.sdk(
                                     transaction
-                                        .create_dir_all(parent, io, io.cancellation())
+                                        .create_dir_all_checked(
+                                            parent,
+                                            io,
+                                            io.cancellation(),
+                                            |prefix| {
+                                                let candidate = prefix.trim_start_matches('/');
+                                                access::require(
+                                                    &view.0,
+                                                    Action::Create,
+                                                    candidate,
+                                                    io,
+                                                )?;
+                                                if let Some(root_view) = &root_view {
+                                                    access::require(
+                                                        &root_view.0,
+                                                        Action::Create,
+                                                        candidate,
+                                                        io,
+                                                    )?;
+                                                }
+                                                if let Some(check) = check {
+                                                    check(Action::Create, candidate)?;
+                                                }
+                                                Ok::<_, Error>(())
+                                            },
+                                        )
                                         .await,
                                 )?;
                             }

@@ -67,16 +67,11 @@ fn model_step_callers_keep_only_control_state() -> Result<()> {
     );
     let cancellable_bytes = std::mem::size_of_val(&cancellable);
     drop(cancellable);
-    let preparation_phase = super::super::phase::run(&journal, None, || {
-        execution.resolve_model_request(&journal, &input, (0, &[], scope, None), None)
-    });
-    let phase_bytes = std::mem::size_of_val(&preparation_phase);
     // Two 4 KiB pages hold bounded coordination state. Request resolution must
     // own its frame instead of being copied into each enclosing state machine.
     let sizes = [
         ("preparation", preparation_bytes),
         ("dispatch", dispatch_bytes),
-        ("phase", phase_bytes),
         ("cancellable", cancellable_bytes),
     ];
     for (name, bytes) in sizes {

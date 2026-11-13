@@ -11,7 +11,7 @@ use acyclic_harness::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{PRIVATE_VOLUME, TurnLimits},
     hosting::{Placement, RootRequest, VerifiedCaller},
-    model::{Model, ModelDispatch, ModelProvider, PreparedModelRequest},
+    model::{ModelDispatch, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     server::{self, Actors, Execution, ServerConfig},
 };
@@ -211,7 +211,11 @@ fn composition_at(
         Execution {
             models: None,
             model: (
-                Model::new("conformance".into(), "scripted".into(), "1".into())?,
+                acyclic_harness_core::model::Model::new(
+                    "fixture".into(),
+                    "test".into(),
+                    "1".into(),
+                )?,
                 model,
             ),
             limits: Limits::default(),
@@ -295,9 +299,9 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     // Fetch and session ingress attach the same command to the actual wire
     // publication, including every selected routing and deployment field.
     assert_eq!(binding.prepare(&command)?.invocations(), [routed.clone()]);
-    clients[0].actor_call(&routed, 0, 1 << 20).await?;
+    clients[0].actor_call(&routed, 0, Some(1 << 20)).await?;
     assert!(matches!(
-        clients[1].actor_call(&routed, 0, 1 << 20).await,
+        clients[1].actor_call(&routed, 0, Some(1 << 20)).await,
         Err(error) if error.category() == StreamError::AccessDenied
     ));
     for field in ["account", "namespace"] {

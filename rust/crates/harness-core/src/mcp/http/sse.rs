@@ -36,6 +36,16 @@ pub(super) async fn notifications(
     );
     futures::pin_mut!(frames);
     while let Some(frame) = frames.next().await {
+        let frame = frame.map_err(|error| match error {
+            Error::ModelUnavailable {
+                failure: crate::ModelTransportFailure::Interrupted,
+                ..
+            } => Error::Boundary {
+                code: crate::wire::ErrorCode::Unavailable,
+                reason: "MCP notification event was interrupted",
+            },
+            error => error,
+        });
         if let Some(value) = decode(frame, operation)? {
             notification(&value, None)?;
             tools_changed(&value, generation);

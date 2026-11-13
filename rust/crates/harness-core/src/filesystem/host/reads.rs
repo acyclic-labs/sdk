@@ -835,27 +835,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 }
 // Only the selected user path is classified here. Metadata, backing storage,
 // cancellation and accounting failures retain their original terminal cause.
-fn path_read_refusal(error: Error) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Error::NativeWorkspace { source, .. } = &error {
-        let (code, reason) = match source.as_ref() {
-            WorkspaceError::NotFound => (
-                crate::wire::ErrorCode::NotFound,
-                crate::conversation::SELECTED_FILE_MISSING,
-            ),
-            WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
-                crate::wire::ErrorCode::Invalid,
-                "selected path is not a regular file",
-            ),
-            WorkspaceError::ReadLimitExceeded => (
-                crate::wire::ErrorCode::Invalid,
-                "selected file exceeds the admitted read bound",
-            ),
-            _ => return error,
-        };
-        return Error::ToolRejected { code, reason };
-    }
-    error
+fn path_read_refusal(error: WorkspaceError) -> Error {
+    let (code, reason) = match error {
+        WorkspaceError::NotFound => (
+            crate::wire::ErrorCode::NotFound,
+            crate::conversation::SELECTED_FILE_MISSING,
+        ),
+        WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
+            crate::wire::ErrorCode::Invalid,
+            "selected path is not a regular file",
+        ),
+        WorkspaceError::ReadLimitExceeded => (
+            crate::wire::ErrorCode::Invalid,
+            "selected file exceeds the admitted read bound",
+        ),
+        error => return error.into(),
+    };
+    Error::ToolRejected { code, reason }
 }
 
 // An absent application policy reads the immutable file's own extent through
@@ -878,10 +874,7 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     io.retain_read_bytes(bytes)
 }
 
-pub(in crate::filesystem) async fn read_generation_if_present<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
+async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: Option<u64>,

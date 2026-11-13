@@ -57,6 +57,8 @@ pub struct McpHttpResponse {
 /// Platform I/O for admitted HTTP operations.
 pub trait McpHttpProvider: acyclic_stream::ProviderPlatform {
     /// Performs one exchange with the original selected policies.
+    /// A read's positively classified transient transport failure is Unavailable;
+    /// other read failures are terminal. Possible write effects retain their uncertainty.
     fn exchange<'a>(
         &'a self,
         operation: OperationId,
@@ -84,11 +86,14 @@ pub struct HttpMcpTransport {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct NotificationWatch(tokio::task::JoinHandle<()>);
+struct NotificationWatch {
+    task: tokio::task::JoinHandle<()>,
+    failure: Arc<std::sync::OnceLock<(OperationId, Arc<Error>)>>,
+}
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for NotificationWatch {
     fn drop(&mut self) {
-        self.0.abort();
+        self.task.abort();
     }
 }
 
@@ -117,6 +122,14 @@ impl HttpMcpTransport {
         operation: OperationId,
         cursor: Option<String>,
     ) -> Result<rmcp::model::ListToolsResult> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((operation, error)) = self
+            .notifications
+            .as_ref()
+            .and_then(|watch| watch.failure.get())
+        {
+            return Err(Error::shared_for_request(error.clone(), *operation));
+        }
         let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}));
         let request = self.request("POST", request(operation, "tools/list", params)?)?;
         let response = self.provider.exchange(operation, request).await?;
@@ -180,52 +193,103 @@ impl HttpMcpTransport {
         let request = self.request("GET", Vec::new())?;
         let provider = self.provider.clone();
         let generation = self.tools_generation.clone();
-        self.notifications = Some(Arc::new(NotificationWatch(tokio::spawn(async move {
-            let [a, b, c, d, ..] = OperationId::new().into_bytes();
-            let schedule = || {
-                acyclic_auth::operation::Backoff::new(100, 5_000, u32::from_le_bytes([a, b, c, d]))
-            };
-            let mut backoff = schedule();
-            loop {
-                let operation = OperationId::new();
-                let mut progressed = false;
-                let result = async {
-                    let response = provider.exchange(operation, request.clone()).await?;
-                    if response.status == 405 {
-                        return Ok(false);
-                    }
-                    if response.status != 200 {
-                        return Err(Error::Indeterminate(operation));
-                    }
-                    // Discovery may have refreshed during the disconnected
-                    // interval. Revalidate after subscribing to close that gap.
-                    generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    sse::notifications(
-                        response.body,
-                        operation,
-                        request.maximum_response_bytes,
-                        &generation,
-                        &mut progressed,
+        let failure = Arc::new(std::sync::OnceLock::new());
+        let terminal = failure.clone();
+        self.notifications = Some(Arc::new(NotificationWatch {
+            failure,
+            task: tokio::spawn(async move {
+                let [a, b, c, d, ..] = OperationId::new().into_bytes();
+                let schedule = || {
+                    acyclic_auth::operation::Backoff::new(
+                        100,
+                        5_000,
+                        u32::from_le_bytes([a, b, c, d]),
                     )
-                    .await?;
-                    Ok(true)
+                };
+                let mut backoff = schedule();
+                loop {
+                    let operation = OperationId::new();
+                    let mut progressed = false;
+                    let result = async {
+                        let response = provider.exchange(operation, request.clone()).await?;
+                        if response.status == 405 {
+                            return Ok(false);
+                        }
+                        match response.status {
+                            200 => {}
+                            408 | 425 | 429 | 500 | 502 | 503 | 504 => {
+                                return Err(Error::Boundary {
+                                    code: crate::wire::ErrorCode::Unavailable,
+                                    reason: "MCP notification endpoint temporarily unavailable",
+                                });
+                            }
+                            401 | 403 => {
+                                return Err(Error::Unauthorized(format!(
+                                    "MCP notifications refused HTTP {}",
+                                    response.status
+                                )));
+                            }
+                            404 | 410 => {
+                                return Err(Error::NotFound(format!(
+                                    "MCP notifications refused HTTP {}",
+                                    response.status
+                                )));
+                            }
+                            _ => {
+                                return Err(Error::Invalid(format!(
+                                    "MCP notification response HTTP {}",
+                                    response.status
+                                )));
+                            }
+                        }
+                        if response.headers.get("content-type").is_none_or(|value| {
+                            !value
+                                .split(';')
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .eq_ignore_ascii_case("text/event-stream")
+                        }) {
+                            return Err(Error::Invalid(
+                                "MCP notifications require an event stream".into(),
+                            ));
+                        }
+                        // Discovery may have refreshed during the disconnected
+                        // interval. Revalidate after subscribing to close that gap.
+                        generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                        sse::notifications(
+                            response.body,
+                            operation,
+                            request.maximum_response_bytes,
+                            &generation,
+                            &mut progressed,
+                        )
+                        .await?;
+                        Ok(true)
+                    }
+                    .await;
+                    match result {
+                        Ok(false) => return,
+                        Err(error) if error.code() != crate::wire::ErrorCode::Unavailable => {
+                            let _ = terminal.set((operation, Arc::new(error)));
+                            generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                            return;
+                        }
+                        Ok(true) | Err(_) => {}
+                    }
+                    if progressed {
+                        backoff = schedule();
+                    }
+                    // EOF is a disconnected notification transport too. Invalidate
+                    // before reconnecting so events lost across the gap are read.
+                    generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                        backoff.delay_ms(),
+                    )))
+                    .await;
                 }
-                .await;
-                if matches!(result, Ok(false)) {
-                    return;
-                }
-                if progressed {
-                    backoff = schedule();
-                }
-                // EOF is a disconnected notification transport too. Invalidate
-                // before reconnecting so events lost across the gap are read.
-                generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                tokio::time::sleep(std::time::Duration::from_millis(u64::from(
-                    backoff.delay_ms(),
-                )))
-                .await;
-            }
-        }))));
+            }),
+        }));
         Ok(())
     }
 

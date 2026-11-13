@@ -69,6 +69,15 @@ struct Slot {
     delivery_control: SyncMutex<DeliveryControl>,
 }
 
+impl Slot {
+    fn wake(&self) {
+        self.refresh.store(true, Ordering::Release);
+        if !self.unplaced.load(Ordering::Acquire) {
+            self.waker.wake_by_ref();
+        }
+    }
+}
+
 #[derive(Default)]
 struct DeliveryControl {
     paused: bool,
@@ -569,10 +578,39 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Request a delivery attempt, for example after a transient failure.
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
-            slot.refresh.store(true, Ordering::Release);
-            if !slot.unplaced.load(Ordering::Acquire) {
-                slot.waker.wake_by_ref();
-            }
+            slot.wake();
+        }
+    }
+
+    /// Notify a resident actor of the activation in a confirmed publication.
+    /// The direct producer and the activation follow share its committed cursor,
+    /// so a delayed copy cannot redeliver an input after its producer failed.
+    /// The caller must have included this actor's activation in the commit.
+    ///
+    /// # Errors
+    /// The receipt omits the actor's activation log append.
+    pub fn wake_committed(
+        &self,
+        actor: &ActorReference,
+        receipt: &acyclic_stream::CommitReceipt,
+    ) -> Result<(), Error> {
+        let path = self
+            .store
+            .scheduling_path(self.store.scheduling_shard(actor))?;
+        let append = receipt
+            .appends
+            .iter()
+            .find(|append| append.path == path)
+            .ok_or(Error::Invalid("receipt omits the actor activation"))?;
+        self.activate(actor, append.tail);
+        Ok(())
+    }
+
+    fn activate(&self, actor: &ActorReference, cursor: u64) {
+        if let Some(slot) = self.slot(actor)
+            && slot.entry.fetch_max(cursor, Ordering::AcqRel) < cursor
+        {
+            slot.wake();
         }
     }
 
@@ -1135,7 +1173,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     sources.push(watch.next(provider));
                 }
                 Event::External(outcome) => {
-                    outcome.result?;
+                    if let Err((actor, error)) = outcome.result {
+                        self.subscription_failed(&actor, &error);
+                        let error = Error::Stream(error);
+                        report(&actor, &error);
+                        failure.get_or_insert_with(|| Arc::new(error));
+                    }
                     if let Some(watch) = outcome.watch {
                         sources.push(watch.next(provider));
                     }
@@ -1392,6 +1435,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }));
                 }
             }
+        }
+    }
+
+    fn subscription_failed(&self, actor: &ActorReference, error: &StreamError) {
+        let signal = self.failures.signal(actor);
+        if let Some(slot) = self.slot(actor) {
+            slot.failure.get_or_init(|| Arc::clone(&signal));
+        }
+        let cause = Arc::new(DeliveryFailure {
+            message: format!("actor {actor:?}: {error}"),
+        });
+        signal.failed(actor, Arc::clone(&cause));
+        if let Some(slot) = self.slot(actor)
+            && let Some(owner) = slot.failure_owner.get()
+        {
+            slot.owner_failure
+                .get_or_init(|| self.failures.signal(owner))
+                .failed(actor, cause);
         }
     }
 

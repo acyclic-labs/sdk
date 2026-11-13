@@ -689,13 +689,17 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
 
 #[tokio::test]
 async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors() -> Result<()> {
-    for (same_error, exact_command, same_cwd) in [
-        (false, true, true),
-        (true, true, true),
-        (true, false, true),
-        (true, true, false),
+    for (name, failed, same_error, exact_command, same_cwd) in [
+        ("shell", true, false, true, true),
+        ("shell", true, true, true, true),
+        ("shell", true, true, false, true),
+        ("spawn", true, false, true, true),
+        ("spawn", true, true, true, true),
+        ("spawn", true, true, false, true),
+        ("spawn", false, true, true, true),
+        ("shell", true, true, true, false),
     ] {
-        let repeated = same_error && exact_command && same_cwd;
+        let repeated = failed && same_error && exact_command && same_cwd;
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let run = OperationId::new();
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([58; 16]));
@@ -726,8 +730,12 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                 run,
                 0,
                 call_id.clone(),
-                "shell".into(),
-                serde_json::json!({"command":command,"cwd":if same_cwd {"project".into()} else {format!("project-{index}")},"yield_time_ms":index + 1,"max_output_tokens":100 + index}),
+                name.into(),
+                if name == "shell" {
+                    serde_json::json!({"command":command,"cwd":if same_cwd {"project".into()} else {format!("project-{index}")},"yield_time_ms":index + 1,"max_output_tokens":100 + index})
+                } else {
+                    serde_json::json!({"role":command})
+                },
                 None,
             )?;
             let invocation = crate::executor::stage_json(
@@ -756,8 +764,20 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                     None,
                 )?
                 .await?;
-            let result = crate::tool::ToolResult {
-                value: serde_json::json!({"exit_code":1,"stdout":format!("unrelated output {index}"),"stderr":if same_error {"same failure".into()} else {format!("failure {index}")}}),
+            let result = if name != "shell" && failed {
+                crate::tools::rejected_input(Error::Invalid(if same_error {
+                    "same failure".into()
+                } else {
+                    format!("failure {index}")
+                }))
+            } else if !failed {
+                crate::tool::ToolResult {
+                    value: serde_json::json!({"agent":"child","error":null}),
+                }
+            } else {
+                crate::tool::ToolResult {
+                    value: serde_json::json!({"exit_code":1,"stdout":format!("unrelated output {index}"),"stderr":if same_error {"same failure".into()} else {format!("failure {index}")}}),
+                }
             };
             let result = crate::executor::stage_json(
                 &journal,
@@ -795,6 +815,10 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
             } else {
                 assert!(signal.is_none());
             }
+        }
+        if !failed {
+            assert!(queries.checkpoint().await?.is_none());
+            continue;
         }
         let cut = queries
             .checkpoint()

@@ -46,9 +46,9 @@ pub enum ConnectError {
     /// Endpoint URI was invalid or the TLS connection failed.
     #[error("invalid or unavailable Stream endpoint: {0}")]
     Endpoint(#[from] tonic::transport::Error),
-    /// The endpoint URI was representable but URL admission could not parse it.
+    /// Shared URL admission could not parse the endpoint.
     #[error("invalid Stream endpoint URL: {0}")]
-    EndpointUrl(#[source] url::ParseError),
+    EndpointUrl(#[source] acyclic_auth::credential::EndpointError),
     /// Endpoint violates the selected TLS or loopback transport policy.
     #[error("Stream endpoint violates the selected transport policy")]
     InsecureEndpoint,
@@ -267,11 +267,8 @@ impl Client {
         let authorization = authorization(bearer_token.as_ref())?;
         let admitted = acyclic_auth::credential::base_endpoint(endpoint.as_ref()).map_err(
             |error| match error {
-                acyclic_auth::credential::EndpointError::Parse(source) => {
-                    match acyclic_auth::channel::endpoint(endpoint.as_ref()) {
-                        Err(error) => ConnectError::Endpoint(error),
-                        Ok(_) => ConnectError::EndpointUrl(source),
-                    }
+                error @ acyclic_auth::credential::EndpointError::Parse(_) => {
+                    ConnectError::EndpointUrl(error)
                 }
                 _ => ConnectError::InsecureEndpoint,
             },

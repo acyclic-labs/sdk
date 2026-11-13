@@ -10,7 +10,7 @@ pub(super) type RetentionRequest = (
 /// Each value retires before its original funding, including on cancellation.
 pub(super) fn retention(
     epoch: u64,
-    objects: &[ObjectId],
+    scope: crate::PublicationScope<'_>,
     work: &mut KernelAccounting<'_>,
 ) -> Result<RetentionRequest, crate::FsError> {
     let root = Retained::<Vec<u8>>::allocate(super::Epoch::ROOT_BYTES, work)?;
@@ -18,8 +18,10 @@ pub(super) fn retention(
         value: super::Epoch::root_from(epoch, root.value),
         allocation: root.allocation,
     };
-    let mut references = Retained::<Vec<acyclic_objects::Digest>>::allocate(objects.len(), work)?;
-    references.value.extend(objects.iter().copied().map(blob));
+    let mut references = Retained::<Vec<acyclic_objects::Digest>>::allocate(scope.len(), work)?;
+    references
+        .value
+        .extend(scope.object_ids().copied().map(blob));
     Ok((root, references))
 }
 

@@ -279,7 +279,7 @@ impl StockExecution<'_> {
                     .io
                     .map(|io| io.guard_owned(key.capacity() as u64))
                     .transpose()?;
-                phase::run(journal, self.io, || async {
+                let append = crate::conversation::BoundedContentFuture::new(self.io, || async {
                     journal
                         .append(
                             input.operation_id,
@@ -288,8 +288,10 @@ impl StockExecution<'_> {
                             self.io,
                         )?
                         .await
-                })
-                .await?;
+                })?;
+                phase::PreparedPhase::new(journal, self.io)?
+                    .run(append)
+                    .await?;
                 if let Some(control) = journal.supervision().await? {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
@@ -574,6 +576,7 @@ impl StockExecution<'_> {
                 }
                 event @ (ModelEvent::Restarted
                 | ModelEvent::Wait(_)
+                | ModelEvent::Trace { .. }
                 | ModelEvent::Counted { .. }
                 | ModelEvent::Content { .. }
                 | ModelEvent::Reasoning { .. }) => {

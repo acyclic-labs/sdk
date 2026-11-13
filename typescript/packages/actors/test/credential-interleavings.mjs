@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { ActorsClient } from "../dist/client.js";
-import { credentialProvider } from "../dist/credential.js";
+import { credentialProvider } from "@acyclic-labs/auth/credential";
 
 // This scheduler executes the real shared provider path. Promise jobs run only
 // at explicit drain steps; all permutations of abort, settlement and two drains

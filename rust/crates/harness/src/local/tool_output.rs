@@ -1,8 +1,7 @@
 //! The live display of an agent's newest tool call or streaming model text,
 //! folded from the change records of its `tools/` directory: a call's
-//! `stdout/` and `stderr/` chunks, or a model dispatch's `reply/` (answer) or
-//! `reasoning/` chunks. The records are the one source: this is a projection
-//! of them, and a settled turn's entry replaces it.
+//! `stdout/` and `stderr/` chunks, or the original model observation's
+//! `reply/` (answer) and `reasoning/` text. A settled turn's entry replaces it.
 
 /// What the live display shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,7 +28,7 @@ pub(super) struct OutputTail {
     /// before it is drained, so a reopen reads only the newest call.
     replayed: Option<u64>,
     /// `tools/{turn}/{operation}` of the newest call, or
-    /// `tools/{turn}/{dispatch}/{reply|reasoning}` of the newest model text.
+    /// `tools/.model/{turn}/{dispatch}/{reply|reasoning}` of the newest model text.
     call: Option<String>,
     kind: LiveKind,
     text: String,
@@ -42,6 +41,7 @@ pub(super) struct Plan {
     end: u64,
     call: Option<String>,
     kind: LiveKind,
+    restarted: bool,
     /// Each chunk's path and whether it is stderr.
     pub(super) reads: Vec<(String, bool)>,
 }
@@ -68,11 +68,21 @@ impl OutputTail {
         let mut call = None;
         let mut kind = LiveKind::Output;
         let mut chunks = Vec::new();
+        let mut restarted = false;
         for (sequence, paths) in records {
             if sequence < self.next {
                 continue;
             }
             for path in paths {
+                if path.starts_with("tools/.model/") && path.contains("/restart/") {
+                    // The original restart observation ends the prior text
+                    // even while replaying several attempts in one page.
+                    call = Some(path);
+                    kind = LiveKind::Answer;
+                    restarted = true;
+                    chunks.clear();
+                    continue;
+                }
                 // A dispatch's answer and reasoning are separate displays:
                 // their owner includes the stream's own directory.
                 let model = |label: &str, kind| {
@@ -108,6 +118,7 @@ impl OutputTail {
             end,
             call,
             kind,
+            restarted,
             reads,
         })
     }
@@ -123,7 +134,7 @@ impl OutputTail {
             self.call = plan.call;
             self.kind = plan.kind;
         }
-        if switched || cut {
+        if switched || plan.restarted || cut {
             self.text.clear();
             self.split = Default::default();
         }
@@ -355,13 +366,30 @@ mod tests {
         let old = (0, paths(&["tools/t/attempt-a/reply/0000000000000000"]));
         absorb(&mut tail, vec![old], 1, 1, &[b"abandoned"]).unwrap();
         assert_eq!(tail.text(), "abandoned");
-        // LiveReply announces the new owner with an empty answer chunk.
-        let restarted = (1, paths(&["tools/t/attempt-b/reply/0000000000000000"]));
-        absorb(&mut tail, vec![restarted], 2, 2, &[b""]).unwrap();
+        let restarted = (1, paths(&["tools/.model/t/0/restart/1.txt"]));
+        absorb(&mut tail, vec![restarted], 2, 2, &[]).unwrap();
         assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, ""));
         let answer = (2, paths(&["tools/t/attempt-b/reply/0000000000000001"]));
         absorb(&mut tail, vec![answer], 3, 3, &[b"answer"]).unwrap();
         assert_eq!(tail.text(), "answer");
+        let mut reopened = OutputTail::default();
+        let same = "tools/.model/t/0/reply/";
+        let records = vec![
+            (0, paths(&[&format!("{same}0.txt")])),
+            (1, paths(&["tools/.model/t/0/restart/1.txt"])),
+            (2, paths(&[&format!("{same}2.txt")])),
+        ];
+        assert_eq!(
+            absorb(&mut reopened, records, 3, 3, &[b"answer"]),
+            Some(vec![format!("{same}2.txt")])
+        );
+        assert_eq!(reopened.text(), "answer");
+        let records = vec![
+            (3, paths(&["tools/.model/t/0/restart/3.txt"])),
+            (4, paths(&[&format!("{same}4.txt")])),
+        ];
+        absorb(&mut reopened, records, 5, 5, &[b"fresh"]).unwrap();
+        assert_eq!(reopened.text(), "fresh");
     }
 
     #[test]

@@ -11,6 +11,134 @@ use crate::{
 mod prefix_tests;
 
 #[tokio::test]
+async fn child_activity_uses_host_custody_without_rebinding_workload_identity() -> Result<()> {
+    use crate::executor::ExecutionJournal as _;
+    let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([195; 16]));
+    let child = parent
+        .child(&crate::agent::AgentId::from_bytes([196; 16]))
+        .map_err(Error::from)?;
+    let provider = ProviderRef::new(
+        "activity-admission".into(),
+        "filesystem".into(),
+        "2".into(),
+        &mut None,
+    )?;
+    let parent_volume = private_volume(provider.clone(), &parent.id())?;
+    let child_volume = private_volume(provider.clone(), &child.id())?;
+    let journal_volume = crate::conversation::journal_volume(provider.clone(), &child.id())?;
+    let host =
+        FilesystemHost::<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>::new(
+            acyclic_fs::Fs::memory(),
+            &provider,
+            None,
+        )?;
+    for volume in [&parent_volume, &child_volume, &journal_volume] {
+        host.create_volume(volume).await?;
+    }
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: parent.id().to_string(),
+    };
+    let root = AuthorityRoot::new("activity-admission", [197; 32], audience.clone());
+    let workload_grants = Capabilities::new([
+        parent_volume.capability(VolumeOperation::Read, &mut None)?,
+        parent_volume.capability(VolumeOperation::Write, &mut None)?,
+        crate::contract::capability::HARNESS_HOST.to_owned(),
+    ]);
+    let scope = root.bootstrap_scope(
+        "parent-workload",
+        &workload_grants,
+        Some(crate::AgentId::from_bytes(parent.id_bytes())),
+        &mut None,
+    )?;
+    let admission = TurnAdmission::Admitted {
+        audience: audience.clone(),
+        scope: scope.clone(),
+    };
+    let issuer = RuntimeAuthority::from(root.clone());
+    admission.verify(&issuer, &parent)?;
+    let state = AgentState::adopted(
+        child.clone(),
+        &crate::agent::ForkAdopted {
+            agent: child.id(),
+            parent: Some(parent),
+            profile: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            checkpoint: None,
+            volumes: vec![WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::Private,
+                PRIVATE_VOLUME.into(),
+                child_volume,
+            )],
+            brief: None,
+            policy: None,
+        },
+    )
+    .map_err(Error::from)?;
+    let stream = Arc::new(acyclic_stream::MemoryStream::default());
+    // Negative control: the former query really rejects this valid parent.
+    assert!(matches!(
+        query_journal(&stream, &host, &issuer, &admission, &state).await,
+        Err(Error::Unauthorized(_))
+    ));
+    let operation = OperationId::new();
+    let journal = query_activity_journal(&stream, &host, &issuer, &state)
+        .await?
+        .ok_or_else(|| Error::Storage("native host lost child activity authority".into()))?
+        .with_turn(operation, operation);
+    journal
+        .append(
+            operation,
+            "start",
+            &crate::executor::ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    assert!(
+        journal
+            .activity(operation, &acyclic_actors::local::SystemClock)
+            .await?
+            .is_some()
+    );
+
+    let broad = Capabilities::new([
+        acyclic_fs::access::Capability::whole_volume(None, &acyclic_fs::access::Action::ALL)
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        crate::contract::capability::HARNESS_HOST.to_owned(),
+    ]);
+    let broad = root.bootstrap_scope("unbound-host", &broad, None, &mut None)?;
+    for (scope, expected) in [(scope, false), (broad, true)] {
+        let (_producer, stopped) = futures::channel::oneshot::channel::<()>();
+        let context = acyclic_auth::operation::Context::from_stopped(
+            root.verifier(&mut None)?
+                .expiry(&scope)?
+                .saturating_mul(1000),
+            async move {
+                let _ = stopped.await;
+                acyclic_auth::operation::Stopped::Cancelled
+            },
+        );
+        let issuer = RuntimeAuthority::admitted(root.admit(scope, context)?, OperationId::new());
+        let observed = query_activity_journal(&stream, &host, &issuer, &state).await?;
+        assert_eq!(observed.is_some(), expected, "delegated ceiling changed");
+        if let Some(journal) = observed {
+            assert!(
+                journal
+                    .with_turn(operation, operation)
+                    .activity(operation, &acyclic_actors::local::SystemClock)
+                    .await?
+                    .is_some()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn announcement_publication_preserves_workload_and_delegated_authority() -> Result<()> {
     struct NoDispatch;
     impl TurnExecutors for NoDispatch {
@@ -1310,6 +1438,7 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         grant,
     ));
     let reopen = || FilesystemTurnChildren {
+        clock: Arc::new(acyclic_actors::local::SystemClock),
         files: files.clone(),
         stream: Arc::new(acyclic_stream::MemoryStream::default()),
         within: acyclic_actors::addressing::ActorReference::new(b"a", b"agents", b"owner")

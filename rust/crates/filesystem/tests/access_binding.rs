@@ -1,6 +1,55 @@
 use super::*;
 use acyclic_fs::{Digest, GenerationId, ObjectId, ObjectKind, kernel::MetadataField};
 
+#[test]
+fn clock_rollback_invalidates_reused_reads_and_publication_authority() -> Result<(), InvalidPolicy>
+{
+    let caller = principal();
+    let mut denied = rule("temporary-denial", Effect::Deny, &[Action::Read], "**");
+    denied.conditions.expires_at = Some(100);
+    let policy = policy(vec![
+        rule("allow", Effect::Allow, &[Action::Read], "**"),
+        denied,
+    ]);
+    let cap = capability();
+    let selected = resource(&caller.lineage, "file", 10);
+    let admitted = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let earlier = Context {
+        now: 99,
+        ..admitted
+    };
+    let digest = Digest::from_bytes([7; 32]);
+    let revision = MetadataField::Value(ObjectId {
+        storage: None,
+        kind: ObjectKind::Metadata,
+        digest,
+    });
+    let view = PathTrie::compile(&policy, &caller, selected, admitted, &cap)?
+        .with_policy_revision(GenerationId::new(digest), revision);
+    assert!(view.decide(Action::Read, "file", admitted.now).allowed);
+    assert_eq!(
+        decide(&policy, &caller, Action::Read, selected, earlier, &cap).denial,
+        Some(Denial::Rule)
+    );
+    let read_blocked = !view.decide(Action::Read, "file", earlier.now).allowed;
+    let reopened = PathTrie::compile(&policy, &caller, selected, earlier, &cap)?;
+    assert_eq!(
+        reopened.decide(Action::Read, "file", earlier.now).denial,
+        Some(Denial::Rule)
+    );
+    let fence = view.publication_fence().expect("authenticated policy cut");
+    assert!(fence.valid_at(admitted.now));
+    let publication_blocked = !fence.valid_at(earlier.now);
+    assert!(
+        read_blocked && publication_blocked,
+        "clock rollback must refuse reused authority: read={read_blocked} publication={publication_blocked}"
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     // A data pin cannot change during publication, and cannot replace the

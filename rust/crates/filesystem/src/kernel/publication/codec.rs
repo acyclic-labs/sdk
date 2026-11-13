@@ -1,9 +1,10 @@
 use super::*;
 
 pub(super) const PAYLOAD_DOMAIN: &[u8] = b"acyclic-fs-publish-generation-v1\0";
-pub(super) const PAYLOAD_VERSION: u16 = 4;
-pub(super) const FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v1\0";
-pub(super) const CONTEXTUAL_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v2\0";
+pub(super) const PAYLOAD_VERSION: u16 = 5;
+pub(super) const FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-publish-fingerprint-v3\0";
+pub(super) const CONTEXTUAL_FINGERPRINT_DOMAIN: &[u8] =
+    b"acyclic-fs-publish-contextual-fingerprint-v3\0";
 pub(super) const EVIDENCE_DOMAIN: &[u8] = b"acyclic-fs-publication-original-evidence-v1\0";
 
 /// Original semantic request retained when an independent operation is composed
@@ -16,9 +17,16 @@ pub(crate) struct PublicationOrigin {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BorrowedPublicationEvidence<'a> {
+pub(crate) struct OriginalEvidence {
+    pub(crate) root: ObjectId,
+    pub(crate) bytes: u64,
+    pub(crate) digest: Digest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PublicationEvidence {
     pub(crate) publication: PublishedGeneration,
-    pub(crate) original_evidence: Option<&'a [u8]>,
+    pub(crate) original_evidence: Option<OriginalEvidence>,
     pub(crate) origin: Option<PublicationOrigin>,
 }
 
@@ -32,12 +40,12 @@ pub fn decode_published_generation<E: From<CanonicalDecodeError>>(
         .map(|decoded| decoded.publication)
 }
 
-pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
-    bytes: &'a [u8],
+pub(crate) fn decode_publication_evidence<E: From<CanonicalDecodeError>>(
+    bytes: &[u8],
     maximum_payload_bytes: u64,
     maximum_evidence_bytes: Option<u64>,
     mut observe: impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
-) -> Result<BorrowedPublicationEvidence<'a>, E> {
+) -> Result<PublicationEvidence, E> {
     let mut decoder = Decoder::new(
         bytes,
         PAYLOAD_DOMAIN,
@@ -64,56 +72,36 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     };
     if flags & 2 == 0 {
         decoder.finish().map_err(E::from)?;
-        return Ok(BorrowedPublicationEvidence {
+        return Ok(PublicationEvidence {
             publication,
             original_evidence: None,
             origin,
         });
     }
-    let length = decoder.u32(&mut observe)?;
-    if length == 0 {
+    let bytes = decoder.u64(&mut observe)?;
+    if bytes == 0 {
         return Err(E::from(CanonicalDecodeError::Invariant(
             crate::kernel::codec::CanonicalInvariant::Static("empty original publication evidence"),
         )));
     }
-    let envelope_bytes =
-        usize_to_u64(publication_payload_length() + generation_root.encoded_len() - 33)
-            .checked_add(usize_to_u64(
-                4 + 32 + origin.map_or(0, |origin| 48 + origin.generation_root.encoded_len()),
-            ))
-            .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    let maximum = u32::try_from(
-        maximum_payload_bytes
-            .saturating_sub(envelope_bytes)
-            .min(maximum_evidence_bytes.unwrap_or(u64::MAX)),
-    )
-    .unwrap_or(u32::MAX);
-    if length > maximum {
-        return Err(E::from(CanonicalDecodeError::FieldTooLarge {
-            observed: length,
+    if let Some(maximum) = maximum_evidence_bytes
+        && bytes > maximum
+    {
+        return Err(E::from(CanonicalDecodeError::ObjectTooLarge {
+            observed: bytes,
             maximum,
         }));
     }
-    let evidence = decoder
-        .take_exact(usize::try_from(length).map_err(|_| CanonicalDecodeError::LengthOverflow)?)?;
-    let stored_digest = Digest::from_bytes(decoder.fixed::<32, E>(&mut observe)?);
+    let root = decoder.object(ObjectKind::Blob, &mut observe)?;
+    let digest = Digest::from_bytes(decoder.fixed::<32, E>(&mut observe)?);
     decoder.finish().map_err(E::from)?;
-    let hashed = usize_to_u64(EVIDENCE_DOMAIN.len())
-        .checked_add(u64::from(length))
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
-    observe(crate::kernel::codec::ReadAllocationStep::BeforeHash(hashed))?;
-    let actual_digest = original_evidence_digest(evidence);
-    observe(crate::kernel::codec::ReadAllocationStep::Hashed(hashed))?;
-    if actual_digest != stored_digest {
-        return Err(E::from(CanonicalDecodeError::Invariant(
-            crate::kernel::codec::CanonicalInvariant::Static(
-                "original publication evidence digest mismatch",
-            ),
-        )));
-    }
-    Ok(BorrowedPublicationEvidence {
+    Ok(PublicationEvidence {
         publication,
-        original_evidence: Some(evidence),
+        original_evidence: Some(OriginalEvidence {
+            root,
+            bytes,
+            digest,
+        }),
         origin,
     })
 }
@@ -137,12 +125,12 @@ fn read_origin<E: From<CanonicalDecodeError>>(
     })
 }
 
-pub(crate) fn decode_publication_evidence_with_accounting<'a>(
-    bytes: &'a [u8],
+pub(crate) fn decode_publication_evidence_with_accounting(
+    bytes: &[u8],
     maximum_payload_bytes: u64,
     maximum_evidence_bytes: Option<u64>,
     accounting: &mut KernelAccounting<'_>,
-) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
+) -> Result<PublicationEvidence, crate::FsError> {
     crate::kernel::file_read::decode_owned(accounting, |observe| {
         decode_publication_evidence(
             bytes,
@@ -246,7 +234,7 @@ pub(super) const fn publication_payload_length() -> usize {
 
 pub(super) fn publication_payload_length_with_evidence(
     generation_root: ObjectId,
-    evidence: Option<&[u8]>,
+    evidence: Option<OriginalEvidence>,
     origin: Option<PublicationOrigin>,
 ) -> Result<usize, crate::FsError> {
     let base = (publication_payload_length() + generation_root.encoded_len() - 33)
@@ -255,16 +243,15 @@ pub(super) fn publication_payload_length_with_evidence(
     let Some(evidence) = evidence else {
         return Ok(base);
     };
-    if evidence.is_empty() {
+    if evidence.bytes == 0 || evidence.root.kind != ObjectKind::Blob {
         return Err(CanonicalDecodeError::Invariant(
-            crate::kernel::codec::CanonicalInvariant::Static("empty original publication evidence"),
+            crate::kernel::codec::CanonicalInvariant::Static(
+                "invalid original publication evidence reference",
+            ),
         )
         .into());
     }
-    u32::try_from(evidence.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-    base.checked_add(4)
-        .and_then(|length| length.checked_add(evidence.len()))
-        .and_then(|length| length.checked_add(32))
+    base.checked_add(8 + evidence.root.encoded_len() + 32)
         .ok_or_else(|| WorkError::Overflow.into())
 }
 
@@ -276,23 +263,14 @@ pub(super) fn original_evidence_digest(evidence: &[u8]) -> Digest {
 }
 
 pub(super) const fn fingerprint_input_length(operation_context: Option<Digest>) -> usize {
-    16 + 8
-        + 8
-        + 8
-        + 32
-        + publication_payload_length()
-        + if operation_context.is_some() { 32 } else { 0 }
+    16 + 8 + 8 + 8 + 32 + 16 + 33 + 1 + if operation_context.is_some() { 32 } else { 0 }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "Payload admission checks the evidence length fits u32 before encoding."
-)]
 pub(super) fn write_publication_payload(
     bytes: &mut Vec<u8>,
     volume_id: VolumeId,
     generation_root: ObjectId,
-    evidence: Option<(&[u8], Digest)>,
+    evidence: Option<OriginalEvidence>,
     origin: Option<PublicationOrigin>,
 ) {
     bytes.extend_from_slice(PAYLOAD_DOMAIN);
@@ -306,10 +284,10 @@ pub(super) fn write_publication_payload(
         bytes.extend_from_slice(origin.expected.digest.as_bytes());
         bytes.extend_from_slice(&origin.generation_root.to_bytes());
     }
-    if let Some((evidence, digest)) = evidence {
-        bytes.extend_from_slice(&(evidence.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(evidence);
-        bytes.extend_from_slice(digest.as_bytes());
+    if let Some(evidence) = evidence {
+        bytes.extend_from_slice(&evidence.bytes.to_le_bytes());
+        bytes.extend_from_slice(&evidence.root.to_bytes());
+        bytes.extend_from_slice(evidence.digest.as_bytes());
     }
 }
 
@@ -325,7 +303,7 @@ pub(super) fn write_fingerprint_input(
     bytes: &mut Vec<u8>,
     request: &PublishGenerationRequest,
     operation_context: Option<Digest>,
-    payload: &[u8],
+    evidence: Option<OriginalEvidence>,
 ) {
     bytes.extend_from_slice(&request.authority_id.into_bytes());
     bytes.extend_from_slice(&request.epoch.get().to_le_bytes());
@@ -335,5 +313,11 @@ pub(super) fn write_fingerprint_input(
     if let Some(context) = operation_context {
         bytes.extend_from_slice(context.as_bytes());
     }
-    bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(&request.volume_id.into_bytes());
+    bytes.extend_from_slice(&request.generation_root.to_bytes());
+    bytes.push(u8::from(evidence.is_some()));
+    if let Some(evidence) = evidence {
+        bytes.extend_from_slice(&evidence.bytes.to_le_bytes());
+        bytes.extend_from_slice(evidence.digest.as_bytes());
+    }
 }

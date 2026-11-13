@@ -5,7 +5,11 @@ use bytes::Bytes;
 use std::collections::BTreeMap;
 // Native work and future admission are always available on native targets.
 #[cfg(not(target_arch = "wasm32"))]
+mod failure;
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+pub use failure::transport_failure;
 /// Native response payload custody shared by protocol codecs.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod owned_bytes;

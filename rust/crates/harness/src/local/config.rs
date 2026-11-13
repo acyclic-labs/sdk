@@ -199,13 +199,10 @@ impl LocalHarnessConfig {
         }
         let Some((models, selection)) = self.models.take() else {
             if let Some((model, _)) = &self.model {
-                let role = crate::templates::root()?.model;
-                let fixed = format!("{}/{}", model.provider, model.name);
-                if crate::templates::resolve_model(role.as_deref(), Some(&fixed))
-                    != Some(fixed.as_str())
-                {
-                    return Err(Error::Invalid("configured role model differs from the fixed binding; use LocalHarnessConfig::resolving with a catalog that resolves the role model".into()));
-                }
+                let binding = format!("{}/{}", model.provider, model.name);
+                crate::templates::root_model(&binding, None).map_err(|error| {
+                    Error::Invalid(format!("{error}; use LocalHarnessConfig::resolving"))
+                })?;
             }
             return Ok(self);
         };
@@ -869,24 +866,21 @@ mod resolver_tests {
     // 1k compositions over one resolver construct each selection's provider
     // once; a changed selection, here a changed settings model, resolves anew.
     #[tokio::test]
-    async fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
+    async fn shared_model_resolution_honors_settings_and_explicit_selection() -> Result<()> {
         let constructed = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&constructed);
-        let models = Arc::new(ModelResolver::new("first", move |selection| {
+        let models = Arc::new(ModelResolver::new("test/first", move |selection| {
             counter.fetch_add(1, Ordering::Relaxed);
             let provider: Arc<dyn ModelProvider> =
                 Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+            let (provider_name, name) = selection
+                .split_once('/')
+                .ok_or_else(|| Error::Invalid("fixture model selection is unqualified".into()))?;
             Ok((
-                Model::new("test".into(), selection.into(), "1".into())?,
+                Model::new(provider_name.into(), name.into(), "1".into())?,
                 provider,
             ))
         }));
-        let role = crate::templates::root()?.model;
-        let expected = |selection| {
-            crate::templates::resolve_model(role.as_deref(), Some(selection))
-                .unwrap_or(selection)
-                .to_owned()
-        };
         let workspace = tempfile::tempdir().map_err(storage)?;
         let codex = tempfile::tempdir().map_err(storage)?;
         let settings = || {
@@ -903,34 +897,34 @@ mod resolver_tests {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
             assert_eq!(
                 selected(config.resolve(Some(&settings()), true).await?)?,
-                expected("first")
+                "first"
             );
         }
         assert_eq!(constructed.load(Ordering::Relaxed), 1);
-        std::fs::write(codex.path().join("config.toml"), "model = \"second\"\n")
-            .map_err(storage)?;
+        std::fs::write(
+            codex.path().join("config.toml"),
+            "model = \"test/second\"\n",
+        )
+        .map_err(storage)?;
         let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
         assert_eq!(
             selected(config.resolve(Some(&settings()), true).await?)?,
-            expected("second")
+            "second"
         );
+        assert_eq!(constructed.load(Ordering::Relaxed), 2);
         let explicit = LocalHarnessConfig::resolving(
             workspace.path(),
             Arc::clone(&models),
-            Some("first".into()),
+            Some("test/first".into()),
         );
         assert_eq!(
             selected(explicit.resolve(Some(&settings()), true).await?)?,
-            expected("first")
+            "first"
         );
         let defaults = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None)
             .without_user_settings();
-        assert_eq!(
-            selected(defaults.resolve(None, true).await?)?,
-            expected("first")
-        );
-        let selections = std::collections::BTreeSet::from([expected("first"), expected("second")]);
-        assert_eq!(constructed.load(Ordering::Relaxed), selections.len());
+        assert_eq!(selected(defaults.resolve(None, true).await?)?, "first");
+        assert_eq!(constructed.load(Ordering::Relaxed), 2);
         Ok(())
     }
 }

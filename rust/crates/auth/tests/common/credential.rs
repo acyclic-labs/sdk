@@ -1,7 +1,7 @@
 //! Transport custody admits opaque bytes without interpreting token claims.
 use acyclic_auth::credential::{
     CredentialError, CredentialProvider, ResolvedCredential, bearer_bytes, capability_from_text,
-    capability_serde, capability_text, valid_credential,
+    capability_serde, capability_text, valid_credential, websocket_protocol,
 };
 use futures::FutureExt;
 use std::sync::{
@@ -122,6 +122,11 @@ fn checked(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(retained.as_encoded_bytes(), encoded.as_ref());
         }
     }
+    let protocol = websocket_protocol(request.as_str());
+    let protocol_payload = protocol
+        .strip_prefix("acyclic.bearer.")
+        .ok_or("missing WebSocket credential prefix")?;
+    assert_eq!(capability_from_text(protocol_payload)?, bytes);
     // No trimming, normalization or token decoding may hide an injected
     // transport delimiter, including one after an otherwise admitted token.
     for delimiter in ['\r', '\n', '\0'] {

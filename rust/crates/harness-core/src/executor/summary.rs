@@ -69,7 +69,7 @@ impl StockExecution<'_> {
             journal,
             operation_id,
             &source_key,
-            &source_bytes,
+            (&source_bytes, "application/json"),
             true,
             self.io,
         )
@@ -198,6 +198,7 @@ impl StockExecution<'_> {
                 }
                 event @ (ModelEvent::Restarted
                 | ModelEvent::Wait(_)
+                | ModelEvent::Trace { .. }
                 | ModelEvent::Counted { .. }
                 | ModelEvent::Content { .. }
                 | ModelEvent::TextPart { .. }
@@ -265,7 +266,15 @@ pub(super) async fn stage_summary_provenance(
     let bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
     // The exact output identity is already the immutable retry key. Appending
     // the provenance payload's digest would make this file unqueryable by ref.
-    stage_bytes(journal, summary.operation_id, &key, &bytes, false, io).await?;
+    stage_bytes(
+        journal,
+        summary.operation_id,
+        &key,
+        (&bytes, "application/json"),
+        false,
+        io,
+    )
+    .await?;
     drop(bytes);
     drop(bytes_hold);
     drop(key);

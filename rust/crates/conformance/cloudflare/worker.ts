@@ -8,7 +8,7 @@ import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
 import { SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
-import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmObjects, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
+import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmObjects, roleModels, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import { fixtureAuthority } from "./fixture-authority.mjs";
 import guestWasm from "./generated/agent_guest_bg.wasm";
 
@@ -104,7 +104,9 @@ export class Agent extends DurableObject {
     if (protocol) this.registry.registerTool(hostFixtureTool(),
       (invocation: { arguments: unknown }) => { ++this.executions; return { value: invocation.arguments }; },
       () => null, (_invocation: unknown, result: { value: unknown }) => result.value);
-    this.registry.configureModel({ provider: "conformance", name: "scripted", revision: "1", options: {} },
+    // The scripted provider serves every role model, then the fixture's own root binding.
+    const models = [...roleModels().map(selection => selection.split("/")), ["conformance", "scripted"]];
+    for (const [provider, name] of models) this.registry.configureModel({ provider, name, revision: "1" },
       async function* (_bytes: Uint8Array, dispatch: { step: number }, signal: AbortSignal) {
         if (hangs) {
           lifecycle.started();

@@ -4,15 +4,12 @@ use super::*;
 mod tests;
 
 /// An original publication and its caller-supplied evidence, recovered together.
-/// The evidence aliases the durable record and retains its original allocation.
+/// The evidence retains its original authenticated blob-read allocation.
 /// It is not a workspace file and never appears in a directory or checkout.
 pub struct OperationPublication<A: 'static, O: 'static> {
     generation: Generation<A, O>,
     predecessor: Option<(crate::Sequence, crate::Digest)>,
-    evidence: Option<Bytes>,
-    // Backing drops before this credit. Funded provider bytes retain their
-    // own original owner instead of acquiring a second allocation lease.
-    _allocation: Option<crate::kernel::RetainedAllocation>,
+    evidence: Option<acyclic_stream::OwnedBytes>,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> OperationPublication<A, O> {
@@ -65,7 +62,7 @@ impl<A, O> OperationPublication<A, O> {
         self.evidence.as_deref()
     }
 
-    /// Releases the record backing while retaining the immutable result.
+    /// Releases the original evidence while retaining the immutable result.
     pub fn into_generation(self) -> Generation<A, O> {
         self.generation
     }
@@ -88,7 +85,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     ) -> W::Output<Option<OperationPublication<A, O>>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let (observed, mut allocation) = self
+            let (observed, allocation) = self
                 .volume
                 .fs
                 .workspace_operation_generation(
@@ -104,22 +101,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 crate::kernel::retire_allocation(allocation, 0, &mut accounting)?;
                 return Ok(None);
             };
-            let bytes =
-                if !self.volume.fs.authority().retains_operation_payload() && evidence.is_some() {
-                    record.payload.len() as u64
-                } else {
-                    0
-                };
-            if bytes != 0 && matches!(allocation, KernelOwnedAllocation::Standalone) {
-                let (funding, admitted) = accounting.record_actual_owned(bytes)?;
-                allocation = funding;
-                if let Err(error) = admitted {
-                    drop(evidence);
-                    drop(record);
-                    crate::kernel::retire_allocation(allocation, bytes, &mut accounting)?;
-                    return Err(error.into());
-                }
-            }
             let predecessor = record
                 .sequence
                 .get()
@@ -127,14 +108,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 .filter(|position| *position != 0)
                 .map(|position| (crate::Sequence::new(position), record.previous_digest));
             drop(record);
-            let allocation = if bytes != 0 {
-                Some(crate::kernel::RetainedAllocation::transfer(
-                    &mut allocation,
-                    bytes,
-                    &mut accounting,
-                )?)
+            crate::kernel::retire_allocation(allocation, 0, &mut accounting)?;
+            let evidence = if let Some(reference) = evidence {
+                Some(
+                    self.volume
+                        .fs
+                        .read_original_publication_evidence(
+                            &self.volume,
+                            reference,
+                            &mut accounting,
+                            cancellation,
+                        )
+                        .await?,
+                )
             } else {
-                crate::kernel::retire_allocation(allocation, bytes, &mut accounting)?;
                 None
             };
             Ok(Some(OperationPublication {
@@ -145,7 +132,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 },
                 predecessor,
                 evidence,
-                _allocation: allocation,
             }))
         }
         .await;

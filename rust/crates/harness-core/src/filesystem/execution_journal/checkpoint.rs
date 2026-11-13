@@ -185,6 +185,20 @@ where
         operation: OperationId,
         io: Option<&PreparationIo>,
     ) -> Result<Option<(IndexState, u64)>> {
+        Ok(self
+            .checkpoint_cut(operation, io, |_| Ok(()))
+            .await?
+            .map(|(state, tail, ())| (state, tail)))
+    }
+
+    /// Project the authenticated anchor while its original record ownership is
+    /// retained. Metadata queries need no immutable index-page traversal.
+    pub(super) async fn checkpoint_cut<T>(
+        &self,
+        operation: OperationId,
+        io: Option<&PreparationIo>,
+        select: impl FnOnce(&acyclic_stream::Record) -> Result<T>,
+    ) -> Result<Option<(IndexState, u64, T)>> {
         self.require_operation(operation, io)?;
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
@@ -231,18 +245,20 @@ where
         let checkpoint = codec::decode(&record.value, io)?;
         let state = checkpoint.state;
         self.verify_checkpoint(operation, &checkpoint, io)?;
-        self.verify_checkpoint_anchor(operation, &state, record.commit_id, io)
+        let selected = self
+            .verify_checkpoint_anchor(operation, &state, record.commit_id, io, select)
             .await?;
-        Ok(Some((state, tail)))
+        Ok(Some((state, tail, selected)))
     }
 
-    async fn verify_checkpoint_anchor(
+    async fn verify_checkpoint_anchor<T>(
         &self,
         operation: OperationId,
         state: &IndexState,
         commit: acyclic_stream::CommitId,
         io: Option<&PreparationIo>,
-    ) -> Result<()> {
+        select: impl FnOnce(&acyclic_stream::Record) -> Result<T>,
+    ) -> Result<T> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history
             .as_mut()
@@ -279,7 +295,7 @@ where
         {
             return Err(missing(io));
         }
-        Ok(())
+        select(&anchor)
     }
 
     pub(super) async fn encode_index_checkpoint(

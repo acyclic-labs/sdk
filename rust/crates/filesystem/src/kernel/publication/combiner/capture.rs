@@ -8,10 +8,7 @@ pub(super) fn quote(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(GuardedAppend, usize), crate::FsError> {
-    let evidence = intent
-        .original_evidence
-        .as_ref()
-        .map(|data| data.as_slice());
+    let evidence = intent.original_evidence_reference;
     let composed_length = publication_payload_length_with_evidence(
         request.generation_root,
         evidence,
@@ -29,7 +26,7 @@ pub(super) fn quote(
         request,
         None,
         operation_context,
-        intent.original_evidence.clone(),
+        (evidence, intent.original_evidence_custody.clone()),
         accounting,
         cancellation,
     )?;

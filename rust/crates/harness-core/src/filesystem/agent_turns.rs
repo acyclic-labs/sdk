@@ -105,6 +105,18 @@ pub enum TurnAdmission {
 }
 
 impl TurnAdmission {
+    /// Host observation uses the retained host ceiling, not a workload's
+    /// agent-bound scope. Native custody remains native; delegated custody
+    /// cannot gain authority by observing a descendant.
+    fn host(issuer: &RuntimeAuthority) -> Self {
+        issuer
+            .caller()
+            .map_or(Self::LocalRoot, |(audience, scope)| Self::Admitted {
+                audience: audience.clone(),
+                scope: scope.clone(),
+            })
+    }
+
     /// Checks identity, audience, lifetime and attenuation before storage IO.
     /// File authority is checked separately against the committed bindings.
     pub(super) fn verify(
@@ -574,8 +586,12 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
     }
 
     /// Root model selected by this composition, pinned at root creation.
-    fn model_selection(&self) -> Option<String> {
-        None
+    ///
+    /// # Errors
+    /// When this composition cannot bind the model the root role selects
+    /// (see [`crate::templates::root_model`]).
+    fn model_selection(&self) -> Result<Option<String>> {
+        Ok(None)
     }
 
     /// Saves each bound workspace before parking on a pending operation.
@@ -756,6 +772,7 @@ where
             within,
             actor_root: None,
             clock: Arc::new(acyclic_actors::local::SystemClock),
+            actor_root: None,
             host,
             issuer,
             templates,
@@ -971,10 +988,14 @@ where
         &self,
         agent: &AgentState,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let (journal, _, _) = self
-            .journal(self.admit(agent)?, &[], &[], None, None)
-            .await?;
-        Ok(journal)
+        query_journal(
+            &self.stream,
+            &self.host,
+            &self.issuer,
+            &self.admission,
+            agent,
+        )
+        .await
     }
 
     pub(super) async fn journal_authority<'a>(
@@ -2354,6 +2375,7 @@ where
                     self.limits.maximum_bytes,
                 )) as Arc<dyn crate::agent::TurnEffects>;
                 let children = Arc::new(FilesystemTurnChildren {
+                    clock: Arc::clone(&self.clock),
                     files: Arc::clone(&files),
                     stream: Arc::clone(&self.stream),
                     within: self.within.clone(),
@@ -2395,6 +2417,7 @@ where
                     agent.clone(),
                     (turn, inbox, initial_through),
                     Arc::clone(&bindings.journal.files),
+                    Arc::clone(&bindings.journal.reader),
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),
@@ -2494,9 +2517,61 @@ where
     }
 }
 
+// One host-only journal binding for queries; it grants no model-content scope,
+// opens no model executor and does not reread policy or history payloads.
+async fn query_journal<P, A, O>(
+    stream: &Arc<P>,
+    host: &Arc<FilesystemHost<A, O>>,
+    issuer: &RuntimeAuthority,
+    admission: &TurnAdmission,
+    agent: &AgentState,
+) -> Result<FilesystemExecutionJournal<P, A, O>>
+where
+    P: crate::store::JournalProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let admitted = AdmittedAgent::verify(issuer, admission, &agent.path, &agent.volumes)?;
+    let (volume, authority) = admitted.journal_authority(host, &[], &[]).await?;
+    FilesystemExecutionJournal::new(
+        Arc::clone(stream),
+        Arc::clone(host),
+        FilesystemJournalBinding {
+            volume: &volume,
+            verifier: &authority.verifier,
+            scope: &authority.scope,
+            io: None,
+        },
+    )
+}
+
+// The caller has authenticated its own workload and direct-child relationship.
+// Optional activity uses only the host's retained ceiling; it never rebinds the
+// parent's agent-scoped workload admission to a different identity.
+async fn query_activity_journal<P, A, O>(
+    stream: &Arc<P>,
+    host: &Arc<FilesystemHost<A, O>>,
+    issuer: &RuntimeAuthority,
+    agent: &AgentState,
+) -> Result<Option<FilesystemExecutionJournal<P, A, O>>>
+where
+    P: crate::store::JournalProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let admission = TurnAdmission::host(issuer);
+    match query_journal(stream, host, issuer, &admission, agent).await {
+        Ok(journal) => Ok(Some(journal)),
+        // Missing optional journal authority does not revoke phase observation.
+        Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// What one agent turn's `wait` observes: each child's status and, once it
 /// settled, its last answer, read under a grant of exactly that output.
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     files: Arc<AgentInternalFiles<A, O>>,
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
@@ -2637,13 +2712,51 @@ where
         child: &'a AgentPath,
     ) -> BoxFuture<'a, Result<crate::agent::Settlement>> {
         Box::pin(async move {
-            match crate::agent::settled(&self.stream, &self.within, child).await {
-                Ok(settled) => Ok(settled),
-                Err(crate::agent::Error::NoSuchAgent) => {
-                    Err(Error::NotFound(child.as_str().to_owned()))
-                }
-                Err(error) => Err(Error::from(error)),
+            if child != &self.agent && !child.is_child_of(&self.agent) {
+                return Err(Error::Unauthorized(
+                    "activity is outside the selected child relationship".into(),
+                ));
             }
+            // The workload still proves its own identity before any child IO.
+            self.admission.verify(&self.issuer, &self.agent)?;
+            let (state, mut settled) =
+                match crate::agent::observed_settlement(&self.stream, &self.within, child).await {
+                    Ok(observed) => observed,
+                    Err(crate::agent::Error::NoSuchAgent) => {
+                        return Err(Error::NotFound(child.as_str().to_owned()));
+                    }
+                    Err(error) => return Err(Error::from(error)),
+                };
+            if let Some(input) = settled.input {
+                let mut records = self
+                    .stream
+                    .read(acyclic_stream::ReadRequest {
+                        key: None,
+                        path: child.inbox().map_err(Error::from)?,
+                        from: input,
+                        limit: 1,
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                let record = records
+                    .try_next()
+                    .await?
+                    .filter(|record| record.sequence == input)
+                    .ok_or_else(|| Error::Storage("activity input is unavailable".into()))?;
+                let record =
+                    crate::agent::InboxRecord::decode(&record.value).map_err(Error::from)?;
+                if let Some(queued) = crate::agent::turn_input(input, record) {
+                    let operation =
+                        crate::agent::turn_id(&state, &queued.input).map_err(Error::from)?;
+                    let journal =
+                        query_activity_journal(&self.stream, &self.host, &self.issuer, &state)
+                            .await?;
+                    if let Some(journal) = journal {
+                        settled.activity = journal.activity(operation, &*self.clock).await?;
+                    }
+                }
+            }
+            Ok(settled)
         })
     }
 

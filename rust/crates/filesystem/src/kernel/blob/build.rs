@@ -13,6 +13,21 @@ pub struct BlobBuildOptions {
     pub maximum_blob_bytes: Option<u64>,
 }
 
+impl BlobBuildOptions {
+    pub(crate) fn for_limits(limits: DecodeLimits, maximum_blob_bytes: Option<u64>) -> Self {
+        Self {
+            chunk_bytes: u32::try_from(limits.maximum_object_bytes.min(1024 * 1024))
+                .unwrap_or(u32::MAX)
+                .max(1),
+            page_items: limits.maximum_page_items,
+            page_bytes: u32::try_from(limits.maximum_object_bytes)
+                .unwrap_or(u32::MAX)
+                .max(1),
+            maximum_blob_bytes,
+        }
+    }
+}
+
 /// Successful streaming blob construction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlobBuild {

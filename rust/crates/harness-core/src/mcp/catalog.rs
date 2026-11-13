@@ -6,7 +6,10 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, BinaryHeap},
+    sync::Arc,
+};
 
 /// Model schema selection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -299,8 +302,7 @@ impl McpCatalog {
             ));
         }
         let prefix = format!("mcp.{}.", self.server);
-        let mut selected = registry.definitions(None)?;
-        selected.retain(|tool| tool.name.starts_with(&prefix));
+        let selected = registry.definitions_in_namespace(&prefix, None)?;
         let mut expected = Vec::new();
         if let Some(old) = previous {
             for tool in &old.tools {
@@ -383,20 +385,24 @@ impl McpCatalog {
             ));
         }
         let query = query.to_lowercase();
-        let mut tools = self
-            .tools
-            .iter()
-            .filter(|tool| {
-                after.is_none_or(|cursor| tool.name.as_str() > cursor)
-                    && (tool.name.to_lowercase().contains(&query)
-                        || tool.description.to_lowercase().contains(&query))
-            })
-            .collect::<Vec<_>>();
-        tools.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        let mut tools: BinaryHeap<(&str, usize)> = BinaryHeap::new();
+        for (index, tool) in self.tools.iter().enumerate().filter(|(_, tool)| {
+            after.is_none_or(|cursor| tool.name.as_str() > cursor)
+                && (tool.name.to_lowercase().contains(&query)
+                    || tool.description.to_lowercase().contains(&query))
+        }) {
+            if tools.len() < maximum_results as usize {
+                tools.push((&tool.name, index));
+            } else if let Some(mut last) = tools.peek_mut()
+                && tool.name.as_str() < last.0
+            {
+                *last = (&tool.name, index);
+            }
+        }
         tools
+            .into_sorted_vec()
             .into_iter()
-            .take(maximum_results as usize)
-            .map(|tool| self.definition(tool))
+            .map(|(_, index)| self.definition(&self.tools[index]))
             .collect()
     }
 }

@@ -78,10 +78,13 @@ where
             return self.detach_async().await;
         }
         self.sync().await?;
-        self.advance_to_head().await?;
         if retire {
             self.prepare_command_cleanup().await?;
             self.detach_async().await?;
+        } else {
+            // Only a retained projection needs a fresh read view and kernel
+            // cache invalidation. Retirement already withdraws its namespace.
+            self.advance_to_head().await?;
         }
         Ok(())
     }

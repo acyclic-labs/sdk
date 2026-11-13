@@ -147,7 +147,7 @@ fn session() -> Result<WasmStream, JsValue> {
 async fn a_browser_command_past_one_frame_executes_and_answers_as_itself() -> Result<(), JsValue> {
     let stream = session()?;
     let controls = discover_agent_controls(&stream, 7).await?.controls();
-    let text = "x".repeat(2 * WasmAgentCommand::maximum_command_bytes() as usize);
+    let text = "x".repeat(2 * WasmAgentCommand::maximum_invocation_bytes() as usize);
     let content = serde_json::json!(text);
     let delivery = acyclic_harness_core::agent::Delivered::Committed { inbox: 3 };
     let child = AgentPath::try_from(AGENT.to_owned())

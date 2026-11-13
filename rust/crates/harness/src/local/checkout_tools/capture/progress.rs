@@ -76,12 +76,13 @@ impl CheckoutTools {
                     .map_err(storage)?
                     .value;
             }
-            let Some(original) = original else {
+            let Some(publication) = original else {
                 return context
                     .record_native_progress(NativeCaptureEvidence::Unavailable { operation }, None)
                     .await;
             };
             if physical.mounted.is_some() {
+                drop(publication);
                 let work = acyclic_fs::NativeMaterializationWork::new(
                     WorkBudget::UNBOUNDED,
                     &cancellation,
@@ -162,7 +163,8 @@ impl CheckoutTools {
                     .record_native_progress(NativeCaptureEvidence::Unavailable { operation }, None)
                     .await;
             }
-            let before = original
+            let after = publication.generation();
+            let before = publication
                 .predecessor(WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?
@@ -172,7 +174,6 @@ impl CheckoutTools {
                     .record_native_progress(NativeCaptureEvidence::Unavailable { operation }, None)
                     .await;
             };
-            let after = original.generation();
             let changed = after
                 .content_changed_from(&before, WorkBudget::UNBOUNDED, &cancellation)
                 .await

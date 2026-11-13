@@ -1,5 +1,5 @@
 import { create } from "@bufbuild/protobuf";
-import type { CredentialOptions } from "@acyclic-labs/actors/credential";
+import type { CredentialOptions } from "@acyclic-labs/auth/credential";
 import { RequestIdentitySchema, type RequestIdentity } from "../generated/proto/inference/v1/inference_pb.js";
 import type { InferenceClient } from "./index.js";
 import { InferenceProtocolError } from "./contract.js";

@@ -19,6 +19,13 @@ pub fn valid_credential(value: &JsValue) -> bool {
     acyclic_auth::credential::javascript::valid_credential(value)
 }
 
+/// Project the shared Auth WebSocket credential spelling.
+#[wasm_bindgen(js_name = websocketCredential)]
+pub fn websocket_credential(value: &JsValue) -> Result<js_sys::JsString, JsValue> {
+    acyclic_auth::credential::javascript::websocket_protocol(value)
+        .map_err(|_| js_sys::TypeError::new("credential must be a string").into())
+}
+
 /// Encode public signed blocks and a guarded proof with the shared Rust writer.
 /// This does not sign, authenticate or admit a capability. The caller owns and
 /// clears its JavaScript proof and output buffers.

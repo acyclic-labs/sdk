@@ -218,6 +218,7 @@ pub fn encode_transition(
     guest::wire::encode_transition(&guest::Transition {
         pause: false,
         response: response.map(Into::into),
+        pause: false,
         checkpoint: guest::Checkpoint {
             codec: guest::CodecIdentity {
                 name: codec_name,

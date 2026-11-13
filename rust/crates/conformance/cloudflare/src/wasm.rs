@@ -384,7 +384,9 @@ async fn verify(
         .stream()
         .await
         .map_err(|error| failure(name, "stream-open", error))?;
-    acyclic_stream::conformance::verify(stream.as_ref())
+    // The stream suite runs behind its own allocation (the agent-host suite
+    // erases itself), so the export's future holds a pointer per suite.
+    Box::pin(acyclic_stream::conformance::verify(stream.as_ref()))
         .await
         .map_err(|error| failure(name, "stream-suite", error))?;
     drop(stream);

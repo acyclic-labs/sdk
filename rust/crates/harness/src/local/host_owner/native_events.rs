@@ -1,4 +1,4 @@
-//! Complete native logs enter the shared publisher in one bounded-memory pass.
+//! Complete native logs enter the shared publisher in one pass.
 use super::*;
 use futures::io::AsyncRead;
 use std::{
@@ -7,7 +7,7 @@ use std::{
     task::{Context, Poll},
 };
 
-/// Recovery uses the same line bound as live ingestion, retaining only the last
+/// Recovery uses the same complete-line policy as live ingestion, retaining only the last
 /// valid resume identity. A malformed event never hides a later valid event.
 struct Resume {
     lines: acyclic_native_runtime::lines::LineBuffer,
@@ -17,9 +17,7 @@ struct Resume {
 impl Resume {
     fn new() -> Self {
         Self {
-            lines: acyclic_native_runtime::lines::LineBuffer::new(
-                super::super::host_process::EVENT_LINE_BYTES,
-            ),
+            lines: acyclic_native_runtime::lines::LineBuffer::new(None),
             id: None,
         }
     }
@@ -123,17 +121,12 @@ impl AsyncRead for NativeEvents {
 pub fn check_native_event_resume(bytes: &[u8]) {
     let expected = bytes
         .split(|byte| *byte == b'\n')
-        .filter(|line| line.len() <= super::super::host_process::EVENT_LINE_BYTES)
         .filter_map(sessions::logged_session_id)
         .last();
     for chunk in [1, 7, 8192] {
         let mut resume = Resume::new();
         for page in bytes.chunks(chunk) {
             resume.push(page);
-            assert!(
-                resume.lines.buffered_bytes() <= super::super::host_process::EVENT_LINE_BYTES,
-                "native resume retained more than one framed event page"
-            );
         }
         resume.finish();
         assert_eq!(

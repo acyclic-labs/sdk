@@ -73,6 +73,16 @@ fn agent_error(error: crate::agent::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 
+/// The model selections the shipped role templates name. A host whose
+/// provider serves any model configures each one before its own, so role
+/// policy resolves through its catalog.
+#[wasm_bindgen(js_name = roleModels)]
+pub fn role_models() -> std::result::Result<Vec<String>, JsValue> {
+    crate::templates::role_models()
+        .map(|models| models.into_iter().collect())
+        .map_err(js_error)
+}
+
 /// Decode a followed agent record with the canonical versioned reader.
 #[wasm_bindgen(js_name = decodeAgentRecord, unchecked_return_type = "unknown")]
 pub fn decode_agent_record(bytes: &[u8]) -> std::result::Result<JsValue, JsValue> {
@@ -627,7 +637,14 @@ impl WasmAgents {
             registry
                 .model
                 .as_ref()
-                .map(|model| format!("{}/{}", model.0.provider, model.0.name)),
+                .map(|model| {
+                    crate::templates::root_model(
+                        &format!("{}/{}", model.0.provider, model.0.name),
+                        registry.models.as_deref(),
+                    )
+                })
+                .transpose()
+                .map_err(js_error)?,
         );
         // Both spawn entrances use the same admitted template reader.
         let agents = Arc::new(if options.children {

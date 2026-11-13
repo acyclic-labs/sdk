@@ -4,9 +4,6 @@ use super::{Outcome, Value};
 #[cfg(any(test, feature = "test-support"))]
 pub mod validation;
 
-/// Byte bound of a retained answer.
-pub(super) const ANSWER_LIMIT: usize = 4096;
-
 /// A lost frame and malformed JSON share the same omission boundary.
 pub(super) fn decode(line: std::io::Result<String>) -> Option<(String, Value)> {
     line.ok().and_then(|line| {
@@ -24,7 +21,6 @@ pub(super) struct NativeAnswer {
     pub(super) outcome: Option<Outcome<String>>,
     pub(super) omitted: bool,
     pub(super) last_part: Option<String>,
-    pub(super) truncated: bool,
 }
 
 impl NativeAnswer {
@@ -33,7 +29,6 @@ impl NativeAnswer {
     pub(super) fn omit(&mut self) {
         self.pending = None;
         self.last_part = None;
-        self.truncated = false;
         if matches!(self.outcome, Some(Outcome::Succeeded(_))) {
             self.outcome = None;
         }
@@ -63,7 +58,7 @@ impl NativeAnswer {
                     result
                         .get("response")
                         .and_then(Value::as_str)
-                        .map(|text| Outcome::Succeeded(bounded([text])))
+                        .map(|text| Outcome::Succeeded(text.into()))
                 }
                 Some("CANCELED" | "INTERRUPTED") => Some(Outcome::Cancelled),
                 _ => Some(Outcome::Failed {
@@ -85,7 +80,7 @@ impl NativeAnswer {
                 self.pending = event
                     .pointer("/item/text")
                     .and_then(Value::as_str)
-                    .map(|text| bounded([text]));
+                    .map(String::from);
             }
             Some("turn.completed") if self.outcome.is_none() => {
                 self.outcome = self.pending.take().map(Outcome::Succeeded);
@@ -96,8 +91,7 @@ impl NativeAnswer {
                     .and_then(Value::as_u64)
                     .is_some_and(|end| end > 0)
                     && self.outcome.is_none()
-                    && !self.omitted
-                    && !self.truncated =>
+                    && !self.omitted =>
             {
                 if let (Some(id), Some(text)) = (
                     event
@@ -107,10 +101,7 @@ impl NativeAnswer {
                     event.pointer("/part/text").and_then(Value::as_str),
                 ) && self.last_part.as_deref() != Some(id)
                 {
-                    let source_len = self.pending.as_ref().map_or(0, String::len) + text.len();
-                    let retained = bounded(self.pending.as_deref().into_iter().chain([text]));
-                    self.truncated = retained.len() < source_len;
-                    self.pending = Some(retained);
+                    self.pending.get_or_insert_with(String::new).push_str(text);
                     self.last_part = Some(id.into());
                 }
             }
@@ -140,7 +131,7 @@ impl NativeAnswer {
                     event
                         .get("result")
                         .and_then(Value::as_str)
-                        .map(|text| Outcome::Succeeded(bounded([text])))
+                        .map(|text| Outcome::Succeeded(text.into()))
                 } else {
                     Some(Outcome::Failed {
                         message: event
@@ -159,11 +150,12 @@ impl NativeAnswer {
                         .pointer("/message/content")
                         .and_then(Value::as_array)
                         .map(|parts| {
-                            Outcome::Succeeded(bounded(
+                            Outcome::Succeeded(
                                 parts
                                     .iter()
-                                    .filter_map(|part| part.get("text").and_then(Value::as_str)),
-                            ))
+                                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                                    .collect(),
+                            )
                         }),
                     Some("error") => Some(Outcome::Failed {
                         message: event
@@ -179,17 +171,6 @@ impl NativeAnswer {
             _ => {}
         }
     }
-}
-
-pub(super) fn bounded<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
-    parts
-        .into_iter()
-        .flat_map(str::chars)
-        .scan(0, |bytes, ch| {
-            *bytes += ch.len_utf8();
-            (*bytes <= ANSWER_LIMIT).then_some(ch)
-        })
-        .collect()
 }
 
 #[cfg(test)]

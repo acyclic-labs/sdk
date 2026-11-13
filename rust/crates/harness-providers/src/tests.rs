@@ -169,9 +169,10 @@ async fn all_adapters_parse_fragmented_utf8_tools_reasoning_and_usage() -> Resul
             };
             assert_eq!(metadata["id"], "run");
             let research = acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED;
+            // Every build joins the provider's request log to the completion.
             assert_eq!(
                 metadata["provider_request_id"].as_str(),
-                research.then_some("generated-http-identity")
+                Some("generated-http-identity")
             );
             assert_eq!(
                 metadata["system_fingerprint"].as_str(),
@@ -543,10 +544,87 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
     Ok(())
 }
 
+/// A settled answer followed by hook context (the feedback plugin's
+/// retrospective, a Stop reason) is the next request's only new input. It
+/// extends the cached prefix in place and ends the conversation, so no route
+/// rewrites its system span or synthesizes a `(continue)` turn.
+#[test]
+fn hook_context_after_an_answer_extends_the_prefix_on_every_route() -> Result<()> {
+    const NOTICE: &str = "What slowed you down or blocked you?";
+    let routes = [
+        (Adapter::Chat, false),
+        (Adapter::Responses, false),
+        (Adapter::Responses, true),
+        (Adapter::Anthropic, false),
+        (Adapter::Gemini, false),
+    ];
+    for (adapter, login) in routes {
+        let (mut provider, _) = provider(adapter, 200);
+        if login {
+            Arc::make_mut(&mut provider.config).authentication =
+                crate::Authentication::ApiKeyOrCodexLogin;
+        }
+        let (prepared, _) = request(&provider)?;
+        let base = prepared.request().clone();
+        let mut noticed = base.clone();
+        noticed.messages.extend([
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("answer".into()),
+            },
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(NOTICE.into()),
+            },
+        ]);
+        let base = projection::body(&provider, &base)?;
+        let noticed = projection::body(&provider, &noticed)?;
+        let route = format!("{adapter:?} login={login}");
+        let (system, conversation) = match adapter {
+            Adapter::Chat => (None, "messages"),
+            Adapter::Responses => (login.then_some("instructions"), "input"),
+            Adapter::Anthropic => (Some("system"), "messages"),
+            Adapter::Gemini => (Some("systemInstruction"), "contents"),
+        };
+        if let Some(system) = system {
+            // Control: the leading system run is still hoisted.
+            assert!(base[system].to_string().contains("system"), "{route}");
+            assert_eq!(base[system], noticed[system], "{route}: system rewritten");
+        }
+        let (base, noticed) = (
+            base[conversation]
+                .as_array()
+                .ok_or_else(|| invalid("no base conversation"))?,
+            noticed[conversation]
+                .as_array()
+                .ok_or_else(|| invalid("no conversation"))?,
+        );
+        assert_eq!(
+            &base[..],
+            &noticed[..base.len()],
+            "{route}: prefix rewritten"
+        );
+        let last = noticed
+            .last()
+            .ok_or_else(|| invalid("empty conversation"))?
+            .to_string();
+        assert!(
+            last.contains(NOTICE),
+            "{route}: notice is not the last input"
+        );
+        assert!(!last.contains("(continue)"), "{route}: synthetic turn");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Result<()> {
     for (adapter, _) in fixtures() {
         let (mut provider, script) = provider(adapter, 200);
+        Arc::make_mut(&mut provider.config).headers.extend([
+            ("X-Client-Request-Id".into(), "configured-mixed".into()),
+            ("x-client-request-id".into(), "configured-lower".into()),
+        ]);
         provider.capacity.output_tokens = Some(provider.capacity.context_tokens);
         let (request, dispatch) = request(&provider)?;
         let count = provider.counted(&request, 0).await?;
@@ -568,7 +646,9 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
                 .iter()
                 .filter(|event| !matches!(
                     event,
-                    ModelEvent::ReasoningBlock { .. } | ModelEvent::TextPart { .. }
+                    ModelEvent::ReasoningBlock { .. }
+                        | ModelEvent::TextPart { .. }
+                        | ModelEvent::Trace { .. }
                 ))
                 .count(),
             4
@@ -611,6 +691,20 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
             .lock()
             .map_err(|_| invalid("poisoned fixture"))?;
         assert_eq!(sent.len(), 1);
+        // Every adapter names the journal dispatch, so relay and provider
+        // request logs join this step's usage record.
+        assert_eq!(
+            sent[0].headers["x-client-request-id"],
+            format!("{}-{}", dispatch.operation_id, dispatch.step)
+        );
+        assert_eq!(
+            sent[0]
+                .headers
+                .keys()
+                .filter(|name| name.eq_ignore_ascii_case("x-client-request-id"))
+                .count(),
+            1
+        );
         let body = json(&sent[0].body)?;
         for field in ["max_output_tokens", "max_completion_tokens"] {
             assert!(
@@ -1010,7 +1104,8 @@ pub(crate) trait CountTestExt: acyclic_harness_core::model::ModelProvider {
                         )?;
                         return Ok((count, custody));
                     }
-                    acyclic_harness_core::model::ModelEvent::Wait(_) => {
+                    acyclic_harness_core::model::ModelEvent::Wait(_)
+                    | acyclic_harness_core::model::ModelEvent::Trace { .. } => {
                         drop(custody);
                     }
                     other => {
@@ -1032,7 +1127,7 @@ pub(crate) async fn count_result(
     let mut events = core::pin::pin!(events);
     while let Some(event) = events.next().await {
         match event? {
-            ModelEvent::Wait(_) => {}
+            ModelEvent::Wait(_) | ModelEvent::Trace { .. } => {}
             ModelEvent::Counted { count } => {
                 if let Some(trailing) = events.next().await {
                     trailing?;
