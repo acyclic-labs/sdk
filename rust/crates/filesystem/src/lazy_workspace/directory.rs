@@ -26,6 +26,8 @@ pub struct LazyDirectoryEntry {
 pub struct LazyDirectoryPage {
     /// At most the requested number of visible entries.
     pub entries: Vec<LazyDirectoryEntry>,
+    /// Physical candidates consumed before authored-shadow filtering.
+    pub examined: u32,
     /// Continuation for the same cut and directory.
     pub next: Option<LazyDirectoryCursor>,
 }
@@ -231,6 +233,7 @@ impl<
             prior = Some(Owned::new(cursor.directory, cursor.allocation, bytes));
         }
         let mut used = false;
+        let mut examined = 0;
         let result = async {
             let authored = checkout
                 .lookup_no_follow_with_metadata_with_accounting(
@@ -323,6 +326,8 @@ impl<
                                 return Err(error);
                             }
                         };
+                        examined = u32::try_from(page.entries.len())
+                            .map_err(|_| LazyWorkspaceError::TooLarge)?;
                         let retained = page.retained_bytes();
                         let mut source_guard = ctx.claim_owned(0, 0)?;
                         let projected = async {
@@ -415,6 +420,8 @@ impl<
                             }
                             Err(error) => return Err(error.into()),
                         };
+                        examined = u32::try_from(page.entries.len())
+                            .map_err(|_| LazyWorkspaceError::TooLarge)?;
                         let retained = retained_directory_page_bytes(
                             &page.entries,
                             page.entries.iter().map(|e| e.name.retained_bytes()),
@@ -478,6 +485,7 @@ impl<
         Ok((
             LazyDirectoryPage {
                 entries: entries.value,
+                examined,
                 next,
             },
             used,

@@ -376,8 +376,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let (loaded, lazy_next) = match lazy_page {
-                Some((page, next, custody)) => (Some((page, Some(custody))), next),
+            let (loaded, lazy_next, physical_examined) = match lazy_page {
+                Some((page, next, custody, examined)) => {
+                    (Some((page, Some(custody))), next, Some(examined))
+                }
                 None => (
                     io.sdk_if_present(
                         generation
@@ -391,10 +393,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .await,
                     )?,
                     None,
+                    None,
                 ),
             };
             #[cfg(target_arch = "wasm32")]
-            let (loaded, lazy_next): (_, Option<String>) = (
+            let (loaded, lazy_next, physical_examined): (
+                _,
+                Option<String>,
+                Option<u32>,
+            ) = (
                 io.sdk_if_present(
                     generation
                         .list_directory(
@@ -407,13 +414,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .await,
                 )?,
                 None,
+                None,
             );
             let Some((mut page, custody)) = loaded else {
                 return Ok(None);
             };
             let page_bytes = raw_owned_bytes(&page)?;
-            let examined = u32::try_from(page.entries.len())
-                .map_err(|_| io.invalid("directory page is too large"))?;
+            let examined = physical_examined.unwrap_or(
+                u32::try_from(page.entries.len())
+                    .map_err(|_| io.invalid("directory page is too large"))?,
+            );
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(custody) = custody {
                 io.absorb_native_custody(custody)?;
@@ -429,7 +439,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let mut page_hold = io.guard_owned(page_bytes)?;
             guard().await?;
             io.charge(WorkCounters {
-                items_examined: page.entries.len() as u64,
+                items_examined: examined as u64,
                 ..Default::default()
             })?;
             let now = super::super::access::access_now()?;

@@ -37,7 +37,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         cursor: Option<LazyDirectoryCursor>,
         maximum: u32,
         caller: &PreparationIo,
-    ) -> Result<(DirectoryPage, Option<String>, acyclic_fs::NativeAllocation)> {
+    ) -> Result<(
+        DirectoryPage,
+        Option<String>,
+        acyclic_fs::NativeAllocation,
+        u32,
+    )> {
         let view = self
             .private_view
             .as_ref()
@@ -54,6 +59,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let (mut page, allocation) = view
             .directory(cut, requested, cursor, maximum, &mut ctx, &io)?
             .await?;
+        let examined = page.examined;
         let next = if let Some(cursor) = page.next.take() {
             let encoded = cursor.encode(work)?;
             cursor.retire(&mut ctx)?;
@@ -117,6 +123,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let retained = raw_owned_bytes(&page)?
             - std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64
             + next.as_ref().map_or(0, |token| token.capacity() as u64);
-        Ok((page, next, io.into_native_custody(retained)?))
+        Ok((page, next, io.into_native_custody(retained)?, examined))
     }
 }
