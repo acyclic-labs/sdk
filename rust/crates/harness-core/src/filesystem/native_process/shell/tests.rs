@@ -152,7 +152,7 @@ async fn abandoned_preparation_retains_its_root_and_leaves_the_executor_availabl
     let mut preparation = Box::pin(super::super::prepare_with_custody(
         // Tuple fields retire in order: the event follows physical root cleanup.
         (project, Retired(Some(retired))),
-        move || {
+        move |_| {
             let _ = entered.send(());
             released
                 .recv_timeout(std::time::Duration::from_secs(2))
