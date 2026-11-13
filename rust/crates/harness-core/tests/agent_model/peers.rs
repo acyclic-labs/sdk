@@ -206,6 +206,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
         calls: Arc<AtomicUsize>,
         answer: bool,
         goal: Option<acyclic_harness_core::OperationId>,
+        steering: bool,
         output: acyclic_harness_core::conversation::FileRef,
     }
     impl TurnDriver for Recipient {
@@ -219,21 +220,33 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
                 let outs = match input {
-                    Some(input) if self.answer => vec![Out::Conversation(
-                        ConversationEntry {
-                            observed_through: input.inbox + 1,
-                            steering: None,
-                            inbox: input.inbox,
-                            input: input.input,
-                            output: self.output.clone(),
-                            outcome: TurnOutcome::Completed,
-                            goal: self.goal,
-                            announcements: Vec::new(),
-                            tool_results: None,
-                            notices: None,
+                    Some(input) if self.answer => {
+                        let steering =
+                            (self.steering && input.inbox <= 2).then(|| SteeringTranscript {
+                                through: input.inbox + 3,
+                                file: self.output.clone(),
+                            });
+                        let through = steering.as_ref().map(|cut| cut.through);
+                        let mut outs = vec![Out::Conversation(
+                            ConversationEntry {
+                                observed_through: through.unwrap_or(input.inbox + 1),
+                                steering,
+                                inbox: input.inbox,
+                                input: input.input,
+                                output: self.output.clone(),
+                                outcome: TurnOutcome::Completed,
+                                goal: self.goal,
+                                announcements: Vec::new(),
+                                tool_results: None,
+                                notices: None,
+                            }
+                            .encode()?,
+                        )];
+                        if let Some(through) = through {
+                            outs.push(Out::Steered(through));
                         }
-                        .encode()?,
-                    )],
+                        outs
+                    }
                     Some(input) => vec![Out::InputCancelled {
                         input: input.inbox,
                         conversation: state.conversation_tail,
@@ -257,6 +270,8 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
         })
     {
         for opt_out_before_delivery in [false, true] {
+            let steering = answer && !continuing && !opt_out_before_delivery;
+            let cancelled_steering = steering && delivery == MessageDelivery::FollowUp;
             let source = MemoryStream::default();
             let destination = Arc::new(MemoryStream::default());
             let sender = create(&source, id(60)).await?;
@@ -274,6 +289,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                     answer,
                     goal: continuing
                         .then(|| acyclic_harness_core::OperationId::from_bytes([4; 16])),
+                    steering,
                     output: super::driver::file("answer.md")?,
                 },
                 ActorLimits::default(),
@@ -305,18 +321,30 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 recipient: head(&destination, &recipient).await?,
             };
             let state = AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+            let mut sends = vec![("request", delivery)];
+            if steering {
+                sends.extend([
+                    ("reserved", MessageDelivery::FollowUp),
+                    ("earlier-steering", MessageDelivery::Steer),
+                    ("later-steering", MessageDelivery::Steer),
+                ]);
+            }
+            let body = super::driver::file("message.md")?;
             let step = Step {
                 outs: effect_outs(
                     &state,
-                    vec![TurnEffect::Send {
-                        peer: Some(admission),
-                        delivery,
-                        to: recipient.clone(),
-                        id: intent("request"),
-                        re: None,
-                        body: Box::new(super::driver::file("message.md")?),
-                        attachments: None,
-                    }],
+                    sends
+                        .into_iter()
+                        .map(|(name, delivery)| TurnEffect::Send {
+                            peer: Some(admission.clone()),
+                            delivery,
+                            to: recipient.clone(),
+                            id: intent(name),
+                            re: None,
+                            body: Box::new(body.clone()),
+                            attachments: None,
+                        })
+                        .collect(),
                 ),
                 state,
                 status: None,
@@ -342,6 +370,16 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 .await?
                 .ok_or("outbox missing")?;
             let envelope = route::Publication::decode(&record.value)?.delivery()?;
+            let mut additional = Vec::new();
+            if steering {
+                for sequence in 1..4 {
+                    let record = source
+                        .record_at(routing.paths.outbox(&routing.node)?, sequence)
+                        .await?
+                        .ok_or("additional outbox record missing")?;
+                    additional.push(route::Publication::decode(&record.value)?.delivery()?);
+                }
+            }
             drop(source);
             let account = MemoryStream::default();
             let recipient_node = NodeId::new(b"recipient-node")?;
@@ -357,6 +395,24 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 commit_id: original.commit_id,
                 sequence: original.sequence,
             };
+            let mut steered = Vec::new();
+            for envelope in additional {
+                envelope
+                    .publish_relay(&account, &routing.paths, &recipient_node, Vec::new())
+                    .await?;
+                let record = account
+                    .head(routing.paths.relay(&recipient_node)?)
+                    .await?
+                    .last
+                    .ok_or("additional relay missing")?;
+                steered.push((
+                    envelope,
+                    route::RelayReceipt {
+                        commit_id: record.commit_id,
+                        sequence: record.sequence,
+                    },
+                ));
+            }
             drop(account);
             let peer = PeerRoute::parse(&envelope)?;
             if opt_out_before_delivery {
@@ -400,6 +456,27 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 before_activation + u64::from(!opt_out_before_delivery),
                 "a skipped inbox append published a wake"
             );
+            for (envelope, receipt) in &steered {
+                assert!(matches!(
+                    PeerRoute::parse(envelope)?
+                        .deliver(&host, &receiving, receipt)
+                        .await?,
+                    Delivered::Committed { .. }
+                ));
+            }
+            if cancelled_steering {
+                host.send(
+                    &recipient,
+                    &user(),
+                    &InboxRecord::Cancel(Cancellation {
+                        by: user(),
+                        id: intent("cancel-steering"),
+                        input: 3,
+                        conversation: 0,
+                    }),
+                )
+                .await?;
+            }
             host.set_peer_membership(
                 &recipient,
                 &user(),
@@ -414,7 +491,13 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             );
             assert_eq!(
                 destination.tail(recipient.inbox()?).await?,
-                if opt_out_before_delivery { 1 } else { 2 }
+                if opt_out_before_delivery {
+                    1
+                } else if steering {
+                    5 + u64::from(cancelled_steering)
+                } else {
+                    2
+                }
             );
             let return_outbox = receiving.paths.outbox(&receiving.node)?;
             if opt_out_before_delivery {
@@ -440,7 +523,11 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             host.drain(&recipient).await?;
             assert_eq!(
                 calls.load(Ordering::SeqCst),
-                usize::from(!opt_out_before_delivery)
+                if steering {
+                    2
+                } else {
+                    usize::from(!opt_out_before_delivery)
+                }
             );
             if continuing && !opt_out_before_delivery {
                 assert!(matches!(
@@ -466,11 +553,12 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 ));
                 continue;
             }
+            let terminal_count = if steering { 4 } else { 1 };
             assert_eq!(
                 destination
                     .tail(receiving.paths.outbox(&receiving.node)?)
                     .await?,
-                1
+                terminal_count
             );
             let terminal = destination
                 .record_at(receiving.paths.outbox(&receiving.node)?, 0)
@@ -488,14 +576,59 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                     }
                 )?,
             );
+            if steering {
+                for (index, (original, sequence, inbox)) in [(1_usize, 0, 3), (0, 1, 2), (2, 1, 4)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let (envelope, receipt) = &steered[original];
+                    let dropped = cancelled_steering && original == 1;
+                    let result = destination
+                        .record_at(receiving.paths.outbox(&receiving.node)?, index as u64 + 1)
+                        .await?
+                        .ok_or("steering terminal missing")?;
+                    assert_eq!(
+                        route::Publication::decode(&result.value)?.delivery()?,
+                        PeerRoute::parse(envelope)?.result(
+                            receiving.node.clone(),
+                            receipt,
+                            if dropped {
+                                SentReplyStatus::Dropped
+                            } else {
+                                SentReplyStatus::Answered { sequence }
+                            }
+                        )?
+                    );
+                    let id = PeerRoute::parse(envelope)?.id().clone();
+                    let reply = host.reply(&recipient, &id, inbox).await?;
+                    if dropped {
+                        assert!(matches!(reply, Reply::Dropped));
+                    } else {
+                        assert!(
+                            matches!(reply, Reply::Answered { sequence: actual, .. } if actual == sequence)
+                        );
+                    }
+                }
+            }
             if !opt_out_before_delivery {
-                let cancelled = destination
-                    .head(StreamPath::new(format!(
-                        "{recipient}/context/input-events"
-                    ))?)
+                let mut facts = destination
+                    .read(ReadRequest {
+                        path: StreamPath::new(format!("{recipient}/context/input-events"))?,
+                        from: 0,
+                        limit: 1,
+                        key: Some(acyclic_stream::ReadKeySeek::exact(
+                            1_u64.to_be_bytes().to_vec(),
+                            u64::MAX,
+                        )),
+                        at_least: Default::default(),
+                    })
                     .await?;
                 assert_eq!(
-                    cancelled.last.ok_or("cancellation fact missing")?.commit_id,
+                    facts
+                        .try_next()
+                        .await?
+                        .ok_or("settlement fact missing")?
+                        .commit_id,
                     terminal.commit_id,
                     "the terminal Notice must join the original input settlement"
                 );
@@ -504,7 +637,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                     destination
                         .tail(receiving.paths.outbox(&receiving.node)?)
                         .await?,
-                    1,
+                    terminal_count,
                     "replaying an idle actor must not publish another terminal"
                 );
                 let local_peer = AgentPath::root(&id(62));
@@ -528,7 +661,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                         destination
                             .tail(receiving.paths.outbox(&receiving.node)?)
                             .await?,
-                        1,
+                        terminal_count,
                         "ordinary user and same-node peer inputs must not emit routed results"
                     );
                 }

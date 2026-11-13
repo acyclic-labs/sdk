@@ -85,7 +85,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     let mut records = Vec::new();
     let mut ranges = Vec::new();
     let mut fence = None;
-    let mut results = Vec::new();
+    let mut results = std::collections::BTreeMap::new();
     let mut sequence = conversation
         .checked_sub(
             outs.iter()
@@ -93,8 +93,11 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 .count() as u64,
         )
         .ok_or(Error::Record("conversation tail precedes its appends"))?;
+    let prior_conversation = sequence;
+    let mut committed_frontier = None;
+    let mut preceding_frontier = None;
     if let Some(retired) = retired {
-        ranges.push(retired);
+        ranges.push((retired, None));
     }
     for out in outs {
         if let super::Out::InputCancelled {
@@ -107,16 +110,13 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 .ok_or(Error::Record("cancelled input is unavailable"))?;
             let source = super::InboxRecord::decode(&record.value)?;
             if let Some((routing, within)) = routing
-                && let Some(result) = super::routing::notices::terminal(
-                    routing,
-                    within,
-                    agent,
-                    &source,
-                    &record,
-                    super::SentReplyStatus::Dropped,
-                )?
+                && let Some(peer) =
+                    super::routing::notices::PeerInput::parse(agent, &source, &record)?
             {
-                results.push(result);
+                results.insert(
+                    *input,
+                    peer.terminal(routing, within, super::SentReplyStatus::Dropped)?,
+                );
             }
             if let Some(input) = super::input::input(*input, source)
                 && let Some(run) = super::goal::continuing(agent, &input.input)
@@ -131,6 +131,8 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             continue;
         };
         let entry = super::ConversationEntry::decode(record)?;
+        let observed_before = preceding_frontier;
+        preceding_frontier = Some(entry.observed_through);
         let settled_at = sequence;
         sequence = sequence
             .checked_add(1)
@@ -151,17 +153,18 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             if entry.admitted_message(entry.inbox, &source).is_none() {
                 return Err(Error::Record("conversation answered another peer input"));
             }
-            if let Some(result) = super::routing::notices::terminal(
-                routing,
-                within,
-                agent,
-                &source,
-                &record,
-                super::SentReplyStatus::Answered {
-                    sequence: settled_at,
-                },
-            )? {
-                results.push(result);
+            if let Some(peer) = super::routing::notices::PeerInput::parse(agent, &source, &record)?
+            {
+                results.insert(
+                    entry.inbox,
+                    peer.terminal(
+                        routing,
+                        within,
+                        super::SentReplyStatus::Answered {
+                            sequence: settled_at,
+                        },
+                    )?,
+                );
             }
         }
         completed.insert(entry.inbox);
@@ -169,12 +172,18 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         // Settlement carries its complete admitted interval. A parked turn's
         // frontier is supplied separately, so neither path depends on a later
         // cancellation delivery finding the retired input still queued.
-        ranges.push(super::BoundaryCut {
-            from: entry.inbox.saturating_add(1),
-            through: cut.through,
-        });
+        ranges.push((
+            super::BoundaryCut {
+                from: entry.inbox.saturating_add(1),
+                through: cut.through,
+            },
+            entry
+                .goal
+                .is_none()
+                .then_some((settled_at, observed_before)),
+        ));
     }
-    for cut in ranges {
+    for (cut, settled_at) in ranges {
         let mut from = cut.from;
         while from < cut.through {
             let limit = (cut.through - from).min(super::MAX_QUEUED as u64) as u32;
@@ -199,28 +208,61 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 let source = super::InboxRecord::decode(&record.value)?;
                 if matches!(source, super::InboxRecord::Message(_)) {
                     completed.insert(from);
+                    if let Some((settled_at, observed_before)) = settled_at
+                        && let Some((routing, within)) = routing
+                        && let std::collections::btree_map::Entry::Vacant(result) =
+                            results.entry(from)
+                        && let Some(peer) =
+                            super::routing::notices::PeerInput::parse(agent, &source, &record)?
+                    {
+                        let observed_before = match observed_before {
+                            Some(frontier) => frontier,
+                            None => match committed_frontier {
+                                Some(frontier) => frontier,
+                                None => {
+                                    let frontier = match prior_conversation.checked_sub(1) {
+                                        None => 0,
+                                        Some(sequence) => {
+                                            let record = super::reply::source_record(
+                                                provider,
+                                                agent.conversation()?,
+                                                sequence,
+                                            )
+                                            .await?
+                                            .ok_or(Error::Record(
+                                                "preceding conversation is unavailable",
+                                            ))?;
+                                            super::ConversationEntry::decode(&record.value)?
+                                                .observed_through
+                                        }
+                                    };
+                                    committed_frontier = Some(frontier);
+                                    frontier
+                                }
+                            },
+                        };
+                        if from >= observed_before {
+                            observe_fence(provider, agent, &mut fence).await?;
+                            let status = if cancelled(provider, agent, from)
+                                .await?
+                                .is_some_and(|frontier| frontier <= settled_at)
+                            {
+                                super::SentReplyStatus::Dropped
+                            } else {
+                                super::SentReplyStatus::Answered {
+                                    sequence: settled_at,
+                                }
+                            };
+                            result.insert(peer.terminal(routing, within, status)?);
+                        }
+                    }
                     if let Some(input) = super::input::input(from, source)
                         && let Some(run) = super::goal::continuing(agent, &input.input)
                     {
                         // The first terminal fact and this retirement must
                         // observe the same order. A changed tail is a source
                         // event that revalidates this actor publication.
-                        if fence.is_none() {
-                            let path = input_events(agent)?;
-                            fence = Some(match provider.head(path.clone()).await {
-                                Ok(head) => acyclic_stream::CommitCondition::Tail {
-                                    path,
-                                    expected: head.tail,
-                                },
-                                Err(error)
-                                    if error.category()
-                                        == acyclic_stream::StreamError::NotFound =>
-                                {
-                                    acyclic_stream::CommitCondition::Absent { path }
-                                }
-                                Err(error) => return Err(Error::Stream(error)),
-                            });
-                        }
+                        observe_fence(provider, agent, &mut fence).await?;
                         if cancelled(provider, agent, from).await?.is_some() {
                             // A caller's requested frontier is not evidence of
                             // retirement; this commit's conversation cut is.
@@ -270,6 +312,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         if !results.is_empty()
             && let Some((routing, _)) = routing
         {
+            let results = results.into_values().collect::<Vec<_>>();
             let path = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
             if let Some(acyclic_stream::CommitMutation::Append { records, .. }) = effect
                 .mutations
@@ -296,6 +339,28 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         }
     }
     Ok(fence.is_some())
+}
+
+/// Share the one terminal-fact cut across all decisions in this publication.
+async fn observe_fence<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &super::AgentPath,
+    fence: &mut Option<acyclic_stream::CommitCondition>,
+) -> Result<(), Error> {
+    if fence.is_none() {
+        let path = input_events(agent)?;
+        *fence = Some(match provider.head(path.clone()).await {
+            Ok(head) => acyclic_stream::CommitCondition::Tail {
+                path,
+                expected: head.tail,
+            },
+            Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {
+                acyclic_stream::CommitCondition::Absent { path }
+            }
+            Err(error) => return Err(Error::Stream(error)),
+        });
+    }
+    Ok(())
 }
 
 fn goal_cancellation(

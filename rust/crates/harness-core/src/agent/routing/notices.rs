@@ -135,55 +135,74 @@ impl PeerRoute<'_> {
     }
 }
 
-/// A settled accepted input already has its immutable source in hand. Return
-/// only a routed peer's terminal, never traffic for ordinary local inputs.
-pub(in crate::agent) fn terminal(
-    routing: &super::Routing,
-    within: &acyclic_actors::addressing::ActorReference,
-    agent: &AgentPath,
-    source: &InboxRecord,
-    record: &acyclic_stream::Record,
-    status: SentReplyStatus,
-) -> Result<Option<AppendRecord>, Error> {
-    let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = source else {
-        return Ok(None);
-    };
-    let Sender::Agent { path: sender } = &message.from else {
-        return Ok(None);
-    };
-    if agent.depth() != 0
-        || sender.depth() != 0
-        || sender == agent
-        || record.origin != agent.inbox()?
-    {
-        return Ok(None);
+/// The original host receipt of an accepted routed peer input. Parsing does
+/// not create a result, so cancellation order can be decided before encoding.
+pub(in crate::agent) struct PeerInput<'a> {
+    peer: &'a AgentPath,
+    sender: &'a AgentPath,
+    id: &'a IntentId,
+    receipt: route::RelayReceipt,
+}
+
+impl<'a> PeerInput<'a> {
+    pub(in crate::agent) fn parse(
+        agent: &'a AgentPath,
+        source: &'a InboxRecord,
+        record: &acyclic_stream::Record,
+    ) -> Result<Option<Self>, Error> {
+        let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = source else {
+            return Ok(None);
+        };
+        let Sender::Agent { path: sender } = &message.from else {
+            return Ok(None);
+        };
+        if agent.depth() != 0
+            || sender.depth() != 0
+            || sender == agent
+            || record.origin != agent.inbox()?
+        {
+            return Ok(None);
+        }
+        let Some(receipt) =
+            route::RelayReceipt::from_headers(&record.headers).map_err(super::error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            peer: agent,
+            sender,
+            id: &message.id,
+            receipt,
+        }))
     }
-    let Some(receipt) = route::RelayReceipt::from_headers(&record.headers).map_err(super::error)?
-    else {
-        return Ok(None);
-    };
-    let actor = |path: &AgentPath| {
-        crate::agent::handler::Agents::<dyn crate::store::JournalProvider>::actor(
-            within,
-            &path.id(),
-        )
-    };
-    Ok(Some(
-        ResultRecord {
+
+    pub(in crate::agent) fn terminal(
+        &self,
+        routing: &super::Routing,
+        within: &acyclic_actors::addressing::ActorReference,
+        status: SentReplyStatus,
+    ) -> Result<AppendRecord, Error> {
+        let actor = |path: &AgentPath| {
+            crate::agent::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+                within,
+                &path.id(),
+            )
+        };
+        Ok(ResultRecord {
             version: 1,
-            id: message.id.clone(),
-            peer: agent.clone(),
+            id: self.id.clone(),
+            peer: self.peer.clone(),
             status,
         }
         .envelope(
             routing.node.clone(),
-            actor(agent)?,
-            actor(sender)?,
-            sender,
-            &receipt,
+            actor(self.peer)?,
+            actor(self.sender)?,
+            self.sender,
+            &self.receipt,
         )?
-        .outbox_record(),
-    ))
+        .outbox_record())
+    }
 }
 
 /// Host-result data validation; this does not confer a peer or node grant.
