@@ -130,8 +130,8 @@ pub enum Action {
     Call,
 }
 
-/// `live/agents/self/admissions/<version>.json`: what happened to one write
-/// of a settings file, where <version> is the version the write produced.
+/// `live/agents/<agent>/admissions/<path>/<cut>/<version>.json`: the selected
+/// file version's outcome under one complete original configuration cut.
 /// "invalid" and "rejected" cannot relax enforcement: retain previously
 /// admitted settings, or refuse the session when no retained generation exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
