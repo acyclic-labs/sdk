@@ -332,7 +332,7 @@ impl PreparationIo {
             value,
             bounds,
             Some(crate::wire::ErrorCode::Invalid),
-            &mut |charge| self.codec_charge(charge, false),
+            &mut |charge| self.codec_charge(charge, true),
         );
         let value = finish_encoding(diagnostics, result)?;
         held.into_retained()?;
@@ -421,7 +421,7 @@ impl PreparationIo {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native Value decoding requires original work"));
         }
-        let bounds = self.bounds(u64::MAX, 128)?;
+        let bounds = self.bounds(None, 128)?;
         self.decode_guarded(
             (schema != Schema::Root).then_some(labels),
             Some(code),
