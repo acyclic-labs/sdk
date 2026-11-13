@@ -5286,6 +5286,8 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
         Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
     ));
     drop(content);
+    // Its lazy child readers retain the original stream provider across reopen.
+    drop(state);
     let request = |index| {
         provider
             .request(index)
@@ -5311,9 +5313,13 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
 
     // Return to the frozen value while closed, then repeat the same transition.
     // The durable frontier must correct B -> A and give A -> B a new intent.
-    std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
+    settled(&harness, &root).await?;
     drop(client);
-    drop(harness);
+    Arc::try_unwrap(harness)
+        .map_err(|_| Error::Conflict("instruction owner is still borrowed".into()))?
+        .disconnect()
+        .await?;
+    std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
     let harness = Arc::new(open()?.await?);
     let mut client = ObservedConversation::open(&harness).await?;
     client.send("three", "AFTER_REOPEN").await?;
