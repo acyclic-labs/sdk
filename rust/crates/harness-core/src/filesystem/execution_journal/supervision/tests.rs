@@ -2,11 +2,91 @@
 use super::*;
 use crate::supervision::{Action, Kind};
 
+async fn authored_workspace<P, A, O>(
+    journal: &FilesystemExecutionJournal<P, A, O>,
+    issuer: &crate::core::AuthorityRoot,
+    bytes: &[u8],
+) -> Result<(
+    crate::runtime::ContentBindings,
+    crate::runtime::RuntimeScope,
+    FileRef,
+)>
+where
+    P: crate::store::JournalProvider + ?Sized,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    use crate::conversation::{ContentAccess, ContentChange, ContentPublisher, VolumeOwner};
+    let VolumeOwner::Agent(agent) = journal.volume.owner() else {
+        return Err(Error::Invalid(
+            "authored workspace needs its original agent".into(),
+        ));
+    };
+    let volume = VolumeRef::new(
+        journal.volume.provider().clone(),
+        "authored-workspace".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(*agent),
+        &mut None,
+    )?;
+    journal.host.create_volume(&volume).await?;
+    let scope = issuer.bootstrap_scope(
+        "authored-owner",
+        &crate::Capabilities::new([
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(*agent),
+        &mut None,
+    )?;
+    let verifier = issuer.verifier(&mut None)?;
+    let publisher = crate::filesystem::FilesystemContentPublisher::new(
+        journal.host.clone(),
+        &volume,
+        &verifier,
+        &scope,
+        64 * 1024,
+        None,
+    )?;
+    let (receipt, _hold) = publisher
+        .stage_changes(
+            &volume,
+            OperationId::from_bytes([125; 16]),
+            &[ContentChange::CreateAbsent {
+                path: "work.txt",
+                bytes,
+                media_type: "text/plain",
+                display_name: "work.txt",
+            }],
+            ContentAccess::default(),
+        )?
+        .await?;
+    let source = receipt
+        .files()
+        .next()
+        .cloned()
+        .ok_or_else(|| Error::Invalid("source missing".into()))?;
+    Ok((
+        crate::runtime::ContentBindings {
+            volume,
+            reader: crate::filesystem::FilesystemContentVerifier::new(
+                journal.host.clone(),
+                &verifier,
+                &scope,
+                64 * 1024,
+                None,
+            )?,
+            writer: Some(publisher),
+        },
+        crate::runtime::RuntimeScope::new(scope.capabilities().clone(), Default::default())?,
+        source,
+    ))
+}
 #[tokio::test]
 async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -> Result<()> {
     use crate::conversation::{ContentAccess, ContentChange, ContentPublisher};
     use crate::supervision::{RunAdmission, RunAdmissionSource};
-    let (journal, _issuer) = super::super::test_support::journal().await?;
+    let (journal, issuer) = super::super::test_support::journal().await?;
     let run = OperationId::from_bytes([113; 16]);
     let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([81; 16]));
     let policy = Policy {
@@ -119,22 +199,9 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
             None,
         )?
         .await?;
-    let content = crate::runtime::ContentBindings {
-        volume: journal.volume.clone(),
-        reader: crate::filesystem::FilesystemContentVerifier::new(
-            journal.host.clone(),
-            &journal.verifier,
-            &journal.scope,
-            64 * 1024,
-            None,
-        )?,
-        writer: Some(publisher),
-    };
+    let (content, scope, source) = authored_workspace(&journal, &issuer, b"original").await?;
     let mut bindings = crate::runtime::Bindings::local();
-    bindings.scope = crate::runtime::RuntimeScope::new(
-        journal.scope.capabilities().clone(),
-        Default::default(),
-    )?;
+    bindings.scope = scope;
     bindings.content = Some(content.clone());
     let filesystem = journal.host.clone();
     let task = Arc::new(
@@ -143,7 +210,6 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
             .agent_context(&crate::Capabilities::new(Vec::<String>::new()), content)?
             .with_execution_journal(Arc::new(journal), operation)?,
     );
-    let source = source.ok_or_else(|| Error::Invalid("original source missing".into()))?;
     let write = crate::runtime::ToolContext::new(task.clone(), write_operation, "write")?;
     let (source, _) = write
         .stage_tool_file_once(
@@ -180,7 +246,6 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
 #[tokio::test]
 async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_recovery()
 -> Result<()> {
-    use crate::conversation::{ContentAccess, ContentChange, ContentPublisher};
     use crate::supervision::{RunAdmission, RunAdmissionSource};
     for native in [false, true] {
         let (journal, _issuer) = super::super::test_support::journal().await?;
@@ -208,48 +273,9 @@ async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_
             policy: policy_file,
             value: declaration.verify(operation, b"Finish", &bytes)?,
         }));
-        let publisher = crate::filesystem::FilesystemContentPublisher::new(
-            journal.host.clone(),
-            &journal.volume,
-            &journal.verifier,
-            &journal.scope,
-            64 * 1024,
-            None,
-        )?;
-        let (created, _hold) = publisher
-            .stage_changes(
-                &journal.volume,
-                OperationId::from_bytes([123; 16]),
-                &[ContentChange::CreateAbsent {
-                    path: "receipt.txt",
-                    bytes: b"before",
-                    media_type: "text/plain",
-                    display_name: "receipt.txt",
-                }],
-                ContentAccess::default(),
-            )?
-            .await?;
-        let source = created
-            .files()
-            .next()
-            .cloned()
-            .ok_or_else(|| Error::Invalid("source missing".into()))?;
-        let content = crate::runtime::ContentBindings {
-            volume: journal.volume.clone(),
-            reader: crate::filesystem::FilesystemContentVerifier::new(
-                journal.host.clone(),
-                &journal.verifier,
-                &journal.scope,
-                64 * 1024,
-                None,
-            )?,
-            writer: Some(publisher),
-        };
+        let (content, scope, source) = authored_workspace(&journal, &_issuer, b"before").await?;
         let mut bindings = crate::runtime::Bindings::local();
-        bindings.scope = crate::runtime::RuntimeScope::new(
-            journal.scope.capabilities().clone(),
-            Default::default(),
-        )?;
+        bindings.scope = scope;
         bindings.content = Some(content.clone());
         let task = Arc::new(
             bindings
