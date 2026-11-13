@@ -135,41 +135,125 @@ fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Res
     let project_volume = project.volume.clone();
     let mut data = volume("B", "data", policy.clone())?;
     data.root = "reports".into();
-    let mut table = compose(root(), &caller, &capability(), CONTEXT, project, [data])?;
+    let data_volume = data.volume.clone();
+    let read_only = Arc::new(Policy {
+        schema_version: POLICY_SCHEMA_VERSION,
+        version: 1,
+        layers: vec![vec![rule(
+            "read",
+            &[Action::Read, Action::List],
+            true,
+            "**",
+        )]],
+    });
+    let mut alias = volume("B", "a-readonly", read_only)?;
+    alias.volume = data_volume.clone();
+    alias.root = "reports".into();
+    let mut other = volume("B", "archive", policy.clone())?;
+    other.volume = data_volume.clone();
+    other.root = "archive".into();
+    let mut table = compose(
+        root(),
+        &caller,
+        &capability(),
+        CONTEXT,
+        project,
+        [alias, other, data],
+    )?;
     assert!(
         workspace_hints(&table.environment()?).is_empty(),
         "a source subtree must not expose its whole native volume implicitly"
     );
-    let (project, path) = table.file(None, "src/file")?;
+    let (project, path) = table.file_for(Action::Read, None, "src/file", CONTEXT.now, None)?;
     assert_eq!(path, "packages/app/src/file");
     project.check(Action::Read, &path, CONTEXT.now)?;
     project.check_relative(Action::Read, "src/file", CONTEXT.now)?;
     assert_eq!(project.relative_path(&path)?, "src/file");
-    let (_, explicit) = table.file(Some(&project_volume), &path)?;
+    let (_, explicit) = table.file_for(
+        Action::Read,
+        Some(&project_volume),
+        &path,
+        CONTEXT.now,
+        None,
+    )?;
     assert_eq!(
         explicit, path,
         "immutable source paths must not be prefixed again"
     );
-    let (_, directory) = table.path_with_work(
+    let (_, directory) = table.path_for(
         None,
         "",
         acyclic_harness::tool::ReadPathKind::Directory,
+        Action::List,
+        CONTEXT.now,
         None,
     )?;
     assert_eq!(directory, "packages/app");
     for path in ["src/file", "packages/app-peer/file", "packages/other/file"] {
         assert!(
-            table.file(Some(&project_volume), path).is_err(),
+            table
+                .file_for(Action::Read, Some(&project_volume), path, CONTEXT.now, None)
+                .is_err(),
             "unadmitted source path {path}"
         );
         assert!(project.check(Action::Read, path, CONTEXT.now).is_err());
     }
     assert!(project.source_path("../other/file", None).is_err());
     assert!(project.relative_path("packages/app/../peer").is_err());
-    assert!(table.file(None, "volume:///data/../peer").is_err());
-    let (data, path) = table.file(None, "volume:///data/result")?;
+    assert!(
+        table
+            .file_for(
+                Action::Read,
+                None,
+                "volume:///data/../peer",
+                CONTEXT.now,
+                None
+            )
+            .is_err()
+    );
+    let (data, path) = table.file_for(
+        Action::Write,
+        None,
+        "volume:///data/result",
+        CONTEXT.now,
+        None,
+    )?;
     assert_eq!(path, "reports/result");
     data.check(Action::Write, &path, CONTEXT.now)?;
+    let (writable, _) = table.file_for(
+        Action::Write,
+        Some(&data_volume),
+        "reports/result",
+        CONTEXT.now,
+        None,
+    )?;
+    assert_eq!(
+        writable.view.name, "data",
+        "the first source alias is read-only"
+    );
+    let (other, _) = table.file_for(
+        Action::Write,
+        Some(&data_volume),
+        "archive/result",
+        CONTEXT.now,
+        None,
+    )?;
+    assert_eq!(
+        other.view.name, "archive",
+        "source references retain their selected subtree"
+    );
+    assert!(
+        table
+            .file_for(
+                Action::Write,
+                None,
+                "volume:///a-readonly/result",
+                CONTEXT.now,
+                None
+            )
+            .is_err(),
+        "an explicit read-only qualifier must not borrow another alias's write grant"
+    );
     let (_, native_relative) = table.resolve(Path::new("volume:///data/result"))?;
     assert_eq!(
         native_relative, "result",

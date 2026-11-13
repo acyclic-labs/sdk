@@ -96,7 +96,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         .root = "ui".into();
     let mut archive = crate::agent::WorkspaceEntry::initial_volume(
         crate::agent::WorkspaceRole::User,
-        "archive".into(),
+        "zarchive".into(),
         private_ui.clone(),
     );
     archive.root = "reports".into();
@@ -200,7 +200,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         output.view.source.as_ref().unwrap().destination,
         "different binding modes shared a native projection",
     );
-    let archive = second.mounts.named(Some("archive"))?.1;
+    let archive = second.mounts.named(Some("zarchive"))?.1;
     assert_ne!(
         private.view.source.as_ref().unwrap().destination,
         archive.view.source.as_ref().unwrap().destination,
@@ -403,10 +403,11 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             b"selected project subtree"
         );
         assert!(!directory.path().join("project-note").exists());
+        let archive_operation = OperationId::new();
         let (file, _) = crate::conversation::ContentPublisher::stage_once(
             &publisher,
-            OperationId::new(),
-            "volume:///archive/bound-note",
+            archive_operation,
+            "volume:///zarchive/bound-note",
             b"separate source root",
             "text/plain",
             path,
@@ -421,6 +422,81 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
                 .await?
                 .as_ref(),
             b"separate source root"
+        );
+        let (observed, _) = crate::conversation::ContentPublisher::observe_staged_once(
+            &publisher,
+            archive_operation,
+            None,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(
+            observed.as_ref(),
+            Some(&file),
+            "receipt recovery must find a later source-root alias"
+        );
+        let (edited, _) = crate::conversation::ContentPublisher::stage_at(
+            &publisher,
+            OperationId::new(),
+            &file,
+            b"edited source root",
+            None,
+            None,
+        )?
+        .await?;
+        assert_eq!(edited.path(), "reports/bound-note");
+        assert_eq!(
+            harness
+                .files
+                .read(&reference, None, "/reports/bound-note", 64, None)
+                .await?
+                .as_ref(),
+            b"edited source root"
+        );
+        let change = |path: &'static str| crate::conversation::ContentChange::CreateAbsent {
+            path,
+            bytes: b"atomic roots",
+            media_type: "text/plain",
+            display_name: "batch",
+        };
+        let (batch, _) = crate::conversation::ContentPublisher::stage_changes(
+            &publisher,
+            &private_ui,
+            OperationId::new(),
+            &[change("ui/batch"), change("reports/batch")],
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(batch.members.len(), 2);
+        for path in ["/ui/batch", "/reports/batch"] {
+            assert_eq!(
+                harness
+                    .files
+                    .read(&reference, None, path, 64, None)
+                    .await?
+                    .as_ref(),
+                b"atomic roots"
+            );
+        }
+        assert!(
+            crate::conversation::ContentPublisher::stage_changes(
+                &publisher,
+                &private_ui,
+                OperationId::new(),
+                &[change("ui/not-committed"), change("outside/not-committed")],
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await
+            .is_err()
+        );
+        assert!(
+            harness
+                .files
+                .read(&reference, None, "/ui/not-committed", 64, None)
+                .await
+                .is_err(),
+            "a peer path refusal must not publish its admitted sibling"
         );
         for name in ["interaction", "project", "unknown", "results"] {
             let path = format!("volume:///{name}/bound-note");

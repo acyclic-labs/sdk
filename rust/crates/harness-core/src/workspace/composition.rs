@@ -29,7 +29,7 @@ pub struct VolumeView<T> {
     pub head: u64,
     /// Name semantics and limits of this volume.
     pub config: acyclic_fs::VolumeConfig,
-    /// Policy loaded by the host from this volume.
+    /// Host-selected policy, including this binding's access restrictions.
     pub policy: Arc<Policy>,
     /// Lazy provider binding, retained without opening or copying its files.
     pub source: T,
@@ -196,7 +196,7 @@ pub struct MountTable<T> {
     // Immutable indices into canonical path order. Paths share their allocation
     // with the namespace; neither identity lookup nor iteration copies a path.
     mounted: Vec<(Arc<str>, Mount<T>)>,
-    volumes: std::collections::HashMap<[u8; 32], usize>,
+    volumes: std::collections::HashMap<[u8; 32], Vec<usize>>,
 }
 
 impl<T> MountTable<T> {
@@ -236,6 +236,7 @@ impl<T> MountTable<T> {
         let mount = self
             .volumes
             .get(&digest)
+            .and_then(|indices| indices.first())
             .and_then(|&index| self.mounted.get(index))
             .map(|(_, mount)| mount)
             .filter(|mount| &mount.view.volume == volume);
@@ -248,86 +249,105 @@ impl<T> MountTable<T> {
         })
     }
 
-    /// Resolves either a task-relative path or an exact volume's relative path.
+    /// An immutable reference names a source volume and path, not a namespace
+    /// alias. Select an admitted binding granting the requested operation;
+    /// named addresses continue to use only their explicitly selected binding.
     #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn file<'a>(
-        &'a self,
-        volume: Option<&VolumeRef>,
-        path: &'a str,
-    ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
-        self.file_with_work(volume, path, None)
+    pub fn by_volume_path(
+        &self,
+        volume: &VolumeRef,
+        path: &str,
+        action: Action,
+        now: u64,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<&Mount<T>> {
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        let digest = crate::executor::with_history_io(io.as_ref(), |history| {
+            volume.identity_digest(
+                crate::store::default_projection_read_limits().maximum_bytes,
+                history,
+            )
+        })?;
+        let mut refused = None;
+        for &index in self.volumes.get(&digest).into_iter().flatten() {
+            let mount = &self.mounted[index].1;
+            if &mount.view.volume != volume {
+                continue;
+            }
+            match mount.check_with_work(action, path, now, work) {
+                Ok(()) => return Ok(mount),
+                Err(error @ Error::Unauthorized(_))
+                | Err(
+                    error @ Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unauthorized,
+                        ..
+                    },
+                ) => {
+                    refused.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(refused.unwrap_or_else(|| {
+            path_error(
+                crate::wire::ErrorCode::Unauthorized,
+                "volume path is not mounted in this task view",
+                work,
+            )
+        }))
     }
 
-    /// Borrowed canonical content-path routing on the original tool ledger.
-    /// Explicit-volume native routing is refused before allocating a path.
+    /// Resolves a file for the operation that will consume its source path.
     #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn file_with_work<'a>(
+    pub fn file_for<'a>(
         &'a self,
+        action: Action,
         volume: Option<&VolumeRef>,
         path: &'a str,
+        now: u64,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
-        self.path_with_work(volume, path, crate::tool::ReadPathKind::File, work)
+        self.path_for(
+            volume,
+            path,
+            crate::tool::ReadPathKind::File,
+            action,
+            now,
+            work,
+        )
     }
 
-    /// Resolves file bytes or directory names through the same mount table.
+    /// Resolves and authorizes once on the original ledger. Explicit source
+    /// references may use any granting alias; namespace qualifiers cannot.
     #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn path_with_work<'a>(
+    pub fn path_for<'a>(
         &'a self,
         volume: Option<&VolumeRef>,
         path: &'a str,
         kind: crate::tool::ReadPathKind,
+        action: Action,
+        now: u64,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a Mount<T>, Cow<'a, str>)> {
-        if volume.is_none() {
-            #[cfg(not(target_arch = "wasm32"))]
-            let io = work
-                .map(crate::filesystem::PreparationIo::from_native_work)
-                .transpose()?;
-            #[cfg(target_arch = "wasm32")]
-            let io: Option<&crate::filesystem::PreparationIo> = None;
-            #[cfg(not(target_arch = "wasm32"))]
-            let io = io.as_ref();
-            let (mount, path) = self.select(path, work)?;
-            crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
-            if Path::new(path)
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-            {
-                return Err(path_error(
-                    crate::wire::ErrorCode::Invalid,
-                    "path escapes the task view",
-                    work,
-                ));
-            }
-            return Ok((mount, mount.source_path_validated(path, io)?));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
         let io = work
             .map(crate::filesystem::PreparationIo::from_native_work)
             .transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let io: Option<&crate::conversation::ContentIo> = None;
-        #[cfg(not(target_arch = "wasm32"))]
         let io = io.as_ref();
-        let mount = self.by_volume(volume.expect("explicit volume checked above"), io)?;
-        crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
-        if Path::new(path)
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(path_error(
-                crate::wire::ErrorCode::Invalid,
-                "path escapes the task view",
-                work,
-            ));
-        }
-        mount.relative_path_with_work(path, work)?;
-        Ok((mount, Cow::Borrowed(path)))
+        let (mount, path) = if let Some(volume) = volume {
+            validate_routed_path(path, kind, io, work)?;
+            let mount = self.by_volume_path(volume, path, action, now, work)?;
+            return Ok((mount, Cow::Borrowed(path)));
+        } else {
+            let (mount, path) = self.select(path, work)?;
+            validate_routed_path(path, kind, io, work)?;
+            (mount, mount.source_path_validated(path, io)?)
+        };
+        mount.check_with_work(action, &path, now, work)?;
+        Ok((mount, path))
     }
+
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
     #[cfg(not(target_arch = "wasm32"))]
@@ -431,6 +451,27 @@ fn normalize_path(path: &Path) -> Result<String> {
         }
     }
     Ok(relative)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_routed_path(
+    path: &str,
+    kind: crate::tool::ReadPathKind,
+    io: Option<&crate::filesystem::PreparationIo>,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<()> {
+    crate::executor::with_history_io(io, |history| kind.validate(path, history))?;
+    if Path::new(path)
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err(path_error(
+            crate::wire::ErrorCode::Invalid,
+            "path escapes the task view",
+            work,
+        ));
+    }
+    Ok(())
 }
 
 fn path_error(
@@ -547,9 +588,12 @@ pub fn compose<T>(
                     crate::store::default_projection_read_limits().maximum_bytes,
                     &mut None,
                 )?;
-                // Canonical order chooses the same first visible alias for a
-                // repeated volume identity, without an invocation-time scan.
-                volumes_by_identity.entry(digest).or_insert(index);
+                // Index only aliases of this source identity. Source-path
+                // authorization never scans unrelated workspaces or agents.
+                volumes_by_identity
+                    .entry(digest)
+                    .or_insert_with(Vec::new)
+                    .push(index);
                 mounted.push((Arc::clone(&path), mount));
                 Some(index)
             }

@@ -248,11 +248,10 @@ impl CheckoutPublisher {
         }
         serialized(&self.tools.state, async |mut state| {
             let physical = self.selected_workspace(&state)?;
-            let (mount, relative) = physical.mounts.file(volume, path)?;
-            mount.check(
-                acyclic_fs::access::Action::Write,
-                &relative,
+            let (mount, relative) = physical.mounts.file_for(
+                acyclic_fs::access::Action::Write, volume, path,
                 self.tools.clock.now_unix_millis() / 1000,
+                None,
             )?;
             let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
             if reconciliation::recover(&physical, view, &|| async { Ok(()) }).await? {
@@ -442,7 +441,13 @@ impl ContentPublisher for CheckoutPublisher {
         io: Option<&ContentIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.supports_stage(io)?;
-        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
+        let (mount, relative) = self.tools.workspace.mounts.file_for(
+            acyclic_fs::access::Action::Write,
+            volume,
+            path,
+            self.tools.clock.now_unix_millis() / 1000,
+            None,
+        )?;
         Ok((&mount.view.volume, relative))
     }
 
@@ -554,7 +559,15 @@ impl ContentPublisher for CheckoutPublisher {
                 let mut refused = None;
                 let mut admitted = false;
                 let selected = replacement
-                    .map(|(volume, path)| physical.mounts.file(Some(volume), path))
+                    .map(|(volume, path)| {
+                        physical.mounts.file_for(
+                            acyclic_fs::access::Action::Write,
+                            Some(volume),
+                            path,
+                            self.tools.clock.now_unix_millis() / 1000,
+                            None,
+                        )
+                    })
                     .transpose()?;
                 let mounts = replacement.is_none().then(|| physical.mounts.mounts());
                 for mount in selected
@@ -602,10 +615,12 @@ impl ContentPublisher for CheckoutPublisher {
                         .await?
                         .0;
                     if let Some(mut file) = file {
-                        mount.check(
-                            acyclic_fs::access::Action::Write,
+                        let mount = physical.mounts.by_volume_path(
+                            file.volume(),
                             file.path(),
+                            acyclic_fs::access::Action::Write,
                             self.tools.clock.now_unix_millis() / 1000,
+                            None,
                         )?;
                         if let Some(source) = &mount.view.source {
                             let publication = source.publication().await?;

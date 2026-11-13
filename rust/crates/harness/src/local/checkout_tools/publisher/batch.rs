@@ -81,9 +81,10 @@ impl CheckoutPublisher {
                 let mount = physical.mounts.by_volume(volume, access.io)?;
                 if let Some(changes) = changes {
                     for change in changes {
-                        mount.check_with_work(
-                            change.action(),
+                        physical.mounts.by_volume_path(
+                            volume,
                             change.path(),
+                            change.action(),
                             self.tools.clock.now_unix_millis() / 1000,
                             access
                                 .io
@@ -155,15 +156,19 @@ impl CheckoutPublisher {
                     drop(original);
                     drop(original_hold);
                     let check = |action, path: &str| {
-                        mount.check_with_work(
-                            action,
-                            path,
-                            self.tools.clock.now_unix_millis() / 1000,
-                            access
-                                .io
-                                .as_ref()
-                                .and_then(crate::store::HistoryIo::original_native_work),
-                        )
+                        physical
+                            .mounts
+                            .by_volume_path(
+                                volume,
+                                path,
+                                action,
+                                self.tools.clock.now_unix_millis() / 1000,
+                                access
+                                    .io
+                                    .as_ref()
+                                    .and_then(crate::store::HistoryIo::original_native_work),
+                            )
+                            .map(|_| ())
                     };
                     let (receipt, hold) = writer
                         .stage_changes_checked(volume, operation, changes, access, Some(&check))?
@@ -176,13 +181,14 @@ impl CheckoutPublisher {
                     return Ok((finish(None)?, hold));
                 };
                 for member in &receipt.members {
-                    mount.check_with_work(
+                    physical.mounts.by_volume_path(
+                        volume,
+                        member.path(),
                         match member {
                             ContentChangeResult::Created(_) => Action::Create,
                             ContentChangeResult::Updated(_) => Action::Write,
                             ContentChangeResult::Deleted(_) => Action::Delete,
                         },
-                        member.path(),
                         self.tools.clock.now_unix_millis() / 1000,
                         access
                             .io

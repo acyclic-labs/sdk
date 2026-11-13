@@ -496,13 +496,11 @@ impl ToolExecutor for CheckoutTools {
         kind: crate::tool::ReadPathKind,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
-        let (mount, relative) = self
-            .workspace
-            .mounts
-            .path_with_work(None, path, kind, work)?;
-        mount.check_with_work(
+        let (mount, relative) = self.workspace.mounts.path_for(
+            None,
+            path,
+            kind,
             kind.action(),
-            &relative,
             self.clock.now_unix_millis() / 1000,
             work,
         )?;

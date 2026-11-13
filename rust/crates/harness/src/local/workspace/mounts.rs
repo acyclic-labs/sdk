@@ -169,22 +169,22 @@ mod tests {
             }
             for (path, mount) in mounts.mounts() {
                 let task_path = if path.is_empty() { entry.clone() } else { format!("{path}/{entry}") };
-                let (routed, relative) = mounts.file(None, &task_path).unwrap();
+                let (routed, relative) = mounts.file_for(Action::Read, None, &task_path, 0, None).unwrap();
                 prop_assert_eq!(&routed.view.volume, &mount.view.volume);
                 prop_assert_eq!(&relative, &entry);
-                let (routed_again, same_path) = mounts.file(Some(&routed.view.volume), &relative).unwrap();
+                let (routed_again, same_path) = mounts.file_for(Action::Read, Some(&routed.view.volume), &relative, 0, None).unwrap();
                 prop_assert_eq!(&routed_again.view.volume, &mount.view.volume);
                 prop_assert_eq!(same_path.as_ref(), relative.as_ref());
             }
             for path in [".volumes/data/entry", ".system/state", ".git/info/exclude", ".home-seed-v1", ".acyclic-sdk/state"] {
                 for explicit in [None, Some(volume("project"))] {
-                    let (selected, relative) = mounts.file(explicit.as_ref(), path).unwrap();
+                    let (selected, relative) = mounts.file_for(Action::Read, explicit.as_ref(), path, 0, None).unwrap();
                     prop_assert_eq!(&selected.view.volume, &volume("project"));
                     prop_assert_eq!(relative.as_ref(), path);
                 }
             }
-            prop_assert!(mounts.file(None, "volume:///missing/entry").is_err());
-            prop_assert!(mounts.file(None, "../entry").is_err());
+            prop_assert!(mounts.file_for(Action::Read, None, "volume:///missing/entry", 0, None).is_err());
+            prop_assert!(mounts.file_for(Action::Read, None, "../entry", 0, None).is_err());
             prop_assert!(mounts.named(Some("journal")).is_err());
             prop_assert!(mounts.named(Some("../data")).is_err());
             prop_assert_eq!(&mounts.named(None).unwrap().1.view.volume, &volume("project"));
