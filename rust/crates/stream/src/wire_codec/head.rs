@@ -96,7 +96,7 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
             .map(|selected| {
                 let path =
                     StreamPath::new(selected.path).map_err(|_| StreamError::InvalidResponse)?;
-                Ok(crate::RetainedRecordObservation {
+                Ok::<_, StreamError>(crate::RetainedRecordObservation {
                     record: selected
                         .record
                         .map(|record| self::record(record, Some(&path)))
