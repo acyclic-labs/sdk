@@ -159,7 +159,7 @@ async fn spawn_shaped_composition_commits_every_fork_with_the_caller_mutations()
         assert_eq!(forked.len(), 2);
         assert_eq!(
             allocation.bytes(),
-            (forked.capacity() * std::mem::size_of::<crate::ForkedGeneration>()) as u64
+            (forked.capacity() * std::mem::size_of::<crate::PreparedGeneration>()) as u64
         );
         assert!(allocation.work().shares_ledger(&work));
         drop(forked);
@@ -590,7 +590,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
                     counter: "peak_allocation_bytes",
                     observed,
                     maximum,
-                }) if observed == maximum + (creations.len() * std::mem::size_of::<crate::WorkspaceId>()) as u64
+                }) if observed == maximum + (creations.len() * std::mem::size_of::<crate::PreparedGeneration>()) as u64
             ),
             "batch output admission was not first: {failure:?}"
         );
@@ -604,7 +604,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
             .await?;
         assert_eq!(
             result.1.bytes(),
-            (result.0.capacity() * std::mem::size_of::<crate::WorkspaceId>()) as u64,
+            (result.0.capacity() * std::mem::size_of::<crate::PreparedGeneration>()) as u64,
             "composed output lost its original backing allocation"
         );
         assert!(result.1.work().shares_ledger(&work));
@@ -614,6 +614,7 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
     #[cfg(target_arch = "wasm32")]
     let created = unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
     assert_eq!(created.len(), 2);
+    let selected = [created[0], created[1]];
     #[cfg(not(target_arch = "wasm32"))]
     {
         let retained = allocation.work().live_allocation_bytes();
@@ -632,7 +633,20 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
         unbounded!(private, read("/AGENTS.md", 16))?.as_ref(),
         b"be brief"
     );
-    assert!(unbounded!(fs, open_workspace("root-result")).is_ok());
+    let result = unbounded!(fs, open_workspace("root-result"))?;
+    for (workspace, original) in [(&private, selected[0]), (&result, selected[1])] {
+        assert_eq!(workspace.id(), original.workspace);
+        assert_eq!(unbounded!(workspace, head())?.id(), original.generation);
+    }
+    private
+        .write_text("/AGENTS.md", "changed after creation")
+        .await?;
+    assert_ne!(unbounded!(private, head())?.id(), selected[0].generation);
+    let original = unbounded!(private, generation(selected[0].generation))?;
+    assert_eq!(
+        unbounded!(original, read("/AGENTS.md", 16))?.as_ref(),
+        b"be brief"
+    );
     assert_eq!(
         stream
             .tail(StreamPath::new("harness/agents/child/state")?)

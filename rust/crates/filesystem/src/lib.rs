@@ -235,7 +235,7 @@ pub use facade::{
     ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
     StagedContent, Volume, VolumeInitialization,
 };
-pub use facade::{CreateSpec, ForkSpec, ForkedGeneration, PublishSpec, RestoreSpec};
+pub use facade::{CreateSpec, ForkSpec, PreparedGeneration, PublishSpec, RestoreSpec};
 #[cfg(not(target_arch = "wasm32"))]
 pub use facade::{
     LocalAuthorityBackend, LocalFs, LocalGarbageCollection, LocalObjectBackend,

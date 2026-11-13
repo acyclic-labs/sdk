@@ -57,13 +57,13 @@ pub struct PublishSpec<'g, A: 'static, O: 'static> {
     pub permit: PublicationPermit,
 }
 
-/// Immutable generation created by a prepared workspace fork. It becomes
+/// Immutable generation contributed by workspace creation or a fork. It becomes
 /// readable through its workspace when the containing transaction commits.
 #[derive(Clone, Copy, Debug)]
-pub struct ForkedGeneration {
+pub struct PreparedGeneration {
     /// Destination workspace identity.
     pub workspace: crate::WorkspaceId,
-    /// Destination generation, sharing its source's immutable file table.
+    /// Exact initial generation published by the containing transaction.
     pub generation: GenerationId,
 }
 
@@ -276,7 +276,7 @@ where
         commit: &mut FilesystemCommit,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Vec<ForkedGeneration>, WorkspaceError> {
+    ) -> W::OwnedOutput<Vec<PreparedGeneration>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         // All-or-none, even when this future is dropped mid-way: the guard
         // removes every entry, contribution and hold this call added unless
@@ -306,7 +306,7 @@ where
         commit: &mut FilesystemCommit,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<ForkedGeneration, WorkspaceError> {
+    ) -> Result<PreparedGeneration, WorkspaceError> {
         let source = fork.source;
         if !self.same_deployment(&source.workspace.volume.fs) {
             return Err(WorkspaceError::ForeignGeneration);
@@ -358,21 +358,21 @@ where
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
         let generation = GenerationId::from_root(fork_root.generation_root);
         drop(fork_root);
-        Ok(ForkedGeneration {
+        Ok(PreparedGeneration {
             workspace: destination_id,
             generation,
         })
     }
 
     /// Adds every fresh workspace to `commit`, all-or-none with the caller's
-    /// mutations. Returns each workspace identity, in order.
+    /// mutations. Returns each workspace and its exact initial generation in order.
     pub async fn prepare_create_many<W: FsWork>(
         &self,
         creations: &[CreateSpec<'_>],
         commit: &mut FilesystemCommit,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Vec<crate::WorkspaceId>, WorkspaceError> {
+    ) -> W::OwnedOutput<Vec<PreparedGeneration>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         // All-or-none, even when this future is dropped mid-way: the guard
         // removes every entry, contribution and hold this call added unless
@@ -402,7 +402,7 @@ where
         commit: &mut FilesystemCommit,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<crate::WorkspaceId, WorkspaceError> {
+    ) -> Result<PreparedGeneration, WorkspaceError> {
         accounting.check()?;
         let id = self.workspace_id_for_name(&spec.name, accounting)?;
         let volume_id = id.volume_id();
@@ -457,7 +457,10 @@ where
         recorded?;
         commit.hold(prepared.hold);
         result.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
-        Ok(id)
+        Ok(PreparedGeneration {
+            workspace: id,
+            generation: GenerationId::from_root(generation_root),
+        })
     }
 
     /// Conditions `commit` on `source` still being its workspace's head when

@@ -25,14 +25,12 @@ case reads its conversation entry and at most two indexed history descriptors;
 directory pages read no descriptors. Both stream heads share the selected cut,
 and descriptor reads use its revision floor and the current authenticated reader.
 Missing or malformed descriptors fail; current generations are never substituted.
-The first case has no preceding settled checkpoint (`cut.checkpoint` is null).
-Initial-generation resolution uses the existing
-`Fs::workspace_for_creation_operation` with the original workspace name and
-creation operation. It authenticates the immutable creation receipt and returns
-the original generation, including after edits; it does not repeat creation.
-An exporter must resolve that initial state from original creation custody; null
-does not authorize using current project heads.
-
+The first decision needs the agent's original creation cut. A workspace may
+predate the agent, so its birth generation cannot reconstruct a later adoption.
+Creation and fork composition return `PreparedGeneration` values from the
+original operations; the creation/history descriptor must retain those selected
+generations before the agent runs. Reading a case must not substitute current
+workspace heads or workspace birth generations for missing adoption metadata.
 Human corrections and overrides retain their exact authored input. Approval
 inputs retain their request identity. No classifier guesses acceptance from prose.
 The output reference retains the original answer and its cost metadata; cases do
