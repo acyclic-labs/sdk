@@ -1081,12 +1081,38 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 .unwrap();
             let observed = root.within_sync(|| context.current()).unwrap();
             assert!(Arc::ptr_eq(&original, &observed));
+            root.within_sync(|| {
+                context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow)
+            })
+            .unwrap();
+            let denial = root
+                .within_sync(|| {
+                    context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Deny)
+                })
+                .unwrap_err();
+            {
+                use std::error::Error as _;
+                assert_eq!(denial.category(), StreamError::AccessDenied);
+                assert!(
+                    std::iter::successors(denial.source(), |source| source.source()).any(
+                        |source| matches!(
+                            source.downcast_ref::<verify::VerifyError>(),
+                            Some(verify::VerifyError::Denied(
+                                acyclic_auth::DenialCause::OwnerPolicy
+                            ))
+                        )
+                    )
+                );
+            }
             let mut query = TraceQuery::new(
                 trace.follow(0, Default::default()).await.unwrap(),
                 Default::default(),
             );
             let mut seen = std::collections::BTreeSet::new();
-            while seen.len() != 3 {
+            let mut authorized = 0;
+            let mut unsettled = 0;
+            let mut snapshots = 0;
+            while seen.len() != 3 || authorized + unsettled != 2 || snapshots != 3 {
                 if let Observation::Completed {
                     start,
                     bytes,
@@ -1108,15 +1134,40 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                             Mechanism::Lock,
                             "atomic_renewal_preserves_account_principal_and_grants",
                         ),
+                        "stream.resource_authorize" => (
+                            Mechanism::AuthCheck,
+                            "current_trust_entry_facts_and_owner_policy",
+                        ),
                         name => panic!("unexpected request path {name}"),
                     };
                     assert_eq!(start.mechanism, mechanism);
                     assert_eq!(start.guarantee.as_deref(), Some(guarantee));
+                    if start.name == "stream.resource_authorize" {
+                        match result {
+                            Outcome::Succeeded => {
+                                assert_eq!(bytes, Some(0));
+                                authorized += 1;
+                            }
+                            Outcome::Unsettled => {
+                                assert_eq!(bytes, None);
+                                unsettled += 1;
+                            }
+                            other => panic!("authorization fabricated terminal evidence {other:?}"),
+                        }
+                        continue;
+                    }
                     assert_eq!(bytes, Some(0));
                     assert_eq!(result, Outcome::Succeeded);
-                    assert!(seen.insert(start.name));
+                    if start.name == "stream.credential_snapshot" {
+                        snapshots += 1;
+                        assert!(snapshots <= 3);
+                        seen.insert(start.name);
+                    } else {
+                        assert!(seen.insert(start.name));
+                    }
                 }
             }
+            assert_eq!((authorized, unsettled), (1, 1));
             root.finish_submitted(None, Outcome::Succeeded).unwrap();
         }
         for checks in [1, 100, 1000] {
