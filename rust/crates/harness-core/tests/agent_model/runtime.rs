@@ -15,7 +15,10 @@ use std::sync::{
 
 /// Spawns child `c` on its first turn and idles afterwards.
 #[derive(Default)]
-struct Spawner(AtomicUsize);
+struct Spawner {
+    calls: AtomicUsize,
+    stop: bool,
+}
 
 impl TurnDriver for Spawner {
     fn step<'a>(
@@ -25,7 +28,7 @@ impl TurnDriver for Spawner {
         _input: Option<Queued>,
         _cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
-        let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
                 checkpoint: None,
@@ -40,11 +43,60 @@ impl TurnDriver for Spawner {
                 } else {
                     Vec::new()
                 },
-                wait: Wait::Input,
+                wait: if first && self.stop {
+                    Wait::Done(AgentOutcome::Archived)
+                } else {
+                    Wait::Input
+                },
                 drops: None,
             })
         })
     }
+}
+
+#[tokio::test]
+async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
+    for stop in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let host = AgentHost::new(
+            provider.clone(),
+            Spawner {
+                stop,
+                ..Default::default()
+            },
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let child = root.child(&AgentId::derive(&root.id(), "c"))?;
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::ApprovalRequested(ApprovalRequested {
+                child: child.clone(),
+                id: intent("turn"),
+            }),
+        )
+        .await?;
+        let failures = host.runtime().drain().await;
+        assert!(failures.is_empty(), "{failures:?}");
+        let parent = host.state(&root).await?;
+        let child = host.state(&child).await?;
+        assert_eq!(parent.closed, stop);
+        assert_eq!(child.closed, stop, "same-turn spawn escaped the stop");
+        assert_eq!(parent.open_children.len(), usize::from(!stop));
+        if stop {
+            assert!(matches!(
+                child.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Archived
+                }
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {

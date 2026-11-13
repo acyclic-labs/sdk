@@ -1751,6 +1751,10 @@ async fn run<T: TurnDriver + ?Sized>(
     outs.extend(turn.outs);
     outs.extend(staged);
     if matches!(wait, Wait::Done(AgentOutcome::Archived)) {
+        // The same step can admit children before observing a stop. Include
+        // those spawns in the ordinary open-child set before freezing its
+        // archive cascade, just as a wait includes same-step children.
+        apply_spawns(state, outs, spawned).await?;
         // An executor-driven stop has the same closure, resource release and
         // descendant cascade as an externally admitted archive. A terminal
         // label alone must never leave a running child tree behind.
