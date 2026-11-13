@@ -95,6 +95,36 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(OwnedSourceChunk, u64), LazyWorkspaceError> {
         let lookup = self.lookup(path, ctx).await?;
+        self.read_resolved_page(lookup, path, offset, length, ctx)
+            .await
+    }
+
+    /// Reads one no-follow page from a frozen cut without recording observations.
+    pub async fn read_page_at_snapshot(
+        &self,
+        cut: LazySnapshotRef,
+        path: &str,
+        offset: u64,
+        length: u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(OwnedSourceChunk, u64), LazyWorkspaceError> {
+        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let Some(lookup) = lookup else {
+            crate::kernel::retire_allocation(guard, 0, ctx)?;
+            return Err(LazyWorkspaceError::NotFound);
+        };
+        self.read_resolved_page((lookup, guard), path, offset, length, ctx)
+            .await
+    }
+
+    async fn read_resolved_page(
+        &self,
+        lookup: (LazyLookup, KernelOwnedAllocation),
+        path: &str,
+        offset: u64,
+        length: u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(OwnedSourceChunk, u64), LazyWorkspaceError> {
         let result = async {
             let stat = lookup.0.stat();
             if stat.kind == SourceNodeKind::SymbolicLink

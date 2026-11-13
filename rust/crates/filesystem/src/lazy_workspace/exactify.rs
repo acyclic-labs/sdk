@@ -118,13 +118,12 @@ impl<
     }
 
     /// Materializes `paths` of an immutable cut of this view, with their
-    /// ancestor directories, into a plain fork of the cut's authored
+    /// ancestor directories, into an immutable descendant of the cut's authored
     /// generation, reading each path at the source version `witness` -- a
     /// view forked from `cut` -- first observed it.
     ///
     /// Unlike [`Self::exactify_snapshot`], the cut need not still be this
-    /// view's current state: the fork carries no lazy binding, so it never
-    /// claims the cut as a live view. Each promoted entry binds the same
+    /// view's current state: construction publishes no workspace or lazy binding. Each promoted entry binds the same
     /// source-derived identity that materializing any view of the cut binds,
     /// which is what a merge base of two such views needs.
     ///
@@ -136,8 +135,7 @@ impl<
     /// the result is `None`. Reads stay pinned to the observed version, so a
     /// change racing this call fails it rather than supplying a base.
     ///
-    /// The scratch fork is named by the pinned cut and path set, so a retry
-    /// resumes it and a different observation never reuses it.
+    /// The returned immutable handle retains its objects without a saved fork.
     pub async fn exactify_cut(
         &self,
         cut: LazySnapshotRef,
@@ -146,7 +144,7 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<crate::Generation<A, O>>, LazyWorkspaceError> {
         self.validate_snapshot(cut, ctx).await?;
-        let witnessed = witness.state(ctx).await?;
+        let witnessed = witness.inspect_state(ctx).await?;
         if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
             return Ok(None);
         }
@@ -199,7 +197,7 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
         self.validate_snapshot(cut, ctx).await?;
-        let witnessed = witness.state(ctx).await?;
+        let witnessed = witness.inspect_state(ctx).await?;
         if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
             return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
         }
@@ -409,18 +407,6 @@ impl<
             overlay,
             cut.shadows,
         );
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic-fs-lazy-cut-base-v1\0");
-        hash.update(&pinned.id.into_bytes());
-        for path in paths {
-            hash.update(&(path.len() as u64).to_le_bytes());
-            hash.update(path.as_bytes());
-        }
-        let hash = hash.finalize();
-        let mut key = [0; 16];
-        key.copy_from_slice(&hash.as_bytes()[..16]);
-        let key = IdempotencyKey::from_bytes(key);
-        let destination = format!("lazy-base-{}", hex::encode(&hash.as_bytes()[..12]));
         let mut selected = std::collections::BTreeSet::new();
         for path in paths {
             selected.insert(path.as_str());
@@ -442,25 +428,12 @@ impl<
             id: cut.authored_generation,
             publication_closure: None,
         };
-        let fork = accounted!(ctx, |work, cancel| self
-            .workspace
-            .fork::<_, _, WorkspaceError>(
-                &destination,
-                ForkOptions::from_generation(generation, key),
-                crate::PublicationPermit::Unrestricted,
-                work,
-                cancel,
-                (),
-            ))?;
-        // A retry resumes from the fork's head: promoted paths read as
-        // authored and the remaining batches commit under their own keys.
-        let head = accounted!(ctx, |work, cancel| fork.head(work, cancel))?;
         self.exactify_into(
             "/",
             pinned,
             owned,
-            head,
-            Exactification::Publish(crate::PublicationPermit::Unrestricted),
+            generation,
+            Exactification::Detached,
             ctx,
         )
         .await

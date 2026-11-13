@@ -150,7 +150,7 @@ impl CheckoutPublication {
             return Ok(None);
         };
         let acyclic_fs::MaterializationIntent::GenerationTransition { from, to } =
-            journal.plan.intent
+            journal.plan().intent
         else {
             return Err(Error::Storage(
                 "checkout publication is not a generation transition".into(),
@@ -166,7 +166,7 @@ impl CheckoutPublication {
             .generation(from, work, work.cancellation())
             .await?;
         let to = target.generation(to, work, work.cancellation()).await?;
-        self.publish(&from, &to, state, options, work, guard)
+        self.publish(&from, &to, state, options, (work, Some(&journal)), guard)
             .await
             .map(Some)
     }

@@ -353,7 +353,7 @@ where
         for workspace in [source, &self.current] {
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
             let lazy = match current
-                .open_related(workspace.clone(), &mut accounting)
+                .inspect_related(workspace.clone(), &mut accounting)
                 .await
             {
                 Ok(lazy) => lazy,
@@ -362,7 +362,7 @@ where
                 Err(error) => return Err(Error::from(error)),
             };
             let Some(origin) = lazy
-                .state(&mut accounting)
+                .inspect_state(&mut accounting)
                 .await
                 .map_err(Error::from)?
                 .fork_origin
@@ -374,7 +374,7 @@ where
                 continue;
             }
             let owner = current
-                .open_related(self.workspace(cut.workspace_id).await?, &mut accounting)
+                .inspect_related(self.workspace(cut.workspace_id).await?, &mut accounting)
                 .await
                 .map_err(Error::from)?;
             // The forked side's own observations pin the base; without them

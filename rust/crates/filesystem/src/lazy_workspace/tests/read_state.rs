@@ -26,6 +26,54 @@ async fn source_epoch_reads_never_publish_bookkeeping() {
         before,
         "reading a new epoch must not create a competing writer"
     );
+    // A saved exactification can appear after an inspector opens. Reading its
+    // binding or taking another cut must not finish/roll back that operation.
+    let inspector = root
+        .inspect_related(root.workspace().clone(), accounting!())
+        .await
+        .unwrap();
+    let mut pending = root.state(accounting!()).await.unwrap();
+    let revision = pending.revision;
+    pending.revision += 1;
+    pending.pending_remove = Some(PendingLazyRemove {
+        prior_overlay: pending.overlay,
+        prior_shadows: pending.shadows,
+        prepared_overlay: pending.overlay,
+        kind: PendingLazyRemoveKind::Exactify {
+            idempotency_key: IdempotencyKey::new(),
+        },
+    });
+    assert!(
+        store
+            .compare_and_swap_lazy_workspace(
+                root.workspace().id(),
+                revision,
+                pending.clone(),
+                accounting!()
+            )
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        inspector.inspect_state(accounting!()).await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert!(matches!(
+        inspector.snapshot(accounting!()).await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert!(matches!(
+        root.inspect_related(root.workspace().clone(), accounting!())
+            .await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert_eq!(
+        store
+            .load_lazy_workspace(root.workspace().id(), accounting!())
+            .await
+            .unwrap(),
+        Some(pending)
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

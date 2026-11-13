@@ -98,7 +98,7 @@ impl<
     ) -> Result<Self, LazyWorkspaceError> {
         let lazy = Self::open_binding(workspace, source, store, ctx).await?;
         lazy.recover_pending_remove(ctx).await?;
-        lazy.state(ctx).await?;
+        lazy.inspect_state(ctx).await?;
         Ok(lazy)
     }
 
@@ -165,7 +165,7 @@ impl<
     ) -> Result<Self, LazyWorkspaceError> {
         let lazy = Self::open_binding(workspace, Arc::clone(&self.source), self.store.clone(), ctx)
             .await?;
-        lazy.state(ctx).await?;
+        lazy.inspect_state(ctx).await?;
         Ok(lazy)
     }
 
@@ -194,7 +194,7 @@ impl<
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let state = self.state(ctx).await?;
+        let state = self.inspect_state(ctx).await?;
         let head = self.head(ctx).await?;
         ctx.charge(WorkCounters {
             bytes_hashed: LazySnapshotRef::hash_bytes(head.id()),
@@ -229,6 +229,21 @@ impl<
                 .current_binding(|| LazyWorkspaceError::NotFound, ctx)
                 .await?;
         }
+        if state.pending_remove.is_some() {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        Ok(state)
+    }
+
+    /// Read a ready binding without recovering another owner's publication.
+    /// Unfinished work remains under its original operation's custody.
+    pub async fn inspect_state(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
+        let state = self
+            .current_binding(|| LazyWorkspaceError::NotFound, ctx)
+            .await?;
         if state.pending_remove.is_some() {
             return Err(LazyWorkspaceError::Concurrent);
         }

@@ -45,12 +45,12 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let OwnedView::Checkout(witness) = &target_view {
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-            if let Some(origin) = witness.state(&mut accounting).await?.fork_origin
+            if let Some(origin) = witness.inspect_state(&mut accounting).await?.fork_origin
                 && origin.snapshot.authored_generation == plan.common_ancestor()
             {
                 let owner = self
                     .lazy_current
-                    .related(self.workspace(origin.snapshot.workspace_id).await?)
+                    .inspect_related(self.workspace(origin.snapshot.workspace_id).await?)
                     .await?;
                 let OwnedView::Checkout(owner) = owner else {
                     return Err(Error::Conflict("fork base has no source binding".into()));
@@ -173,8 +173,10 @@ where
             OwnedView::Checkout(view) => {
                 let cancellation = CancellationToken::new();
                 let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+                let cut = view.snapshot(&mut accounting).await?;
                 let (bytes, total) = view
-                    .read_page(
+                    .read_page_at_snapshot(
+                        cut,
                         &path,
                         offset,
                         super::actions::SHOW_PAGE_BYTES,

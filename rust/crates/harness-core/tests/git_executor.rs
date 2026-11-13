@@ -776,7 +776,7 @@ async fn agent_diff_reads_a_frozen_cut_without_writing_the_inspected_agent() -> 
         .value
         .id();
     let window_before = coordinator.snapshot(child.workspace().id()).await?;
-    let inspect = async |operation| {
+    let inspect = async |operation, arguments: Vec<String>| {
         git::run(
             git::Workspace {
                 access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
@@ -795,14 +795,26 @@ async fn agent_diff_reads_a_frozen_cut_without_writing_the_inspected_agent() -> 
                     unanswered: Arc::new(|_| true),
                 }),
             },
-            &["diff".into(), "agents/child".into()],
+            &arguments,
         )
         .await
     };
+    let arguments = || vec!["diff".into(), "agents/child".into()];
     let operation = OperationId::new();
-    let output = inspect(operation).await?;
-    let replay = inspect(operation).await?;
-    let other = inspect(OperationId::new()).await?;
+    let output = inspect(operation, arguments()).await?;
+    let replay = inspect(operation, arguments()).await?;
+    let other = inspect(OperationId::new(), arguments()).await?;
+    let shown = inspect(
+        OperationId::new(),
+        vec!["show".into(), "agents/child:native.txt".into()],
+    )
+    .await?;
+    assert!(matches!(
+        shown.command,
+        Some(GitCommandOutput::Filesystem(
+            acyclic_fs::GitFilesystemResult::Data { .. }
+        ))
+    ));
     let exact_cut = |output: &git::Output| -> Result<String> {
         let Some(GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
             kind,

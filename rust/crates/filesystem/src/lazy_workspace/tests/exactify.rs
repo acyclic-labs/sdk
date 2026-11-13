@@ -135,6 +135,12 @@ async fn inspection_needs_only_read_access_and_preserves_the_original_writer() {
         .await
         .unwrap();
     let cut = inspector.snapshot(accounting!()).await.unwrap();
+    let (page, total) = inspector
+        .read_page_at_snapshot(cut, "/file.txt", 1, 3, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(page.bytes.as_ref(), b"our");
+    assert_eq!(total, 6);
     let exact = inspector
         .exact_generation(cut, accounting!())
         .await

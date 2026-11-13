@@ -418,7 +418,7 @@ async fn retained_publication_resumes_its_original_transition_after_head_advance
                 &advanced,
                 &fixture.state,
                 &options,
-                &fixture.work,
+                (&fixture.work, None),
                 || std::future::ready(Ok(())),
             )
             .await
@@ -435,7 +435,7 @@ async fn retained_publication_resumes_its_original_transition_after_head_advance
         )
         .await?
         .ok_or("original publication disappeared")?;
-    assert_eq!(resumed.plan, original.plan);
+    assert_eq!(resumed.plan(), original.plan());
     assert_eq!(resumed.phase, acyclic_fs::MaterializationPhase::Applied);
     assert_eq!(
         std::fs::read_to_string(fixture.root.join("note"))?,

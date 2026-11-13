@@ -32,8 +32,13 @@ impl RootMaterializingGitExecutor<'_, '_> {
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let publication =
-            CheckoutPublication::new(self.root, self.source_root_identity, operation_id, &work)?;
+        let publication = CheckoutPublication::new(
+            self.root,
+            self.source_root_identity,
+            operation_id,
+            self.inner.store,
+            &work,
+        )?;
         let options = MaterializeOptions::native(publication.directory().join("target"));
         if publication
             .resume(&from, &target, self.inner.store, &options, &work, || {
@@ -56,7 +61,7 @@ impl RootMaterializingGitExecutor<'_, '_> {
                 &to_generation,
                 self.inner.store,
                 &options,
-                &work,
+                (&work, None),
                 || self.validate(),
             )
             .await?;
