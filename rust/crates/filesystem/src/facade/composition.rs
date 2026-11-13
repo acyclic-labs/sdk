@@ -101,7 +101,7 @@ where
         let mut guard = commit.guard();
         let result = async {
             accounting.check()?;
-            if !state_changes.is_empty() {
+            if !publications.is_empty() || !state_changes.is_empty() {
                 let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
                 let preserved = guard.preserve_conditions(&mut authority);
                 finish_authority_work(authority)?;
@@ -183,6 +183,12 @@ where
         let mut accounting = work.accounting(cancellation);
         let mut guard = commit.guard();
         let result = async {
+            if !restores.is_empty() {
+                let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+                let preserved = guard.preserve_conditions(&mut authority);
+                finish_authority_work(authority)?;
+                preserved.map_err(|error| WorkspaceError::from(FsError::from(error)))?;
+            }
             let mut generations = Owned::<Vec<_>>::allocate(restores.len(), &mut accounting)?;
             for restore in restores {
                 let volume = &restore.expected.workspace.volume;
