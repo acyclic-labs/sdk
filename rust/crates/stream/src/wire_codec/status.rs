@@ -86,7 +86,14 @@ impl From<StreamError> for Status {
 #[must_use]
 fn error_status(error: &StreamError) -> Status {
     let refusal = error.member_refusal().map(|refusal| &**refusal);
-    let parts = Refusal::encode(refusal, canonical(error));
+    let parts = match Refusal::encode(refusal, canonical(error)) {
+        Ok(parts) => parts,
+        Err(error) => {
+            let mut status = Status::internal("refusal attribution encoding failed");
+            status.set_source(std::sync::Arc::new(error));
+            return status;
+        }
+    };
     Status::with_details_and_metadata(
         Code::from_i32(parts.code),
         parts.message,

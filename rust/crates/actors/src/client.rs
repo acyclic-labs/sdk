@@ -804,7 +804,8 @@ mod tests {
     }
 
     #[test]
-    fn foreign_metadata_retains_header_attribution_without_original_status_parts() {
+    fn foreign_metadata_retains_header_attribution_without_original_status_parts()
+    -> Result<(), Box<dyn std::error::Error>> {
         use acyclic_auth::refusal::{Canonical, Cause, Refusal};
         let header_cause = Cause::new("actor.owner", "unavailable");
         let body_cause = Cause::new("actor.delivery", "interrupted");
@@ -817,7 +818,7 @@ mod tests {
                 owned: &[],
                 cause_is_embedded: false,
             },
-        );
+        )?;
         for body in 0..3 {
             let details = match body {
                 0 => Vec::new(),
@@ -865,6 +866,7 @@ mod tests {
                 serde_json::to_value(expected).unwrap()
             );
         }
+        Ok(())
     }
 
     #[test]
