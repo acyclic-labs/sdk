@@ -162,6 +162,16 @@ impl<P: NativeStreamProvider + ?Sized + 'static> StreamProvider<P> {
         at: Option<Revision>,
         work: &NativeMaterializationWork,
     ) -> Result<NativeStreamOutput<acyclic_stream::Heads>, DemandError> {
+        let cancellation = work.cancellation();
+        let mut ctx = KernelAccounting::NativeOriginal {
+            work,
+            cancellation: &cancellation,
+        };
+        let _paths =
+            RetainedAllocation::claim((2 * std::mem::size_of::<StreamPath>()) as u64, 1, &mut ctx)?;
+        let paths = [path(&self.path, work)?, path(&self.history, work)?]
+            .into_iter()
+            .collect();
         result(
             self.streams
                 .native_heads(
@@ -170,10 +180,7 @@ impl<P: NativeStreamProvider + ?Sized + 'static> StreamProvider<P> {
                             .clone()
                             .map_or_else(RevisionCut::default, RevisionCut::of),
                         at,
-                        paths: HeadSet::from_buf([
-                            path(&self.path, work)?,
-                            path(&self.history, work)?,
-                        ]),
+                        paths,
                         retained: HeadSet::new(),
                         durable_through: None,
                         projection: HeadProjection::Tail,
