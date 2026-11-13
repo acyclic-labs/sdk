@@ -271,10 +271,10 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
         selected_context: None,
         max_steps: None,
     };
-    let refused = executor.execute_progress(input, journal.as_ref()).await;
+    let refused = executor.execute_progress(input, journal.as_ref()).await?;
     assert!(
-        matches!(refused, Err(Error::Invalid(ref reason))
-        if reason == "mandatory content exceeds selected model capacity"),
+        matches!(refused, ExecutionProgress::PreDispatchFailed(failure)
+        if failure.message().ends_with("mandatory content exceeds selected model capacity")),
         "a model change must re-admit the mandatory input against its selected window"
     );
     assert_eq!(tool.0.load(Ordering::SeqCst), 1);
