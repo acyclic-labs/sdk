@@ -328,13 +328,13 @@ pub async fn serve(
             match owner.publish(endpoint) {
                 Ok(()) => {
                     if let Err(error) = ready.signal() {
-                        publication = Err(storage(error));
+                        publication = journal.complete(Err(storage(error)));
                         let _ = failed.send(());
                     }
                 }
                 Err(error) => {
                     let _ = ready.fail(&error.to_string());
-                    publication = Err(error);
+                    publication = journal.complete(Err(error));
                     let _ = failed.send(());
                 }
             }

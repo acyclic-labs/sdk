@@ -215,6 +215,28 @@ mod tests {
         test_support::{ScriptedModelProvider, local_harness_config},
     };
 
+    #[test]
+    fn failed_startup_remains_durable_when_clean_shutdown_follows() -> Result<()> {
+        let temporary = tempfile::tempdir().map_err(failed)?;
+        let directory = Directory(temporary.path().to_owned());
+        let journal = Journal::new(&directory)?;
+        let original = journal.selection.clone();
+        let source = std::fs::File::open(temporary.path().join("missing-startup-publication"))
+            .err()
+            .ok_or_else(|| Error::Invalid("startup publication unexpectedly exists".into()))?;
+        let error = Error::exchange(crate::ExchangeStep::Step("publish owner readiness"), source);
+        assert!(journal.complete::<()>(Err(error)).is_err());
+        journal.complete(Ok(()))?;
+        let retained = original.cause()?;
+        let parts = retained
+            .original()
+            .ok_or_else(|| Error::Invalid("startup failure lost its durable cause".into()))?;
+        assert!(parts.message.contains("publish owner readiness"));
+        assert!(parts.message.contains("caused by:"));
+        assert!(!parts.message.contains("local owner stopped"));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn owner_completion_is_durable_before_session_closure_and_survives_restart() -> Result<()>
     {
