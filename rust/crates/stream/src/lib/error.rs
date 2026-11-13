@@ -125,9 +125,11 @@ impl StreamError {
             diagnostic,
         })
     }
-    /// Unavailability attributed to its original producer failure. This
-    /// retains the diagnostic through the canonical status/refusal codec;
-    /// it never grants permission to retry an application failure.
+    /// Unavailability carrying the producer failure's rendered diagnostic.
+    /// The canonical status/refusal codec retains that message, not the
+    /// borrowed producer's concrete Rust error type. Its standard error source
+    /// exposes the retained refusal status. This never grants permission to
+    /// retry an application failure.
     #[must_use]
     pub fn unavailable_with_cause(cause: &(dyn std::error::Error + 'static)) -> Self {
         acyclic_auth::refusal::Refusal::capture(
