@@ -38,7 +38,7 @@ pub fn selection_from_opened(
     value: &wire::SessionOpened,
 ) -> Result<(Revision, crate::StreamSelection, bool), StreamError> {
     let snapshot = revision_from(value.applied.as_ref().ok_or(StreamError::InvalidResponse)?)
-        .map_err(|_| StreamError::InvalidResponse)?;
+        .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
     let selected = value
         .selection
         .as_ref()
@@ -48,7 +48,7 @@ pub fn selection_from_opened(
     } else {
         Some(
             super::commit_id(&selected.preceding_commit_id)
-                .map_err(|_| StreamError::InvalidResponse)?,
+                .map_err(|source| StreamError::InvalidResponse.with_source(source))?,
         )
     };
     Ok((

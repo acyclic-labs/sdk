@@ -94,9 +94,9 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
             .retained
             .into_iter()
             .map(|selected| -> Result<_, StreamError> {
-                let path =
-                    StreamPath::new(selected.path).map_err(|_| StreamError::InvalidResponse)?;
-                Ok::<_, StreamError>(crate::RetainedRecordObservation {
+                let path = StreamPath::new(selected.path)
+                    .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+                Ok(crate::RetainedRecordObservation {
                     record: selected
                         .record
                         .map(|record| self::record(record, Some(&path)))
