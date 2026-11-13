@@ -188,12 +188,14 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStor
     ) -> crate::Result<()> {
         let expected = self.generations[5];
         self.with_home(apply.candidate)?;
-        let mut changes = io.sdk(
+        let mut spent = acyclic_fs::WorkCounters::UNCHARGED;
+        let mut changes = io.cursor_receipt(
             expected
                 .changed_paths_to(apply.candidate, io, io.cancellation())
                 .await,
+            &mut spent,
         )?;
-        while let Some(change) = io.sdk(changes.next().await)? {
+        while let Some(change) = io.cursor_receipt(changes.next().await, &mut spent)? {
             if !apply.permissions.allows_change(&change, apply.now) {
                 return Err(crate::executor::stock_boundary(
                     Some(io),

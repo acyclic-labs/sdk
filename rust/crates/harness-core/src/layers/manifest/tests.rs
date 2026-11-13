@@ -7,6 +7,7 @@ use std::sync::Arc;
 async fn home_apply_denies_before_publication_and_fences_every_original_source()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_fs::{PublicationPermit, access};
+    use acyclic_stream::StreamProviderExt as _;
     let stream = Arc::new(MemoryStream::default());
     let fs = Fs::new(
         StreamAuthorityStore::new(Arc::clone(&stream)),
@@ -83,15 +84,7 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
         transaction
             .write_text("/policy.ts", "export default {};")
             .await?;
-        let checkpoint = transaction
-            .checkout
-            .checkpoint(budget, &cancellation)
-            .await?
-            .value;
-        let candidate = workspaces[5]
-            .generation(checkpoint, budget, &cancellation)
-            .await?
-            .value;
+        let candidate = transaction.snapshot(budget, &cancellation).await?.value;
         assert!(matches!(
             manifest.with_home(&generations[0]),
             Err(WorkspaceError::ForeignGeneration)
