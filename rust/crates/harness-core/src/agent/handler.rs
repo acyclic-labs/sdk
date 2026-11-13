@@ -805,7 +805,7 @@ where
             .companions
             .as_ref()
             .filter(|companions| companions.handles(actor))
-            .is_none_or(|companions| companions.revalidate_foreign_conflicts(actor))
+            .is_some_and(|companions| companions.revalidate_foreign_conflicts(actor))
     }
 
     fn subscription_key(
@@ -834,6 +834,11 @@ where
         subscription: &'a str,
         record: &'a acyclic_stream::Record,
     ) -> GuestFuture<'a, bool> {
+        if let Some(companions) = &self.agents.companions
+            && companions.handles(&delivery.actor)
+        {
+            return companions.accepts_interrupt(delivery, checkpoint, subscription, record);
+        }
         Box::pin(async move {
             if subscription != INBOX {
                 return Ok(false);

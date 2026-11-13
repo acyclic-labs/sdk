@@ -109,6 +109,9 @@ where
             let mut generations = Owned::<Vec<_>>::allocate(transactions.len(), &mut accounting)?;
             for spec in transactions {
                 let transaction = spec.transaction;
+                if transaction.requires_rebase {
+                    return Err(WorkspaceError::StaleGeneration);
+                }
                 let volume = &transaction.workspace.volume;
                 if !self.same_deployment(&volume.fs) {
                     return Err(WorkspaceError::ForeignGeneration);

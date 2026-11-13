@@ -199,7 +199,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.condition(CommitCondition::Tail {
                     path: diagnostic.path()?,
                     expected: diagnostic.records(),
-                });
+                })?;
             }
             Out::Commit(_) => {}
             Out::Supervised { run, control } => {
