@@ -139,7 +139,6 @@
       "target": "Compaction and continuation",
       "owner": "b-substrate",
       "cases": [
-        "auto-compaction",
         "pty-manual-compaction",
         "compaction-background",
         "context-agent-rewrite",

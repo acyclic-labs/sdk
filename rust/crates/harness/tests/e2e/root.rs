@@ -157,17 +157,23 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
     }
     for files in [
         vec![],
-        vec![vec![]],
-        vec![vec!["partial-".into()]],
-        vec![vec!["restored".into()]],
-        vec![vec!["wrong".into()]],
-        vec![vec![], vec!["wrong".into()]],
+        vec![vec![], vec!["wrong".into()], vec!["retained facts".into()]],
+        vec![
+            vec![],
+            vec!["retained earlier facts".into()],
+            vec!["wrong".into()],
+        ],
+        vec![
+            vec![],
+            vec!["retained earlier facts".into()],
+            vec!["retained facts".into(), "extra".into()],
+        ],
     ] {
         let mut case = Scenario::load(&root, &baseline)?;
         case.expect.request_files = Some(files);
         assert!(
             run(case).await.is_err(),
-            "accepted incorrect backstop attachment"
+            "accepted incorrect rolling summary attachment"
         );
     }
     Ok(())
