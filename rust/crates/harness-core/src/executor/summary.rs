@@ -33,6 +33,7 @@ impl StockExecution<'_> {
             )
         })?;
         let executor = StockExecution {
+            origin: self.origin,
             stock: ExecutionConfiguration::Borrowed(&self.stock),
             configuration: None,
             context: self.context,
