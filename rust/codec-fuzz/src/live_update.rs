@@ -71,7 +71,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
                 "live-update writer must be admitted"
             );
             seeds.push((
-                concat!("live-update-v1-", $name),
+                concat!("live-update-", $name),
                 bytes,
                 concat!("live_update::encode::<", stringify!($ty), ">"),
             ));
@@ -262,26 +262,26 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     save!("policy", policy, live::RolloutPolicy);
     for (name, status_name, guard) in [
         (
-            "live-update-v1-guard-awaiting",
-            "live-update-v1-status-awaiting",
+            "live-update-guard-awaiting",
+            "live-update-status-awaiting",
             live::GuardDecision::AwaitingCoverage,
         ),
         (
-            "live-update-v1-guard-advance",
-            "live-update-v1-status-advance",
+            "live-update-guard-advance",
+            "live-update-status-advance",
             live::GuardDecision::Advance { policy: [1; 32] },
         ),
         (
-            "live-update-v1-guard-rollback",
-            "live-update-v1-status-rollback",
+            "live-update-guard-rollback",
+            "live-update-status-rollback",
             live::GuardDecision::Rollback {
                 policy: [2; 32],
                 reason: "failed".into(),
             },
         ),
         (
-            "live-update-v1-guard-blocked",
-            "live-update-v1-status-blocked",
+            "live-update-guard-blocked",
+            "live-update-status-blocked",
             live::GuardDecision::HandoffBlocked {
                 reason: "unknown".into(),
             },
@@ -312,14 +312,14 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     let mut whitespace = original.clone();
     whitespace.push(b'\n');
     seeds.push((
-        "live-update-v1-noncanonical",
+        "live-update-noncanonical",
         whitespace,
         "live_update::encode::<Selection> plus trailing whitespace",
     ));
     let mut future: serde_json::Value = serde_json::from_slice(&original)?;
     future["v"] = 2.into();
     seeds.push((
-        "live-update-v1-future-version",
+        "live-update-future-version",
         serde_json::to_vec(&future)?,
         "live_update::encode::<Selection> with unsupported version",
     ));

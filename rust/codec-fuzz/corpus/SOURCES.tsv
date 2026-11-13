@@ -2175,32 +2175,3 @@ actor_codecs/live-update-v1-schema	371830	2401c54f731bb9c638b4ddeea1c9033214467f
 actor_codecs/live-update-v1-rpc	743665	71d6c06689e49f08acf5579c86c785897899b003723c82941946a14d06a04374	live_update::encode::<live::RpcSchema>
 actor_codecs/live-update-v1-compatibility	1116038	f28d9336dc9b6f0782b05224e92e9b079f2b09f3c707d8af7136da104fcc5e9a	live_update::encode::<live::CompatibilityManifest>
 actor_codecs/live-update-v1-publication	1116456	4170216dbbd854469ba352fbe60b0523c7c85a39d13d6708178b7d9061ddca7f	live_update::encode::<live::Publication>
-actor_codecs/live-update-v1-deployment	69	df0cd8fdf83b56ed4caaee009412e37e3abb3f54e53b7a24aa0626aa913edf23	live_update::encode::<live::DeploymentId>
-actor_codecs/live-update-v1-version	105	8961ce89907566829d3856cc5c22872b28cee7300db2f1c96f2de48064d94d90	live_update::encode::<live::Version>
-actor_codecs/live-update-v1-actor-pin	226	10b8ba09414011530ca44ff261c8bd642b7a9ac786473d9029460f256eba02ac	live_update::encode::<live::Pin>
-actor_codecs/live-update-v1-cohort-pin	47	f57944a7e58ca47d993ba8d0c35ae2638936e9d82fa74fc8be269b98621eb351	live_update::encode::<live::Pin>
-actor_codecs/live-update-v1-fraction	89	f806ba69f6d02c01744eb665d5460279c99c2de5c92d87b823b0a61a773bc947	live_update::encode::<live::Fraction>
-actor_codecs/live-update-v1-split	315	960d6531a8a3c2bcaa1d2b70ac3728f17ad09648d144bbaa46528fd7fcee986e	live_update::encode::<live::Split>
-actor_codecs/live-update-v1-selection	404	908a7f8b92d06ce64b9d77752d38847e535af654ec11e2b8ca1d414c1923ea6c	live_update::encode::<live::Selection>
-actor_codecs/live-update-v1-change-kind	25	df1cda1f7c45cc802203ba2e9389dca2adf9506a8a5e3ad7e8653d9f4021e191	live_update::encode::<live::ChangeKind>
-actor_codecs/live-update-v1-promotion	450	b615703c75565fa4e4db2bde2a92ae8e45fd5ab6fd868a098daaa6c3dd4ab24d	live_update::encode::<live::SelectionChange>
-actor_codecs/live-update-v1-rollback	451	8fa7bed6f78baab487eb58fa7654c335d25857a8394a73153aca877332dab1dd	live_update::encode::<live::SelectionChange>
-actor_codecs/live-update-v1-peer-unbounded	108	c7e3fe3f9c05429b7be7f7ff1e810556ce1af78b56d35ad5da3103c35b1701b5	live_update::encode::<live::PeerRange>
-actor_codecs/live-update-v1-peer-bounded	126	3997a9de85f2cb6e8fe290f454c01345074bab26c44cd08c3453e1cee360bd84	live_update::encode::<live::PeerRange>
-actor_codecs/live-update-v1-handoff	187	643ff2432f561f1a71db773e8fef7807dea9bcf88974c47eb420426d02efc2ed	live_update::encode::<live::HandoffRequirements>
-actor_codecs/live-update-v1-adapter	234	f49104b8185f30646fba11ba656ac1dd63e486cfaa7d007c2631885b7a0483a3	live_update::encode::<live::Adapter>
-actor_codecs/live-update-v1-envelope	528	1ab907bf3d63c5b0ec1e222ec5ae7fc534b6f5954ffa1929242b1201f32e284c	live_update::encode::<live::CallEnvelope>
-actor_codecs/live-update-v1-journal	200	47bc632cc1e6a81c007cc335c4e092877176cc3b2bf3f6be0c368692f8291c77	live_update::encode::<live::JournalPosition>
-actor_codecs/live-update-v1-durable-await	333	1d4420745d7d2fefaeb276ff8e7cc392a9713c607917ac1948b04f9351d79b7e	live_update::encode::<live::DurableAwait>
-actor_codecs/live-update-v1-calls	534	d85c2c6ac811d63aea95b6fa6c267c4cf481c3bf620790d3da9e32ada39ce60b	live_update::encode::<live::CallPair>
-actor_codecs/live-update-v1-policy	219	d205fb9db094ff2e5f7090c40ab3356c865240ce437a3df3845389e425019dbb	live_update::encode::<live::RolloutPolicy>
-actor_codecs/live-update-v1-guard-awaiting	47	36d5da2eccf56570ba17a8f5b300fb2f51f6e15af99862921f54621b3d3f068f	live_update::encode::<GuardDecision>
-actor_codecs/live-update-v1-status-awaiting	1074	717dfc91a8d36a15db4e3a2ac0aa29f2b729dceda50011f1558ce9be1f5ec046	live_update::encode::<RolloutStatus>
-actor_codecs/live-update-v1-guard-advance	113	8519e6cf673d60008aff9afe1fa677e068ace39877e2b6c5809b3444e5a07e92	live_update::encode::<GuardDecision>
-actor_codecs/live-update-v1-status-advance	1140	07b5ccf8ddb258e52d32e27db2cda95b2f53a7f0583a00f7be5aa12987b59cfd	live_update::encode::<RolloutStatus>
-actor_codecs/live-update-v1-guard-rollback	132	21775c0859076817530b489a4e6c1ec530824763deaae73d1efd9d21ce34cfa2	live_update::encode::<GuardDecision>
-actor_codecs/live-update-v1-status-rollback	1159	cee676b489d4b6154b44e1737fd66dc2459d6ed4b1e164b902694cfca2af2b98	live_update::encode::<RolloutStatus>
-actor_codecs/live-update-v1-guard-blocked	64	d398a814dc2e6983a7a1ca00a90fa9136130a4bd227e01f3dee814914115e44c	live_update::encode::<GuardDecision>
-actor_codecs/live-update-v1-status-blocked	1091	52d3b9932c76dc701ac3dc94afea64841685270de0e01a69c5ed5bad256f6a73	live_update::encode::<RolloutStatus>
-actor_codecs/live-update-v1-noncanonical	405	e044b2e07f1c4db8514077e684d144f36a2f1c3eaa95e186d6fbbe0cc1794db8	live_update::encode::<Selection> plus trailing whitespace
-actor_codecs/live-update-v1-future-version	404	a94d0d65e51697aebe2c0746d74a2551a285b533d4f7c0013849709888cf1419	live_update::encode::<Selection> with unsupported version
