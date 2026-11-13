@@ -668,6 +668,46 @@ async fn carried_beyond<P: StreamProvider + ?Sized>(
     "activation follow ended".into()
 }
 
+/// A restarted externally placed host asks its owner to place each dormant
+/// actor with due work, and that placement then delivers the waiting input.
+///
+/// Negative control: an actor already resident is never requested, and the
+/// dormant actor delivers nothing until its owner places it.
+#[tokio::test]
+async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
+    let one = std::num::NonZeroU16::MIN;
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one);
+    let dormant = spawn_with(&store, "dormant", &[b"emit"]).await?;
+    let resident = spawn_with(&store, "resident", &[b"emit"]).await?;
+    let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement(Arc::new(move |actor: &ActorReference| {
+        sender.send(actor.clone()).ok();
+    }));
+    runtime.place(resident.clone(), 1).await?;
+    let mut serving = Box::pin(runtime.run(|actor, error| panic!("{actor:?}: {error}")));
+    let first = observe_while_running(serving.as_mut(), async {
+        Ok(requested.recv().await.ok_or("placement requests closed")?)
+    })
+    .await?;
+    assert_eq!(first, dormant);
+    observe_while_running(serving.as_mut(), async { Ok(runtime.complete().await?) }).await?;
+    assert!(records(&*provider, "out/dormant").await?.is_empty());
+    assert_eq!(records(&*provider, "out/resident").await?.len(), 1);
+    runtime.place(dormant.clone(), 1).await?;
+    observe_while_running(serving.as_mut(), async { Ok(runtime.complete().await?) }).await?;
+    assert_eq!(records(&*provider, "out/dormant").await?.len(), 1);
+    while let Ok(actor) = requested.try_recv() {
+        assert_eq!(actor, dormant, "a resident actor was requested");
+    }
+    Ok(())
+}
+
 /// An externally placed host releases its failed actor: it carries that
 /// actor's wake exactly once, then no more however many checkpoints pass,
 /// and the input stays unconsumed for the next placer, which delivers it.
@@ -691,7 +731,7 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
         }),
         Arc::new(SystemClock),
     )
-    .with_external_placement();
+    .with_external_placement(Arc::new(|_: &ActorReference| {}));
     runtime.place(poisoned.clone(), 1).await?;
     runtime.place(healthy.clone(), 1).await?;
     let mut serving = Box::pin(runtime.run(|actor, error| {
@@ -756,7 +796,7 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     )
-    .with_external_placement();
+    .externally_placed();
     next.place(poisoned.clone(), 2).await?;
     next.drain_actor(&poisoned).await?;
     assert_eq!(records(&*provider, "out/released").await?.len(), 1);
