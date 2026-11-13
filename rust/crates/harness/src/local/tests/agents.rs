@@ -509,10 +509,11 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         )
         .await
         .map_err(agent)?;
-    assert!(matches!(
-        client.cancel().await,
-        Err(Error::Conflict(reason)) if reason.contains("archived")
-    ));
+    assert_eq!(
+        client.cancel().await?,
+        None,
+        "an archived agent has no current input to cancel"
+    );
     assert_eq!(provider.request_count(), requests);
     Ok(())
 }
