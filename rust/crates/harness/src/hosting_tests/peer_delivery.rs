@@ -65,6 +65,44 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         0,
         credentials(&[server.resource(), &server.session_resource()]),
     )?;
+    let outbox = routing.paths.outbox(&routing.node)?;
+    let before_local_work = stream.head(outbox.clone()).await?;
+    let note = "{\"note\":\"local file\"}";
+    assert!(matches!(
+        call(
+            &client,
+            "agents",
+            &AgentCommand::PublishAgentFiles {
+                agent: sender.clone(),
+                operation: crate::OperationId::new(),
+                changes: vec![crate::client_files::ClientFileChange {
+                    path: "notes.json".into(),
+                    text: note.into(),
+                    expected: None,
+                }],
+            }
+        )
+        .await??,
+        AgentReply::ClientFilesPublished { .. }
+    ));
+    let AgentReply::FilePreviews { snapshot } = call(
+        &client,
+        "agents",
+        &AgentCommand::AgentFilePreviews {
+            agent: sender.clone(),
+            paths: vec!["notes.json".into()],
+            after: None,
+            bytes: 4096,
+        },
+    )
+    .await??
+    else {
+        return Err("local file preview returned another reply".into());
+    };
+    assert_eq!(
+        snapshot.files.get("notes.json").and_then(Option::as_deref),
+        Some(note)
+    );
     let prepare = AgentCommand::PreparePeer {
         sender: sender.clone(),
         agent: recipient.clone(),
@@ -120,6 +158,21 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         credentials(&[server.resource(), &server.session_resource()]),
     )?;
     let first = call(&client, "agents", &command).await??;
+    let after_local_work = stream.head(outbox.clone()).await?;
+    assert_eq!(
+        after_local_work.tail, before_local_work.tail,
+        "local files and same-node sends published router events"
+    );
+    assert_eq!(
+        after_local_work
+            .last
+            .as_ref()
+            .map(|record| record.commit_id),
+        before_local_work
+            .last
+            .as_ref()
+            .map(|record| record.commit_id)
+    );
     assert!(matches!(
         first,
         AgentReply::Delivered {
@@ -178,6 +231,10 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         .await?
         .last
         .ok_or("removal outbox missing")?;
+    assert!(
+        outgoing.sequence >= before_local_work.tail,
+        "the outbox counter failed to observe an actual membership publication"
+    );
     assert_eq!(outgoing.commit_id, removed.commit_id);
     assert!(matches!(
         acyclic_actors::route::Publication::decode(&outgoing.value)?,
