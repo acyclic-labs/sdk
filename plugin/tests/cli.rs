@@ -410,7 +410,13 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
             command.arg("--no-compaction");
         }
         if matches!(choice, "explicit_model" | "explicit_both") {
-            command.args(["--model", "graphcoder-qual/tiny"]);
+            // Launch requirements name the effective model: role policy wins
+            // over the requested fallback even when that fallback is explicit.
+            let selected = acyclic_harness::templates::root()
+                .unwrap()
+                .model
+                .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+            command.arg("--model").arg(selected);
         }
         let output = capture(command, "").await;
         if matches!(
@@ -422,6 +428,10 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
                 | "explicit_compaction"
                 | "explicit_both"
         ) {
+            assert!(
+                output.status.success(),
+                "{choice} session={session_client}: {output:?}"
+            );
             assert_eq!(succeeded(&output), "fixture answer\n");
             assert_eq!(model.generated(), 1);
         } else {
