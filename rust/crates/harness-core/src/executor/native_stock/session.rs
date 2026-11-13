@@ -102,10 +102,15 @@ impl<'a> StockExecution<'a> {
             .map_or(&self.stock.after_hooks, |selected| &selected.after_hooks)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::executor) fn selected_prompt_block(&self) -> &Option<String> {
-        self.selected
+    pub(in crate::executor) fn check_prompt_admission(&self) -> Result<()> {
+        let block = self
+            .selected
             .as_ref()
-            .map_or(&self.stock.prompt_block, |selected| &selected.prompt_block)
+            .map_or(&self.stock.prompt_block, |selected| &selected.prompt_block);
+        match block {
+            Some(reason) => Err(Error::Invalid(stock_string_copy(reason, self.io)?)),
+            None => Ok(()),
+        }
     }
     pub(in crate::executor) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self {

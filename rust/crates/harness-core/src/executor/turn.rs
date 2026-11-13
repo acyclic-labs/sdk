@@ -62,9 +62,8 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(reason) = self.selected_prompt_block() {
-            return Err(Error::Invalid(reason.clone()));
-        }
+        self.check_prompt_admission()?;
+
         self.ensure_started(journal, input).await?;
         self.begin_working_history().await;
         self.begin_request_continuation().await;
@@ -120,6 +119,8 @@ impl StockExecution<'_> {
                         self.begin_request_continuation().await;
                     }
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                self.check_prompt_admission()?;
                 let model_events = async {
                     self.run_model_step(
                         journal,

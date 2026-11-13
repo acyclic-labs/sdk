@@ -158,6 +158,67 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
         assert_eq!((first.requests().len(), second.requests().len()), (1, 2));
         assert_eq!(tool.0.load(Ordering::SeqCst), 2);
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    for denied_at in [0, 1] {
+        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+        let journal = storage.journal();
+        let first = Arc::new(ScriptedModelProvider::new([tool_turn([echo_call(
+            "before-denial",
+            json!({"value": "change configuration"}),
+        )])]));
+        let second = Arc::new(ScriptedModelProvider::new([done_turn()]));
+        let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let tools = echo_tools(
+            tool.clone(),
+            json!({"type": "object"}),
+            json!({"type": "object"}),
+            crate::tool::json_projection_schema(json!({"type": "object"})),
+        )?;
+        let compose = |name: &str, provider: Arc<dyn ModelProvider>| -> Result<StockExecutor> {
+            StockExecutor::new(
+                Model::new("fixture".into(), name.into(), "1".into())?,
+                provider,
+                ContextPipeline::default(),
+                tools.clone(),
+            )
+            .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo"]),
+                    Limits::default(),
+                )?,
+                allowed()?,
+            )
+        };
+        let initial = compose("before-denial", first.clone())?;
+        let mut selected = [initial.clone(), compose("after-denial", second.clone())?];
+        // This is the admitted denial retained by with_agent_hooks. Selecting
+        // it must enforce that decision before a model request, also on replay.
+        selected[denied_at].prompt_block = Some("selected prompt denied".into());
+        let [first_binding, second_binding] = selected;
+        let executor = initial.with_step_configuration(Arc::new(Configurations([
+            first_binding.into_step_binding(None)?,
+            second_binding.into_step_binding(None)?,
+        ])));
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("question".into()),
+            selected_context: None,
+            max_steps: None,
+        };
+        for _ in 0..2 {
+            let result = executor.execute(input.clone(), journal.as_ref()).await;
+            assert!(
+                matches!(result, Err(Error::Invalid(ref reason)) if reason == "selected prompt denied")
+            );
+            assert_eq!(first.requests().len(), denied_at);
+            assert_eq!(tool.0.load(Ordering::SeqCst), denied_at);
+            assert!(
+                second.requests().is_empty(),
+                "selected prompt denial reached the model"
+            );
+        }
+    }
     // Both selections fit the original window. Only the replacement's window
     // refuses the mandatory question after the first tool has changed settings.
     let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
