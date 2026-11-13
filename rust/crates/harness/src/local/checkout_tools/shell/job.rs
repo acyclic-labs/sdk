@@ -13,13 +13,18 @@ impl Cancellation {
         Ok(Self { watcher, path })
     }
 
-    pub(super) async fn wait(self) -> Result<()> {
+    pub(super) async fn wait(mut self) -> Result<()> {
         loop {
             // Subscribe before observing the predicate. Each re-read follows
             // a new input event; no sticky tree invalidation can spin here.
             let changed = self.watcher.changed();
-            self.watcher.arm()?;
-            if self.path.try_exists().map_err(storage)? {
+            let (cancelled, original) = native_process::prepare_with_custody(self, |original| {
+                original.watcher.arm()?;
+                original.path.try_exists().map_err(storage)
+            })
+            .await?;
+            self = original;
+            if cancelled {
                 return Ok(());
             }
             changed.await?;

@@ -45,7 +45,7 @@ impl<T> MountTable<T> {
         Ok(environment)
     }
 
-    /// One line describing the namespace, for the task's context projection.
+    /// Task-local addresses and modes, independent of host projection paths.
     pub fn context_line(&self) -> String {
         let mut line = String::from("Volumes: ");
         for (index, (path, mount)) in self.mounts().enumerate() {
@@ -53,10 +53,6 @@ impl<T> MountTable<T> {
                 line.push_str(", ");
             }
             line.push_str(if path.is_empty() { "." } else { path });
-            if let Some(root) = mount.native_root.override_path() {
-                line.push_str(" at ");
-                line.push_str(&root.to_string_lossy());
-            }
             line.push_str(" (");
             if matches!(mount.native_root, super::NativeRoot::Logical) {
                 line.push_str("logical, ");
