@@ -176,6 +176,150 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_recovery()
+-> Result<()> {
+    use crate::conversation::{ContentAccess, ContentChange, ContentPublisher};
+    use crate::supervision::{RunAdmission, RunAdmissionSource};
+    for native in [false, true] {
+        let (journal, _issuer) = super::super::test_support::journal().await?;
+        let operation = OperationId::from_bytes([122; 16]);
+        let policy = Policy {
+            no_progress_turns: Some(1),
+            ..Default::default()
+        };
+        let bytes =
+            serde_json::to_vec(&policy).map_err(|error| Error::Invalid(error.to_string()))?;
+        let declaration = RunAdmission::new(operation, b"Finish", &bytes);
+        let goal = journal
+            .stage(operation, "goal", b"Finish", "text/plain", None)?
+            .await?;
+        let policy_file =
+            crate::executor::stage_json(&journal, operation, "policy", &policy, None).await?;
+        let admission =
+            crate::executor::stage_json(&journal, operation, "admission", &declaration, None)
+                .await?;
+        // Missing agent authority makes the real progress publication refuse,
+        // after the independently authorized conditional content write.
+        let journal = journal.with_run_admission(Some(RunAdmissionSource {
+            admission,
+            goal,
+            policy: policy_file,
+            value: declaration.verify(operation, b"Finish", &bytes)?,
+        }));
+        let publisher = crate::filesystem::FilesystemContentPublisher::new(
+            journal.host.clone(),
+            &journal.volume,
+            &journal.verifier,
+            &journal.scope,
+            64 * 1024,
+            None,
+        )?;
+        let (created, _hold) = publisher
+            .stage_changes(
+                &journal.volume,
+                OperationId::from_bytes([123; 16]),
+                &[ContentChange::CreateAbsent {
+                    path: "receipt.txt",
+                    bytes: b"before",
+                    media_type: "text/plain",
+                    display_name: "receipt.txt",
+                }],
+                ContentAccess::default(),
+            )?
+            .await?;
+        let source = created
+            .files()
+            .next()
+            .cloned()
+            .ok_or_else(|| Error::Invalid("source missing".into()))?;
+        let content = crate::runtime::ContentBindings {
+            volume: journal.volume.clone(),
+            reader: crate::filesystem::FilesystemContentVerifier::new(
+                journal.host.clone(),
+                &journal.verifier,
+                &journal.scope,
+                64 * 1024,
+                None,
+            )?,
+            writer: Some(publisher),
+        };
+        let mut bindings = crate::runtime::Bindings::local();
+        bindings.scope = crate::runtime::RuntimeScope::new(
+            journal.scope.capabilities().clone(),
+            Default::default(),
+        )?;
+        bindings.content = Some(content.clone());
+        let task = Arc::new(
+            bindings
+                .build()?
+                .agent_context(&crate::Capabilities::new(Vec::<String>::new()), content)?
+                .with_execution_journal(Arc::new(journal), operation)?,
+        );
+        let context = crate::runtime::ToolContext::new(task, operation, "edit")?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 16_000_000);
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = if native {
+            PreparationIo::from_native_work(&work)?
+        } else {
+            PreparationIo::from_budget(budget, &cancellation)?
+        };
+        let baseline = io.owned_bytes()?;
+        let error = context
+            .stage_file_at(operation, &source, b"after", Some(&io))
+            .await
+            .expect_err("missing agent authority accepted progress");
+        assert!(
+            error
+                .to_string()
+                .contains("original progress has no agent binding"),
+            "{error:?}"
+        );
+        drop(error);
+        assert_eq!(
+            io.owned_bytes()?,
+            baseline,
+            "failed progress leaked the accepted receipt"
+        );
+        let (receipt, retained) = context
+            .observe_tool_changes(operation, source.volume(), Some(&io))
+            .await?;
+        let receipt = receipt.ok_or_else(|| Error::Invalid("accepted write disappeared".into()))?;
+        let hold = io.guard_owned(retained)?;
+        assert_eq!(
+            receipt.files().next().unwrap().descriptor().byte_length(),
+            5
+        );
+        drop(receipt);
+        drop(hold);
+        assert_eq!(io.owned_bytes()?, baseline);
+        let error = context
+            .observe_tool_source_file_once(
+                operation,
+                Some(source.volume()),
+                Some(source.path()),
+                Some(&io),
+            )
+            .await
+            .expect_err("recovery accepted progress without agent authority");
+        assert!(
+            error
+                .to_string()
+                .contains("original progress has no agent binding"),
+            "{error:?}"
+        );
+        drop(error);
+        assert_eq!(
+            io.owned_bytes()?,
+            baseline,
+            "failed recovery leaked the original receipt"
+        );
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_original_turn()
 -> Result<()> {
