@@ -812,11 +812,7 @@ async fn distributed_publication_records_one_idempotent_merge_commit() {
         .record_commit(
             None,
             generation(1),
-            if byte <= 3 {
-                BTreeSet::from(["tracked.txt".to_owned(), "removed-later.txt".to_owned()])
-            } else {
-                BTreeSet::from(["tracked.txt".to_owned()])
-            },
+            BTreeSet::from(["tracked.txt".to_owned()]),
             "initial",
             "parent",
             1,
@@ -1374,11 +1370,7 @@ async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let executor = TestExecutor::returning(GitFilesystemResult::Captured {
         tree: tree(9),
-        tracked_paths: if byte <= 3 {
-            BTreeSet::from(["tracked.txt".to_owned(), "removed-later.txt".to_owned()])
-        } else {
-            BTreeSet::from(["tracked.txt".to_owned()])
-        },
+        tracked_paths: BTreeSet::from(["tracked.txt".to_owned()]),
         proof: None,
     });
     let GitCommandOutput::Committed(commit) = repository
