@@ -42,12 +42,10 @@ pub(super) fn evaluate(module: &config::Prepared, settings: &Value) -> Result<co
 }
 
 impl AfterHook {
-    pub(super) fn new(evaluation: config::Evaluation) -> Result<Self> {
+    pub(super) fn new(evaluated: config::Evaluated, identity: [u8; 32]) -> Result<Self> {
         // This source has one event vocabulary and no changing payload. Resolve
         // the pure callback once at admission, before any model request. Delivery
         // then borrows the admitted delta without an engine, clock or allocation.
-        let identity = evaluation.identity();
-        let evaluated = evaluation.into_result()?;
         let effects = evaluated.value.record::<Vec<Effect>>()?;
         if effects.value.iter().any(|effect| !effect.notice.wake) {
             return Err(Error::Invalid(

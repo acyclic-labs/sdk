@@ -295,14 +295,17 @@ async fn load_enabled(
             let prepared = config::prepare(&hook, code.as_bytes(), tree)
                 .await
                 .map_err(LoadFailure::Operational)?;
-            let evaluation = after::evaluate(&prepared, settings)?;
+            let evaluation =
+                after::evaluate(&prepared, settings).map_err(LoadFailure::Operational)?;
             if let Some(identity) = identity.as_deref_mut() {
                 identity.update(&evaluation.identity());
             }
+            let hook_identity = evaluation.identity();
+            let evaluated = evaluation.into_result().map_err(LoadFailure::Semantic)?;
             loaded
                 .value
                 .after
-                .push(AfterHook::new(evaluation).map_err(LoadFailure::decoding)?);
+                .push(AfterHook::new(evaluated, hook_identity).map_err(LoadFailure::decoding)?);
         }
         loaded.value.descriptions.push(manifest.description);
         let settings = String::from_utf8(crate::contract::canonical_json_bytes(settings)?)

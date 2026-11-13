@@ -182,21 +182,6 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
 
 #[tokio::test]
 async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> Result<()> {
-    struct Metered<'a> {
-        files: Files,
-        io: &'a crate::filesystem::PreparationIo,
-    }
-    impl Tree for Metered<'_> {
-        fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
-            Some(self.io)
-        }
-        fn read<'a>(
-            &'a self,
-            path: &'a str,
-        ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
-            self.files.read(path)
-        }
-    }
     let cancel = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
@@ -261,5 +246,76 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
     );
     drop(rules);
     assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+struct Metered<'a> {
+    files: Files,
+    io: &'a crate::filesystem::PreparationIo,
+}
+impl Tree for Metered<'_> {
+    fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        Some(self.io)
+    }
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+        self.files.read(path)
+    }
+}
+
+#[tokio::test]
+async fn native_after_hook_refusals_retain_the_original_decision() -> Result<()> {
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let layers = [Layer {
+        name: "home",
+        generation: "one",
+        bytes: Some(b"export default {helper:{enabled:true}};"),
+    }];
+    let mut original = None;
+    for source in [
+        "throw new Error('original refusal');",
+        "throw new Error('changed refusal');",
+    ] {
+        let tree = Metered {
+            io: &io,
+            files: Files(BTreeMap::from([
+                (
+                    "plugins/helper/plugin.ts",
+                    "export default {name:'helper', description:'helper', after:{done:{path:'live/agents/self/status.json',from:'now'}}};",
+                ),
+                ("plugins/helper/hooks/after-done.ts", source),
+            ])),
+        };
+        let first = load_decision(&tree, &layers, "owner").await?;
+        let identity = first.identity();
+        assert!(matches!(
+            first.into_result(),
+            Err(Error::NativeDiagnostic {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            })
+        ));
+        let second = load_decision(&tree, &layers, "owner").await?;
+        assert_eq!(second.identity(), identity);
+        assert!(matches!(
+            second.into_result(),
+            Err(Error::NativeDiagnostic { .. })
+        ));
+        if let Some(original) = original {
+            assert_ne!(
+                original, identity,
+                "changed source must change refusal evidence"
+            );
+        }
+        original = Some(identity);
+    }
     Ok(())
 }
