@@ -277,6 +277,24 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     let relay = envelope
         .relay_request(&paths, &placement.node)
         .map_err(violation)?;
+    let claimed = provider
+        .commit(
+            call.accept(
+                &crate::call::Accepted {
+                    executor: "account-router".into(),
+                    fence: None,
+                },
+                true,
+            )
+            .map_err(violation)?
+            .request(key(&root, "forwarder-claim")?),
+        )
+        .await
+        .map_err(Error::from)?;
+    require(
+        matches!(claimed, CommitOutcome::Committed(_)),
+        "forwarder did not claim its original call",
+    )?;
     // Lose the account receipt after relay publication. The local outbox
     // cursor must remain unchanged and reconnect must resubmit the same intent.
     let interrupted = crate::route::forward(provider, &paths, &source, async |record| {
@@ -303,14 +321,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         "lost account receipt advanced local outbox progress",
     )?;
     let completion = |relay_seq: u64| -> Result<Vec<CommitEffect>, crate::route::Error> {
-        let accepted = crate::call::Accepted {
-            executor: "account-router".into(),
-            fence: None,
-        };
         Ok(vec![
-            call.accept(&accepted, true)
-                .map_err(|_| crate::route::Error::InvalidRecord)?
-                .into(),
             call.settle(
                 None,
                 &crate::call::Outcome::Ok(relay_seq.to_le_bytes().to_vec().into()),
@@ -322,10 +333,10 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     for soft in [false, true] {
         let blocked_completion = crate::route::forward(provider, &paths, &source, async |_| {
             let mut effects = completion(0)?;
-            effects[1].conditions.push(CommitCondition::Present {
+            effects[0].conditions.push(CommitCondition::Present {
                 path: StreamPath::new(format!("{root}/missing-completion-guard"))?,
             });
-            effects[1].soft = soft;
+            effects[0].soft = soft;
             Ok(effects)
         })
         .await;
