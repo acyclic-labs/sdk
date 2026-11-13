@@ -2,7 +2,7 @@
 
 Immutable, versioned workspaces with embedded and hosted backends. Generations are stable identities; mutations produce new generations instead of rewriting history.
 
-For a stable paginated directory walk, capture `workspace.sync().await?.into_generation()` and call `generation.list_directory(...)` for every page. The moving workspace head intentionally has no paginated directory API.
+`Workspace::list_directory` reads the moving head independently for each page, so successive pages can reflect different generations. For a stable paginated directory walk, retain one `Generation` from a workspace sync and call `generation.list_directory(...)` for every page.
 
 ```sh
 cargo add acyclic-fs
