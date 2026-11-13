@@ -142,3 +142,95 @@ overlay/fork, opened-file version, bounded page/range, idle-cost and mounted
 override-removal regressions use the same asynchronous provider boundary.
 The harness native signal-file adapter remains a separate integration obligation;
 this SDK primitive proof alone does not establish that mounted integration.
+
+Original-cut native point reads share the portable Streams selector and never
+fall back to portable IO. In `acyclic-stream --lib`, run
+`replay_tests::native_latest_before_keeps_original_cuts_and_budget`,
+`replay_tests::portable_success_cannot_substitute_for_native_admission`, and
+`replay_tests::latest_before_requires_the_original_single_record_cursor_to_close`.
+The real memory provider distinguishes old keyed/unkeyed cuts from later writes,
+missing keys and zero cuts, denies original native allocation, and rejects a
+cancelled zero-cut read. The real-provider cursor wrapper injects an extra record
+or a late error, with the healthy single-record cursor as its control.
+`point-cursor-closure.patch` removes the portable cursor-close check; the cursor
+regression must fail at `point read ignored an extra record or a late cursor error`.
+`point-zero-cancellation.patch` removes the original native cancellation check;
+the native regression must fail at `cancelled native point read admitted absence`.
+Apply each independently, require that exact assertion, reverse it and require
+the identical regression to pass. These new tests and mutant executions are
+pending; patch applicability is not a runtime kill or native mounted-file proof.
+
+`supervision::streams::tests::signal_files_follow_a_continuing_runs_pause_at_the_captured_cut`
+in `acyclic-harness-core --lib` also reads both original run cuts through
+`native_signal_file`. The returned JSON must equal the portable original-cut
+projection and retain the native output allocation until its bytes retire.
+Zero and missing-signal cuts remain absent; decoder denial, cancellation,
+another agent's source and a payload indexed under the wrong kind are refused.
+`native-signal-original-cut.patch` substitutes the latest source cut and must
+fail at `native signal borrowed a later run or signal cut`.
+`native-signal-output-custody.patch` substitutes an ordinary output buffer and
+must fail at `native signal output lost its original allocation owner`.
+Run each mutation independently with that same regression, require the named
+assertion, reverse it and require the unchanged regression to pass again.
+`supervision::events::tests::supervision_event_decode_custody_covers_native_storage`
+measures real decoder allocations for every lifecycle variant, including long
+owned strings, and requires the original peak reservation and retained custody
+to cover the actual allocations and retire completely. These new executions
+remain pending. This proves neither a mounted adapter nor a live PR producer.
+
+The same `replay_tests::native_latest_before_keeps_original_cuts_and_budget`
+regression measures allocations while a nonempty original revision cut is moved
+into a denied native read. It must allocate nothing before the provider's
+refusal. A unique ordinary key likewise cannot allocate its lazy shared header
+before admission. `point-request-clone.patch` restores the unmetered request
+copy and must fail at `native point read copied its revision vector before admission`;
+`point-key-promotion.patch` removes key admission and must fail at
+`native point read promoted a unique key before admission`.
+Run these independently, require the exact assertion, reverse, then require
+the same regression to pass. The native signal query's necessary revision-vector
+copies use `RevisionCut::native_clone`, sharing the existing admitted vector
+copy implementation and retaining its guard through the original request.
+The regression also checks healthy cut-copy custody/refund and denied cut-copy
+admission. New test/mutant execution remains pending.
+
+The real Streams schedule regression
+`supervision::streams::tests::late_native_completions_keep_original_turns_and_latched_controls`
+settles a spending turn while its native measurement remains pending, then
+settles a later spending turn without a pending producer of its own. An older
+pending call must not exempt that later turn from no-progress. Four schedules
+place changed/unchanged physical completion before or after the later settlement.
+They retain original progress identity, exact stop cause, idempotent completion
+and delayed-start refusal. Physical completion does not retroactively recount
+the earlier logical settlement or clear the later stop.
+`native-pending-turn.patch` shares the pending counter across turns and must
+fail at `another turn's pending measurement bypassed no-progress settlement`.
+`native-late-stop.patch` forgets the prior action and must fail at
+`late native completion cleared a latched stop`. Apply independently, require
+the unchanged regression's exact assertion, reverse and require that regression
+to pass again. Execution remains pending. This query-boundary proof is separate
+from qualification of native process completion through the shipping binary.
+
+The shipping `acyclic-plugin --test cli` regression
+`supervision::headless_configured_morph_chat_preserves_usage_and_process_credentials`
+uses a configured Morph catalog entry and a real local Chat Completions HTTP
+endpoint. Complete trailer usage must stop a spending, unchanged turn through
+`no_progress`; missing trailer usage must instead preserve unknown spending and
+stop at the owner's token reservation. Each authenticated case admits exactly
+one model request with the Chat wire shape and process-only credential. The
+missing-credential control admits no request. The same persisted-artifact and
+output credential scan is shared with the root/worker configuration regression.
+These are real binary/input controls, not a claim of live service qualification.
+New execution remains pending.
+
+Stream-only computed snapshots have no authored generation; their input domain
+must remain distinct from every explicitly authored generation. In
+`acyclic-fs --lib --features test-support`, run
+`demand::computed_tests::stream_only_computed_cuts_do_not_alias_authored_inputs`.
+It keeps the same bytes, source identity and stream position, changes only the
+authored-input domain, and checks distinct versions, directory/lookup agreement,
+original opened bytes and rejection of the old version. The production mutation
+`computed-generation-domain.patch` normalizes absent generations to an authored
+zero digest and must fail at `stream-only cut aliased an authored generation`.
+Require that unchanged regression to fail, reverse the patch and require its
+restored pass. Execution remains pending; this source-cut proof is not mounted
+signal-file or native-watch qualification.

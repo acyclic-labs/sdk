@@ -143,6 +143,171 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
             serde_json::from_str(&values.first().ok_or("pause reason disappeared")?.text)?;
         assert_eq!(signal.sequence, expected_sequence);
         assert_eq!(values[0].input.stream, events);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let original = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = original.live_allocation_bytes();
+            let projected = native_signal_file(
+                &provider,
+                &agent,
+                SignalFileRead {
+                    source: events.clone(),
+                    before: cut,
+                    at_least: Default::default(),
+                    kind: Kind::RepeatFailure,
+                },
+                &original,
+            )
+            .await?
+            .ok_or("native pause reason disappeared")?;
+            assert_eq!(
+                serde_json::from_slice::<Signal>(&projected.bytes)?,
+                signal,
+                "native signal borrowed a later run or signal cut"
+            );
+            assert_eq!(projected.sequence, values[0].input.sequence);
+            assert!(
+                original.live_allocation_bytes() > baseline,
+                "native signal output lost its original allocation owner"
+            );
+            drop(projected);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        // Absence is distinct from successful measured data, decoder denial
+        // and cancellation. None may silently use the portable entrance.
+        for (kind, cut, decode, cancelled, absent) in [
+            (Kind::RepeatFailure, 0, true, false, true),
+            (Kind::Stuck, b_cut, true, false, true),
+            (Kind::RepeatFailure, b_cut, false, false, false),
+            (Kind::RepeatFailure, 0, true, true, false),
+        ] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let original = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget {
+                    bytes_decoded: if decode { budget.bytes_decoded } else { 0 },
+                    ..budget
+                },
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = original.live_allocation_bytes();
+            if cancelled {
+                cancellation.cancel();
+            }
+            let result = native_signal_file(
+                &provider,
+                &agent,
+                SignalFileRead {
+                    source: events.clone(),
+                    before: cut,
+                    at_least: Default::default(),
+                    kind,
+                },
+                &original,
+            )
+            .await;
+            if absent {
+                assert!(result?.is_none(), "absent signal became a status file");
+            } else {
+                assert!(
+                    result.is_err(),
+                    "native signal query bypassed its original denial"
+                );
+                drop(result);
+            }
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = original.live_allocation_bytes();
+        let foreign = AgentPath::root(&AgentId::from_bytes([90; 16]));
+        assert!(
+            native_signal_file(
+                &provider,
+                &foreign,
+                SignalFileRead {
+                    source: events.clone(),
+                    before: b_cut,
+                    at_least: Default::default(),
+                    kind: Kind::RepeatFailure,
+                },
+                &original,
+            )
+            .await
+            .is_err(),
+            "native signal query accepted another agent's source"
+        );
+        // An authentic indexed record with a mismatched signal payload is
+        // rejected by the same validator on portable and native entrances.
+        let invalid = Event {
+            version: 1,
+            agent: agent.clone(),
+            run: Some(a),
+            source: Position {
+                stream: agent.inbox()?,
+                sequence: 2,
+            },
+            event: Lifecycle::Signal {
+                signal: Signal {
+                    version: 1,
+                    sequence: 2,
+                    kind: Kind::ValidationLoop,
+                    count: 1,
+                    evidence: super::super::Evidence::Signature { key: [0; 32] },
+                },
+                action: super::super::Action::Alert,
+            },
+        };
+        provider
+            .append(acyclic_stream::AppendRequest {
+                path: events.clone(),
+                records: vec![AppendRecord {
+                    value: serde_json::to_vec(&invalid)?.into(),
+                    headers: acyclic_stream::RecordHeaders::new(
+                        vec![
+                            Bytes::from_static(CURRENT_RUN_KEY).into(),
+                            signal_key(a, Kind::RepeatFailure).into(),
+                        ],
+                        Vec::new(),
+                    )?,
+                }],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        assert!(
+            Queries::new(&provider, &agent, a)
+                .read_signal(Kind::RepeatFailure)
+                .await
+                .is_err()
+        );
+        assert!(
+            native_signal_file(
+                &provider,
+                &agent,
+                SignalFileRead {
+                    source: events,
+                    before: u64::MAX,
+                    at_least: Default::default(),
+                    kind: Kind::RepeatFailure,
+                },
+                &original,
+            )
+            .await
+            .is_err(),
+            "native signal accepted an indexed payload for another kind"
+        );
+        assert_eq!(original.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
@@ -424,29 +589,13 @@ async fn native_pending_measurements_settle_per_call_without_bypassing_no_progre
         };
         policy.actions.insert(Kind::NoProgress, Action::Stop);
         let publish = |sequence, projection: Projection| -> TestResult<CommitRequest> {
-            Ok(CommitRequest {
-                deadline_unix_millis: None,
-                idempotency_key: IdempotencyKey::unique(),
-                effects: vec![
-                    CommitEffect::hard(
-                        vec![if sequence == 0 {
-                            CommitCondition::Absent {
-                                path: agent.inbox()?,
-                            }
-                        } else {
-                            CommitCondition::Tail {
-                                path: agent.inbox()?,
-                                expected: sequence,
-                            }
-                        }],
-                        vec![CommitMutation::Append {
-                            path: agent.inbox()?,
-                            records: vec![b"original native producer".as_slice().into()],
-                        }],
-                    ),
-                    projection.effect,
-                ],
-            })
+            native_source_request(
+                &Position {
+                    stream: agent.inbox()?,
+                    sequence,
+                },
+                projection,
+            )
         };
         let source = |sequence| -> TestResult<Position> {
             Ok(Position {
@@ -501,6 +650,179 @@ async fn native_pending_measurements_settle_per_call_without_bypassing_no_progre
             provider.commit(publish(sequence, settlement)?).await?,
             CommitOutcome::Committed(_)
         ));
+    }
+    Ok(())
+}
+
+fn native_source_request(source: &Position, projection: Projection) -> TestResult<CommitRequest> {
+    Ok(CommitRequest {
+        deadline_unix_millis: None,
+        idempotency_key: IdempotencyKey::unique(),
+        effects: vec![
+            CommitEffect::hard(
+                vec![if source.sequence == 0 {
+                    CommitCondition::Absent {
+                        path: source.stream.clone(),
+                    }
+                } else {
+                    CommitCondition::Tail {
+                        path: source.stream.clone(),
+                        expected: source.sequence,
+                    }
+                }],
+                vec![CommitMutation::Append {
+                    path: source.stream.clone(),
+                    records: vec![b"original native producer".as_slice().into()],
+                }],
+            ),
+            projection.effect,
+        ],
+    })
+}
+
+#[tokio::test]
+async fn late_native_completions_keep_original_turns_and_latched_controls() -> TestResult {
+    use crate::supervision::Action;
+    use NativeMeasurement::{Complete, Pending};
+    async fn publish(
+        provider: &MemoryStream,
+        source: &Position,
+        projection: Projection,
+    ) -> TestResult {
+        assert!(matches!(
+            provider
+                .commit(native_source_request(source, projection)?)
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        Ok(())
+    }
+    for (complete_before_next_settlement, changed) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let provider = MemoryStream::default();
+        let agent = AgentPath::root(&AgentId::from_bytes([195; 16]));
+        let run = OperationId::from_bytes([196; 16]);
+        let call = OperationId::from_bytes([197; 16]);
+        let queries = Queries::new(&provider, &agent, run);
+        let mut policy = Policy {
+            no_progress_turns: Some(1),
+            ..Default::default()
+        };
+        policy.actions.insert(Kind::NoProgress, Action::Stop);
+        let source = |sequence| -> TestResult<Position> {
+            Ok(Position {
+                stream: agent.inbox()?,
+                sequence,
+            })
+        };
+        let usage = |turn| TurnUsage {
+            turn,
+            tokens: Some(1),
+            usd_nanos: None,
+            spent_tokens: true,
+        };
+        // Turn zero returns logically while its original physical measurement
+        // is still pending. That unknown cannot prove absence or make progress.
+        let spending = queries
+            .project_usage(&source(0)?, &usage(0), &policy)
+            .await?;
+        publish(&provider, &source(0)?, spending).await?;
+        let pending = queries
+            .project_native_capture(&source(1)?, 0, call, Pending, &policy)
+            .await?;
+        publish(&provider, &source(1)?, pending).await?;
+        let logical = queries
+            .project_settlement(&source(2)?, 0, &policy)
+            .await?
+            .ok_or("logical settlement absent")?;
+        assert_eq!(logical.checkpoint.state.unproductive_turns, 0);
+        assert_eq!(logical.checkpoint.action, Action::Alert);
+        publish(&provider, &source(2)?, logical).await?;
+        let spending = queries
+            .project_usage(&source(3)?, &usage(1), &policy)
+            .await?;
+        publish(&provider, &source(3)?, spending).await?;
+        let mut sequence = 4;
+        if complete_before_next_settlement {
+            let completed = queries
+                .project_native_capture(
+                    &source(sequence)?,
+                    0,
+                    call,
+                    Complete(Some(changed)),
+                    &policy,
+                )
+                .await?;
+            assert_eq!(
+                completed.checkpoint.state.unproductive_turns, 0,
+                "late native completion retroactively counted its logical turn"
+            );
+            publish(&provider, &source(sequence)?, completed).await?;
+            sequence += 1;
+        }
+        // This later turn has reported spending and no pending producer of its
+        // own. Another turn's pending count must not buy it another paid turn.
+        let settled = queries
+            .project_settlement(&source(sequence)?, 1, &policy)
+            .await?
+            .ok_or("later settlement absent")?;
+        assert_eq!(
+            settled.checkpoint.state.unproductive_turns, 1,
+            "another turn's pending measurement bypassed no-progress settlement"
+        );
+        assert_eq!(settled.checkpoint.action, Action::Stop);
+        let decision_source = settled.checkpoint.decision_source.clone();
+        publish(&provider, &source(sequence)?, settled).await?;
+        sequence += 1;
+        if !complete_before_next_settlement {
+            let completed = queries
+                .project_native_capture(
+                    &source(sequence)?,
+                    0,
+                    call,
+                    Complete(Some(changed)),
+                    &policy,
+                )
+                .await?;
+            assert_eq!(
+                completed.checkpoint.state.unproductive_turns, 1,
+                "late native completion changed another turn's absence proof"
+            );
+            assert_eq!(
+                completed.checkpoint.action,
+                Action::Stop,
+                "late native completion cleared a latched stop"
+            );
+            assert_eq!(completed.checkpoint.decision_source, decision_source);
+            let request = native_source_request(&source(sequence)?, completed)?;
+            let receipt = provider.commit(request.clone()).await?;
+            assert!(matches!(receipt, CommitOutcome::Committed(_)));
+            assert_eq!(provider.commit(request).await?, receipt);
+            // A delayed start after physical completion cannot resurrect the
+            // call's pending credit or rewrite the stop's original cause.
+            sequence += 1;
+            let delayed = queries
+                .project_native_capture(&source(sequence)?, 0, call, Pending, &policy)
+                .await?;
+            assert_eq!(delayed.checkpoint.action, Action::Stop);
+            assert_eq!(delayed.checkpoint.decision_source, decision_source);
+            publish(&provider, &source(sequence)?, delayed).await?;
+        }
+        let admission = queries.admission(&policy).await?;
+        assert_eq!(
+            admission.control.as_ref().map(|control| control.action),
+            Some(Action::Stop)
+        );
+        assert_eq!(
+            admission.control.as_ref().map(|control| &control.source),
+            decision_source.as_ref()
+        );
+        assert_eq!(queries.progress_in_turn(0).await?.0, changed);
+        assert!(
+            !queries.progress_in_turn(1).await?.0,
+            "late native progress was rebound to the later turn"
+        );
     }
     Ok(())
 }

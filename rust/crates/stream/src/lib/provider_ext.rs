@@ -1,7 +1,116 @@
+struct LatestRead {
+    from: u64,
+    key: Option<ReadKeySeek>,
+    before: u64,
+}
+
+impl LatestRead {
+    fn new(
+        path: StreamPath,
+        key: Option<Bytes>,
+        before: u64,
+        at_least: RevisionCut,
+    ) -> Option<(Self, ReadRequest)> {
+        let last = before.checked_sub(1)?;
+        let key = key.map(|key| ReadKeySeek::latest(key, before));
+        let from = if key.is_some() { 0 } else { last };
+        Some((
+            Self {
+                from,
+                key: key.clone(),
+                before,
+            },
+            ReadRequest {
+                from,
+                key,
+                path,
+                limit: 1,
+                at_least,
+            },
+        ))
+    }
+
+    fn validate(&mut self, record: &Record) -> Result<(), StreamError> {
+        if record.sequence >= self.before {
+            return Err(StreamError::InvalidResponse);
+        }
+        match &mut self.key {
+            Some(selector) => {
+                selector.advance(&mut self.from, record.sequence, record.headers.keys())
+            }
+            None if record.sequence == self.from => Ok(()),
+            None => Err(StreamError::InvalidResponse),
+        }
+    }
+}
+
 /// Projections of canonical provider operations, shared by every backend.
 ///
 /// These methods introduce no provider dispatch or independent observation.
 pub trait StreamProviderExt: StreamProvider {
+    /// Selects one indexed record before an original cut on its native owner.
+    /// The finite cursor must close successfully before its record is returned;
+    /// the result retains that record's original metadata allocation. Zero is
+    /// known absence without provider IO. Unsupported native reads never fall
+    /// back to the portable provider entrance.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_latest_before(
+        &self,
+        path: StreamPath,
+        key: Option<Bytes>,
+        before: u64,
+        at_least: RevisionCut,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> impl Future<Output = NativeStreamResult<Option<Record>>> + Send
+    where
+        Self: NativeStreamProvider,
+    {
+        async move {
+            use futures::TryStreamExt as _;
+            meter.check()?;
+            if before == 0 {
+                return Ok(Ok(NativeStreamOutput::new(
+                    None,
+                    acyclic_native_runtime::ReadAllocation::empty(&meter),
+                )));
+            }
+            let key = key
+                .map(|key| key.into_cloneable_native(&meter))
+                .transpose()?;
+            let (mut selection, request) = LatestRead::new(path, key, before, at_least)
+                .expect("nonzero original cut has one predecessor");
+            let mut records = match self.native_read(request, meter.clone()).await? {
+                Ok(records) => records,
+                Err(error) => return Ok(Err(error)),
+            };
+            let record = match records.value_mut().try_next().await? {
+                Some(Ok(record)) => Some(record),
+                Some(Err(error)) => return Ok(Err(error)),
+                None => None,
+            };
+            if let Some(record) = &record
+                && let Err(error) = selection.validate(record.value())
+            {
+                return Ok(Err(error));
+            }
+            if record.is_some() {
+                match records.value_mut().try_next().await? {
+                    Some(Err(error)) => return Ok(Err(error)),
+                    Some(Ok(_)) => return Ok(Err(StreamError::InvalidResponse)),
+                    None => {}
+                }
+            }
+            meter.check()?;
+            Ok(Ok(match record {
+                Some(record) => record.map(Some),
+                None => NativeStreamOutput::new(
+                    None,
+                    acyclic_native_runtime::ReadAllocation::empty(&meter),
+                ),
+            }))
+        }
+    }
+
     /// Projects funded append publication without another future allocation.
     #[cfg(not(target_arch = "wasm32"))]
     fn native_append(
@@ -112,27 +221,16 @@ pub trait StreamProviderExt: StreamProvider {
     ) -> impl Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
         async move {
             use futures::StreamExt as _;
-            if before == 0 {
+            let Some((mut selection, request)) = LatestRead::new(path, key, before, at_least)
+            else {
                 return Ok(None);
-            }
-            let mut selector = key.map(|key| ReadKeySeek::latest(key, before));
-            let mut from = if selector.is_some() { 0 } else { before - 1 };
-            let mut records = self
-                .read(ReadRequest {
-                    key: selector.clone(),
-                    path,
-                    from,
-                    limit: 1,
-                    at_least,
-                })
-                .await?;
+            };
+            let mut records = self.read(request).await?;
             let record = records.next().await.transpose()?;
             if let Some(record) = &record {
-                if record.sequence >= before {
+                selection.validate(record)?;
+                if records.next().await.transpose()?.is_some() {
                     return Err(StreamError::InvalidResponse);
-                }
-                if let Some(selector) = &mut selector {
-                    selector.advance(&mut from, record.sequence, record.headers.keys())?;
                 }
             }
             Ok(record)

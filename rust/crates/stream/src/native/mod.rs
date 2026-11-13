@@ -8,6 +8,7 @@ pub use output::NativeStreamOutput;
 pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
 pub(crate) use prepared::NativeCommitRecordSlot;
 pub use prepared::{PreparedNativeCommit, PreparedRecordCapacity};
+pub(crate) use request::copy_vector;
 pub(crate) use work::Work;
 
 macro_rules! span {

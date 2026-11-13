@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/supervision/streams/native.rs b/rust/crates/harness-core/src/supervision/streams/native.rs
+--- a/rust/crates/harness-core/src/supervision/streams/native.rs
++++ b/rust/crates/harness-core/src/supervision/streams/native.rs
+@@ -53,7 +53,7 @@
+         .native_latest_before(
+             read.source.clone(),
+             Some(key),
+-            read.before,
++            u64::MAX,
+             at_least,
+             original.runtime_meter(),
+         )

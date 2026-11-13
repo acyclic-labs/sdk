@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/supervision/streams/checkpoint.rs b/rust/crates/harness-core/src/supervision/streams/checkpoint.rs
+--- a/rust/crates/harness-core/src/supervision/streams/checkpoint.rs
++++ b/rust/crates/harness-core/src/supervision/streams/checkpoint.rs
+@@ -240,7 +240,7 @@
+             .as_ref()
+             .map(|(checkpoint, _)| checkpoint.action)
+             .unwrap_or_default();
+-        let action = prior_action.max(prepared.transition.action);
++        let action = prepared.transition.action;
+         let signal = if prepared.transition.action > prior_action {
+             prepared
+                 .transition

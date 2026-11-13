@@ -19,6 +19,11 @@ use bytes::Bytes;
 mod checkpoint;
 pub use checkpoint::{Admission, Checkpoint, Projection};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{NativeSignalFile, SignalFileRead, native_signal_file};
+
 #[cfg(test)]
 mod tests;
 
@@ -92,14 +97,39 @@ pub(crate) async fn current_run_before<P: StreamProvider + ?Sized>(
     record
         .map(|record| {
             let event: Event = serde_json::from_slice(&record.value).map_err(invalid)?;
-            if event.version != 1 || event.agent != *agent {
-                return Err(invalid("invalid indexed current run"));
-            }
-            event
-                .run
-                .ok_or_else(|| invalid("indexed current activity has no run"))
+            current_run_from(&event, agent).map_err(invalid)
         })
         .transpose()
+}
+
+fn current_run_from(
+    event: &Event,
+    agent: &AgentPath,
+) -> std::result::Result<OperationId, &'static str> {
+    if event.version != 1 || event.agent != *agent {
+        return Err("invalid indexed current run");
+    }
+    event.run.ok_or("indexed current activity has no run")
+}
+
+fn signal_from<'a>(
+    event: &'a Event,
+    agent: &AgentPath,
+    run: OperationId,
+    kind: Kind,
+) -> std::result::Result<&'a Signal, &'static str> {
+    let Lifecycle::Signal { signal, .. } = &event.event else {
+        return Err("indexed supervision source is not a signal");
+    };
+    if event.version != 1
+        || event.agent != *agent
+        || event.run != Some(run)
+        || signal.version != 1
+        || signal.kind != kind
+    {
+        return Err("invalid supervision signal source");
+    }
+    Ok(signal)
 }
 
 /// Point-select the run owning the latest pause, with its atomic action fence.
@@ -183,11 +213,21 @@ fn cell_path(agent: &AgentPath, run: OperationId, key: &[u8; 32]) -> Result<Stre
     .map_err(Error::from)
 }
 
+fn signal_key_text(
+    run: OperationId,
+    kind: Kind,
+) -> arrayvec::ArrayString<{ 5 + 36 + 19 + 15 + 5 }> {
+    use std::fmt::Write as _;
+    // Fixed schema: prefix, canonical UUID, namespace, longest Kind, suffix.
+    // No user-provided component or variable-size history occupies this buffer.
+    let mut text = arrayvec::ArrayString::new();
+    write!(text, "runs/{run}/status/supervision/{}.json", kind.name())
+        .expect("supervision key fits its fixed schema");
+    text
+}
+
 fn signal_key(run: OperationId, kind: Kind) -> Bytes {
-    Bytes::from(format!(
-        "runs/{run}/status/supervision/{}.json",
-        kind.name()
-    ))
+    Bytes::copy_from_slice(signal_key_text(run, kind).as_bytes())
 }
 
 async fn tail<P: StreamProvider + ?Sized>(provider: &P, path: StreamPath) -> Result<Option<u64>> {
@@ -681,17 +721,9 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         record
             .map(|record| {
                 let event: Event = serde_json::from_slice(&record.value).map_err(invalid)?;
-                let Lifecycle::Signal { signal, .. } = event.event else {
-                    return Err(invalid("indexed supervision source is not a signal"));
-                };
-                if event.version != 1
-                    || event.agent != *agent
-                    || event.run != Some(run)
-                    || signal.version != 1
-                    || signal.kind != kind
-                {
-                    return Err(invalid("invalid supervision signal source"));
-                }
+                let signal = signal_from(&event, agent, run, kind)
+                    .map_err(invalid)?
+                    .clone();
                 Ok((
                     signal,
                     Position {

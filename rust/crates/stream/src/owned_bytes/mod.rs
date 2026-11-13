@@ -184,6 +184,20 @@ impl OwnedBytes {
     pub fn copy_from_slice(bytes: &[u8]) -> Self {
         Vec::from(bytes).into()
     }
+
+    /// Admits the shared header before cloning a uniquely owned ordinary input.
+    /// Existing native and shared backing needs no new physical allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn into_cloneable_native(
+        self,
+        meter: &Arc<dyn NativeReadMeter>,
+    ) -> io::Result<Self> {
+        if matches!(&self.data, Data::Plain(bytes) if bytes.is_unique()) {
+            self.with_guard((), Arc::clone(meter))
+        } else {
+            Ok(self)
+        }
+    }
     /// Transfers a vector and its allocation owner.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_vec_with_guard<G: Send + Sync + 'static>(
