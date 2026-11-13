@@ -1,5 +1,33 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn fresh_lookup_waits_for_publication_before_selecting_its_binding()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::write(root.path().join("kept"), b"original")?;
+    let runtime = shared_runtime()?;
+    let view = Arc::new(runtime.block_on(mounted_view(root.path(), "lookup-publication"))?);
+    let gate = Arc::clone(&view.source_view);
+    let writer = runtime.block_on(gate.write());
+    gate.begin_transition();
+    let (blocked, observed) = std::sync::mpsc::channel();
+    gate.observe_blocked_reader(blocked);
+    let reading = std::thread::spawn(move || {
+        let work =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| crate::NativeMountError::from(error))?;
+        crate::native_mount::fuse::lookup::resolve_path(&*view, &mounted(&["kept"]), &work)
+    });
+    let observed = observed.recv();
+    gate.finish_transition();
+    drop(writer);
+    observed?;
+    let (lookup, _) = reading.join().map_err(|_| "lookup worker panicked")??;
+    assert_eq!(lookup.map(|entry| entry.node.logical_bytes), Some(8));
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]
 #[test]
 fn cleanup_retry_observes_the_retired_source_watch_failure()

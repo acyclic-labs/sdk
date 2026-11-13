@@ -29,6 +29,8 @@ struct ViewState {
     writer: bool,
     mutation_phase: bool,
     waiting_writers: usize,
+    #[cfg(all(test, not(loom)))]
+    blocked_reader: Option<std::sync::mpsc::Sender<()>>,
 }
 
 /// Pins a coherent mount view across a native callback or authored mutation.
@@ -41,6 +43,16 @@ pub(super) struct ViewGate {
 }
 
 impl ViewGate {
+    #[cfg(all(test, not(loom)))]
+    pub(in crate::native_mount) fn observe_blocked_reader(
+        &self,
+        observer: std::sync::mpsc::Sender<()>,
+    ) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .blocked_reader = Some(observer);
+    }
     pub(super) const INITIAL_GENERATION: u64 = 2;
 
     pub(super) fn new() -> Self {
@@ -141,6 +153,16 @@ impl ViewGate {
             let admitted = self.try_read_as(owner, expected, carrier)?;
             if let Some(lease) = admitted {
                 return Ok(lease);
+            }
+            #[cfg(all(test, not(loom)))]
+            if let Some(observer) = self
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .blocked_reader
+                .take()
+            {
+                let _ = observer.send(());
             }
             super::adapter::await_with_cancellation(notified, carrier, cancellation, lifetime)
                 .await?;

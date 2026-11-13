@@ -82,7 +82,7 @@ mod core;
 pub use core::NativeMountWorkScope;
 pub(super) use core::callback_errno;
 use core::*;
-mod lookup;
+pub(super) mod lookup;
 use lookup::*;
 mod session;
 pub(super) use session::FuseSession;

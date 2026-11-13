@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn resolve_path(
+pub(in crate::native_mount) fn resolve_path(
     source: &dyn MountFilesystem,
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
