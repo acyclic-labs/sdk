@@ -322,23 +322,22 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
-    /// Observes an already staged immutable payload by its original operation and retry key.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn staged_ref_with_native_work<'a>(
+    /// Observes an immutable payload by its original operation and retry key,
+    /// before consulting live sources during recovery. `None` means that this
+    /// exact identity has no publication; authorization and storage failures
+    /// remain errors, never permission to select replacement content.
+    fn staged_ref<'a>(
         &'a self,
         _operation_id: OperationId,
         _idempotency_key: &'a str,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation), crate::Error>,
-    > {
-        work.remaining()?;
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native original staged-payload observation is unavailable",
-        })
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<FileRef>>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "original staged-payload observation is unavailable",
+        ))
     }
-
     /// Reads an exact version under the journal owner's grant and verifies its descriptor.
     fn load<'a>(
         &'a self,
