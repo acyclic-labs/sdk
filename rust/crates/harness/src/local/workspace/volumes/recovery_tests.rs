@@ -216,8 +216,10 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             .stdin(fence.try_clone()?)
             .spawn()?,
     );
+    // Process exit does not acknowledge every accepted native retirement.
+    // Wait for actual fence custody before testing exclusion and release.
     fence
-        .try_lock(acyclic_native_runtime::FileLockMode::Exclusive)
+        .lock(acyclic_native_runtime::FileLockMode::Exclusive)
         .map_err(|error| format!("acquiring the dead owner's exclusive recovery fence: {error}"))?;
     assert!(recover(&root).is_err(), "recovery bypassed the fence");
     assert_eq!(
