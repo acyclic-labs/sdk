@@ -603,7 +603,39 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         "chunk replay changed the activity cursor"
     );
     assert!(log.publish_chunk("stderr/0", b"replacement").await.is_err());
-    log.finish().await?;
+    use crate::filesystem::native_process::capture::finish_output;
+    use crate::filesystem::{NativeProcessResult, NativeProcessStop, NativeProcessStopKind};
+    let mut capture = NativeProcessResult {
+        success: false,
+        exit_code: None,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        stop: Some(NativeProcessStop {
+            kind: NativeProcessStopKind::CaptureFailed,
+            message: "original cleanup failure".into(),
+            cleanup_completed: false,
+        }),
+    };
+    for unresolved in [
+        Err(crate::Error::Record("original capture unavailable")),
+        Ok(None),
+        Ok(Some(capture.clone())),
+    ] {
+        finish_output(&log, &unresolved).await?;
+        assert!(
+            activity_context
+                .read_output_file_once("completed.json")
+                .await?
+                .is_none(),
+            "unsettled capture retired quiet supervision",
+        );
+    }
+    capture
+        .stop
+        .as_mut()
+        .ok_or("missing stop")?
+        .cleanup_completed = true;
+    finish_output(&log, &Ok(Some(capture.clone()))).await?;
     let terminal = activity_context
         .read_output_file_once("completed.json")
         .await?
@@ -613,7 +645,8 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         (completed.turn, completed.call),
         (turn, context.operation_id())
     );
-    recovered.finish().await?;
+    capture.stop = None;
+    finish_output(&recovered, &Ok(Some(capture))).await?;
     assert_eq!(
         context
             .read_output_file_once("completed.json")

@@ -86,6 +86,28 @@ pub enum OutputRetention {
 /// inside the completion so even a refused launch returns its original custody.
 pub type NativeProcessOutcome = Result<Option<NativeProcessResult>>;
 
+/// Publish physical completion only from the original capture's confirmed
+/// cleanup. Missing or indeterminate outcomes retain the existing quiet watch.
+pub async fn finish_output(
+    output: &crate::runtime::ToolOutputLog,
+    outcome: &NativeProcessOutcome,
+) -> Result<()> {
+    if outcome
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .is_some_and(|result| {
+            result
+                .stop
+                .as_ref()
+                .is_none_or(|stop| stop.cleanup_completed)
+        })
+    {
+        output.finish().await?;
+    }
+    Ok(())
+}
+
 #[doc(hidden)]
 pub async fn capture_with_custody<T: Send + 'static>(
     invocation: Invocation,
