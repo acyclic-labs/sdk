@@ -87,8 +87,8 @@ impl SessionProfile {
 pub struct SessionRow {
     /// Immutable root location.
     pub node: NodeId,
-    /// Public metadata selected on change.
-    pub profile: SessionProfile,
+    /// Public metadata selected on change, or a removal after opt-out/archive.
+    pub profile: Option<SessionProfile>,
     /// One-based publication revision; unchanged metadata spends no revision.
     pub rev: u64,
 }
@@ -98,23 +98,30 @@ pub struct SessionRow {
 struct RowWire {
     version: u32,
     node: Vec<u8>,
-    phase: SessionPhase,
-    title: String,
-    workspaces: Vec<WorkspaceEntry>,
-    goal_preview: String,
+    phase: Option<SessionPhase>,
+    title: Option<String>,
+    workspaces: Option<Vec<WorkspaceEntry>>,
+    goal_preview: Option<String>,
     rev: u64,
+    #[serde(default)]
+    removed: bool,
 }
 
 impl Serialize for SessionRow {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct as _;
-        let mut wire = serializer.serialize_struct("SessionRow", 7)?;
+        let mut wire = serializer
+            .serialize_struct("SessionRow", if self.profile.is_some() { 7 } else { 4 })?;
         wire.serialize_field("version", &1_u32)?;
         wire.serialize_field("node", self.node.as_bytes())?;
-        wire.serialize_field("phase", &self.profile.phase)?;
-        wire.serialize_field("title", &self.profile.title)?;
-        wire.serialize_field("workspaces", &self.profile.workspaces)?;
-        wire.serialize_field("goal_preview", &self.profile.goal_preview)?;
+        if let Some(profile) = &self.profile {
+            wire.serialize_field("phase", &profile.phase)?;
+            wire.serialize_field("title", &profile.title)?;
+            wire.serialize_field("workspaces", &profile.workspaces)?;
+            wire.serialize_field("goal_preview", &profile.goal_preview)?;
+        } else {
+            wire.serialize_field("removed", &true)?;
+        }
         wire.serialize_field("rev", &self.rev)?;
         wire.end()
     }
@@ -125,7 +132,7 @@ impl SessionRow {
     pub fn new(node: NodeId, profile: SessionProfile) -> Self {
         Self {
             node,
-            profile,
+            profile: Some(profile),
             rev: 1,
         }
     }
@@ -137,21 +144,35 @@ impl SessionRow {
         if wire.version != 1 || wire.rev == 0 {
             return Err(Error::Record("unsupported session row"));
         }
+        let profile = match (
+            wire.removed,
+            wire.phase,
+            wire.title,
+            wire.workspaces,
+            wire.goal_preview,
+        ) {
+            (false, Some(phase), Some(title), Some(workspaces), Some(goal_preview)) => {
+                Some(SessionProfile {
+                    phase,
+                    title,
+                    workspaces,
+                    goal_preview,
+                })
+            }
+            (true, None, None, None, None) => None,
+            _ => return Err(Error::Record("inconsistent session removal")),
+        };
         Ok(Self {
             node: NodeId::new(&wire.node).map_err(|_| Error::Record("invalid session node"))?,
-            profile: SessionProfile {
-                phase: wire.phase,
-                title: wire.title,
-                workspaces: wire.workspaces,
-                goal_preview: wire.goal_preview,
-            },
+            profile,
             rev: wire.rev,
         })
     }
 
     /// Select a publication only when visible metadata changes. Root location
     /// stays fixed, and no stream observation, task or timer is created here.
-    pub fn changed(&self, profile: SessionProfile) -> Result<Option<Self>, Error> {
+    /// `None` removes membership and discards the previous public metadata.
+    pub fn changed(&self, profile: Option<SessionProfile>) -> Result<Option<Self>, Error> {
         if self.profile == profile {
             return Ok(None);
         }

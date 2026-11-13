@@ -55,7 +55,7 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
         "é中 changed after the preview",
         4,
     );
-    assert!(row.changed(internal_change)?.is_none());
+    assert!(row.changed(Some(internal_change))?.is_none());
     for changed in [
         SessionProfile::project(&Phase::Running, "Review".into(), &table, "é中 tail", 4),
         SessionProfile::project(&phase, "Updated".into(), &table, "é中 tail", 4),
@@ -83,7 +83,9 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
             )
         },
     ] {
-        let next = row.changed(changed.clone())?.ok_or("missing change")?;
+        let next = row
+            .changed(Some(changed.clone()))?
+            .ok_or("missing change")?;
         assert_eq!(next.rev, row.rev + 1);
         assert!(matches!(
             provider
@@ -95,8 +97,8 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
                 .await?,
             CommitOutcome::Committed(_)
         ));
-        let mut stale = row.changed(changed)?.ok_or("missing stale change")?;
-        stale.profile.title = "stale producer".into();
+        let mut stale = row.changed(Some(changed))?.ok_or("missing stale change")?;
+        stale.profile.as_mut().ok_or("missing stale profile")?.title = "stale producer".into();
         assert!(matches!(
             provider
                 .commit(CommitRequest {
@@ -113,6 +115,52 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
         assert_eq!(head.tail, next.rev);
         row = next;
     }
+    let removed = row.changed(None)?.ok_or("missing removal")?;
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        idempotency_key: intent_key("remove-session-row", &[])?,
+        effects: vec![removed.effect(path.clone())?],
+    };
+    for _ in 0..2 {
+        assert!(matches!(
+            provider.commit(request.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+    }
+    assert!(removed.changed(None)?.is_none());
+    let head = provider.head(path.clone()).await?;
+    let record = head.last.ok_or("removal missing")?;
+    assert_eq!(SessionRow::decode(&record.value)?, removed);
+    assert_eq!(head.tail, removed.rev);
+    let encoded: serde_json::Value = serde_json::from_slice(&record.value)?;
+    for field in ["phase", "title", "workspaces", "goal_preview"] {
+        assert!(encoded.get(field).is_none(), "removed row retained {field}");
+    }
+    let late = row
+        .changed(Some(profile.clone()))?
+        .ok_or("missing late row")?;
+    assert!(matches!(
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: intent_key("late-session-row", &[])?,
+                effects: vec![late.effect(path.clone())?],
+            })
+            .await?,
+        CommitOutcome::Conflict(_)
+    ));
+    let rejoined = removed.changed(Some(profile))?.ok_or("missing rejoin")?;
+    assert!(matches!(
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: intent_key("rejoin-session-row", &[])?,
+                effects: vec![rejoined.effect(path.clone())?],
+            })
+            .await?,
+        CommitOutcome::Committed(_)
+    ));
+    assert_eq!(provider.tail(path).await?, rejoined.rev);
     Ok(())
 }
 
