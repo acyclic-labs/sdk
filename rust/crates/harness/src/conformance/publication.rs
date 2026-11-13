@@ -5,7 +5,7 @@ use crate::conformance::{
 };
 use acyclic_actors::{addressing::ActorReference, guest::*};
 use acyclic_stream::{
-    CommitCondition, CommitOutcome, CommitRequest, Record, StreamError, StreamPath,
+    CommitCondition, CommitId, CommitOutcome, CommitRequest, Record, StreamError, StreamPath,
 };
 use std::sync::{
     Arc, Mutex,
@@ -16,9 +16,24 @@ use std::sync::{
 struct Counts {
     opened: AtomicUsize,
     sealed: AtomicUsize,
-    settled: AtomicUsize,
+    /// Each settlement, by the composed record it settled when it committed.
+    settled: Mutex<Vec<Option<CommitId>>>,
     conflicts: AtomicUsize,
     condition: Mutex<Option<StreamPath>>,
+}
+impl Counts {
+    /// Settlements of distinct outcomes. Settlement is at least once
+    /// (`Composition::settle`), so settling an already settled committed
+    /// record again is allowed and not counted; any other settlement is.
+    fn settled(&self) -> usize {
+        let log = self.settled.lock().unwrap_or_else(|e| e.into_inner());
+        log.iter()
+            .enumerate()
+            .filter(|(index, record)| {
+                record.is_none_or(|record| !log[..*index].contains(&Some(record)))
+            })
+            .count()
+    }
 }
 
 struct ComposerCounts(Arc<Counts>);
@@ -68,7 +83,15 @@ impl Composition for ParticipantCounts {
             if matches!(outcome, Ok(CommitOutcome::Conflict(_))) {
                 self.0.conflicts.fetch_add(1, Ordering::SeqCst);
             }
-            self.0.settled.fetch_add(1, Ordering::SeqCst);
+            let record = match outcome {
+                Ok(CommitOutcome::Committed(receipt)) => Some(receipt.commit_id),
+                _ => None,
+            };
+            self.0
+                .settled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(record);
             Ok(())
         })
     }
@@ -120,12 +143,12 @@ async fn conflict(backend: &dyn Backend) -> Result {
     host.send(&root, &fixtures::sender(), &fixtures::request("once")?)
         .await?;
     let state = host.state(&root).await?;
-    let settled = counts.settled.load(Ordering::SeqCst);
+    let settled = counts.settled();
     // This is a real provider conflict against an existing path, not a canned
     // response: the participant's condition must join the actor transaction.
     *counts.condition.lock().unwrap_or_else(|e| e.into_inner()) = Some(root.inbox()?);
     if host.runtime().drain().await.is_empty()
-        || counts.settled.load(Ordering::SeqCst) != settled + 1
+        || counts.settled() != settled + 1
         || counts.conflicts.load(Ordering::SeqCst) != 1
         || host.state(&root).await? != state
         || !vectors::outputs(&*provider, &root).await?.is_empty()
@@ -152,13 +175,13 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
     host.send(&root, &fixtures::sender(), &fixtures::request("once")?)
         .await?;
     drop(provider.take_commits());
-    let settled = counts.settled.load(Ordering::SeqCst);
+    let settled = counts.settled();
     provider.arm(0, fault);
     if host.runtime().drain().await.is_empty() {
         return Err(format!("{fault:?} did not interrupt publication").into());
     }
     let terminal = matches!(fault, Fault::Refuse);
-    if counts.settled.load(Ordering::SeqCst) != settled + usize::from(terminal) {
+    if counts.settled() != settled + usize::from(terminal) {
         return Err("participant settled before a terminal result".into());
     }
     let seals = counts.sealed.load(Ordering::SeqCst);
@@ -167,9 +190,7 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
         // A refusal of a retry cannot resolve an earlier lost acknowledgement.
         provider.arm(0, Fault::Refuse);
         host.host(&root)?;
-        if host.runtime().drain().await.is_empty()
-            || counts.settled.load(Ordering::SeqCst) != settled
-        {
+        if host.runtime().drain().await.is_empty() || counts.settled() != settled {
             return Err("a retry refusal settled an earlier unknown result".into());
         }
     }
@@ -189,7 +210,7 @@ async fn publication(backend: &dyn Backend, fault: Fault) -> Result {
             return Err("unknown publication reopened or resealed its participant".into());
         }
     }
-    if counts.settled.load(Ordering::SeqCst) != settled + 1 + usize::from(terminal) {
+    if counts.settled() != settled + 1 + usize::from(terminal) {
         return Err("terminal publication did not settle exactly once".into());
     }
     if vectors::outputs(&*provider, &root).await? != [b"once".to_vec()] {
