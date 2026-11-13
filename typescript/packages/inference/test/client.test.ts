@@ -241,14 +241,14 @@ test("prepared requests preserve context, run, and warm identities", async () =>
   let revisionCounter = 0;
   const transport: InferenceTransport = {
     async listModels() { return create(ListModelsResponseSchema); },
-    async createContext(request) { expect(request.items[0]?.kind).toBe(ItemKind.USER); return receipt(++revisionCounter); },
+    async createContext(request) { await Promise.resolve(); expect(request.items[0]?.kind).toBe(ItemKind.USER); return receipt(++revisionCounter); },
     async inspectContext(request) { const view = contextView(request.revision); view.items.push(create(ItemSchema, { kind: ItemKind.USER })); return view; },
-    async mutateContext(request) { expect(request.action.case).not.toBeUndefined(); return receipt(++revisionCounter); },
+    async mutateContext(request) { await Promise.resolve(); expect(request.action.case).not.toBeUndefined(); return receipt(++revisionCounter); },
     async retainWarm(request) { const view = warmView(revision(7), request.context, request.expiresAtMs); view.latencyProfile = request.latencyProfile; return view; },
     async inspectWarm(request) { return warmView(request.commitment, revision(3)); },
     async renewWarm(request) { return warmView(request.commitment, revision(3), request.expiresAtMs); },
-    async releaseWarm(request) { return warmView(request.commitment, revision(3)); },
-    async generateRun(request) { return create(GenerateRunResponseSchema, { run: { runId: request.identity!.requestId, input: request.context, model: "model" } }); },
+    async releaseWarm(request) { await Promise.resolve(); return warmView(request.commitment, revision(3)); },
+    async generateRun(request) { await Promise.resolve(); return create(GenerateRunResponseSchema, { run: { runId: request.identity!.requestId, input: request.context, model: "model" } }); },
     async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", lastSequence: 4n, result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: contextView(revision(10)) }) }); },
     async *watchRun(request) { yield create(RunEventSchema, { sequence: request.fromSequence, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", cancellationRequested: true }); },
@@ -259,18 +259,29 @@ test("prepared requests preserve context, run, and warm identities", async () =>
   const item = create(ItemSchema, { kind: ItemKind.USER, payload: bytes(1) });
   const client = inference.client;
   const creation = create(CreateContextRequestSchema, { identity: inference.identity(), model: "model", items: [item] });
-  const context = contextRevision((await client.createContext(creation)).revision);
+  const creating = client.createContext(creation);
+  creation.items.length = 0;
+  const context = contextRevision((await creating).revision);
   expect((await client.inspectContext(context)).items[0]?.kind).toBe(ItemKind.USER);
-  const appended = await client.mutateContext(create(MutateContextRequestSchema, {
+  const edit = create(MutateContextRequestSchema, {
     identity: inference.identity(), source: context,
     action: { case: "edit", value: create(EditsSchema, { edits: [create(EditSchema, { action: { case: "append", value: item } })] }) },
-  }));
+  });
+  const editing = client.mutateContext(edit);
+  edit.action = { case: undefined };
+  const appended = await editing;
   const fork = contextRevision((await client.mutateContext(create(MutateContextRequestSchema, {
     identity: inference.identity(), source: appended.revision, action: { case: "fork", value: create(EmptySchema) },
   }))).revision);
   expect(fork).toEqual(revision(3));
-  const generation = create(GenerateRunRequestSchema, { identity: inference.identity(), context: fork, input: item, maximumOutput: 32n });
-  const run = runId((await client.generate(generation)).run!.runId);
+  const generation = create(GenerateRunRequestSchema, { identity: inference.identity(), context: fork.slice(), input: item, maximumOutput: 32n });
+  const expectedRun = generation.identity!.requestId.slice();
+  const generating = client.generate(generation);
+  generation.identity!.requestId.fill(9);
+  generation.context.fill(9);
+  const generated = await generating;
+  expect(generated.run).toMatchObject({ runId: expectedRun, input: fork });
+  const run = runId(generated.run!.runId);
   expect((await client.inspectContext(context)).revision).toEqual(context);
   expect((await client.inspectRun(run)).runId).toEqual(run);
   const result = await client.resultRun(run);
@@ -289,9 +300,12 @@ test("prepared requests preserve context, run, and warm identities", async () =>
   expect((await client.renewWarm(create(RenewWarmRequestSchema, {
     identity: inference.identity(), commitment: warm, expiresAtMs: 20n,
   }))).expiresAtMs).toBe(20n);
-  expect((await client.releaseWarm(create(ReleaseWarmRequestSchema, {
-    identity: inference.identity(), commitment: warm,
-  }))).commitment).toEqual(revision(7));
+  const release = create(ReleaseWarmRequestSchema, {
+    identity: inference.identity(), commitment: warm.slice(),
+  });
+  const releasing = client.releaseWarm(release);
+  release.commitment.fill(9);
+  expect((await releasing).commitment).toEqual(revision(7));
 });
 
 test("run recovery rejects substituted or malformed streams and observes an inclusive zero cursor", async () => {
@@ -351,7 +365,10 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   const substituted = new InferenceClient({ ...transport, async inspectRun() { return create(RunViewSchema, { runId: runIdentity(9), input: revision(1), model: "model" }); } });
   await expect(substituted.inspectRun(id)).rejects.toThrow();
 
-  const substitutedGeneration = new InferenceClient({ ...transport, async generateRun(request) { return create(GenerateRunResponseSchema, { run: { runId: runIdentity(9), input: request.context, model: "model" } }); } });
+  const substitutedGeneration = new InferenceClient({ ...transport, async generateRun(request) {
+    request.identity!.requestId.fill(9);
+    return create(GenerateRunResponseSchema, { run: { runId: request.identity!.requestId, input: request.context, model: "model" } });
+  } });
   await expect(substitutedGeneration.generate(create(GenerateRunRequestSchema, { identity: { clientInstance: runIdentity(2), requestId: id }, context: revision(1) }))).rejects.toThrow();
 
   const emptyContext = new InferenceClient({ ...transport, async generateRun(request) {
@@ -419,24 +436,44 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   }))).rejects.toThrow();
   expect(admitted).toBeFalse();
 
-  for (const mutateRequest of [false, true]) {
-    for (const returnedDigest of [30, 31]) {
-      const substitutedEvaluation = new InferenceClient({
-        ...transport,
-        async createEvaluation(request) {
-          if (mutateRequest) request.spec!.specDigest = revision(31);
-          return evaluationView(request.identity!.requestId, revision(returnedDigest));
-        },
-      });
-      const response = substitutedEvaluation.createEvaluation(create(CreateEvaluationRequestSchema, {
-        identity: { clientInstance: runIdentity(6), requestId: runIdentity(5) },
-        spec: evaluationSpec(),
-      }));
-      if (returnedDigest === 30) await expect(response).resolves.toMatchObject({ spec: { specDigest: revision(30) } });
-      else await expect(response).rejects.toThrow(InferenceProtocolError);
+  for (const mutateCaller of [false, true]) {
+    for (const mutateRequest of [false, true]) {
+      for (const returnedIdentity of [5, 9]) {
+        for (const returnedDigest of [30, 31]) {
+          const substitutedEvaluation = new InferenceClient({
+            ...transport,
+            async createEvaluation(request) {
+              expect(request.identity!.clientInstance).toEqual(runIdentity(6));
+              expect(request.identity!.requestId).toEqual(runIdentity(5));
+              expect(request.spec).toEqual(evaluationSpec());
+              if (mutateRequest) {
+                request.identity!.requestId.fill(9);
+                request.spec!.specDigest.fill(31);
+              }
+              return evaluationView(runIdentity(returnedIdentity), revision(returnedDigest));
+            },
+          });
+          const request = create(CreateEvaluationRequestSchema, {
+            identity: { clientInstance: runIdentity(6), requestId: runIdentity(5) },
+            spec: evaluationSpec(),
+          });
+          const response = substitutedEvaluation.createEvaluation(request);
+          if (mutateCaller) {
+            request.identity!.clientInstance.fill(7);
+            request.identity!.requestId.fill(9);
+            request.spec!.specDigest.fill(31);
+            request.spec!.suite!.cases[0]!.input.fill(8);
+            request.spec!.maximumCaseResults = 0n;
+            delete request.identity;
+            delete request.spec;
+          }
+          if (returnedIdentity === 5 && returnedDigest === 30) {
+            await expect(response).resolves.toMatchObject({ evaluationId: runIdentity(5), spec: { specDigest: revision(30) } });
+          } else await expect(response).rejects.toThrow(InferenceProtocolError);
+        }
+      }
     }
   }
-
   const completedWithoutResult = new InferenceClient({
     ...transport,
     async inspectEvaluation(request) {

@@ -3,6 +3,8 @@ import { credentialProvider, resolveCredential, watchCredential, type Credential
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart, runTerminalMetadata, type RunTerminalKind } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
+  CreateContextRequestSchema,
+  CreateEvaluationRequestSchema,
   ContextViewSchema,
   EvaluationSpecSchema,
   EvaluationViewSchema,
@@ -11,6 +13,9 @@ import {
   InspectRunRequestSchema,
   InspectWarmRequestSchema,
   MutationReceiptSchema,
+  MutateContextRequestSchema,
+  GenerateRunRequestSchema,
+  ReleaseWarmRequestSchema,
   RenewWarmRequestSchema,
   RetainWarmRequestSchema,
   RunViewSchema,
@@ -130,6 +135,7 @@ export class InferenceClient {
 
   listModels(): Promise<ListModelsResponse> { return this.transport.listModels(); }
   async createContext(request: CreateContextRequest): Promise<MutationReceipt> {
+    request = clone(CreateContextRequestSchema, request);
     const receipt = await this.transport.createContext(request);
     await validateContract("mutation_receipt", MutationReceiptSchema, receipt);
     return receipt;
@@ -141,6 +147,7 @@ export class InferenceClient {
     return view;
   }
   async mutateContext(request: MutateContextRequest): Promise<MutationReceipt> {
+    request = clone(MutateContextRequestSchema, request);
     const receipt = await this.transport.mutateContext(request);
     await validateContract("mutation_receipt", MutationReceiptSchema, receipt);
     return receipt;
@@ -171,17 +178,22 @@ export class InferenceClient {
   }
   async releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> {
     requireFixed(request.commitment, INFERENCE_FIXED_WIDTHS.releaseWarmCommitment, "warm commitment");
+    request = clone(ReleaseWarmRequestSchema, request);
+    const expected = request.commitment.slice();
     const view = await this.transport.releaseWarm(request);
-    await validateContract("warm_commitment", WarmViewSchema, view, request.commitment);
+    await validateContract("warm_commitment", WarmViewSchema, view, expected);
     return view;
   }
   async generate(request: GenerateRunRequest): Promise<GenerateRunResponse> {
     if (request.identity === undefined) throw new InferenceProtocolError("generate request identity is absent");
     requireFixed(request.identity.clientInstance, INFERENCE_FIXED_WIDTHS.requestClientInstance, "generate client instance");
     requireFixed(request.identity.requestId, INFERENCE_FIXED_WIDTHS.requestId, "generate request ID");
+    request = clone(GenerateRunRequestSchema, request);
+    const expected = request.identity!.requestId.slice();
+    const context = request.context.slice();
     const response = await this.transport.generateRun(request);
     if (response.run === undefined) throw new InferenceProtocolError("generate response omitted its run");
-    await validateContract("generated_run_view", RunViewSchema, response.run, request.identity.requestId, request.context);
+    await validateContract("generated_run_view", RunViewSchema, response.run, expected, context);
     return response;
   }
   async inspectRun(runId: Uint8Array, signal?: AbortSignal): Promise<RunView> {
@@ -237,9 +249,11 @@ export class InferenceClient {
     requireFixed(request.identity.requestId, INFERENCE_FIXED_WIDTHS.requestId, "evaluation request ID");
     if (request.spec === undefined) throw new InferenceProtocolError("evaluation spec is absent");
     requireFixed(request.spec.specDigest, INFERENCE_FIXED_WIDTHS.evaluationSpecDigest, "evaluation spec digest");
-    const related = await validateContract("evaluation_spec", EvaluationSpecSchema, request.spec);
+    request = clone(CreateEvaluationRequestSchema, request);
+    const expected = request.identity!.requestId.slice();
+    const related = await validateContract("evaluation_spec", EvaluationSpecSchema, request.spec!);
     const view = await this.transport.createEvaluation(request);
-    await validateContract("evaluation_view", EvaluationViewSchema, view, request.identity.requestId, related);
+    await validateContract("evaluation_view", EvaluationViewSchema, view, expected, related);
     return view;
   }
   async inspectEvaluation(evaluationId: Uint8Array): Promise<EvaluationView> {
