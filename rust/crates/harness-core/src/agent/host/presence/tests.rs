@@ -121,7 +121,7 @@ async fn rejoining_requires_original_display_metadata() -> Result<(), Box<dyn st
                 vec![CommitMutation::Fork {
                     source: original.clone(),
                     destination: path.clone(),
-                    at_tail: None,
+                    at_tail: 1,
                     exclude: Vec::new(),
                     records: Vec::new(),
                 }],

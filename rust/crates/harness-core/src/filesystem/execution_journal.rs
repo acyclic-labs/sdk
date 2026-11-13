@@ -134,7 +134,6 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     preceding_request: Option<FileRef>,
     /// An agent turn's stop signal, followed as the executor's cancellation.
     stop: Option<acyclic_actors::guest::CancellationToken>,
-    clock: Option<Arc<dyn acyclic_actors::local::Clock>>,
     boundary: Option<Arc<dyn crate::agent::ModelBoundary>>,
     /// A native agent's approval files; its interactions never touch the ledger.
     agent_approvals: Option<Arc<crate::approvals::AgentApprovals>>,

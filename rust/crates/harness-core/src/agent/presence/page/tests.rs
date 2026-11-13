@@ -454,7 +454,7 @@ async fn account_pages_reject_inherited_session_and_presence_records() -> TestRe
                 vec![CommitMutation::Fork {
                     source: directory.routes.presence(&directory.nodes[0])?,
                     destination: other.presence(&directory.nodes[0])?,
-                    at_tail: None,
+                    at_tail: 1,
                     exclude: Vec::new(),
                     records: Vec::new(),
                 }],
@@ -495,7 +495,7 @@ async fn account_pages_reject_inherited_session_and_presence_records() -> TestRe
                 vec![CommitMutation::Fork {
                     source: original,
                     destination: destination.clone(),
-                    at_tail: None,
+                    at_tail: 1,
                     exclude: Vec::new(),
                     records: Vec::new(),
                 }],

@@ -138,7 +138,12 @@ mod tests {
             2,
             "unrelated goals must not spend page credit"
         );
-        assert_eq!(counted.requests().head(), 0);
+        assert_eq!(
+            counted
+                .requests()
+                .class(acyclic_stream::testing::RequestClass::Head),
+            0
+        );
         let copied = input_events(&forked)?;
         let outcome = crate::agent::submit(
             &provider,

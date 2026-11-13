@@ -180,7 +180,6 @@ where
             bound_selection: None,
             preceding_request: None,
             stop: None,
-            clock: None,
             boundary: None,
             agent_approvals: None,
             execution: None,
@@ -282,13 +281,6 @@ where
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
         self.verifier.bind_checkpoint_stop(&stop);
         self.stop = Some(stop);
-        self
-    }
-
-    /// Uses the actor owner's clock for preparation and tool quiet deadlines.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
-        self.clock = Some(clock);
         self
     }
 

@@ -381,7 +381,7 @@ mod provenance_tests {
             publish(vec![CommitMutation::Fork {
                 source: original.peer_membership()?,
                 destination: inherited.peer_membership()?,
-                at_tail: None,
+                at_tail: 1,
                 exclude: Vec::new(),
                 records: Vec::new(),
             }])
