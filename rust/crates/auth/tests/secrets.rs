@@ -1064,6 +1064,11 @@ fn secrets_and_identity_share_endpoint_admission_before_credentials() {
         ),
         ("http://[::1]:1234", true, Some("http://[::1]:1234/")),
         (
+            "http://2130706433:1234",
+            true,
+            Some("http://127.0.0.1:1234/"),
+        ),
+        (
             "http://localhost:1234",
             true,
             Some("http://localhost:1234/"),

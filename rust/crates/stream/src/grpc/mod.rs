@@ -264,12 +264,13 @@ impl Client {
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token.as_ref())?;
-        let endpoint = acyclic_auth::channel::endpoint(endpoint.as_ref())?;
-        let admitted = acyclic_auth::credential::base_endpoint(&endpoint.uri().to_string())
+        let admitted = acyclic_auth::credential::base_endpoint(endpoint.as_ref())
             .map_err(|_| ConnectError::InsecureEndpoint)?;
         if admitted.scheme() != "http" {
             return Err(ConnectError::InsecureEndpoint);
         }
+        // Connect to the admitted authority, including numeric-host normalization.
+        let endpoint = acyclic_auth::channel::endpoint(admitted.as_str())?;
         Ok(Self::from_channel(
             endpoint.tcp_nodelay(true).connect().await?,
             authorization,
