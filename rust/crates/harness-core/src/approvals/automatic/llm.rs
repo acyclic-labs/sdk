@@ -17,11 +17,12 @@ struct Review {
 }
 impl crate::filesystem::PreparationRecord for Review {}
 
-pub(super) async fn review_model(
+pub(crate) async fn review_model(
     execution: (&dyn ExecutionJournal, Option<&PreparationIo>),
     request: &ApprovalRequest<'_>,
     principal: &str,
     binding: (&Model, &Arc<dyn ModelProvider>),
+    policy: Option<&str>,
     limits: Limits,
 ) -> Result<(RuleVerdict, Option<String>)> {
     let (model, provider) = binding;
@@ -40,6 +41,16 @@ pub(super) async fn review_model(
         },
         io,
     )?;
+    if let Some(policy) = policy {
+        crate::executor::stock_vec_push(
+            &mut messages,
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(crate::executor::stock_string_copy(policy, io)?),
+            },
+            io,
+        )?;
+    }
     if let Some(update) = profile.and_then(|profile| profile.configuration_update(None)) {
         crate::executor::stock_vec_push(&mut messages, update, io)?;
     }
@@ -220,6 +231,7 @@ mod tests {
                     &request,
                     "reviewer",
                     (&model, &bound),
+                    None,
                     limits,
                 )
                 .await;
@@ -288,6 +300,7 @@ mod tests {
                     &request,
                     "reviewer",
                     (&model, &bound),
+                    None,
                     limits,
                 )
                 .await;
@@ -323,6 +336,7 @@ mod tests {
                             &changed,
                             "reviewer",
                             (&model, &bound),
+                            None,
                             limits
                         )
                         .await

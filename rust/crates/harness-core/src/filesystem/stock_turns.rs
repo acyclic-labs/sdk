@@ -290,6 +290,31 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    fn review<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        execution: (
+            &'a dyn crate::executor::ExecutionJournal,
+            Option<&'a crate::executor::PreparationIo>,
+        ),
+        request: &'a crate::approvals::ApprovalRequest<'a>,
+        principal: &'a str,
+        policy: &'a str,
+    ) -> BoxProviderFuture<'a, Result<(crate::approvals::RuleVerdict, Option<String>)>> {
+        Box::pin(async move {
+            let (model, provider) = self.selected(agent)?;
+            crate::approvals::review_model(
+                execution,
+                request,
+                principal,
+                (&model, &provider),
+                Some(policy),
+                self.limits,
+            )
+            .await
+        })
+    }
+
     fn question_plugin(&self) -> bool {
         self.question_plugin
     }
