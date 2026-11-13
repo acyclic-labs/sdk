@@ -56,6 +56,8 @@ no timed readiness checks or reconnect loops. Original reply payloads and
 allocation credit remain held until physical device publication, and retirement
 requires an explicit receipt after device closure. A missing receipt is an error,
 not evidence of successful cleanup.
+Physical write errors return their original errno to the caller without retiring
+the connection; an already-evicted cache entry therefore cannot disconnect a mount.
 
 Streams-backed generation locators use the versioned
 `acyclic-fs-stream-generation-locator-v1` record: two little-endian `u64`
