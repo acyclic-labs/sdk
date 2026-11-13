@@ -711,9 +711,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         > = FuturesUnordered::new();
         let mut opening: FuturesUnordered<BoxProviderFuture<'_, Result<Opened, Error>>> =
             FuturesUnordered::new();
-        // A placing host restores dormant interest holders, one page at a
-        // time: the next page is read only after this page's wakes settle,
-        // through the same ready index and admission as every delivery.
+        // A placing host restores dormant interest holders on their own
+        // credit: one page read in flight, whatever delivery work is queued.
+        // Their wakes join the same ready index and admission as every
+        // delivery, so a backlogged actor never stalls the remaining pages.
         let mut restoring: Option<
             BoxProviderFuture<'_, Result<(u16, Vec<ActorReference>, Option<StreamPath>), Error>>,
         > = None;
@@ -747,9 +748,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     // The last page's wakes are already queued work.
                     self.restored
                         .send_if_modified(|restored| !std::mem::replace(restored, true));
-                } else if !self.ready.busy()
-                    && let Some((shard, after)) = restore.pop()
-                {
+                } else if let Some((shard, after)) = restore.pop() {
                     restoring = Some(Box::pin(async move {
                         let (actors, next) = self.store.interest_holders(shard, after).await?;
                         Ok((shard, actors, next))

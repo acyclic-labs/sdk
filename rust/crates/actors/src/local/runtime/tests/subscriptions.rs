@@ -223,6 +223,95 @@ async fn idle_marker_of_the_longest_valid_address_is_written() -> TestResult {
     Ok(())
 }
 
+/// Holds every delivery in flight forever: a continuously backlogged host.
+struct Stalls(Package);
+impl Handler for Stalls {
+    fn manifest(&self) -> &Manifest {
+        self.0.manifest()
+    }
+    fn on_record<'a>(
+        &'a self,
+        _delivery: Delivery,
+        _checkpoint: Option<&'a Checkpoint>,
+        _cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        futures::future::pending().boxed()
+    }
+}
+
+/// Restoration has its own credit: interest holders on later pages are
+/// restored while earlier ones keep delivery work in flight. With paused
+/// time, a restore gated on quiescence could finish only after the manifest
+/// timeout fails a stalled delivery.
+#[tokio::test(start_paused = true)]
+async fn restoration_completes_while_restored_actors_stay_backlogged() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    // Two holders on different shards, so restoring them takes two pages.
+    let first = actor("observer-0")?;
+    let second = (1..)
+        .map(|index| actor(&format!("observer-{index}")))
+        .find(|candidate| {
+            candidate.as_ref().is_ok_and(|candidate| {
+                store.scheduling_shard(candidate) != store.scheduling_shard(&first)
+            })
+        })
+        .ok_or("no second shard")??;
+    let (store, actors, observed) = observing(&provider, vec![first, second]).await?;
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("idle delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    for address in &actors {
+        let shard = runtime.store().scheduling_shard(address);
+        assert!(
+            runtime
+                .store()
+                .interest_holders(shard, None)
+                .await?
+                .0
+                .contains(address)
+        );
+    }
+    drop(serving);
+    drop(runtime);
+    // No activation entry: each restored holder finds input and stalls on it.
+    provider
+        .append(AppendRequest {
+            path: observed,
+            records: vec![Bytes::from_static(b"emit").into()],
+            if_tail: None,
+            idempotency_key: key("backlog")?,
+        })
+        .await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Stalls(Package::new()?)),
+        Arc::new(SystemClock),
+    );
+    let failed = std::sync::Mutex::new(Vec::new());
+    let mut serving = Box::pin(runtime.run(|actor, _| failed.lock().unwrap().push(actor.clone())));
+    observe_while_running(serving.as_mut(), async {
+        runtime.restored().await?;
+        Ok(())
+    })
+    .await?;
+    assert!(
+        failed.lock().unwrap().is_empty(),
+        "restoration waited for a stalled delivery to fail"
+    );
+    for address in &actors {
+        assert!(
+            runtime.shard(address).lock().unwrap().contains_key(address),
+            "every holder was restored"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_other_actors()
 -> TestResult {
