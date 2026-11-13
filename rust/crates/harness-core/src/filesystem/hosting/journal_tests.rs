@@ -6,7 +6,7 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PRIVATE_VOLUME, TurnAuthority},
 };
-use acyclic_stream::{MemoryStream, Source as _};
+use acyclic_stream::{MemoryStream, trust_feed::Source as _};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 type Binding = Bound<MemoryStream, acyclic_fs::LogicalObjectStore<acyclic_objects::MemoryObjects>>;
