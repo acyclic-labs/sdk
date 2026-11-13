@@ -1492,8 +1492,22 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     let grant =
         ExecutionGrant::workspace_default(&workspace, ExecutionAccess::WorkspaceWrite, [], [])
             .unwrap();
+    let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
+    let capture = |mut tree: ProcessTree| {
+        tree.wait_with_output(
+            crate::CaptureSchedule::Unbounded,
+            65536,
+            None,
+            || Ok(()),
+            |_| Ok(Default::default()),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    };
     for input in [true, false] {
-        let command = || {
+        let command = |file_stdio: bool| {
             let mut command = ProcessCommand::new(crate::platform_shell().unwrap());
             command
                 .args(acyclic_host_platform::shell::PLATFORM.arguments)
@@ -1505,13 +1519,13 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
                 })
                 .current_dir(&workspace)
                 .env_clear()
-                .stdin(if input {
+                .stdin(if input && file_stdio {
                     ProcessStdio::from(std::fs::File::open(&sentinel).unwrap())
                 } else {
                     ProcessStdio::null()
                 })
                 .stderr(ProcessStdio::null())
-                .stdout(if input {
+                .stdout(if input || !file_stdio {
                     ProcessStdio::piped()
                 } else {
                     ProcessStdio::from(
@@ -1525,12 +1539,25 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
             command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
             command
         };
-        let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
         for custody in [None, Some(&custody)] {
+            let control =
+                capture(ProcessTree::spawn_granted(command(false), &grant, custody).unwrap());
+            assert!(
+                control.status.success(),
+                "native stdio control failed: {control:?}"
+            );
+            assert_eq!(
+                control.stdout,
+                if input {
+                    b"".as_slice()
+                } else {
+                    b"escaped".as_slice()
+                }
+            );
             let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
             let mut retained = None;
             let error = ProcessTree::spawn_granted_controlled(
-                command(),
+                command(true),
                 &grant,
                 custody,
                 Some(&original),
@@ -1544,6 +1571,13 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
                 error.kind(),
                 io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
             ));
+            if error.kind() == io::ErrorKind::Unsupported {
+                assert!(
+                    error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+                );
+            }
             if let Some(tree) = retained.as_mut() {
                 // A failed guest admission can retain the original warden/record.
                 // Cleanup is a separate admitted operation, never a hidden retry
@@ -1556,19 +1590,7 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
         }
         // Real negative control: the identical trusted command writes through
         // this descriptor without the boundary, even though it names no path.
-        let mut tree = ProcessTree::spawn(&mut command()).unwrap();
-        let output = tree
-            .wait_with_output(
-                std::time::Duration::from_secs(5),
-                65536,
-                None,
-                || Ok(()),
-                |_| Ok(Default::default()),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+        let output = capture(ProcessTree::spawn(&mut command(true)).unwrap());
         assert!(output.status.success());
         if input {
             assert_eq!(output.stdout, b"original");

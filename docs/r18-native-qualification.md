@@ -14,12 +14,14 @@ without confinement.
 | Read-only primary or auxiliary grants regain writes | The same matrix covers writable primary/volume, read-only primary with writable volume, and both read-only, with and without process custody. |
 | Required shell dependencies or workspace metadata are denied | The same matrix runs the real platform shell, reads the workspace/volume, stats every ancestor and enumerates `.cargo`; Linux also executes `ls -la && rg --files`. |
 | A default confined process reaches a host TCP listener | The same matrix proves the unconfined connection first; confined connection is denied and the listener receives nothing. |
-| Inherited file handles bypass pathname confinement | `execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary` rejects outside-file stdin and stdout with and without custody, preserves the sentinel and runs the identical unconfined shell as a positive control for each direction. |
+| Inherited file handles bypass pathname confinement | `execution::tests::inherited_file_stdio_cannot_bypass_the_workspace_boundary` first runs the confined shell with pipe/null stdio for each direction/custody mode, then rejects outside-file stdin/stdout, preserves the sentinel and proves the identical unconfined shell can read/write it. |
 | A host-composed read scope exceeds its retained parent | `execution::tests::scoped_native_reads_pin_the_original_parent_and_refuse_escape` rejects foreign scopes; Unix also checks symlink/replacement, Windows checks the original directory cannot be renamed while pinned. |
 | A missing native enforcement capability is silently skipped | `sandbox_policy` unwraps the confined launch: no ignored test, capability skip or unconfined fallback. Windows requires native PSEC 1.1. |
 
 Native stdio refusal preserves `PermissionDenied` or `Unsupported` without
-equating typed preparation refusals with `Unsupported`.
+equating typed preparation refusals with `Unsupported`. Unsupported rejections must
+retain an `ExecutionRefusal` cause. The admitted confined control prevents a
+missing native capability from masquerading as handle rejection.
 
 Additional existing Unix proof `execution::tests::sandbox_denies_outside_write`
 covers a workspace symlink to an outside file and an inheritable outside file
