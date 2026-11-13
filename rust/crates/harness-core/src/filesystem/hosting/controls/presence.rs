@@ -41,7 +41,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             ceiling: Some(ceiling),
             io: None,
         };
-        profile.title = self
+        let selected = self
             .volumes
             .read_private_path_indexed(
                 state.private.volume()?,
@@ -51,11 +51,19 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 self.maximum_bytes,
                 access,
             )
-            .await
-            .map_err(turn)?
-            .map_or_else(String::new, |(_, bytes, _)| {
+            .await;
+        profile.title = match selected {
+            Ok(selected) => selected.map_or_else(String::new, |(_, bytes, _)| {
                 String::from_utf8_lossy(&bytes).into_owned()
-            });
+            }),
+            // Malformed display input must not prevent a pause/stop change
+            // carried by this same original filesystem publication.
+            Err(crate::Error::ToolRejected {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            }) => String::new(),
+            Err(error) => return Err(turn(error)),
+        };
         let Some(row) = row.changed(Some(profile))? else {
             return Ok(Vec::new());
         };

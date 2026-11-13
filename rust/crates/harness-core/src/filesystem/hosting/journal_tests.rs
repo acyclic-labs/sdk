@@ -557,6 +557,55 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
             .ok_or("root actor missing")?
             .paused()
     );
+    let state = bound.agents().state(&root).await?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|entry| entry.role == crate::agent::WorkspaceRole::Private)
+        .ok_or("private binding missing")?
+        .volume()?;
+    let workspace = crate::filesystem::workspace_ref(
+        private.provider().clone(),
+        &private.storage_name(&mut None)?,
+    )?;
+    bound
+        .volumes
+        .apply(
+            &workspace,
+            None,
+            &[
+                crate::filesystem::WorkspaceMutation::Remove {
+                    path: "/ui/title".into(),
+                },
+                crate::filesystem::WorkspaceMutation::CreateDirectory {
+                    path: "/ui/title".into(),
+                },
+                crate::filesystem::WorkspaceMutation::Remove {
+                    path: "/control/pause".into(),
+                },
+            ],
+            &crate::IdempotencyKey::unique(),
+        )
+        .await?;
+    runtime.drain_actor(&control).await?;
+    assert!(
+        !crate::agent::actor_store(&provider)?
+            .load(&actor)
+            .await?
+            .state()
+            .ok_or("root actor missing")?
+            .paused(),
+        "invalid display input blocked the resume in its publication"
+    );
+    let head = provider.head(row_path).await?;
+    assert_eq!(head.tail, initial + 3);
+    assert!(
+        SessionRow::decode(&head.last.ok_or("metadata row missing")?.value)?
+            .profile
+            .ok_or("metadata removed")?
+            .title
+            .is_empty()
+    );
     Ok(())
 }
 
