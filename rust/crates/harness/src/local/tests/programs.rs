@@ -53,6 +53,14 @@ fn result<'a>(request: &'a crate::model::ModelRequest, id: &str) -> Result<&'a s
     }
 }
 
+fn system_prefix(request: &crate::model::ModelRequest) -> Result<Vec<u8>> {
+    let prefix: Vec<_> = request
+        .messages
+        .iter()
+        .take_while(|message| message.role == crate::model::ModelRole::System)
+        .collect();
+    serde_json::to_vec(&prefix).map_err(|error| Error::Invalid(error.to_string()))
+}
 fn echoed(request: &crate::model::ModelRequest, id: &str, expected: &str) -> Result<()> {
     let value = result(request, id)?;
     assert_eq!(value["exit_code"], 0, "{id}: {value}");
@@ -147,17 +155,10 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         let requests = provider.requests();
         assert_eq!(requests.len(), first + 3);
         assert_eq!(result(&requests[first + 1], "author")?, "authored");
-        let prefix = |request: &crate::model::ModelRequest| -> Result<_> {
-            let system: Vec<_> = request
-                .messages
-                .iter()
-                .take_while(|message| message.role == crate::model::ModelRole::System)
-                .collect();
-            let bytes =
-                serde_json::to_vec(&system).map_err(|error| Error::Invalid(error.to_string()))?;
-            Ok(blake3::hash(&bytes))
-        };
-        assert_eq!(prefix(&requests[first])?, prefix(&requests[first + 1])?);
+        assert_eq!(
+            system_prefix(&requests[first])?,
+            system_prefix(&requests[first + 1])?
+        );
         assert_eq!(
             requests[first].model_tools().collect::<Vec<_>>(),
             requests[first + 1].model_tools().collect::<Vec<_>>()
@@ -249,5 +250,117 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
             echoed(&last, "call-frozen-program", "frozen-child-value-🦀")?;
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn authored_settings_select_the_next_provider_without_restarting_the_turn() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::create_dir(directory.path().join(".git"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let first = scripted([
+        ScriptedTurn::Text("ready".into()),
+        code(
+            "select-settings",
+            r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/agent.ts', "export default {model: 'scripted/second', sampling: {temperature: 0.75}};", 'any');
+            export default 'selected';
+        "#,
+        ),
+        ScriptedTurn::Text("stale provider".into()),
+    ]);
+    let second = scripted([
+        ScriptedTurn::Text("selected provider".into()),
+        ScriptedTurn::Text("inherited provider".into()),
+    ]);
+    let models = Arc::new(crate::model::ModelResolver::new("scripted/test", {
+        let first = Arc::clone(&first);
+        let second = Arc::clone(&second);
+        move |selection| {
+            let (name, provider): (_, Arc<dyn ModelProvider>) = match selection {
+                "scripted/test" => ("test", first.clone()),
+                "scripted/second" => ("second", second.clone()),
+                _ => return Err(Error::NotFound(selection.into())),
+            };
+            Ok((
+                Model::new("scripted".into(), name.into(), "1".into())?,
+                provider,
+            ))
+        }
+    }));
+    let mut config = checkout_config(directory.path(), (model()?, first.clone()))?;
+    config.model = None;
+    config.models = Some((models, None));
+    let harness = Arc::new(super::open_scripted(config).await?);
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned { agent: worker, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: connection.root().clone(),
+            id: crate::agent::IntentId::try_from("settings-author")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            brief: ModelContent::Text("Prepare to select a model".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("settings worker did not open".into()));
+    };
+    agents::settled(&harness, &worker).await?;
+    assert_eq!(first.request_count(), 1);
+    let conversation = Conversation::open(connection.select(worker.clone()).await?);
+    let mut observed = ObservedConversation::observe(conversation, None).await?;
+    let entry = observed
+        .send("select-model", "Write and use your model settings")
+        .await?;
+    assert!(entry.outcome.is_completed(), "{:?}", entry.outcome);
+    assert_eq!(
+        observed.conversation.output_text(&entry).await?,
+        "selected provider"
+    );
+    assert_eq!(
+        first.request_count(),
+        2,
+        "the preceding provider must not run another step"
+    );
+    assert_eq!(second.request_count(), 1);
+    let before = first.request(1).unwrap();
+    let after = second.request(0).unwrap();
+    assert_eq!(result(&after, "select-settings")?, "selected");
+    assert_eq!(after.model.name, "second");
+    assert_eq!(after.sampling.temperature, Some(0.75));
+    assert_eq!(system_prefix(&before)?, system_prefix(&after)?);
+    let before = first.dispatches()[1];
+    let after = second.dispatches()[0];
+    assert_eq!(before.operation_id, after.operation_id);
+    assert_eq!((before.step, after.step), (0, 1));
+    assert_eq!(
+        observed
+            .conversation
+            .send("select-model", "Write and use your model settings")
+            .await?,
+        entry.inbox,
+    );
+    assert_eq!((first.request_count(), second.request_count()), (2, 1));
+    let AgentReply::Spawned { agent: child, .. } = connection
+        .execute(&AgentCommand::Fork {
+            continuation: None,
+            parent: worker,
+            id: crate::agent::IntentId::try_from("settings-reader")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            at: 1,
+            brief: ModelContent::Text("Use your inherited settings".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("settings fork did not open".into()));
+    };
+    agents::settled(&harness, &child).await?;
+    assert_eq!((first.request_count(), second.request_count()), (2, 2));
+    let inherited = second.request(1).unwrap();
+    assert_eq!(inherited.model.name, "second");
+    assert_eq!(inherited.sampling.temperature, Some(0.75));
+    assert_ne!(second.dispatches()[1].operation_id, after.operation_id);
     Ok(())
 }
