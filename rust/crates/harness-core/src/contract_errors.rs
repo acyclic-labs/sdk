@@ -679,11 +679,11 @@ impl Error {
             | WorkspaceError::ChangedPathLimit
             | WorkspaceError::EmptyContentSet
             | WorkspaceError::NotFork
-            | WorkspaceError::ContentLengthOverflow
-            | WorkspaceError::Work(_)
-            | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
+            | WorkspaceError::ContentLengthOverflow => ErrorCode::Invalid,
             WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
-            WorkspaceError::Engine(_) => ErrorCode::Storage,
+            WorkspaceError::Engine(_)
+            | WorkspaceError::Work(_)
+            | WorkspaceError::WorkMerge { .. } => ErrorCode::Storage,
         }
     }
 
@@ -1082,14 +1082,12 @@ impl Error {
             return true;
         }
         // A retained workspace cause is model feedback only as a definitive
-        // refusal; exhausted work stays a harness failure despite its Invalid code.
+        // refusal. Its canonical classification keeps exhausted work in Storage,
+        // including when a lazy source wraps the same workspace cause.
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::NativeWorkspace { source, .. } = self {
             use crate::wire::ErrorCode;
-            return !matches!(
-                **source,
-                acyclic_fs::WorkspaceError::Work(_) | acyclic_fs::WorkspaceError::WorkMerge { .. }
-            ) && matches!(
+            return matches!(
                 Self::workspace_error_code(source),
                 ErrorCode::Invalid
                     | ErrorCode::NotFound
