@@ -271,6 +271,9 @@ export class Suite extends DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/actors-discovery") {
+      return Response.json(await env.ACTORS.getByName(crypto.randomUUID()).verifyDiscovery());
+    }
     if (new URL(request.url).pathname === "/actors") {
       const verified = await env.ACTORS.getByName(crypto.randomUUID()).run(false);
       const measured = await env.ACTORS.getByName(crypto.randomUUID()).run(true);

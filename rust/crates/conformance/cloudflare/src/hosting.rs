@@ -276,3 +276,18 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
     result.map_err(|error| JsValue::from_str(&format!(
         "STEP adoption-fixture spawn failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))
 }
+
+/// Open the Actor verifier's authority with the canonical alarm admission rule.
+#[wasm_bindgen(js_name = openActorJournal)]
+pub async fn actor_journal(journal: JsValue) -> Result<acyclic_stream::WasmStream, JsValue> {
+    let provider = acyclic_stream::JournalStream::open(journal, Default::default())
+        .await
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    provider
+        .install_commit_admission(acyclic_actors::local::alarm_admission())
+        .await
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    Ok(acyclic_stream::WasmStream::from_provider(Arc::new(
+        provider,
+    )))
+}
