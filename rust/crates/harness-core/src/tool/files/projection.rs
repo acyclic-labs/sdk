@@ -594,7 +594,7 @@ impl ToolProjection for FileProjection {
             Self::Publication(mode) => {
                 if invocation.name == "write" && super::record::selected(invocation) {
                     let result = decode::<RecordResult>(&result.value, work)?;
-                    result.0.report.validate()?;
+                    result.0.validate()?;
                     return schema::project_json(
                         &super::record::Ack {
                             path: crate::live::feedback::PATH,

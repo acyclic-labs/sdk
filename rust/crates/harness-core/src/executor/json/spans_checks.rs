@@ -51,6 +51,58 @@ fn documents() -> impl Strategy<Value = Value> {
     })
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn sequences_preserve_original_value_spans_across_every_chunk_boundary(
+        values in prop::collection::vec(documents(), 1..6),
+        chunk in 1usize..97,
+    ) {
+        let encoded = values.iter().map(|v| serde_json::to_string(v).unwrap()).collect::<Vec<_>>().join("\r\n");
+        let bytes = encoded.as_bytes();
+        let mut cursor = JsonSpans::sequence();
+        let mut actual = Vec::new();
+        let mut event = |event| -> Result<bool> {
+            if let SpanEvent::End { depth: 0, start, end, .. } = event {
+                actual.push(serde_json::from_slice::<Value>(&bytes[start as usize..end as usize]).unwrap());
+            }
+            Ok(true)
+        };
+        let bounds = JsonBounds { maximum_bytes: Some(bytes.len() as u64), maximum_items: None, maximum_depth: RECORD_MAXIMUM_DEPTH };
+        for part in bytes.chunks(chunk) {
+            let mut consumed = 0;
+            while consumed < part.len() {
+                consumed += cursor.feed(&part[consumed..], bounds, None, &mut |_| Ok(()), &mut event).unwrap();
+            }
+        }
+        cursor.finish(None, &mut event).unwrap();
+        prop_assert_eq!(actual, values.clone());
+        // Sequence support must not relax ordinary persisted-document decoding.
+        if values.len() > 1 { prop_assert!(scan(bytes, chunk, RECORD_MAXIMUM_DEPTH).is_err()); }
+    }
+}
+
+#[test]
+fn sequence_admission_is_cumulative_and_incomplete_suffixes_are_refused() {
+    for (source, maximum_bytes, maximum_items) in [
+        (&b"{}\n{}"[..], Some(4), None),
+        (&b"{}\n{}"[..], None, Some(1)),
+        (&b"{}\n{"[..], None, None),
+        (&b"{}\n\"unfinished"[..], None, None),
+    ] {
+        let mut cursor = JsonSpans::sequence();
+        let bounds = JsonBounds {
+            maximum_bytes,
+            maximum_items,
+            maximum_depth: RECORD_MAXIMUM_DEPTH,
+        };
+        let result = cursor
+            .feed(source, bounds, None, &mut |_| Ok(()), &mut |_| Ok(false))
+            .and_then(|_| cursor.finish(None, &mut |_| Ok(false)));
+        assert!(result.is_err(), "{source:?}");
+    }
+}
+
 #[test]
 fn spans_accept_the_producer_depth_boundary_and_refuse_the_next_container() {
     for empty in [Value::Array(Vec::new()), Value::Object(Default::default())] {

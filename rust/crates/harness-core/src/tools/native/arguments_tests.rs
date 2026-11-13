@@ -95,10 +95,10 @@ fn anthropic_calls_map_to_canonical_inputs() -> Result<()> {
     NativeTools::new(anthropic)?.bind(&mut registry)?;
     let write = registry.get("Write", None, None)?.expect("native write");
     let result = crate::tool::ToolResult {
-        value: json!({"report": {
+        value: json!({"version": 1, "reports": [{
             "version": 1, "kind": "slow", "what": "Waited for a result",
             "evidence": "shell step 3"
-        }}),
+        }]}),
     };
     for (path, expected) in [
         (

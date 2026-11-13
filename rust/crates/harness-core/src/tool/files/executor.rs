@@ -382,7 +382,7 @@ impl ToolExecutor for FileTool {
         Ok((matches!(self, Self::Write)
             && invocation.name == "write"
             && super::record::selected(invocation)
-            && result.value.get("report").is_some())
+            && result.value.get("reports").is_some())
         .then_some(crate::executor::ToolRecordKind::Feedback))
     }
 

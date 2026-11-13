@@ -11,17 +11,35 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     use crate::test_support::ScriptedEvent;
 
     let report = |count| {
+        let content = (0..count)
+            .map(|number| {
+                json!({
+                    "version":1, "kind":"slow", "what":format!("Waited for result {number}"),
+                    "evidence":"shell step 3"
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut events = Vec::new();
-        for number in 0..count {
+        if count > 1 {
             events.push(ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
-                format!("feedback-{number}"),
+                "bad-feedback-batch".into(),
                 "write".into(),
                 json!({
                     "path": crate::live::feedback::PATH,
-                    "content": "{\"version\":1,\"kind\":\"slow\",\"what\":\"Waited for a result\",\"evidence\":\"shell step 3\"}"
+                    "content": format!("{}\nundefined{{", content.lines().next().unwrap()),
                 }),
             ))));
         }
+        events.push(ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+            "feedback-batch".into(),
+            "write".into(),
+            json!({
+                "path": crate::live::feedback::PATH,
+                "content": content
+            }),
+        ))));
         events.push(ScriptedEvent::Event(ModelEvent::Completed {
             metadata: json!({}),
         }));
@@ -190,6 +208,11 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
             if path.depth() == 0 { 2 } else { 1 },
             "live inspection counts only this agent's original reports"
         );
+        assert_eq!(
+            inspection.snapshot().tools.completed,
+            1,
+            "all reports from one write belong to one original completion"
+        );
         aggregate = aggregate.merged(inspection.snapshot().tools)?;
         let bytes = std::fs::read(output.join(format!("{}.jsonl", path.id())))
             .map_err(crate::local::storage)?;
@@ -201,6 +224,7 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         let mut position = ExecutionPosition::default();
         let mut calls = 0;
         let mut failed_tool = false;
+        let mut refused_batch = false;
         loop {
             let query = selected
                 .execution_page(position.input, position.after, false)
@@ -229,6 +253,11 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 failed_tool |= matches!(
                     record.event,
                     crate::executor::ExecutionEvent::ToolFailed { .. }
+                );
+                refused_batch |= matches!(
+                    &record.event,
+                    crate::executor::ExecutionEvent::ToolFailed { call_id, .. }
+                        if call_id == "bad-feedback-batch"
                 );
                 let row = rows.next().expect("every journal record exported");
                 assert_eq!(row["version"], 1);
@@ -289,6 +318,9 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         assert!(calls > 0, "agent's own model calls are absent");
         if path.depth() == 1 {
             assert!(failed_tool, "child's tool error is absent");
+        }
+        if path.depth() == 0 {
+            assert!(refused_batch, "malformed suffix did not refuse the batch");
         }
         assert!(
             rows.next().is_none(),

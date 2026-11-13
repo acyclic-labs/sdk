@@ -384,10 +384,10 @@ mod tests {
             ..invocation.clone()
         };
         let record = ToolResult {
-            value: json!({"report": {
+            value: json!({"version": 1, "reports": [{
                 "version": 1, "kind": "slow", "what": "Waited for a result",
                 "evidence": "shell step 3"
-            }}),
+            }]}),
         };
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projection = FileProjection::Publication(mode)

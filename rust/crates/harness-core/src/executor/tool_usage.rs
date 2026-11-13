@@ -38,7 +38,10 @@ impl ToolUsage {
     /// Number of disjoint original source records, or unknown on overflow or a
     /// noncanonical zero-count failure entry. Used to validate source-page bounds.
     pub fn observations(&self) -> Option<u64> {
-        if category_total(self.feedback.values())? > self.completed {
+        // A single successful write can retain any number of authored reports;
+        // these category totals are not counts of source completion records.
+        let reports = category_total(self.feedback.values())?;
+        if reports != 0 && self.completed == 0 {
             return None;
         }
         self.started
@@ -102,11 +105,12 @@ impl ToolUsage {
                             Error::Storage("invalid original feedback result".into())
                         })?;
                     report
-                        .report
                         .validate()
                         .map_err(|_| Error::Storage("invalid original feedback report".into()))?;
-                    let count = self.feedback.entry(report.report.kind).or_default();
-                    *count = count.checked_add(1).ok_or_else(overflow)?;
+                    for report in report.reports {
+                        let count = self.feedback.entry(report.kind).or_default();
+                        *count = count.checked_add(1).ok_or_else(overflow)?;
+                    }
                 }
             }
             ExecutionEvent::ToolFailed { cause, .. } => {
