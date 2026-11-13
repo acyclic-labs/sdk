@@ -852,6 +852,14 @@ impl Error {
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
     pub(crate) fn leaves_effect_uncertain(&self) -> bool {
+        if let Self::StreamFailure {
+            code,
+            native: false,
+            ..
+        } = self
+        {
+            return *code == ErrorCode::Storage;
+        }
         if let Self::Agent(source) = self {
             return source.uncertain();
         }
@@ -1454,13 +1462,7 @@ impl From<crate::agent::Error> for Error {
 /// A Stream failure below the harness is a durable-storage failure.
 impl From<acyclic_stream::StreamError> for Error {
     fn from(error: acyclic_stream::StreamError) -> Self {
-        Self::StreamFailure {
-            code: ErrorCode::Storage,
-            source: error,
-            native: false,
-            #[cfg(not(target_arch = "wasm32"))]
-            custody: None,
-        }
+        Self::from(crate::agent::Error::Stream(error))
     }
 }
 

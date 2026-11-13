@@ -74,8 +74,8 @@ Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal
 reads no longer replace the original provider cause with its formatted text.
-General Stream-to-harness conversion retains the original error directly,
-without an intermediate agent-error box. This closes that conversion gap;
+General Stream-to-harness conversion retains the original agent classification,
+including its source-based retry and effect decisions. This closes the cause gap;
 the remaining bare error constructors elsewhere still require migration.
 
 Typed `Compared` deltas carry a request, output or cache-prefix comparison in

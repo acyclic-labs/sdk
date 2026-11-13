@@ -26,6 +26,10 @@ fn journal_stream_boundary_retains_original_io_cause_and_outcome()
         assert_eq!(error.code(), code);
         assert_eq!(error.uncertain(), code != crate::wire::ErrorCode::Invalid);
         assert!(!error.is_native_failure());
+        assert_eq!(
+            error.leaves_effect_uncertain(),
+            code == crate::wire::ErrorCode::Storage
+        );
         let mut cause = error.source();
         let mut found = None;
         while let Some(source) = cause {
@@ -51,6 +55,18 @@ fn journal_stream_boundary_retains_original_io_cause_and_outcome()
         }
         assert!(shared, "original retained source chain disappeared");
         assert_eq!(original.kind(), std::io::ErrorKind::NotFound);
+    }
+    // A wire Storage classification does not replace the source primitive's
+    // original decision about whether a dispatched effect needs reconciliation.
+    for category in StreamError::ALL {
+        let original = std::fs::read(directory.path().join("missing")).unwrap_err();
+        let stream = category.with_source(original);
+        let uncertain = stream.uncertain();
+        let error = Error::from(stream);
+        assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
+        assert_eq!(error.uncertain(), uncertain);
+        assert_eq!(error.leaves_outcome_uncertain(), uncertain);
+        assert_eq!(error.leaves_effect_uncertain(), uncertain);
     }
     Ok(())
 }
