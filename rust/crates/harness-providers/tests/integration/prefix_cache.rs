@@ -163,6 +163,13 @@ fn text(answer: &str) -> Step {
     }
 }
 
+/// The stock feedback plugin asks for a retrospective after every settled
+/// answer. Its reply sits in the script right after that answer, so it can
+/// never consume another agent's next action.
+fn retrospective() -> Step {
+    text("none")
+}
+
 fn program(id: &str, code: &str) -> Step {
     call(id, "code", json!({ "code": code }))
 }
@@ -198,6 +205,9 @@ impl Changing {
 }
 
 impl TurnExecutors for Changing {
+    fn model_selection(&self) -> acyclic_harness::Result<Option<String>> {
+        self.current().model_selection()
+    }
     fn content_limits(&self) -> Limits {
         self.current().content_limits()
     }
@@ -258,13 +268,18 @@ fn executors(
         ..Bindings::default()
     }
     .build()?;
+    // Role policy wins at admission: the fixture catalog serves the shipped
+    // role models with this one recorded binding.
+    let binding: acyclic_harness::model::ModelBinding = (model.model().clone(), model);
+    let models = acyclic_harness::test_support::role_models(binding.clone())?;
     Ok(Arc::new(
         acyclic_harness::filesystem::StockExecutors::new(
-            (model.model().clone(), model),
+            binding,
             tools,
             (limits, CompactionPolicy::Capacity(CapacityCompaction {})),
             Arc::new(Tasks(bindings)),
         )
+        .with_models(Arc::new(models))
         .with_agent_tools(&selected)
         .with_templates(),
     ))
@@ -452,8 +467,10 @@ async fn run(
                 // Turn 1: a tool call and its continuation.
                 program("call-1", "1 + 1"),
                 text("one"),
+                retrospective(),
                 // Turn 2: a waking notice.
                 text("noticed"),
+                retrospective(),
                 // Turn 3: the tool table changed; the parent forks a child.
                 call(
                     "call-2",
@@ -461,9 +478,11 @@ async fn run(
                     json!({"task":"Count to two","name":"kid","role":"worker"}),
                 ),
                 text("spawned"),
+                retrospective(),
                 // The child continues from the fork with its own tool call.
                 program("call-3", "2 + 2"),
                 text("kid done"),
+                retrospective(),
                 // Asked again, the child forks a grandchild.
                 call(
                     "call-4",
@@ -471,6 +490,7 @@ async fn run(
                     json!({"task":"Count to three","name":"grandkid","role":"worker"}),
                 ),
                 text("spawned again"),
+                retrospective(),
             ]),
             Vec::new(),
         )),
@@ -549,12 +569,25 @@ async fn run(
     // A fork with the same directive preserves the entire admitted prefix.
     // Use the same real template reader as production, with a home override.
     let root_template = acyclic_harness::seed::file("templates/orchestrator/AGENT.md").unwrap();
+    // Rewrite the context by its key: a shipped template change must fail
+    // here, not silently leave the child without a fork.
+    let mut forked = false;
     let child_template = std::str::from_utf8(root_template)?
-        .replace("context: top_level", "context: fork")
         .lines()
         .filter(|line| !line.starts_with("allowed_tools:"))
+        .map(|line| {
+            if line.starts_with("context:") {
+                forked = true;
+                "context: fork"
+            } else {
+                line
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
+    if !forked {
+        return Err("the shipped orchestrator template declares no context".into());
+    }
     let set_template = |agent: AgentPath| {
         let filesystem = filesystem.clone();
         let provider = &provider;
@@ -655,11 +688,10 @@ async fn run(
         )
         .await?;
     agents.drain(&child).await?;
-    let grandchild = agents
-        .resolve_spawn_name(&child, "grandkid")
-        .await?
-        .live()
-        .ok_or("missing grandkid")?;
+    let Some(grandchild) = agents.resolve_spawn_name(&child, "grandkid").await?.live() else {
+        let state = agents.state(&child).await?;
+        return Err(format!("missing grandkid; child phase {:?}", state.phase).into());
+    };
     transport.label("grandchild");
     agents.drain(&grandchild).await?;
     transport.label("child");

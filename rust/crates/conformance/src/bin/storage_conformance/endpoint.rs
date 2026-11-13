@@ -12,7 +12,7 @@ use acyclic_harness::{
     filesystem::{Grants, PRIVATE_VOLUME, TurnLimits},
     hosting::{Bound, Placement, RootRequest, Runtime, Serving, Turns, VerifiedCaller},
     local::{Connection, Event, agent_conversation::Conversation},
-    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     preset::Preset,
     resources::ProviderRef,
     server::{Hosted, ServerConfig},
@@ -159,9 +159,11 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let preset = Preset::graphcoder();
         let limits = Limits::default();
         let turns = Turns {
+            // The deterministic answer serves any model, so it binds the root
+            // role's own: a host refuses a fixed binding that role does not select.
             executors: Arc::new(acyclic_harness_core::filesystem::StockExecutors::new(
                 (
-                    Model::new("conformance".into(), "answer".into(), "1".into())?,
+                    acyclic_harness::templates::root_role_model("1")?,
                     Arc::new(Answer),
                 ),
                 ToolRegistry::default(),

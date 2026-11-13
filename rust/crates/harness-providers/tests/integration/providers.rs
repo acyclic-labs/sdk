@@ -255,6 +255,9 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>) -> TestResult {
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
         .goal_continuations(None)
+        // A recorded script is finite: settlement notices would ask for
+        // generations the provider never recorded.
+        .feedback_plugin(false)
         .tools(case.tools.iter().map(String::as_str).map(echo_tool));
     let harness = Arc::new(
         LocalHarness::open(config)
