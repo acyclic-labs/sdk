@@ -247,26 +247,40 @@ impl<T> MountTable<T> {
         volume: &VolumeRef,
         io: Option<&crate::conversation::ContentIo>,
     ) -> Result<&Mount<T>> {
+        self.volume_mounts(volume, io)?
+            .next()
+            .map(|(_, mount)| mount)
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "volume is not mounted in this task view",
+                )
+            })
+    }
+
+    /// The admitted aliases of one volume, using the composition's volume
+    /// index. Selection alone grants no action on a source path.
+    #[doc(hidden)]
+    pub fn volume_mounts<'m>(
+        &'m self,
+        volume: &VolumeRef,
+        io: Option<&crate::conversation::ContentIo>,
+    ) -> Result<impl Iterator<Item = (&'m str, &'m Mount<T>)>> {
         let digest = crate::executor::with_history_io(io, |work| {
             volume.identity_digest(
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
             )
         })?;
-        let mount = self
+        Ok(self
             .volumes
             .get(&digest)
-            .and_then(|indices| indices.first())
-            .and_then(|&index| self.mounted.get(index))
-            .map(|(_, mount)| mount)
-            .filter(|mount| &mount.view.volume == volume);
-        mount.ok_or_else(|| {
-            crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "volume is not mounted in this task view",
-            )
-        })
+            .into_iter()
+            .flatten()
+            .filter_map(move |&index| self.mounted.get(index))
+            .filter(move |(_, mount)| &mount.view.volume == volume)
+            .map(|(relative, mount)| (relative.as_ref(), mount)))
     }
 
     /// An immutable reference names a source volume and path, not a namespace

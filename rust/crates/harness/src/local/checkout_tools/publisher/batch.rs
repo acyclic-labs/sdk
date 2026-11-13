@@ -122,16 +122,18 @@ impl CheckoutPublisher {
                     self.finish_pending_capture(&physical, view, watcher)
                         .await?;
                 }
-                let native = match &mount.view.source {
-                    Some(source) => Some(source.publication().await?),
-                    None => None,
-                };
-                let native = native.as_ref().and_then(|(guard, _)| guard.as_ref());
                 let workspace = mount
                     .view
                     .source
                     .as_ref()
                     .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+                let native = workspace::projection::PublicationGroup::acquire(
+                    &physical.mounts,
+                    volume,
+                    workspace.id(),
+                    access.io,
+                )
+                .await?;
                 // The shared writer checks the signed scope and caller ceiling
                 // for each action and missing parent at the publication cut.
                 let writer = self.writer_for(volume, workspace)?;
@@ -139,15 +141,10 @@ impl CheckoutPublisher {
                     .observe_changes(volume, operation, maximum, access)?
                     .await?;
                 let (receipt, hold) = if let Some(changes) = changes {
-                    if original.is_none() && (native.is_some() || mount.view.source.is_none()) {
-                        if let Some(native) = native {
-                            BoundedContentFuture::new(access.io, || async {
-                                native.sync().await?;
-                                Ok(())
-                            })?
-                            .await?;
-                        } else {
-                            BoundedContentFuture::new(access.io, || {
+                    if original.is_none() {
+                        BoundedContentFuture::new(access.io, || async {
+                            native.sync().await?;
+                            if mount.view.source.is_none() {
                                 capture::capture(
                                     (&self.tools.capture_options, &self.tools.capture_policy),
                                     (&physical, view),
@@ -155,9 +152,11 @@ impl CheckoutPublisher {
                                     (operation, 0),
                                     PublicationPermit::Unrestricted,
                                 )
-                            })?
-                            .await?;
-                        }
+                                .await?;
+                            }
+                            Ok(())
+                        })?
+                        .await?;
                     }
                     // The original transaction validates the complete request even on replay.
                     drop(original);
@@ -203,44 +202,38 @@ impl CheckoutPublisher {
                             .and_then(crate::store::HistoryIo::original_native_work),
                     )?;
                 }
-                if native.is_some() || mount.view.source.is_none() {
-                    BoundedContentFuture::new(access.io, || async {
-                        if let Some(native) = native {
-                            native.advance_to_head().await?;
-                        } else if mount.view.source.is_none() {
-                            if physical.mounted.is_some() {
-                                reconciliation::advance_mount(&physical, &|| async { Ok(()) })
-                                    .await?;
-                            } else {
-                                let generation = acyclic_fs::GenerationId::from_bytes(
-                                    receipt.generation.as_resource().key(),
+                BoundedContentFuture::new(access.io, || async {
+                    native.advance_to_head().await?;
+                    if mount.view.source.is_none() {
+                        if physical.mounted.is_some() {
+                            reconciliation::advance_mount(&physical, &|| async { Ok(()) }).await?;
+                        } else {
+                            let generation = acyclic_fs::GenerationId::from_bytes(
+                                receipt.generation.as_resource().key(),
+                            )
+                            .ok_or_else(|| {
+                                Error::Invalid("invalid conditional publication generation".into())
+                            })?;
+                            self.tools
+                                .owe_write_capture(
+                                    (&physical, view),
+                                    watcher,
+                                    (
+                                        publication_operation(operation, ""),
+                                        acyclic_fs::GitGenerationRef {
+                                            workspace_id: view.workspace().id(),
+                                            generation,
+                                        },
+                                    ),
                                 )
-                                .ok_or_else(|| {
-                                    Error::Invalid(
-                                        "invalid conditional publication generation".into(),
-                                    )
-                                })?;
-                                self.tools
-                                    .owe_write_capture(
-                                        (&physical, view),
-                                        watcher,
-                                        (
-                                            publication_operation(operation, ""),
-                                            acyclic_fs::GitGenerationRef {
-                                                workspace_id: view.workspace().id(),
-                                                generation,
-                                            },
-                                        ),
-                                    )
-                                    .await?;
-                                self.finish_pending_capture(&physical, view, watcher)
-                                    .await?;
-                            }
+                                .await?;
+                            self.finish_pending_capture(&physical, view, watcher)
+                                .await?;
                         }
-                        Ok(())
-                    })?
-                    .await?;
-                }
+                    }
+                    Ok(())
+                })?
+                .await?;
                 Ok((finish(Some(receipt))?, hold))
             })
             .await

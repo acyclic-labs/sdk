@@ -31,6 +31,71 @@ impl Drop for Native {
     }
 }
 
+type PublicationGuard = (OwnedMutexGuard<Option<Native>>, OwnedMutexGuard<()>);
+
+/// One volume's distinct projections, retained in command lock order across
+/// logical publication. Read-only aliases also observe the committed head.
+pub(in crate::local) struct PublicationGroup {
+    slots: Vec<PublicationGuard>,
+    _storage: Option<acyclic_fs::NativeAllocation>,
+}
+
+impl PublicationGroup {
+    pub(in crate::local) async fn acquire(
+        mounts: &Mounts,
+        volume: &VolumeRef,
+        selected: acyclic_fs::WorkspaceId,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<Self> {
+        let ordered = volumes::ordered_mounts(mounts.volume_mounts(volume, io)?);
+        let bytes = ordered
+            .len()
+            .checked_mul(std::mem::size_of::<PublicationGuard>())
+            .ok_or_else(|| Error::Invalid("native publication storage overflows".into()))?;
+        let allocation = io
+            .as_ref()
+            .and_then(crate::store::HistoryIo::original_native_work)
+            .map(|work| work.claim(bytes as u64, 1, acyclic_fs::WorkCounters::UNCHARGED))
+            .transpose()?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(ordered.len()).map_err(storage)?;
+        for (_, mount) in ordered {
+            if let Some(source) = &mount.view.source
+                && source.options.is_some()
+            {
+                if source.workspace.workspace().id() != selected {
+                    return Err(Error::Conflict(
+                        "volume projections select different workspaces".into(),
+                    ));
+                }
+                slots.push(source.publication().await?);
+            }
+        }
+        Ok(Self {
+            slots,
+            _storage: allocation,
+        })
+    }
+
+    pub(in crate::local) async fn sync(&self) -> Result<()> {
+        for (slot, _) in &self.slots {
+            if let Some(native) = slot.as_ref() {
+                native.sync().await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::local) async fn advance_to_head(&self) -> Result<()> {
+        for (slot, _) in &self.slots {
+            if let Some(native) = slot.as_ref() {
+                native.advance_to_head().await?;
+            }
+        }
+        Ok(())
+    }
+}
+
 // Lock order: checkout state -> volume execution -> projection -> filesystem/provider.
 // No callback reacquires either outer lock. Hold this guard through logical
 // writes, so first projection cannot pin a head preceding an unpublished write.

@@ -264,22 +264,22 @@ impl CheckoutPublisher {
             if mount.view.source.is_none() {
                 self.finish_pending_capture(&physical, view, watcher).await?;
             }
-            let native = match &mount.view.source {
-                Some(source) => Some(source.publication().await?),
-                None => None,
-            };
-            let native = native.as_ref().and_then(|(guard, _)| guard.as_ref());
             let workspace = mount.view.source.as_ref()
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+            let native = workspace::projection::PublicationGroup::acquire(
+                &physical.mounts,
+                &mount.view.volume,
+                workspace.id(),
+                None,
+            ).await?;
             access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
             let writer = self.writer_for(&mount.view.volume, workspace)?;
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
             let original = self.original_publication(&writer, operation, &relative, &publication, ceiling).await?;
             if original.is_none() {
-                if let Some(native) = native {
-                    native.sync().await?;
-                } else if mount.view.source.is_none() {
+                native.sync().await?;
+                if mount.view.source.is_none() {
                     if let Some(mounted) = &physical.mounted {
                         mounted.sync().await.map_err(storage)?;
                     } else {
@@ -298,9 +298,8 @@ impl CheckoutPublisher {
                 }
                 Publication::Replace(source) => writer.stage_at(operation, source, bytes, ceiling, None)?.await?.0,
             };
-            if let Some(native) = native {
-                native.advance_to_head().await?;
-            } else if mount.view.source.is_none() {
+            native.advance_to_head().await?;
+            if mount.view.source.is_none() {
                 return self.settle(&physical, view, watcher, operation, file).await;
             }
             Ok(file)
@@ -623,12 +622,19 @@ impl ContentPublisher for CheckoutPublisher {
                             self.tools.clock.now_unix_millis() / 1000,
                             None,
                         )?;
-                        if let Some(source) = &mount.view.source {
-                            let publication = source.publication().await?;
-                            if let Some(native) = publication.0.as_ref() {
-                                native.advance_to_head().await?;
-                            }
-                        } else {
+                        let workspace = mount.view.source.as_ref().map_or_else(
+                            || view.workspace(),
+                            |source| source.workspace.workspace(),
+                        );
+                        let publication = workspace::projection::PublicationGroup::acquire(
+                            &physical.mounts,
+                            file.volume(),
+                            workspace.id(),
+                            None,
+                        )
+                        .await?;
+                        publication.advance_to_head().await?;
+                        if mount.view.source.is_none() {
                             // A recovered publication names the same
                             // generation the original write returned.
                             file = self

@@ -81,6 +81,199 @@ async fn published(scratch: &MountedVolume, path: &str) -> Result<Vec<u8>> {
 }
 
 #[tokio::test]
+async fn publications_keep_all_live_volume_projections_at_the_committed_head() -> Result<()> {
+    use crate::agent::{WorkspaceEntry, WorkspaceRole};
+    use crate::conversation::{ContentAccess, ContentChange, ContentPublisher as _};
+
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let base = harness.workspace().unwrap();
+    let reference = crate::filesystem::workspace_ref(
+        harness.scratch.provider().clone(),
+        &harness.scratch.storage_name(&mut None)?,
+    )?;
+    harness
+        .files
+        .apply(
+            &reference,
+            None,
+            &[
+                crate::filesystem::WorkspaceMutation::CreateDirectory { path: "/ui".into() },
+                crate::filesystem::WorkspaceMutation::CreateDirectory {
+                    path: "/reports".into(),
+                },
+            ],
+            &crate::IdempotencyKey::new("projection-roots")?,
+        )
+        .await?;
+    let mut entries = harness.session_bindings().to_vec();
+    for (role, name, directory) in [
+        (WorkspaceRole::User, "ui", "ui"),
+        (WorkspaceRole::User, "reports", "reports"),
+        (WorkspaceRole::Output, "report-view", "reports"),
+        // Same source and projection as Home: acquiring it twice deadlocks.
+        (WorkspaceRole::User, "home-alias", ""),
+    ] {
+        let mut entry = WorkspaceEntry::initial_volume(role, name.into(), harness.scratch.clone());
+        entry.root = directory.into();
+        entries.push(entry);
+    }
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let view = base
+        .view()
+        .open_related(
+            base.view().workspace().clone(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            },
+        )
+        .await
+        .map_err(storage)?;
+    let authority = base
+        .mount_authority
+        .as_ref()
+        .unwrap()
+        .for_scope(&harness.signed)?;
+    let selected = base
+        .bound_task_view(
+            view,
+            &harness.project,
+            &entries,
+            &super::super::owner::AgentOwner,
+            &authority,
+        )
+        .await?;
+    let (_, publisher) = selected
+        .executor(
+            (&harness.project, &harness.files, harness.limits.file_bytes),
+            Arc::clone(&harness.clock),
+            &harness.signed,
+            &harness.verifier,
+            None,
+        )
+        .await?;
+    let mounts = &selected.mounts;
+    let source = |name| {
+        mounts
+            .named(Some(name))
+            .unwrap()
+            .1
+            .view
+            .source
+            .as_ref()
+            .unwrap()
+    };
+    let ui = source("ui");
+    let reports = source("reports");
+    let observer = source("report-view");
+    assert!(Arc::ptr_eq(source("home"), source("home-alias")));
+    native_scope(mounts, async |claims| {
+        assert!(!ui.destination.join("batch").exists());
+        assert!(!reports.destination.join("batch").exists());
+        assert!(!observer.destination.join("batch").exists());
+        write_projected(&reports.destination.join("before-batch"), b"native edit")?;
+        let change = |path| ContentChange::CreateAbsent {
+            path,
+            bytes: b"batch value",
+            media_type: "text/plain",
+            display_name: "batch",
+        };
+        // A dirty second projection must be synchronized before the batch's
+        // absent-path condition; otherwise it is incorrectly overwritten.
+        assert_eq!(
+            publisher
+                .stage_changes(
+                    &harness.scratch,
+                    OperationId::new(),
+                    &[change("reports/before-batch")],
+                    ContentAccess::default(),
+                )?
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Conflict,
+        );
+        assert_eq!(
+            published(reports, "/reports/before-batch").await?,
+            b"native edit"
+        );
+        let operation = OperationId::new();
+        let changes = [change("ui/batch"), change("reports/batch")];
+        let (receipt, _) = publisher
+            .stage_changes(
+                &harness.scratch,
+                operation,
+                &changes,
+                ContentAccess::default(),
+            )?
+            .await?;
+        for projection in [ui, reports, observer] {
+            assert_eq!(
+                std::fs::read(projection.destination.join("batch")).map_err(storage)?,
+                b"batch value"
+            );
+        }
+        assert_eq!(
+            publisher
+                .stage_changes(
+                    &harness.scratch,
+                    operation,
+                    &changes,
+                    ContentAccess::default(),
+                )?
+                .await?
+                .0,
+            receipt,
+        );
+        let scalar_operation = OperationId::new();
+        let (file, _) = publisher
+            .stage_once(
+                scalar_operation,
+                "volume:///reports/single",
+                b"one file",
+                "text/plain",
+                "single",
+                ContentAccess::default(),
+            )?
+            .await?;
+        assert_eq!(
+            std::fs::read(observer.destination.join("single")).map_err(storage)?,
+            b"one file"
+        );
+        assert_eq!(
+            publisher
+                .observe_staged_once(scalar_operation, None, None, ContentAccess::default(),)?
+                .await?
+                .0,
+            Some(file)
+        );
+        assert_eq!(
+            publisher
+                .stage_once(
+                    OperationId::new(),
+                    "volume:///report-view/forbidden",
+                    b"denied",
+                    "text/plain",
+                    "forbidden",
+                    ContentAccess::default(),
+                )?
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Unauthorized,
+        );
+        assert!(!reports.destination.join("forbidden").exists());
+        Ok(((), claims))
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head()
 -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
@@ -320,7 +513,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         }),
     )?;
     assert_eq!(
-        ordered_mounts(&table)?
+        ordered_mounts(table.mounts())
             .into_iter()
             .map(|(relative, _)| relative)
             .collect::<Vec<_>>(),
@@ -471,7 +664,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
     let swapped = table(&second, first)?;
     let duplicate = table(first, first)?;
     let identities = |table: &Mounts| -> Result<Vec<PathBuf>> {
-        Ok(ordered_mounts(table)?
+        Ok(ordered_mounts(table.mounts())
             .into_iter()
             .map(|(_, mount)| mount.view.source.as_ref().unwrap().destination.clone())
             .collect())
