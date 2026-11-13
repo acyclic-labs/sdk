@@ -1088,5 +1088,51 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             .text,
         "after"
     );
+    // Trace demand is held by this same authenticated file wait, including
+    // before the original trace stream has its first publication.
+    let requested = "live/agents/self/trace/0/2.json".to_owned();
+    let trace_paths = vec![requested.clone()];
+    let before = bound.files(&agent, root, &trace_paths, None).await?;
+    assert!(before.files[&requested].is_none());
+    assert!(bound.trace_recorder(&agent)?.is_none());
+    let mut watching = Box::pin(bound.files(&agent, root, &trace_paths, Some(&before.cut)));
+    assert!(futures::poll!(&mut watching).is_pending());
+    let recorder = bound
+        .trace_recorder(&agent)?
+        .ok_or("file wait did not retain demand")?;
+    let span = recorder
+        .start(
+            "original_file_request",
+            acyclic_stream::trace::Mechanism::Io,
+            None,
+            Some("original_authenticated_file_cut"),
+        )
+        .await?;
+    let changed = watching.await?;
+    assert!(
+        bound.trace_recorder(&agent)?.is_none(),
+        "returned file wait retained demand"
+    );
+    let value: serde_json::Value = serde_json::from_str(
+        &changed.files[&requested]
+            .as_ref()
+            .ok_or("trace window absent")?
+            .text,
+    )?;
+    assert_eq!(value["coveredFrom"], 0);
+    assert_eq!(value["coveredThrough"], 1);
+    assert_eq!(value["activeSpans"], 1);
+    span.finish(Some(0), acyclic_stream::trace::Outcome::Succeeded)
+        .await?;
+    let completed = bound.files(&agent, root, &trace_paths, None).await?;
+    let value: serde_json::Value = serde_json::from_str(
+        &completed.files[&requested]
+            .as_ref()
+            .ok_or("completed trace absent")?
+            .text,
+    )?;
+    assert_eq!(value["coveredThrough"], 2);
+    assert_eq!(value["mechanisms"]["io"]["completed"], 1);
+    assert_eq!(value["activeSpans"], 0);
     Ok(())
 }
