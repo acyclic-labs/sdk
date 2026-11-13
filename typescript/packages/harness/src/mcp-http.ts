@@ -1,7 +1,7 @@
 /** Browser platform I/O for the Rust MCP transport; no protocol semantics here. */
 import type { McpBrowserHttpProvider, McpBrowserResponseHead }
   from "../generated/wasm/acyclic_harness_wasm.js";
-import { deadlineSignal } from "@acyclic-labs/actors/deadline";
+import { deadlineSignal } from "@acyclic-labs/auth/deadline";
 
 /** Supplies host-selected HTTP I/O for journal-admitted MCP operations. */
 export function createBrowserMcpHttpProvider(fetcher: typeof fetch = globalThis.fetch,

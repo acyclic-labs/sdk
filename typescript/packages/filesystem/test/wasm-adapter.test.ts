@@ -17,7 +17,7 @@ import { openBrowserOperationWindowCoordinator } from "../src/browser.js";
 import { DEFAULT_MEMORY_FS_OPTIONS, openMemoryFs } from "../src/memory-node.js";
 import { nodeWasmBindings } from "../src/wasm-node.js";
 import { portableVolumeOptions } from "../src/contracts.js";
-import type { OperationEvent } from "@acyclic-labs/actors/observe";
+import type { OperationEvent } from "@acyclic-labs/auth/observe";
 import { adaptWorkspaceContextRegistry } from "../src/workspace-context.js";
 import { decodeMergeConflict, parseJoinResult, parseMergePreparation, parseWorkspaceCommit, parseWorkspaceRebaseResult } from "../src/workspace-results.js";
 

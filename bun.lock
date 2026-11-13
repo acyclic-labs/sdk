@@ -53,7 +53,6 @@
       "name": "@acyclic-labs/fs",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/actors": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
@@ -69,7 +68,7 @@
       "name": "@acyclic-labs/harness",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/actors": "0.2.0",
+        "@acyclic-labs/auth": "0.2.0",
         "@acyclic-labs/machines": "0.2.0",
         "@acyclic-labs/objects": "0.2.0",
       },
@@ -111,7 +110,7 @@
       "name": "@acyclic-labs/inference",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/actors": "0.2.0",
+        "@acyclic-labs/auth": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
       },
       "devDependencies": {
@@ -124,7 +123,6 @@
       "name": "@acyclic-labs/machines",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/actors": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
@@ -139,7 +137,6 @@
       "name": "@acyclic-labs/objects",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/actors": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",
@@ -174,7 +171,6 @@
       "name": "@acyclic-labs/stream",
       "version": "0.2.0",
       "dependencies": {
-        "@acyclic-labs/actors": "0.2.0",
         "@acyclic-labs/auth": "0.2.0",
         "@bufbuild/protobuf": "2.17.0",
         "@connectrpc/connect": "2.3.0",

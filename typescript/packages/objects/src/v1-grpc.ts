@@ -1,10 +1,10 @@
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
-import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
+import { credentialProvider, type CredentialOptions } from "@acyclic-labs/auth/credential";
 import { rootCertificates } from "node:tls";
 import { createClient, Code, ConnectError } from "@connectrpc/connect";
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
-import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/auth/observe";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { BlobsService } from "../generated/proto/objects/v1/objects_pb.js";
 import { ObjectsV1Request as RustRequest } from "../generated/wasm/acyclic_objects_wasm.js";

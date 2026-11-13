@@ -39,7 +39,7 @@
     "prepack": "bun run generate"
   },
   "dependencies": {
-    "@acyclic-labs/actors": "0.2.0",
+    "@acyclic-labs/auth": "0.2.0",
     "@bufbuild/protobuf": "2.17.0"
   },
   "devDependencies": {

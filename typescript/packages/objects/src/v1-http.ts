@@ -1,10 +1,10 @@
-import { awaitSignal, credentialProvider, resolveCredential, watchCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/actors/credential";
+import { awaitSignal, credentialProvider, resolveCredential, watchCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/auth/credential";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV1Error, ObjectsV1Provider, objectsRequest, objectsStreamRequest, type ObjectsV1Request } from "./v1.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
-import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/auth/observe";
 
 export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly endpoint: string;

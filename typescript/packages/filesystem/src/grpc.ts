@@ -1,5 +1,5 @@
-import { grpcDeadlines } from "@acyclic-labs/actors/deadline";
-import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
+import { grpcDeadlines } from "@acyclic-labs/auth/deadline";
+import { credentialProvider, type CredentialOptions } from "@acyclic-labs/auth/credential";
 import { rootCertificates } from "node:tls";
 import { type MessageInitShape } from "@bufbuild/protobuf";
 import { createClient, type CallOptions, type Interceptor } from "@connectrpc/connect";

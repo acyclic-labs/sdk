@@ -43,7 +43,15 @@
       "types": "./dist/guest-admission.d.ts",
       "default": "./dist/guest-admission.js"
     },
-    "./conformance": "./generated/conformance/secrets-v1.json"
+    "./conformance": "./generated/conformance/secrets-v1.json",
+    "./observe": {
+      "types": "./dist/observe.d.ts",
+      "default": "./dist/observe.js"
+    },
+    "./deadline": {
+      "types": "./dist/deadline.d.ts",
+      "default": "./dist/deadline.js"
+    }
   },
   "files": [
     "dist",
@@ -57,7 +65,7 @@
     "build": "bun run generate && bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs auth",
     "generate": "bun ../../../scripts/generate.mjs auth",
-    "test": "bun run generate",
+    "test": "bun run generate && bun test test",
     "prepack": "bun run generate"
   }
 }

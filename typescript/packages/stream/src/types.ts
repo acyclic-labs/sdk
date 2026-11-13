@@ -1,4 +1,4 @@
-import type { CredentialOptions } from "@acyclic-labs/actors/credential";
+import type { CredentialOptions } from "@acyclic-labs/auth/credential";
 import type {
   AppendReceipt as WireAppendReceipt, AppendRequest as WireAppendRequest,
   CommittedAppend as WireCommittedAppend, CommittedFork as WireCommittedFork,

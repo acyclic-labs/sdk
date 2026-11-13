@@ -18,10 +18,6 @@
       "types": "./dist/credential.d.ts",
       "default": "./dist/credential.js"
     },
-    "./observe": {
-      "types": "./dist/observe.d.ts",
-      "default": "./dist/observe.js"
-    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
@@ -37,10 +33,6 @@
     "./addressing": {
       "types": "./dist/addressing.d.ts",
       "default": "./dist/addressing.js"
-    },
-    "./deadline": {
-      "types": "./dist/deadline.d.ts",
-      "default": "./dist/deadline.js"
     }
   },
   "types": "./dist/index.d.ts",

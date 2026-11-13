@@ -1,4 +1,4 @@
-import { credentialProvider, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { type HostedFsOptions, type HostedFsEngine, type HostedFsCapabilities } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
 import { DEFAULT_HOSTED_OPTIONS } from "../generated/defaults.js";
@@ -7,14 +7,14 @@ import { type Interceptor, createClient } from "@connectrpc/connect";
 import { toBinary } from "@bufbuild/protobuf";
 import { FilesystemService, FilesystemProfile } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
-import { observeInterceptors, resolveObserver } from "@acyclic-labs/actors/observe";
+import { observeInterceptors, resolveObserver } from "@acyclic-labs/auth/observe";
 import { FILESYSTEM_DESCRIPTOR_DIGEST } from "../generated/descriptor-digest.js";
 import { profileFromWire } from "./hosted-values.js";
 import { workspace } from "./hosted-workspace.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
-export { performanceObserver } from "@acyclic-labs/actors/observe";
+export { performanceObserver } from "@acyclic-labs/auth/observe";
 export { HostedFsError, type HostedFsErrorCode } from "./hosted-rpc.js";
 
 
