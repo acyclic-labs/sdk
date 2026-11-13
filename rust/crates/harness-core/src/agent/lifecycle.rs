@@ -201,14 +201,17 @@ impl<P: acyclic_stream::StreamProvider + ?Sized + 'static> Composition for Closi
                     .clone()
                     .load(self.provider.as_ref())
                     .await
-                    .map_err(guest)?;
+                    .map_err(Error::into_guest)?;
                 owner
                     .release(&self.agent, &original.volumes)
                     .await
-                    .map_err(guest)?;
+                    .map_err(Error::into_guest)?;
             }
             if let Some(lifecycle) = &self.lifecycle {
-                lifecycle.close(&self.agent).await.map_err(guest)?;
+                lifecycle
+                    .close(&self.agent)
+                    .await
+                    .map_err(Error::into_guest)?;
             }
             Ok(request)
         })

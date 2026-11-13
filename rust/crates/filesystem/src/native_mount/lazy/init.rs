@@ -81,12 +81,14 @@ where
                 drop(owner);
                 None
             };
+            let source_epoch = AtomicU64::new(lazy.source_reference().epoch);
             Ok(Self {
                 lazy,
                 authored,
                 root: inputs.root,
                 runtime,
                 source_view,
+                source_epoch,
                 removals: Mutex::new(MountedRemovals::default()),
                 detached,
                 open_sources,
@@ -320,7 +322,7 @@ where
             .lazy
             .publication_cut(None, &mut accounting)
             .await
-            .is_ok_and(|state| state.source == self.lazy.source_reference())
+            .is_ok_and(|state| state.source.epoch == self.source_epoch.load(Ordering::Relaxed))
         {
             let result = self.authored.advance_to_head_async().await;
             return result;
@@ -328,7 +330,12 @@ where
         self.source_view.begin_transition();
         let result = async {
             self.authored.advance_to_head_async().await?;
-            self.lazy.state(&mut accounting).await.map_err(lazy_error)?;
+            let source = self
+                .lazy
+                .state(&mut accounting)
+                .await
+                .map_err(lazy_error)?
+                .source;
             // Every unauthored node may read differently from the new epoch.
             self.authored.record_projection_change(
                 &ViewChange::Everything,
@@ -338,14 +345,15 @@ where
                 )),
                 || Ok(()),
             )?;
-            Ok(())
+            Ok(source)
         }
         .await;
 
-        if result.is_ok() {
+        if let Ok(source) = &result {
+            self.source_epoch.store(source.epoch, Ordering::Relaxed);
             self.source_view.finish_transition();
         }
-        result
+        result.map(|_| ())
     }
 }
 
