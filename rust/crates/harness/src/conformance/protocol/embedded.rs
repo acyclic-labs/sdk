@@ -172,7 +172,7 @@ pub async fn open<B: Backend + ?Sized>(
         },
     )?;
     let handler = backend.handler(bound.handler())?;
-    let bound = bound.hosting(handler)?;
+    let bound = bound.hosting(acyclic_actors::guest::Requests::default(), handler)?;
     let Serving::Served(server) = hosting::serve(
         bound.clone(),
         Arc::new(Owner),

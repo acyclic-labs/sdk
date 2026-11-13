@@ -370,6 +370,7 @@ async fn a_definitively_refused_child_publication_settles_its_parent_once() -> R
             Arc::new(Unsettled(handler))
         };
         let host = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             provider.clone(),
             ActorReference::new(b"account", b"agents", b"owner")?,
             handler,

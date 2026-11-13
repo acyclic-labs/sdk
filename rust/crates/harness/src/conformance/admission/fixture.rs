@@ -84,7 +84,7 @@ impl Fixture {
             },
         )?;
         let handler = backend.handler(bound.handler())?;
-        let bound = bound.hosting(handler)?;
+        let bound = bound.hosting(acyclic_actors::guest::Requests::default(), handler)?;
         let RootSubmission::Created(path) = bound
             .create_root(
                 &vectors::intent("create")?,

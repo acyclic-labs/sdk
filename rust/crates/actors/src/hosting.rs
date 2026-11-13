@@ -1,6 +1,6 @@
 //! One actor per event owner, using the shared delivery and publication engine.
 //!
-//! The platform admits the actor and injects its Store, Handler and clock. It
+//! The platform admits the actor and injects its request ledger, Store, Handler and clock. It
 //! routes committed input changes and the returned alarm to [`Host::wake`],
 //! retaining its event until that call finishes. No background task is started.
 
@@ -27,6 +27,8 @@ pub struct Host<P: StreamProvider + ?Sized> {
 
 impl<P: StreamProvider + ?Sized> Host<P> {
     /// Bind exactly one actor, without selecting a backend or an application.
+    /// Bind the guest capability bridge to a clone of `requests` before
+    /// constructing this host.
     pub fn new(
         requests: crate::guest::Requests,
         store: Store<P>,
