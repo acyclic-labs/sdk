@@ -22,7 +22,7 @@ fn output_custody_outlives_observer(measured: bool) -> Result<()> {
         let mut observer = HistoryWork::new(attempt);
         HistoryIo::take_owned_custody(&mut observer, 8)?
     } else {
-        let output = HistoryIo::take_owned_custody(&mut attempt.history_io(), 8)?;
+        let output = Some(attempt.take_all_owned_custody()?);
         assert_eq!(attempt.owned_bytes()?, 0);
         output
     }
@@ -59,6 +59,7 @@ fn cancelled_custody_transfer_preserves_the_current_owner() -> Result<()> {
     )?;
     let mut reservation = io.reserve_decode(8)?;
     cancellation.cancel();
+    assert!(io.take_all_owned_custody().is_err());
     assert!(reservation.take_custody().is_err());
     assert_eq!(reservation.bytes(), 8);
     assert_eq!(io.owned_bytes()?, 8);
