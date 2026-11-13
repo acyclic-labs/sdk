@@ -176,6 +176,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let status = stream(agent.status())?;
             let children = stream(agent.children())?;
             let diagnostics = stream(crate::agent::Diagnostic::directory(agent))?;
+            let supervision = stream(
+                crate::supervision::streams::path(agent)
+                    .map_err(|_| crate::agent::Error::Record("invalid supervision source")),
+            )?;
             let tree = agent.depth() == 0;
             let membership = stream(if tree {
                 agent.membership_tree()
@@ -203,6 +207,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 ]
             };
             grants.push((diagnostics.as_str(), true, &["streams/read"]));
+            grants.push((
+                supervision.as_str(),
+                false,
+                &["streams/read", "streams/follow"],
+            ));
             grants.extend(calls.iter().map(|calls| (*calls, false, invoke)));
             let directory_streams = [
                 acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
