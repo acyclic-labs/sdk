@@ -1,6 +1,61 @@
 use super::*;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 
+#[tokio::test]
+async fn current_main_eight_writer_benchmark() -> Result<()> {
+    for files in [0usize, 500] {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let harness = open(root.path(), state.path()).await?;
+        let mounts = &harness
+            .workspace()
+            .ok_or_else(|| Error::NotFound("workspace".into()))?
+            .mounts;
+        let scratch = mounts
+            .named(Some("home"))?
+            .1
+            .view
+            .source
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("home source".into()))?;
+        for index in 0..files {
+            scratch
+                .workspace
+                .workspace()
+                .write_text(&format!("/seed-{index}"), "seed\n")
+                .await
+                .map_err(storage)?;
+        }
+        eprintln!("PHASE files={files} single");
+        for _ in 0..10 {
+            native_scope(mounts, async |claims| Ok(((), claims))).await?;
+        }
+        eprintln!("PHASE files={files} concurrent8");
+        for result in futures::future::join_all(
+            (0..8).map(|_| native_scope(mounts, async |claims| Ok(((), claims)))),
+        )
+        .await
+        {
+            result?;
+        }
+        eprintln!("PHASE files={files} write8");
+        let writers = (0..8).map(|index| {
+            native_scope(mounts, async move |claims| {
+                let path = scratch.destination.join(format!("w-{index}"));
+                tokio::task::spawn_blocking(move || write_projected(&path, b"w"))
+                    .await
+                    .map_err(storage)??;
+                Ok(((), claims))
+            })
+        });
+        for result in futures::future::join_all(writers).await {
+            result?;
+        }
+        eprintln!("BENCH files={files} write8 completed");
+    }
+    Ok(())
+}
+
 fn write_projected(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(windows)]
     {
