@@ -512,6 +512,7 @@ where
             volumes.clone(),
             maximum_bytes,
             turns.actors,
+            turns.routing.clone(),
         )?);
         // A host keeping state beside its volumes (a lazy checkout) chooses
         // each spawn's fork cut, so a child's project is a related fork.

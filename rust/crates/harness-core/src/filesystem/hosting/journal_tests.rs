@@ -33,6 +33,20 @@ pub(in crate::filesystem) async fn binding_with(
     executors: Arc<dyn TurnExecutors>,
     approval_policy: crate::approvals::ApprovalPolicy,
 ) -> TestResult<(Binding, AgentPath)> {
+    binding_configured(executors, approval_policy, None).await
+}
+
+async fn binding_with_routing(
+    routing: Option<crate::agent::Routing>,
+) -> TestResult<(Binding, AgentPath)> {
+    binding_configured(Arc::new(NoTurns), Default::default(), routing).await
+}
+
+async fn binding_configured(
+    executors: Arc<dyn TurnExecutors>,
+    approval_policy: crate::approvals::ApprovalPolicy,
+    routing: Option<crate::agent::Routing>,
+) -> TestResult<(Binding, AgentPath)> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -57,7 +71,7 @@ pub(in crate::filesystem) async fn binding_with(
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
-            routing: None,
+            routing,
             executors,
             limits: TurnLimits {
                 maximum_bytes: Some(65_536),
@@ -100,7 +114,7 @@ pub(in crate::filesystem) async fn binding_with(
 }
 
 #[tokio::test]
-async fn waking_notices_steer_without_granting_their_journal_files() -> TestResult {
+sync fn waking_notices_steer_without_granting_their_journal_files() -> TestResult {
     use crate::filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, agent_internal::AgentInternalFiles,
         agent_steering::FilesystemBoundary, agent_turns::AdmittedAgent,
@@ -451,6 +465,98 @@ async fn independent_review_uses_selected_model_without_opening_worker_context()
             && message.content == ModelContent::Text(r#"{"action":"exact child action"}"#.into())
     }));
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn title_events_publish_once_without_losing_file_controls() -> TestResult {
+    use crate::{
+        agent::{SessionPublication, SessionRow},
+        client_files::ClientFileChange,
+    };
+    use acyclic_stream::StreamProviderExt as _;
+    let routing = crate::agent::Routing {
+        paths: acyclic_actors::route::Paths::new(acyclic_stream::StreamPath::new("routing")?),
+        node: acyclic_actors::route::NodeId::new(b"node")?,
+    };
+    let (bound, root) = binding_with_routing(Some(routing.clone())).await?;
+    let provider = bound.agents().provider().clone();
+    let actor = bound.agents().actor(&root)?;
+    let row_path = SessionPublication::row_path(&actor)?;
+    let initial = provider.tail(row_path.clone()).await?;
+    let control = ActorReference::new(
+        actor.account().as_bytes(),
+        actor.namespace().as_str().as_bytes(),
+        format!("file-controls-{}", root.id()).as_bytes(),
+    )?;
+    let mut runtime = acyclic_actors::local::Runtime::new(
+        acyclic_actors::guest::Requests::default(),
+        crate::agent::actor_store(&provider)?.with_composer(bound.composer()),
+        bound.handler(),
+        bound.clock.clone(),
+    );
+    for (index, title) in ["First", "First", "Second"].into_iter().enumerate() {
+        let expected = bound
+            .agent_files(&root, &["ui/title".into()], None)
+            .await?
+            .files
+            .get("ui/title")
+            .and_then(Option::as_ref)
+            .and_then(crate::client_files::ClientFile::original)
+            .cloned();
+        let mut changes = vec![ClientFileChange {
+            path: "ui/title".into(),
+            expected,
+            text: Some(title.into()),
+        }];
+        if index == 2 {
+            changes.push(ClientFileChange {
+                path: "control/pause".into(),
+                expected: None,
+                text: Some(String::new()),
+            });
+        }
+        bound
+            .publish_agent_files(&root, OperationId::new(), &changes)
+            .await?;
+        runtime.drain_actor(&control).await?;
+        let head = provider.head(row_path.clone()).await?;
+        assert_eq!(head.tail, initial + if index == 2 { 2 } else { 1 });
+        let row = head.last.ok_or("metadata row missing")?;
+        assert_eq!(
+            SessionRow::decode(&row.value)?
+                .profile
+                .ok_or("metadata removed")?
+                .title,
+            title
+        );
+        let outbox = provider.head(routing.paths.outbox(&routing.node)?).await?;
+        assert_eq!(
+            outbox.last.ok_or("metadata outbox missing")?.commit_id,
+            row.commit_id
+        );
+        if index == 0 {
+            // Reopen the actual actor store: the committed source cursor must
+            // prevent the same file event from publishing another revision.
+            drop(runtime);
+            runtime = acyclic_actors::local::Runtime::new(
+                acyclic_actors::guest::Requests::default(),
+                crate::agent::actor_store(&provider)?.with_composer(bound.composer()),
+                bound.handler(),
+                bound.clock.clone(),
+            );
+            runtime.drain_actor(&control).await?;
+            assert_eq!(provider.tail(row_path.clone()).await?, head.tail);
+        }
+    }
+    assert!(
+        crate::agent::actor_store(&provider)?
+            .load(&actor)
+            .await?
+            .state()
+            .ok_or("root actor missing")?
+            .paused()
+    );
     Ok(())
 }
 

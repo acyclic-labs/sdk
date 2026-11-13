@@ -20,6 +20,9 @@ const STOP: &str = "file-stop";
 const STEER: &str = "file-steer";
 const CLOSED: &str = "file-closed";
 const JOBS: &str = "job-created";
+const TITLE: &str = "session-title";
+
+mod presence;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +74,7 @@ pub(super) struct Controls<P: AuthorityProvider + ?Sized + 'static, O: 'static> 
     manifest: Manifest,
     external: Vec<String>,
     ordered: Vec<String>,
+    routing: Option<crate::agent::Routing>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Controls<P, O> {
@@ -80,6 +84,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         volumes: Arc<Host<P, O>>,
         maximum_bytes: Option<u64>,
         limits: ActorLimits,
+        routing: Option<crate::agent::Routing>,
     ) -> Result<Self, Error> {
         let external: Vec<String> = [
             PAUSE,
@@ -87,6 +92,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             STEER,
             CLOSED,
             JOBS,
+            TITLE,
             super::quiet::ACTIVITY,
             super::quiet::COMPLETED,
             super::quiet::LIFECYCLE,
@@ -97,10 +103,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         .collect();
         let mut code = blake3::Hasher::new();
         code.update(include_bytes!("controls.rs"));
+        code.update(include_bytes!("controls/presence.rs"));
         code.update(include_bytes!("quiet.rs"));
         code.update(include_bytes!("../../supervision/tool_jobs.rs"));
         Ok(Self {
-            ordered: vec![PAUSE.into(), STOP.into(), STEER.into()],
+            ordered: [PAUSE, STOP, STEER, TITLE].map(str::to_owned).into(),
+            routing,
             store: crate::agent::actor_store(&volumes.filesystem.stream_provider())?,
             composer: std::sync::OnceLock::new(),
             issuer,
@@ -259,6 +267,36 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     &mut None,
                 )
                 .map_err(turn)?;
+                let changed = |path: &[u8]| {
+                    record
+                        .headers
+                        .keys()
+                        .binary_search_by(|key| key.as_ref().cmp(path))
+                        .is_ok()
+                };
+                if changed(b"ui/title") {
+                    effects.extend(
+                        self.metadata_effects(
+                            &delivery,
+                            &state,
+                            &generation,
+                            &grant,
+                            authority.scope.capabilities(),
+                        )
+                        .await?,
+                    );
+                    if ![
+                        b"control/pause".as_slice(),
+                        b"control/stop",
+                        b"control/steer.md",
+                    ]
+                    .into_iter()
+                    .any(changed)
+                    {
+                        state.source_sequence = Some(sequence);
+                        return state.transition(effects, false);
+                    }
+                }
                 let mut present = [false; 2];
                 for (index, path) in ["control/pause", "control/stop"].into_iter().enumerate() {
                     present[index] = self
@@ -578,6 +616,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
             PAUSE => Some(Bytes::from_static(b"control/pause")),
             STOP => Some(Bytes::from_static(b"control/stop")),
             STEER => Some(Bytes::from_static(b"control/steer.md")),
+            TITLE => Some(Bytes::from_static(b"ui/title")),
             JOBS => Some(Bytes::from_static(
                 crate::supervision::tool_jobs::STARTED_KEY,
             )),
@@ -622,8 +661,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
             source_sequence: None,
             paused: false,
         };
+        let metadata = (agent.depth() == 0 && self.routing.is_some())
+            .then_some([TITLE])
+            .into_iter()
+            .flatten();
         let subscriptions = [PAUSE, STOP, STEER]
             .into_iter()
+            .chain(metadata)
             .map(|id| {
                 (
                     id.into(),
