@@ -33,6 +33,13 @@ fn normalized_literal_spans_preserve_original_unicode_offsets() -> Result<()> {
     let blank_lines = rejection("a\n\n", "b\n\n", &None)?.to_string();
     assert!(blank_lines.contains("lines 1-2"), "{blank_lines}");
     assert!(blank_lines.contains(r#"+ "a\n\n""#), "{blank_lines}");
+    for source in ["\na", "\r\na"] {
+        let span = closest(source, "b", &mut None)?;
+        assert_eq!(&source[span.clone()], source.strip_suffix('a').unwrap());
+        let diagnostic = rejection(source, "b", &None)?.to_string();
+        assert!(diagnostic.contains(&format!("+ {:?}", &source[span])));
+        assert!(!diagnostic.contains("+ \"\""), "{diagnostic}");
+    }
     Ok(())
 }
 
@@ -70,10 +77,53 @@ proptest! {
             if let Some(line) = lines.get(index) { start += line.len(); }
         }
         let mut expected = best.map_or(0..0, |(_,_,range)| range);
-        if !needle.ends_with('\n') && source[expected.clone()].ends_with('\n') { expected.end -= 1; }
+        if !needle.ends_with('\n') && expected.len() > 1 && source[expected.clone()].ends_with('\n') { expected.end -= 1; }
         let actual = ranked_window(&source, &needle, needle.chars().filter(|c| !c.is_whitespace()).count(), &mut None).unwrap();
         prop_assert_eq!(actual, expected);
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn long_line_advice_keeps_addressable_ends_within_the_original_allocation() -> Result<()> {
+    let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    budget.peak_allocation_bytes = 16_384;
+    budget.items_examined = 2_000_000;
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    for (source, needle, head, tail, start, end) in [
+        ("a".repeat(100_000), "b", "a", "a", 1, 99_999),
+        ("é".repeat(50_000), "🦀", "é", "é", 2, 99_998),
+    ] {
+        // Negative control: retaining the former full-line presentation alone
+        // would exceed the invocation's entire peak allocation allowance.
+        assert!(source.len() > budget.peak_allocation_bytes as usize);
+        let custody = allocation(Some(&work), 0)?;
+        let error = rejection(&source, needle, &custody)?;
+        let text = error.to_string();
+        assert!(text.len() < 1_024, "{} bytes", text.len());
+        assert!(text.contains("UTF-8 bytes 0..100000"), "{text}");
+        assert!(text.contains(&format!("+ {head:?};")), "{text}");
+        assert!(text.ends_with(&format!("+ {tail:?}")), "{text}");
+        assert!(
+            text.contains(&format!("actual UTF-8 bytes {start}..{end} omitted")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("range {{\"start\":{start},\"end\":{end}}}")),
+            "{text}"
+        );
+        assert_eq!(
+            error.to_string(),
+            rejection(&source, needle, &None)?.to_string()
+        );
+        drop(error);
+        drop(custody);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

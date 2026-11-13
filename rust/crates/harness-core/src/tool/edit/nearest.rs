@@ -223,8 +223,10 @@ fn ranked_window(
     let mut selected = best.2;
     if !needle.ends_with('\n') {
         if source[selected.clone()].ends_with("\r\n") {
-            selected.end -= 2;
-        } else if source[selected.clone()].ends_with('\n') {
+            if selected.len() > 2 {
+                selected.end -= 2;
+            }
+        } else if selected.len() > 1 && source[selected.clone()].ends_with('\n') {
             selected.end -= 1;
         }
     }
@@ -248,14 +250,38 @@ impl fmt::Display for Diagnostic<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "closest span: lines {}-{}, UTF-8 bytes {}..{}; diff (- attempted, + actual): - {:?}; + {:?}",
-            self.lines.start,
-            self.lines.end,
-            self.bytes.start,
-            self.bytes.end,
-            self.attempted,
-            self.actual
+            "closest span: lines {}-{}, UTF-8 bytes {}..{}; diff (- attempted, + actual): - {:?}; + ",
+            self.lines.start, self.lines.end, self.bytes.start, self.bytes.end, self.attempted
         )?;
+        // Each end is sized by the attempted text, rather than by the selected
+        // line's potentially unbounded length. Borrow UTF-8 slices throughout;
+        // the original invocation's formatter owns the only retained copy.
+        let width = self.attempted.chars().count().max(1);
+        let head_end = self
+            .actual
+            .char_indices()
+            .nth(width)
+            .map_or(self.actual.len(), |(offset, _)| offset);
+        let tail_start = self
+            .actual
+            .char_indices()
+            .rev()
+            .nth(width - 1)
+            .map_or(0, |(offset, _)| offset);
+        if head_end >= tail_start {
+            write!(f, "{:?}", self.actual)?;
+        } else {
+            write!(
+                f,
+                "{:?}; [actual UTF-8 bytes {}..{} omitted; read the same file with range {{\"start\":{},\"end\":{}}}]; + {:?}",
+                &self.actual[..head_end],
+                self.bytes.start + head_end,
+                self.bytes.start + tail_start,
+                self.bytes.start + head_end,
+                self.bytes.start + tail_start,
+                &self.actual[tail_start..]
+            )?;
+        }
         if self.attempted != self.actual && quotes(self.attempted).eq(quotes(self.actual)) {
             f.write_str("; escaped-quote mismatch")?;
         } else if self.attempted != self.actual
