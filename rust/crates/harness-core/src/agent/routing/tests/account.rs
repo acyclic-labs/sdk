@@ -386,8 +386,8 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
     ));
     assert_eq!(
         provider.named_head_selections() - before,
-        2,
-        "terminal admission must read only immutable source/destination placements, not membership rows"
+        0,
+        "terminal admission must not select current membership heads"
     );
     assert_eq!(route::admit(&client, 3, &terminal, 4096).await?, outcome);
     assert_eq!(
