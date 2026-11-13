@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{FnArg, ItemTrait, Pat, TraitItem};
 
-pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
+pub(crate) fn expand(contract: ItemTrait, arc: bool) -> syn::Result<TokenStream> {
     if !contract.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &contract.generics,
@@ -15,6 +15,7 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
     let mut explicit = contract;
     let name = std::mem::replace(&mut explicit.ident, required);
     let mut forwarding = Vec::new();
+    let mut arc_forwarding = Vec::new();
     for item in &mut explicit.items {
         let TraitItem::Fn(method) = item else {
             return Err(syn::Error::new_spanned(
@@ -25,9 +26,13 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
         method.default = None;
         method.semi_token = Some(Default::default());
         let mut args = Vec::new();
+        let mut arc_args = Vec::new();
         for arg in &method.sig.inputs {
             match arg {
-                FnArg::Receiver(_) => args.push(quote!(self)),
+                FnArg::Receiver(_) => {
+                    args.push(quote!(self));
+                    arc_args.push(quote!(&**self));
+                }
                 FnArg::Typed(arg) => {
                     let Pat::Ident(name) = &*arg.pat else {
                         return Err(syn::Error::new_spanned(
@@ -37,17 +42,22 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
                     };
                     let name = &name.ident;
                     args.push(quote!(#name));
+                    arc_args.push(quote!(#name));
                 }
             }
         }
         let attrs = &method.attrs;
         let sig = &method.sig;
-        let name = &sig.ident;
+        let method_name = &sig.ident;
         let target = &explicit.ident;
         let wait = sig.asyncness.as_ref().map(|_| quote!(.await));
         forwarding.push(quote! {
             #(#attrs)*
-            #sig { <Self as #target>::#name(#(#args),*) #wait }
+            #sig { <Self as #target>::#method_name(#(#args),*) #wait }
+        });
+        arc_forwarding.push(quote! {
+            #(#attrs)*
+            #sig { <__Inner as #name>::#method_name(#(#arc_args),*) #wait }
         });
     }
     // rustc expands cfg_attr before invoking this attribute macro. Preserve
@@ -66,6 +76,14 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
         })
         .collect();
     let required = &explicit.ident;
+    let arc_implementation = arc.then(|| {
+        quote! {
+            #(#attrs)*
+            impl<__Inner: #name + ?Sized> #name for ::std::sync::Arc<__Inner> {
+                #(#arc_forwarding)*
+            }
+        }
+    });
     Ok(quote! {
         #original
         #explicit
@@ -73,5 +91,6 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
         impl<__Provider: #required> #name for __Provider {
             #(#forwarding)*
         }
+        #arc_implementation
     })
 }

@@ -2308,7 +2308,7 @@ async fn flush_excludes_collection_through_acknowledgement()
                 .await?;
         }
         // Request wrappers retain the same account exclusion as their owner.
-        let request = account.over(std::sync::Arc::new(medium.clone()));
+        let request = std::sync::Arc::new(account.over(std::sync::Arc::new(medium.clone())));
         let (mut reached, release) = if before_flush {
             medium.park("create", "/p/")
         } else {
