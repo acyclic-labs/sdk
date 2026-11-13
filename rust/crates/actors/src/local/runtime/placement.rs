@@ -111,6 +111,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         )
         .await?;
         slot.refresh.store(false, Ordering::Release);
+        slot.unplaced.store(false, Ordering::Release);
         slot.waker.wake_by_ref();
         Ok(())
     }

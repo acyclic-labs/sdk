@@ -52,6 +52,8 @@ struct Slot {
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
     refresh: AtomicBool,
+    /// Discovery retains custody without admitting execution before placement.
+    unplaced: AtomicBool,
     /// Just past its latest activation entry this dispatcher observed or
     /// carried; zero for none. A failed delivery's checkpoint bound.
     entry: AtomicU64,
@@ -314,10 +316,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if self.places {
             return self.track(actor.clone());
         }
-        if let Some(requests) = &self.unplaced
-            && self.slot(actor).is_none()
-        {
-            requests.unplaced(actor);
+        if let Some(requests) = &self.unplaced {
+            self.track_with_placement(actor.clone(), true)?;
+            if self
+                .slot(actor)
+                .is_some_and(|slot| slot.unplaced.load(Ordering::Acquire))
+            {
+                requests.unplaced(actor);
+            }
         }
         Ok(())
     }
@@ -363,6 +369,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Register a dormant slot. Registration queues no work and grants no ownership.
     /// Unassigned actors cannot claim themselves when input arrives.
     pub fn track(&self, actor: ActorReference) -> Result<(), Error> {
+        self.track_with_placement(actor, false)
+    }
+
+    fn track_with_placement(&self, actor: ActorReference, unplaced: bool) -> Result<(), Error> {
         if !self.includes(&actor) {
             return Err(Error::Invalid("actor is outside this runtime's scope"));
         }
@@ -374,6 +384,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             return Ok(());
         }
         let registration = self.ready.register(actor.clone())?;
+        if unplaced {
+            // An undelivered activation has the same checkpoint custody as an
+            // unfinished delivery. Placement alone does not consume its input.
+            drop(self.ready.flight(&actor));
+        }
         let waker = registration.waker();
         actors.insert(
             actor,
@@ -382,6 +397,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
                 refresh: AtomicBool::new(false),
+                unplaced: AtomicBool::new(unplaced),
                 entry: AtomicU64::new(0),
                 event_deliveries: AtomicUsize::new(0),
                 control: tokio::sync::Mutex::new(()),
@@ -410,7 +426,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let Some(slot) = actors.get(actor) else {
             return true;
         };
-        if slot.event_deliveries.load(Ordering::Acquire) != 0 {
+        if slot.unplaced.load(Ordering::Acquire)
+            || slot.event_deliveries.load(Ordering::Acquire) != 0
+        {
             return false;
         }
         let Ok(mut inner) = slot.inner.try_lock() else {
@@ -440,7 +458,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
             slot.refresh.store(true, Ordering::Release);
-            slot.waker.wake_by_ref();
+            if !slot.unplaced.load(Ordering::Acquire) {
+                slot.waker.wake_by_ref();
+            }
         }
     }
 
