@@ -88,8 +88,18 @@ where
         range: acyclic_fs::ByteRange,
     ) -> Result<(acyclic_stream::OwnedBytes, u64), Error> {
         let binding = self.directory_binding(agent, target, path).await?;
-        let (bytes, _selected, length) = self
-            .volumes
+        #[cfg(not(target_arch = "wasm32"))]
+        let host = if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate {
+            self.volumes
+                .for_evaluations(self.agents.provider().clone(), agent, &binding.volume)
+                .await
+                .map_err(turn)?
+        } else {
+            self.volumes.clone()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let host = self.volumes.clone();
+        let (bytes, _selected, length) = host
             .read_private_range(
                 &binding.volume,
                 &binding.grant,
@@ -136,8 +146,24 @@ where
         let binding = self
             .directory_binding(agent, query.target, query.path)
             .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let host = if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate {
+            self.volumes
+                .for_evaluations(self.agents.provider().clone(), agent, &binding.volume)
+                .await
+                .map_err(turn)?
+        } else {
+            self.volumes.clone()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let host = self.volumes.clone();
         let generation = if query.after_name.is_some() {
             query.generation.cloned()
+        } else if binding.volume.class() == crate::conversation::VolumeClass::AgentPrivate
+            && query.generation.is_none()
+            && query.after_generation.is_none()
+        {
+            None
         } else {
             Some(match query.generation {
                 Some(generation) => generation.clone(),
@@ -153,8 +179,7 @@ where
             maximum_entries: query.maximum_entries,
             ceiling: Some(binding.scope.capabilities()),
         };
-        let page = self
-            .volumes
+        let page = host
             .list_private_directory(&binding.volume, &binding.grant, &binding.path, options)
             .await
             .map_err(turn)?;
@@ -183,10 +208,12 @@ where
         let (mut page, _custody) =
             PrivateDirectoryPage::from_filesystem(generation, page, source, &ledger)
                 .map_err(turn)?;
-        let generation = acyclic_fs::GenerationId::from_bytes(page.generation.as_resource().key())
-            .ok_or(Error::Record("directory generation is not canonical"))?;
-        let generation_bytes = generation.to_bytes().len();
+        let generation = acyclic_fs::GenerationId::from_bytes(page.generation.as_resource().key());
+        let generation_bytes = generation.as_ref().map_or(0, |id| id.to_bytes().len());
         let kept = select(&page, &|name| {
+            if generation.is_none() {
+                return page.next.as_ref().map(|token| token.len());
+            }
             super::super::host::directory::cursor::encoded_len(generation_bytes, name.len())
         })?;
         if kept > page.entries.len() || (kept == 0 && !page.entries.is_empty()) {
@@ -195,6 +222,9 @@ where
             ));
         }
         if kept < page.entries.len() {
+            let generation = generation.ok_or(Error::Record(
+                "partial computed directory delivery requires a source continuation",
+            ))?;
             let name = &page.entries[kept - 1].name;
             let after = acyclic_fs::kernel::LogicalName::new(
                 acyclic_fs::kernel::NameEncoding::Utf8,
