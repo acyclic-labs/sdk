@@ -6,7 +6,6 @@ use crate::agent::{
 };
 use acyclic_stream::{
     AppendRecord, CommitMutation, CommitRequest, ReadKeySeek, ReadRequest, StreamProvider,
-    StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -262,17 +261,20 @@ pub(in crate::agent) async fn observe<P: StreamProvider + ?Sized>(
     peer: &AgentPath,
 ) -> Result<(SentReplyStatus, Option<Watch>), Error> {
     let path = sender.inbox()?;
-    let tail = provider.tail(path.clone()).await.map_err(Error::Stream)?;
     let mut records = provider
         .read(ReadRequest {
             path,
             from: 0,
             limit: 1,
-            key: Some(ReadKeySeek::exact(key(sender, id)?, tail)),
+            key: Some(ReadKeySeek::exact(key(sender, id)?, u64::MAX)),
             at_least: Default::default(),
         })
         .await
         .map_err(Error::Stream)?;
+    let tail = records
+        .selection
+        .end
+        .ok_or(Error::Stream(acyclic_stream::StreamError::InvalidResponse))?;
     if let Some(record) = records.try_next().await.map_err(Error::Stream)? {
         let status =
             matches(&record, sender, id, peer)?.ok_or(Error::Record("indexed result differs"))?;

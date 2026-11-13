@@ -673,6 +673,24 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
         }
         assert_eq!(account.tail(routing.paths.relay(&destination)?).await?, 2);
         assert_eq!(local.tail(recipient.inbox()?).await?, 1);
+        let counted = std::sync::Arc::new(acyclic_stream::testing::Counted::new(local.clone()));
+        assert_eq!(
+            sent_reply(&counted, &within, &sender, &intent("first"))
+                .await?
+                .ok_or("send missing")?
+                .status,
+            SentReplyStatus::Pending
+        );
+        // One owned-marker head, its original commit, its admission receipt,
+        // and one indexed result read. The read carries its own watch cut.
+        assert_eq!(
+            counted
+                .requests()
+                .class(acyclic_stream::testing::RequestClass::Head),
+            1
+        );
+        assert_eq!(counted.requests().control(), 1);
+        assert_eq!(counted.requests().data(), 3);
         let owned = std::sync::Arc::new(local.clone());
         let host = AgentHost::new(
             owned.clone(),
@@ -891,7 +909,9 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             .await?
             .ok_or("fork send missing")?;
         assert_eq!(pending.status, SentReplyStatus::Pending);
-        assert!(matches!(pending.watch, Some(Watch::PeerReply { sender, .. }) if sender == forked));
+        assert!(
+            matches!(pending.watch, Some(Watch::PeerReply { sender, from: 4, .. }) if sender == forked)
+        );
     }
     Ok(())
 }
