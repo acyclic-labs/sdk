@@ -39,7 +39,7 @@ impl Handler for UnavailableUntilRecovery {
         Box::pin(async move {
             if delivery
                 .invocation()?
-                .is_some_and(|invocation| invocation.request().as_ref() == b"offline")
+                .is_some_and(|invocation| invocation.operation().as_ref() == b"offline")
                 && !self.recovered.load(Ordering::SeqCst)
             {
                 if let Some(attempted) = self.attempted.lock().unwrap().take() {
@@ -60,12 +60,13 @@ async fn unavailable_actor_releases_the_only_active_slot_until_recovery() -> Tes
     let store = Store::new(Arc::clone(&provider), root()?);
     let unavailable = spawn_with(&store, "unavailable", &[b"clear"]).await?;
     let healthy = spawn_with(&store, "healthy", &[b"clear"]).await?;
-    let invocation = |target, request: &'static [u8]| {
+    let caller = StreamPath::new("caller/recovery")?;
+    let invocation = |target, operation: &'static [u8]| {
         Invocation::new(
-            StreamPath::new("caller/recovery")?,
+            caller.clone(),
             target,
             "inbox".into(),
-            Bytes::from_static(request),
+            Bytes::from_static(operation),
             Bytes::from_static(b"emit"),
         )
     };
