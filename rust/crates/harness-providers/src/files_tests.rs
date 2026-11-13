@@ -495,7 +495,8 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                 },
             ]);
             let request = PreparedModelRequest::prepare(source, Limits::default(), None)?;
-            let shared = crate::prepared::PreparedInput::new(provider.clone(), request).await?;
+            let shared =
+                Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request).await?);
             let generation = crate::json(&shared.generation)?;
             assert!(crate::validate_input(adapter, &generation).is_empty());
             let turns = generation["contents"].as_array().unwrap();
@@ -506,7 +507,9 @@ async fn notices_keep_typed_files_on_the_original_admission_and_projection() -> 
                 turns[2]["parts"],
                 json!([parts[0], parts[1], parts[0], {"text":"current input"}, parts[0]])
             );
-            let count = shared.count().await?;
+            let count =
+                crate::tests::count_result(crate::prepared::PreparedInput::count(shared.clone()))
+                    .await?;
             count.validate(&shared.request, &mut None)?;
             let counted = script.counted.lock().unwrap();
             let counted = crate::json(counted.as_ref().expect("original count was not sent"))?;
@@ -592,7 +595,7 @@ proptest! {
                 }]).unwrap();
                 let mut provider = Arc::new(provider);
                 let prepared = Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.unwrap());
-                let count = prepared.count().await.unwrap();
+                let count = crate::tests::count_result(crate::prepared::PreparedInput::count(prepared.clone())).await.unwrap();
                 // Reusing the retained HTTP bytes for generation performs no file I/O.
                 {
                     let dispatch = ModelDispatch {request_digest:request.request_digest(),..parser_dispatch()};
@@ -610,7 +613,7 @@ proptest! {
                     boxed.unwrap().try_collect::<Vec<_>>().await.unwrap();
                 }
                 assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
-                let baseline_count = provider.count_tokens(&request, 0).await.unwrap();
+                let baseline_count = provider.counted(&request, 0).await.unwrap();
                 let baseline_generation = crate::dispatch::encode(&provider, &request, &crate::tool_names::Names::new(request.request()), None, &provider.reasoning_origin(provider.key.as_deref(),None)).await.unwrap();
                 assert_eq!(baseline_count, count);
                 assert_eq!(baseline_generation.bytes.as_slice(), prepared.generation.as_ref());
@@ -626,7 +629,7 @@ proptest! {
                         spec
                     });
                     let before = reader.reads.load(Ordering::SeqCst);
-                    let error = provider.count_tokens(&request, 0).await.unwrap_err();
+                    let error = provider.counted(&request, 0).await.unwrap_err();
                     let expected_reads = if counter.is_some() {
                         assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
                         let error = crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.err().expect("mismatched prepared counter admitted");
@@ -636,7 +639,7 @@ proptest! {
                         assert!(matches!(error, Error::ModelTokenCountUnavailable));
                         let prepared = Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await.unwrap());
                         assert_eq!(prepared.generation.as_ref(), baseline_generation.bytes.as_slice());
-                        assert!(matches!(prepared.count().await, Err(Error::ModelTokenCountUnavailable)));
+                        assert!(matches!(crate::tests::count_result(crate::prepared::PreparedInput::count(prepared.clone())).await, Err(Error::ModelTokenCountUnavailable)));
                         let dispatch = ModelDispatch {request_digest:request.request_digest(),..parser_dispatch()};
                         crate::prepared::PreparedInput::generate(prepared, dispatch).try_collect::<Vec<_>>().await.unwrap();
                         before + 1
@@ -646,7 +649,11 @@ proptest! {
                         acyclic_fs::performance::work_budget(1_000_000, 1_000_000), &cancellation,
                     ).unwrap();
                     let baseline = work.live_allocation_bytes();
-                    let error = crate::counting::count(&provider, &request, 0, Some(&work)).await.err().expect("unverified native counter admitted");
+                    let error = {
+                        let events = crate::counting::count(&provider, &request, 0, Some(&work));
+                        let mut events = core::pin::pin!(events);
+                        events.next().await.expect("counter ended without refusal").err().expect("unverified native counter admitted")
+                    };
                     if counter.is_some() {
                         assert!(matches!(error, Error::NativeBoundary {code: acyclic_harness_core::wire::ErrorCode::Invalid, reason: "token counter dialect differs from generation"}));
                     } else {
@@ -690,7 +697,7 @@ async fn bounded_text_and_reference_files_project_in_order_with_verified_countin
                 ModelContentPart::text("last".into()),
             ],
         )?;
-        let count = provider.count_tokens(&prepared, 0).await?;
+        let count = provider.counted(&prepared, 0).await?;
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
         let wire = crate::dispatch::encode(
             &provider,

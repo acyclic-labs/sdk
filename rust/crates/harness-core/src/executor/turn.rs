@@ -458,6 +458,7 @@ impl StockExecution<'_> {
                 }
                 event @ (ModelEvent::Restarted
                 | ModelEvent::Wait(_)
+                | ModelEvent::Counted { .. }
                 | ModelEvent::Content { .. }
                 | ModelEvent::Reasoning { .. }) => {
                     stock_retire_event(event, io)?;

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    context::ModelContextCapacity,
+    context::{ModelContextCapacity, ModelTokenCount},
     conversation::Limits,
     model::{
         ModelContent, ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
@@ -57,9 +57,9 @@ async fn accounting_callbacks_bind_exact_selection_bytes_and_request() -> Result
     );
     provider.count_tokens = Some(Function::new_with_args(
         "bytes,digest",
-        "const request = JSON.parse(new TextDecoder().decode(bytes)); if(request.model.revision !== 'selected' || request.messages[0].content !== 'canonical input') throw new Error('wrong canonical request'); return {request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [3]};",
+        "const request = JSON.parse(new TextDecoder().decode(bytes)); if(request.model.revision !== 'selected' || request.messages[0].content !== 'canonical input') throw new Error('wrong canonical request'); return (async function*(){ yield {kind:'counted',count:{request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [3]}}; })();",
     ));
-    let count = provider.count_tokens(&request, 0).await?;
+    let count = counted(&provider, &request).await?;
     assert_eq!(count.validate(&request, &mut None)?, 5);
     assert!(count.validate(&prepared("changed")?, &mut None).is_err());
     Ok(())
@@ -71,15 +71,15 @@ async fn asynchronous_count_callbacks_preserve_verified_totals() -> Result<()> {
     let mut provider = provider();
     provider.count_tokens = Some(Function::new_with_args(
         "bytes,digest",
-        "return Promise.resolve({request_digest:digest, input_tokens:512n, fixed_tokens:1, message_tokens:[1]});",
+        "return (async function*(){ const count = await Promise.resolve({request_digest:digest, input_tokens:512n, fixed_tokens:1, message_tokens:[1]}); yield {kind:'counted',count}; })();",
     ));
-    let count = provider.count_tokens(&request, 0).await?;
+    let count = counted(&provider, &request).await?;
     assert_eq!(count.validate(&request, &mut None)?, 512);
     assert_eq!(count.fixed_tokens + count.message_tokens[0], 2);
     provider.count_tokens = Some(Function::new_no_args(
-        "return Promise.reject(new Error('private counter detail'));",
+        "return (async function*(){ throw new Error('private counter detail'); })();",
     ));
-    let error = provider.count_tokens(&request, 0).await.unwrap_err();
+    let error = counted(&provider, &request).await.unwrap_err();
     assert!(!error.to_string().contains("private counter detail"));
     Ok(())
 }
@@ -89,14 +89,18 @@ async fn accounting_rejects_unbound_malformed_results() -> Result<()> {
     let request = prepared("selected")?;
     let mut provider = provider();
     for response in [
-        "return {request_digest: new Array(32).fill(0), input_tokens: 5, fixed_tokens: 2, message_tokens: [3]};",
-        "return {request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: []};",
-        "return {request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [3, 4]};",
-        "return {request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [-1]};",
+        "return {request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [3]};",
+        "return (async function*(){ yield {kind:'counted',count:{request_digest: new Array(32).fill(0), input_tokens: 5, fixed_tokens: 2, message_tokens: [3]}}; })();",
+        "return (async function*(){ yield {kind:'counted',count:{request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: []}}; })();",
+        "return (async function*(){ yield {kind:'counted',count:{request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [3, 4]}}; })();",
+        "return (async function*(){ yield {kind:'counted',count:{request_digest: digest, input_tokens: 5, fixed_tokens: 2, message_tokens: [-1]}}; })();",
         "throw new Error('unavailable tokenizer');",
     ] {
         provider.count_tokens = Some(Function::new_with_args("bytes,digest", response));
-        assert!(provider.count_tokens(&request, 0).await.is_err());
+        assert!(matches!(
+            counted(&provider, &request).await,
+            Err(Error::Invalid(_))
+        ));
     }
     for response in [
         "return {context_tokens: 0, output_tokens: 1};",
@@ -111,6 +115,40 @@ async fn accounting_rejects_unbound_malformed_results() -> Result<()> {
 }
 
 #[wasm_bindgen_test]
+async fn host_count_wait_is_visible_before_completion_and_owns_cancellation() -> Result<()> {
+    use futures::{FutureExt as _, StreamExt as _};
+    let state = Function::new_no_args(
+        "const state = {aborted:false}; state.count = (bytes,digest,signal) => (async function*(){ signal.addEventListener('abort', () => {state.aborted=true}, {once:true}); yield {kind:'wait',state:'admission_started',cause:{kind:'credit'}}; await new Promise(() => {}); })(); return state;",
+    ).call0(&JsValue::UNDEFINED).map_err(|_| Error::Invalid("count fixture failed".into()))?;
+    let mut provider = provider();
+    provider.count_tokens = Some(
+        js_sys::Reflect::get(&state, &"count".into())
+            .map_err(|_| Error::Invalid("count fixture callback missing".into()))?
+            .dyn_into::<Function>()
+            .map_err(|_| Error::Invalid("count fixture callback is invalid".into()))?,
+    );
+    let request = prepared("selected")?;
+    let mut events = provider.count_tokens(&request, 0);
+    assert!(matches!(
+        events.next().await.transpose()?,
+        Some(ModelEvent::Wait(
+            crate::model::ModelWait::AdmissionStarted {
+                cause: crate::model::ModelAdmissionCause::Credit
+            }
+        ))
+    ));
+    assert!(events.next().now_or_never().is_none());
+    drop(events);
+    assert_eq!(
+        js_sys::Reflect::get(&state, &"aborted".into())
+            .map_err(|_| Error::Invalid("count fixture cancellation missing".into()))?
+            .as_bool(),
+        Some(true)
+    );
+    Ok(())
+}
+
+#[wasm_bindgen_test]
 async fn missing_accounting_remains_explicitly_unsupported() -> Result<()> {
     let request = prepared("selected")?;
     let provider = provider();
@@ -119,8 +157,21 @@ async fn missing_accounting_remains_explicitly_unsupported() -> Result<()> {
         Err(Error::Unsupported(_))
     ));
     assert!(matches!(
-        provider.count_tokens(&request, 0).await,
+        counted(&provider, &request).await,
         Err(Error::Unsupported(_))
     ));
     Ok(())
+}
+
+async fn counted(provider: &HostModel, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
+    use futures::StreamExt as _;
+    let mut events = provider.count_tokens(request, 0);
+    while let Some(event) = events.next().await {
+        match event? {
+            ModelEvent::Wait(_) => {}
+            ModelEvent::Counted { count } => return Ok(count),
+            _ => return Err(Error::Invalid("counter emitted generation output".into())),
+        }
+    }
+    Err(Error::Invalid("counter ended without its count".into()))
 }

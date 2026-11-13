@@ -1,9 +1,10 @@
 use crate::{Adapter, HttpTransport, ProviderSpec, invalid};
 use acyclic_harness_core::{
     Result,
-    context::{ModelContextCapacity, ModelTokenCount},
+    context::ModelContextCapacity,
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
 };
+use futures::StreamExt as _;
 use std::sync::{Arc, Weak};
 
 /// One selection's calibration and authoritative usage anchor. Reader-bound
@@ -386,31 +387,35 @@ impl ModelProvider for ResolvedModel {
     ) -> Result<
         acyclic_fs::NativeFutureBundle<
             'a,
-            (ModelTokenCount, acyclic_fs::NativeAllocation),
+            acyclic_harness_core::model::NativeModelStream<'a>,
             acyclic_harness_core::Error,
         >,
     > {
         self.context_capacity_with_native_work(&request.request().model, work)?;
         acyclic_fs::NativeFutureBundle::new(work, || async move {
-            let cancelled = work.cancellation_wait()?;
-            let exchange = crate::counting::count(self, request, ceiling, Some(work));
-            let cancelled = core::pin::pin!(cancelled);
-            let exchange = core::pin::pin!(exchange);
-            match futures::future::select(cancelled, exchange).await {
-                futures::future::Either::Left(_) => {
-                    Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into())
+            acyclic_harness_core::model::NativeModelStream::new(work, || async_stream::try_stream! {
+                let events = crate::counting::count(self, request, ceiling, Some(work));
+                let mut events = core::pin::pin!(events);
+                while let Some(event) = events.next().await {
+                    match event? {
+                        crate::admission::Event::Wait(wait) => {
+                            let event = ModelEvent::Wait(wait);
+                            let custody = work.claim(event.logical_owned_bytes()?, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+                            yield (event, custody);
+                        }
+                        crate::admission::Event::Ready((count, custody)) => {
+                            let mut custody = custody.ok_or(acyclic_harness_core::Error::NativeBoundary {
+                                code: acyclic_harness_core::wire::ErrorCode::Invalid,
+                                reason: "verified count lost native custody",
+                            })?;
+                            let event_bytes = std::mem::size_of::<ModelEvent>() as u64
+                                + (count.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64;
+                            custody.resize(event_bytes)?;
+                            yield (ModelEvent::Counted { count }, custody);
+                        }
+                    }
                 }
-                futures::future::Either::Right((result, _)) => {
-                    let (count, custody) = result?;
-                    Ok((
-                        count,
-                        custody.ok_or(acyclic_harness_core::Error::NativeBoundary {
-                            code: acyclic_harness_core::wire::ErrorCode::Invalid,
-                            reason: "verified count lost native custody",
-                        })?,
-                    ))
-                }
-            }
+            }).map(|stream| stream.with_delivery(acyclic_harness_core::model::ModelDelivery::Live))
         })
     }
 
@@ -473,12 +478,17 @@ impl ModelProvider for ResolvedModel {
         &'a self,
         request: &'a PreparedModelRequest,
         ceiling: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
-        Box::pin(async move {
-            crate::counting::count(self, request, ceiling, None)
-                .await
-                .map(|(count, _)| count)
-        })
+    ) -> acyclic_harness_core::model::ModelStream<'a> {
+        acyclic_harness_core::model::ModelStream::new(Box::pin(async_stream::try_stream! {
+            let events = crate::counting::count(self, request, ceiling, None);
+            let mut events = core::pin::pin!(events);
+            while let Some(event) = events.next().await {
+                match event? {
+                    crate::admission::Event::Wait(wait) => yield ModelEvent::Wait(wait),
+                    crate::admission::Event::Ready((count, _custody)) => yield ModelEvent::Counted { count },
+                }
+            }
+        })).with_delivery(acyclic_harness_core::model::ModelDelivery::Live)
     }
 
     fn generate<'a>(

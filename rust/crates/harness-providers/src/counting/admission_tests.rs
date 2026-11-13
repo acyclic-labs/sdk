@@ -22,14 +22,14 @@ proptest! {
             let projected = projection::body_named(&provider, prepared.request(), &names, &origin, &mut crate::files::FileText::default()).unwrap();
             let counted = wire::body(projected, &provider.model.name, crate::counting::specification(&provider.config, None).unwrap()).unwrap();
             let actual = counted.len() as u64 + 512;
-            let first = futures::executor::block_on(provider.count_tokens(&prepared, 0)).unwrap();
+            let first = futures::executor::block_on(provider.counted(&prepared, 0)).unwrap();
             prop_assert_eq!(first.input_tokens, actual + u64::from(framing));
             prop_assert!(first.input_tokens >= actual);
             // Calibration can alter only planning weights, including after resume.
             provider.accounting.estimator.observe(1_000, &json!({"usage":{
                 "input_tokens":observed,"prompt_tokens":observed,"promptTokenCount":observed
             }}));
-            let next = futures::executor::block_on(provider.count_tokens(&prepared, 0)).unwrap();
+            let next = futures::executor::block_on(provider.counted(&prepared, 0)).unwrap();
             prop_assert_eq!(next.input_tokens, first.input_tokens);
             prop_assert_eq!(next.request_digest, prepared.request_digest());
             if observed >= 1_000 {
@@ -44,7 +44,7 @@ proptest! {
 fn calibrated_weight_negative_control_cannot_establish_admission() -> Result<()> {
     let (provider, _) = provider(Adapter::Responses, 200);
     let (request, _) = request(&provider)?;
-    let count = futures::executor::block_on(provider.count_tokens(&request, 0))?;
+    let count = futures::executor::block_on(provider.counted(&request, 0))?;
     let planning = u64::from(count.fixed_tokens)
         + count
             .message_tokens
@@ -107,7 +107,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
             crate::TimeoutSpec::DEFAULT,
         );
         let (request, _) = request(&provider)?;
-        let error = provider.count_tokens(&request, 0).await.unwrap_err();
+        let error = provider.counted(&request, 0).await.unwrap_err();
         assert_eq!(error.code(), code);
         assert!(error.to_string().contains(&status.to_string()));
         // A refusal or a non-context 400 carries its bounded body excerpt, as on
@@ -132,7 +132,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
             crate::TimeoutSpec::DEFAULT,
         );
         let (request, _) = request(&provider)?;
-        assert!(provider.count_tokens(&request, 0).await.is_err());
+        assert!(provider.counted(&request, 0).await.is_err());
     }
     let (mut provider, _) = provider(Adapter::Responses, 200);
     Arc::make_mut(&mut provider.config).max_event_bytes = Some(8);
@@ -145,7 +145,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         crate::TimeoutSpec::DEFAULT,
     );
     let (request, _) = request(&provider)?;
-    assert!(provider.count_tokens(&request, 0).await.is_err());
+    assert!(provider.counted(&request, 0).await.is_err());
     let counted = b"{\"input_tokens\":1}";
     Arc::make_mut(&mut provider.config).max_event_bytes = Some(counted.len());
     provider.transport = crate::deadline::Bounded::new(
@@ -156,7 +156,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         }),
         crate::TimeoutSpec::DEFAULT,
     );
-    assert_eq!(provider.count_tokens(&request, 0).await?.input_tokens, 1);
+    assert_eq!(provider.counted(&request, 0).await?.input_tokens, 1);
     Ok(())
 }
 
@@ -204,7 +204,7 @@ proptest::proptest! {
         });
         provider.transport = crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, _) = request(&provider).unwrap();
-        let result = futures::executor::block_on(provider.count_tokens(&request, 0));
+        let result = futures::executor::block_on(provider.counted(&request, 0));
         let final_failure = matches!(status, 400 | 413) || (definitive && !matches!(status,408 | 429 | 500..=599));
         let expected = if final_failure && failures > 0 { 1 } else { failures + 1 };
         proptest::prop_assert_eq!(transport.sent.load(std::sync::atomic::Ordering::SeqCst), expected);
@@ -254,7 +254,7 @@ async fn reported_usage_preserves_compaction_pressure_without_a_count_endpoint()
         long.messages.last_mut().unwrap().content = ModelContent::Text("text ".repeat(4096));
         let long = PreparedModelRequest::prepare(long, Limits::default(), None)?;
         assert!(matches!(
-            provider.count_tokens(&long, 4096).await,
+            provider.counted(&long, 4096).await,
             Err(Error::ModelTokenCountUnavailable)
         ));
         provider.accounting.usage.observe(
@@ -264,7 +264,7 @@ async fn reported_usage_preserves_compaction_pressure_without_a_count_endpoint()
                 "input_tokens":4097,"prompt_tokens":4097,"promptTokenCount":4097
             }}),
         )?;
-        let count = provider.count_tokens(&prepared, 4096).await?;
+        let count = provider.counted(&prepared, 4096).await?;
         assert_eq!(count.input_tokens, 4097);
         assert!(
             acyclic_harness_core::context::CapacityCompaction {}
@@ -306,11 +306,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
         )?
         .len() as u64;
         // Unanchored: the exact body bounds every counted token.
-        let bound = provider.count_tokens(&prepared, u64::MAX).await?;
+        let bound = provider.counted(&prepared, u64::MAX).await?;
         assert_eq!((bound.input_tokens, sent()), (body + u64::from(framing), 0));
         assert_eq!(bound.request_digest, prepared.request_digest());
         // Negative control: a ceiling the bound cannot prove sends the verified count.
-        let counted = provider.count_tokens(&prepared, body).await?;
+        let counted = provider.counted(&prepared, body).await?;
         assert_eq!((counted.input_tokens, sent()), (7 + u64::from(framing), 1));
         // Anchored on reported usage, a tighter ceiling is still proven locally.
         provider.accounting.usage.observe(
@@ -318,9 +318,7 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
             &prepared,
             &json!({"usage":{"input_tokens":5,"prompt_tokens":5,"promptTokenCount":5}}),
         )?;
-        let anchored = provider
-            .count_tokens(&prepared, 5 + u64::from(framing))
-            .await?;
+        let anchored = provider.counted(&prepared, 5 + u64::from(framing)).await?;
         assert_eq!((anchored.input_tokens, sent()), (5 + u64::from(framing), 1));
         if adapter == Adapter::Anthropic {
             let mut request = prepared.request().clone();
@@ -366,13 +364,13 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                 let expanded_bound = rendered.len() as u64 + u64::from(framing);
                 assert!(expanded_bound > old_bound);
                 let before = sent();
-                let verified = provider.count_tokens(&expanded, old_bound).await?;
+                let verified = provider.counted(&expanded, old_bound).await?;
                 assert_eq!(
                     (verified.input_tokens, sent()),
                     (7 + u64::from(framing), before + 1)
                 );
                 // The exact expanded body still permits zero-HTTP admission.
-                let local = provider.count_tokens(&expanded, expanded_bound).await?;
+                let local = provider.counted(&expanded, expanded_bound).await?;
                 assert_eq!((local.input_tokens, sent()), (expanded_bound, before + 1));
             }
             let whitespace = "\t\n ".repeat(4096);
@@ -449,12 +447,12 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                 let rendered_bound = rendered.len() as u64 + u64::from(framing);
                 assert!(rendered_bound > old_bound);
                 let before = sent();
-                let verified = provider.count_tokens(&restored, old_bound).await?;
+                let verified = provider.counted(&restored, old_bound).await?;
                 assert_eq!(
                     (verified.input_tokens, sent()),
                     (7 + u64::from(framing), before + 1)
                 );
-                let local = provider.count_tokens(&restored, rendered_bound).await?;
+                let local = provider.counted(&restored, rendered_bound).await?;
                 assert_eq!((local.input_tokens, sent()), (rendered_bound, before + 1));
             }
         }
@@ -505,14 +503,14 @@ fn local_admission_does_not_copy_transport_headers() -> Result<()> {
                     count = Some(if native {
                         let (count, custody) = futures::executor::block_on(
                             provider
-                                .count_tokens_with_native_work(&request, u64::MAX, &work)
+                                .counted_with_native_work(&request, u64::MAX, &work)
                                 .unwrap(),
                         )
                         .unwrap();
                         (count, Some(custody))
                     } else {
                         (
-                            futures::executor::block_on(provider.count_tokens(&request, u64::MAX))
+                            futures::executor::block_on(provider.counted(&request, u64::MAX))
                                 .unwrap(),
                             None,
                         )

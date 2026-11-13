@@ -3,6 +3,54 @@ use crate::executor::json::JsonCodecCharge;
 use crate::wire::ErrorCode::Invalid;
 
 impl ModelEventAdmission {
+    fn validate_cardinality(&self, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
+        with_history_io(io, |work| {
+            if let Some(work) = work.as_deref_mut() {
+                work.codec_charge(JsonCodecCharge::Inspect { items: 1 })?;
+            }
+            Ok::<_, Error>(())
+        })?;
+        if limits
+            .model_events_per_step
+            .is_some_and(|maximum| self.count >= maximum.get())
+        {
+            return Err(stock_boundary(io, Invalid, "model event limit exceeded"));
+        }
+        if self.completed {
+            return Err(stock_boundary(
+                io,
+                Invalid,
+                "model emitted an event after completion",
+            ));
+        }
+        Ok(())
+    }
+
+    /// A count is an accounting round trip, without a generation dispatch.
+    /// Its streamed observations still obey the caller's selected event credit.
+    pub(super) fn observe_count(
+        &mut self,
+        event: &ModelEvent,
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        self.validate_cardinality(limits, io)?;
+        if !matches!(event, ModelEvent::Wait(_) | ModelEvent::Counted { .. }) {
+            return Err(stock_boundary(
+                io,
+                Invalid,
+                "token-count stream emitted generation output",
+            ));
+        }
+        let count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| stock_boundary(io, Invalid, "model event count overflow"))?;
+        self.count = count;
+        self.completed = matches!(event, ModelEvent::Counted { .. });
+        Ok(())
+    }
+
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn from_state(mut state: Self, limits: Limits) -> Result<Self> {
@@ -40,25 +88,14 @@ impl ModelEventAdmission {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Option<usize>> {
-        with_history_io(io, |work| {
-            if let Some(work) = work.as_deref_mut() {
-                work.codec_charge(JsonCodecCharge::Inspect { items: 1 })?;
-            }
-            Ok::<_, Error>(())
-        })?;
-        if limits
-            .model_events_per_step
-            .is_some_and(|maximum| self.count >= maximum.get())
-        {
-            return Err(stock_boundary(io, Invalid, "model event limit exceeded"));
-        }
-        if self.completed {
+        if matches!(event, ModelEvent::Counted { .. }) {
             return Err(stock_boundary(
                 io,
                 Invalid,
-                "model emitted an event after completion",
+                "token-count result appeared in a generation stream",
             ));
         }
+        self.validate_cardinality(limits, io)?;
         if let ModelEvent::ReasoningBlock { block } = event {
             with_history_io(io, |work| {
                 block.validate_limits(limits, work)?;
@@ -222,6 +259,7 @@ impl ModelEventAdmission {
             }
             ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Wait(_)
+            | ModelEvent::Counted { .. }
             | ModelEvent::Content { .. }
             | ModelEvent::MessageCompleted { .. }
             | ModelEvent::TextPart { .. }

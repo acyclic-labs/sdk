@@ -1,5 +1,5 @@
 import type { BrowserAgentRegistry } from "../src/browser.js";
-import type { CompactionPolicy, ModelContextCapacity, ModelTokenCount,
+import type { CompactionPolicy, ModelContextCapacity,
   ModelEvent, ModelEventInput, ModelContentInput } from "../src/index.js";
 
 type Assert<Condition extends true> = Condition;
@@ -11,7 +11,7 @@ type ConfigureModel = Parameters<BrowserAgentRegistry["configureModel"]>;
 // The public types describe the actual host callback boundary, in Rust fields.
 type _CompactionIsTheHostContract = Assert<Equal<ConfigureModel[5], CompactionPolicy>>;
 type _CapacityIsTheHostContract = Assert<Equal<ReturnType<NonNullable<ConfigureModel[3]>>, ModelContextCapacity>>;
-type _AccountingIsTheHostContract = Assert<Equal<Awaited<ReturnType<NonNullable<ConfigureModel[4]>>>, ModelTokenCount>>;
+type _AccountingIsTheHostContract = Assert<Equal<ReturnType<NonNullable<ConfigureModel[4]>>, AsyncIterator<ModelEvent>>>;
 
 const providerEvent: ModelEvent = { kind: "tool_call", call_id: "call", name: "lookup", arguments: {}, metadata: null };
 const eventInput: ModelEventInput = { kind: "tool_call", callId: "call", name: "lookup", arguments: {}, metadata: null };

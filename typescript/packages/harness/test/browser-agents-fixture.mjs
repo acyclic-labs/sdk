@@ -67,10 +67,13 @@ export async function agentsFixture(id, reply, initialize = init) {
 // Synthetic provider units are canonical request bytes, counted once as fixed
 // cost; individual message costs are already included in those exact bytes.
 export const modelCapacity = () => ({ context_tokens: 131072, output_tokens: 8192 });
-export const modelTokenCount = (bytes, request_digest) => ({
-  request_digest, input_tokens: BigInt(bytes.byteLength), fixed_tokens: bytes.byteLength,
-  message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0),
-});
+export async function* modelTokenCount(bytes, request_digest, signal) {
+  signal.throwIfAborted();
+  yield { kind: "counted", count: {
+    request_digest, input_tokens: BigInt(bytes.byteLength), fixed_tokens: bytes.byteLength,
+    message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0),
+  } };
+}
 
 // The canonical replay-to-live cursor owns registration and cancellation.
 // These fixed fixture histories are retained only for their parallel assertions.

@@ -83,7 +83,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
         // A native image's compressed wire bytes cannot bound its token cost,
         // even under an unlimited admission ceiling.
-        let counted = provider.count_tokens(&request, u64::MAX).await?;
+        let counted = provider.counted(&request, u64::MAX).await?;
         let count_body = script.counted.lock().unwrap().take().unwrap();
         assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);
         provider.accounting.usage.observe(
@@ -101,7 +101,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         });
         let appended = PreparedModelRequest::prepare(appended, Limits::default(), None)?;
         assert_eq!(provider.accounting.usage.bound(&appended)?, None);
-        let counted = provider.count_tokens(&appended, u64::MAX).await?;
+        let counted = provider.counted(&appended, u64::MAX).await?;
         let count_body = script.counted.lock().unwrap().take().unwrap();
         assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);
     }

@@ -29,6 +29,12 @@ pub(crate) struct ContextCount {
 
 impl From<crate::context::ModelTokenCount> for ContextCount {
     fn from(count: crate::context::ModelTokenCount) -> Self {
+        Self::from(&count)
+    }
+}
+
+impl From<&crate::context::ModelTokenCount> for ContextCount {
+    fn from(count: &crate::context::ModelTokenCount) -> Self {
         Self {
             request_digest: count.request_digest,
             input_tokens: count.input_tokens,
@@ -88,32 +94,105 @@ pub(super) async fn stock_count_tokens(
     request: &crate::model::PreparedModelRequest,
     ceiling: u64,
     io: Option<&PreparationIo>,
-) -> Result<crate::context::ModelTokenCount> {
+    journal: &dyn ExecutionJournal,
+    turn: (OperationId, u32),
+    limits: Limits,
+) -> Result<ContextCount> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io {
+    let stream = if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| {
             stock_boundary(
-                io.into(),
+                Some(io),
                 crate::wire::ErrorCode::Unsupported,
                 "stock token accounting requires original native work",
             )
         })?;
         io.check_cancellation()?;
-        let (count, custody) = provider
-            .count_tokens_with_native_work(request, ceiling, work)?
-            .await?;
-        io.absorb_native_custody(custody)?;
-        return Ok(count);
-    }
+        futures::future::Either::Right(
+            provider
+                .count_tokens_with_native_work(request, ceiling, work)?
+                .await?
+                .map(|result| stock_admit_model_event(result, Some(io))),
+        )
+    } else {
+        futures::future::Either::Left(provider.count_tokens(request, ceiling))
+    };
     #[cfg(target_arch = "wasm32")]
-    if io.is_some() {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Unsupported,
-            "native stock token accounting is unavailable",
-        ));
+    let stream = {
+        if io.is_some() {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "native stock token accounting is unavailable",
+            ));
+        }
+        provider.count_tokens(request, ceiling)
+    };
+    let mut stream = core::pin::pin!(stream);
+    // Preparation may repeat a read after interruption. Its new source
+    // observations get a distinct append identity, not a fabricated replay.
+    let mut call = None;
+    let mut sequence = 0_u64;
+    let mut admission = ModelEventAdmission::default();
+    while let Some(event) = stream.next().await {
+        let event = event?;
+        if let Err(error) = admission.observe_count(&event, limits, io) {
+            stock_retire_event(event, io)?;
+            return Err(error);
+        }
+        match &event {
+            ModelEvent::Wait(_) => {
+                let call = call.get_or_insert_with(OperationId::new);
+                let key = with_history_io(io, |work| {
+                    preparation_format(format_args!("count:{}:{call}:{sequence}", turn.1), work)
+                })?;
+                let hold = io
+                    .map(|io| io.guard_owned(key.capacity() as u64))
+                    .transpose()?;
+                let appended = model_observation::append(
+                    journal,
+                    turn.0,
+                    &key,
+                    (turn.1, ModelPurpose::Count),
+                    &event,
+                    None,
+                    io,
+                )
+                .await;
+                stock_retire_event(event, io)?;
+                drop(key);
+                drop(hold);
+                appended?;
+                sequence = sequence.checked_add(1).ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "count observation sequence overflows",
+                    )
+                })?;
+            }
+            ModelEvent::Counted { count } => {
+                let counted = ContextCount::from(count);
+                // Planning weights are not retained in durable accounting.
+                // Return their original credit as the actual DTO is dropped.
+                stock_retire_event(event, io)?;
+                return Ok(counted);
+            }
+            _ => {
+                stock_retire_event(event, io)?;
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "token-count stream emitted generation output",
+                ));
+            }
+        }
     }
-    provider.count_tokens(request, ceiling).await
+    Err(stock_boundary(
+        io,
+        crate::wire::ErrorCode::Invalid,
+        "token-count stream ended without its verified count",
+    ))
 }
 
 pub(super) fn stock_json_bound<T: Serialize>(
@@ -148,6 +227,8 @@ impl StockExecution<'_> {
     pub(super) async fn response_accounting(
         &self,
         prepared: &crate::model::PreparedModelRequest,
+        journal: &dyn ExecutionJournal,
+        turn: (OperationId, u32),
     ) -> Result<ContextAccounting> {
         let capacity = self.model_capacity()?;
         let ceiling = self.input_ceiling(capacity)?;
@@ -156,12 +237,15 @@ impl StockExecution<'_> {
             prepared,
             ceiling,
             self.io,
+            journal,
+            turn,
+            self.stock.limits,
         )
         .await
         {
             Ok(count) => {
                 with_history_io(self.io, |work| count.validate(prepared, work))?;
-                InputAccounting::Counted(count.into())
+                InputAccounting::Counted(count)
             }
             Err(Error::ModelContextOverflow) if !self.single_request => InputAccounting::Overflow,
             // No tokenizer means the generation endpoint admits its own input.
@@ -238,16 +322,23 @@ impl StockExecution<'_> {
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
         let ceiling = u64::from(capacity.context_tokens);
-        let count =
-            match stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io)
-                .await
-            {
-                Ok(count) => count,
-                Err(Error::ModelTokenCountUnavailable) => {
-                    return Ok(Some(prepared));
-                }
-                Err(error) => return Err(error),
-            };
+        let count = match stock_count_tokens(
+            self.stock.provider.as_ref(),
+            &prepared,
+            ceiling,
+            self.io,
+            journal,
+            (input.operation_id, step),
+            self.stock.limits,
+        )
+        .await
+        {
+            Ok(count) => count,
+            Err(Error::ModelTokenCountUnavailable) => {
+                return Ok(Some(prepared));
+            }
+            Err(error) => return Err(error),
+        };
         let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
         if count > ceiling {
             return Err(stock_boundary(

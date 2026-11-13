@@ -8,7 +8,7 @@
 use super::TestResult;
 use acyclic_harness::{
     AgentId, Capabilities, ConversationId, OperationId,
-    context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
+    context::{ContextPipeline, ModelContextCapacity},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
@@ -238,7 +238,7 @@ impl ModelProvider for PausedPrefix {
         &'a self,
         request: &'a PreparedModelRequest,
         ceiling: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ModelTokenCount>> {
+    ) -> acyclic_harness::model::ModelStream<'a> {
         self.accounting.count_tokens(request, ceiling)
     }
 

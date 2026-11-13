@@ -94,8 +94,21 @@ export async function cancelModel(iterator, signal, ready, useReturn) {
     if (!useReturn || !result.done) throw new Error('cancel did not terminate iterator');
   } catch (error) { if (useReturn || error.name !== 'AbortError') throw error; }
 }
+
+export async function collectCount(iterator) {
+  let counted;
+  for await (const event of iterator) {
+    if (counted) throw new Error('counter emitted an event after its count');
+    if (event.kind === 'counted') counted = event.count;
+    else if (event.kind !== 'wait') throw new Error('counter emitted generation output');
+  }
+  if (!counted) throw new Error('counter ended without its count');
+  return counted;
+}
 "#)]
 extern "C" {
+    #[wasm_bindgen(js_name = collectCount)]
+    fn collect_count(iterator: JsValue) -> js_sys::Promise;
     #[wasm_bindgen(js_name = cancelCount)]
     fn cancel_count(
         promise: Promise,
@@ -225,7 +238,9 @@ async fn transient_refusal_headers_recover_without_reading_bodies_until_a_perman
             );
             assert_eq!(field(&fixture, "calls")?.as_f64(), Some(2.0));
             assert_eq!(field(&fixture, "refusalReads")?.as_f64(), Some(0.0));
-            let failure = prepared.count_tokens().await.unwrap_err();
+            let failure = JsFuture::from(collect_count(prepared.count_tokens()))
+                .await
+                .unwrap_err();
             assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));
             assert_eq!(field(&fixture, "calls")?.as_f64(), Some(4.0));
             assert_eq!(field(&fixture, "aborted")?.as_f64(), Some(4.0));
@@ -245,14 +260,14 @@ async fn registry_drives_every_adapter_through_fetch_with_accounting_and_public_
         let capacity: Value = from_js(provider.context_capacity(provider.model()?)?)?;
         assert_eq!(capacity, json!({"contextTokens":4096,"outputTokens":512}));
         let prepared = provider.prepare(request).await?;
-        let count = prepared.count_tokens().await?;
+        let count = JsFuture::from(collect_count(prepared.count_tokens())).await?;
         assert_eq!(
-            field(&count, "requestDigest")?
-                .dyn_into::<Uint8Array>()?
+            field(&count, "request_digest")?
+                .dyn_into::<js_sys::Array>()?
                 .length(),
             32
         );
-        let tokens: Vec<u32> = from_js(field(&count, "messageTokens")?)?;
+        let tokens: Vec<u32> = from_js(field(&count, "message_tokens")?)?;
         assert_eq!(tokens.len(), 1);
         assert!(tokens[0] >= 5);
         assert_eq!(field(&fixture, "calls")?.as_f64(), Some(0.0));
@@ -401,7 +416,7 @@ async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), 
     watch_input(&fixture, &request);
     let request: JsValue = request.into();
     let prepared = provider.prepare(request.clone()).await?;
-    prepared.count_tokens().await?;
+    JsFuture::from(collect_count(prepared.count_tokens())).await?;
     assert_eq!(field(&fixture, "reads")?.as_f64(), Some(1.0));
     JsFuture::from(collect_model(prepared.generate(dispatch()?)?)).await?;
     let body: Value = from_js(field(&fixture, "body")?)?;
@@ -412,11 +427,8 @@ async fn browser_reader_is_verified_for_counting_and_generation() -> Result<(), 
     assert_eq!(field(&fixture, "inputReads")?.as_f64(), Some(1.0));
     // Old independent preparation is the negative control: both canonical
     // copying/decoding and verified file reads occur twice for count + generate.
-    provider
-        .prepare(request.clone())
-        .await?
-        .count_tokens()
-        .await?;
+    let separate = provider.prepare(request.clone()).await?;
+    JsFuture::from(collect_count(separate.count_tokens())).await?;
     let independent = provider.prepare(request).await?;
     JsFuture::from(collect_model(independent.generate(dispatch()?)?)).await?;
     assert_eq!(field(&fixture, "reads")?.as_f64(), Some(3.0));
@@ -431,7 +443,7 @@ async fn counting_aborts_pending_headers_and_releases_the_fetch() -> Result<(), 
     let controller = web_sys::AbortController::new()?;
     let input = request(&provider, Some(&controller.signal()))?;
     let promise = wasm_bindgen_futures::future_to_promise(async move {
-        provider.prepare(input).await?.count_tokens().await
+        JsFuture::from(collect_count(provider.prepare(input).await?.count_tokens())).await
     });
     JsFuture::from(cancel_count(
         promise,

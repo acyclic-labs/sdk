@@ -8,27 +8,30 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct WaitUsage {
-    /// Original timer starts, including timers without a successful finish.
+    /// Original wait starts, including waits without a successful finish.
     pub started: u64,
-    /// Original successful timer finishes.
+    /// Original successful wait finishes.
     pub completed: u64,
-    /// Completed timers' measured elapsed nanoseconds. A value that cannot fit
+    /// Changes of cause within an original admission wait; these never settle
+    /// it or make an unfinished wait look complete.
+    pub changed: u64,
+    /// Completed waits' measured elapsed nanoseconds. A value that cannot fit
     /// is unknown. When started differs from completed, this omits unfinished
-    /// timers and must not be presented as the entire waiting time.
+    /// waits and must not be presented as the entire waiting time.
     pub completed_ns: UsageTotal,
 }
 
 impl WaitUsage {
     /// Entire waiting time only when every start finished and every duration
-    /// fits the counter. Never present an unfinished timer as zero waiting time.
+    /// fits the counter. Never present an unfinished wait as zero waiting time.
     pub fn elapsed_ns(self) -> Option<u64> {
-        (self.started == self.completed)
+        (self.started == self.completed && (self.changed == 0 || self.started != 0))
             .then(|| self.completed_ns.value())
             .flatten()
     }
     /// Whether the source page contains no wait facts.
     pub fn is_empty(&self) -> bool {
-        self.started == 0 && self.completed == 0
+        self.started == 0 && self.completed == 0 && self.changed == 0
     }
 
     /// Disjoint source count, refusing overflow or noncanonical elapsed values.
@@ -38,7 +41,9 @@ impl WaitUsage {
         {
             return None;
         }
-        self.started.checked_add(self.completed)
+        self.started
+            .checked_add(self.completed)?
+            .checked_add(self.changed)
     }
 
     /// Combine disjoint pages atomically, retaining no call identities.
@@ -51,6 +56,10 @@ impl WaitUsage {
             completed: self
                 .completed
                 .checked_add(page.completed)
+                .ok_or_else(overflow)?,
+            changed: self
+                .changed
+                .checked_add(page.changed)
                 .ok_or_else(overflow)?,
             completed_ns: self
                 .completed_ns
@@ -73,10 +82,17 @@ impl WaitUsage {
             ));
         }
         match observation {
-            ModelWait::Started { .. } => {
+            ModelWait::Started { .. } | ModelWait::AdmissionStarted { .. } => {
                 self.started = self.started.checked_add(1).ok_or_else(overflow)?;
             }
-            ModelWait::Finished { elapsed } => {
+            ModelWait::AdmissionChanged { .. } => {
+                self.changed = self.changed.checked_add(1).ok_or_else(overflow)?;
+            }
+            ModelWait::Finished { elapsed }
+            | ModelWait::AdmissionFinished {
+                waited_for: elapsed,
+                ..
+            } => {
                 self.completed = self.completed.checked_add(1).ok_or_else(overflow)?;
                 self.completed_ns
                     .push(u64::try_from(elapsed.as_nanos()).ok())

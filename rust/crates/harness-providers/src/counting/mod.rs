@@ -1,7 +1,8 @@
 //! Verified provider admission, independent of usage-calibrated planning weights.
 pub(crate) mod wire;
-use crate::{HttpRequest, ResolvedModel, dispatch, projection};
+use crate::{HttpRequest, ResolvedModel, admission::Event, dispatch, projection};
 use acyclic_harness_core::{Error, Result, context::ModelTokenCount};
+use futures::StreamExt as _;
 
 fn boundary(work: acyclic_fs::NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
@@ -40,19 +41,19 @@ pub(crate) fn specification<'a>(
 /// The only guarantee admission buys is that the
 /// caller compacts before the window overflows, and a bound within the ceiling
 /// already proves the caller need not compact.
-pub(crate) async fn count(
-    provider: &ResolvedModel,
-    request: &acyclic_harness_core::model::PreparedModelRequest,
+pub(crate) fn count<'a>(
+    provider: &'a ResolvedModel,
+    request: &'a acyclic_harness_core::model::PreparedModelRequest,
     ceiling: u64,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(ModelTokenCount, acyclic_fs::NativeCustody)> {
+    work: acyclic_fs::NativeWork<'a>,
+) -> impl futures::Stream<Item = Result<Event<(ModelTokenCount, acyclic_fs::NativeCustody)>>>
++ acyclic_stream::ProviderTask
++ 'a {
+    async_stream::try_stream! {
     let current = provider.current_credentials()?;
     let provider = &current;
     if request.request().model != provider.model {
-        return Err(boundary(
-            work,
-            "request model differs from resolved selection",
-        ));
+        Err(boundary(work, "request model differs from resolved selection"))?;
     }
     let framing = u64::from(
         provider
@@ -69,12 +70,14 @@ pub(crate) async fn count(
         .and_then(|tokens| tokens.checked_add(framing))
         .filter(|tokens| *tokens <= ceiling || provider.config.token_counter.is_none())
     {
-        return local(provider, request, bound, work);
+        yield Event::Ready(local(provider, request, bound, work)?);
+        return;
     }
     #[cfg(not(target_arch = "wasm32"))]
     if provider.codex_login.is_some() {
         let tokens = provider.accounting.usage.codex_estimate(request)?;
-        return local(provider, request, tokens, work);
+        yield Event::Ready(local(provider, request, tokens, work)?);
+        return;
     }
     let spec = specification(&provider.config, work)?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -154,7 +157,8 @@ pub(crate) async fn count(
         .filter(|tokens| *tokens <= ceiling && !has_native_media)
     {
         count.input_tokens = bound;
-        return Ok((count, count_custody));
+        yield Event::Ready((count, count_custody));
+        return;
     }
     let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
     drop(auth);
@@ -185,7 +189,10 @@ pub(crate) async fn count(
         body,
         method: http::Method::POST,
     };
-    send_count(provider, exchange, count, count_custody, work).await
+    let events = send_count(provider, exchange, count, count_custody, work);
+    let mut events = core::pin::pin!(events);
+    while let Some(event) = events.next().await { yield event?; }
+    }
 }
 
 /// A count proven without a request is charged like the DTO it returns.
@@ -224,15 +231,30 @@ fn local(
     Ok((result?, custody))
 }
 
-pub(crate) async fn send_count(
-    provider: &ResolvedModel,
+pub(crate) fn send_count<'a>(
+    provider: &'a ResolvedModel,
     exchange: HttpRequest,
     mut count: ModelTokenCount,
     count_custody: acyclic_fs::NativeCustody,
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<(ModelTokenCount, acyclic_fs::NativeCustody)> {
-    count.input_tokens = exchange_count(provider, exchange, count.request_digest, work).await?;
-    Ok((count, count_custody))
+    work: acyclic_fs::NativeWork<'a>,
+) -> impl futures::Stream<Item = Result<Event<(ModelTokenCount, acyclic_fs::NativeCustody)>>>
++ acyclic_stream::ProviderTask
++ 'a {
+    async_stream::try_stream! {
+        let events = exchange_count(provider, exchange, count.request_digest, work);
+        let mut events = core::pin::pin!(events);
+        while let Some(event) = events.next().await {
+            match event? {
+                Event::Wait(wait) => yield Event::Wait(wait),
+                Event::Ready(tokens) => {
+                    count.input_tokens = tokens;
+                    yield Event::Ready((count, count_custody));
+                    return;
+                }
+            }
+        }
+        Err(crate::invalid("count exchange ended without its result"))?;
+    }
 }
 
 async fn read_count(
@@ -256,12 +278,13 @@ async fn read_count(
 
 /// A count has no caller-visible output until its whole body is validated. All retryable
 /// failures, including a cut or stalled successful body, wait through the shared recovery owner.
-async fn exchange_count(
-    provider: &ResolvedModel,
+fn exchange_count<'a>(
+    provider: &'a ResolvedModel,
     exchange: HttpRequest,
     request_digest: [u8; 32],
-    work: acyclic_fs::NativeWork<'_>,
-) -> Result<u64> {
+    work: acyclic_fs::NativeWork<'a>,
+) -> impl futures::Stream<Item = Result<Event<u64>>> + acyclic_stream::ProviderTask + 'a {
+    async_stream::try_stream! {
     let mut recovery = crate::retry::Attempt::count(provider.config.retry, request_digest);
     // Each attempt sends a copy, so the copy in flight is funded alongside the retained request.
     #[cfg(not(target_arch = "wasm32"))]
@@ -287,14 +310,25 @@ async fn exchange_count(
             headers: exchange.headers.clone(),
             body: exchange.body.clone(),
         };
-        let sent = crate::admission::send(provider, attempt, work, &mut held).await;
+        let sent = {
+            let events = crate::admission::send(provider, attempt, work, &mut held);
+            let mut events = core::pin::pin!(events);
+            loop {
+                match events.next().await {
+                    Some(Ok(Event::Wait(wait))) => yield Event::Wait(wait),
+                    Some(Ok(Event::Ready(response))) => break Ok(response),
+                    Some(Err(error)) => break Err(error),
+                    None => break Err(crate::invalid("count send ended without a response")),
+                }
+            }
+        };
         if let Ok(response) = &sent {
             recovery.observe(response.status);
         }
         let (failure, retry_after) = match sent {
             Ok(response) if (200..300).contains(&response.status) => {
                 match read_count(provider, response, work).await {
-                    Ok(count) => return Ok(count),
+                    Ok(count) => { yield Event::Ready(count); return; },
                     Err(failure) => (failure, None),
                 }
             }
@@ -308,8 +342,17 @@ async fn exchange_count(
         };
         crate::admission::Permit::settle(&mut held);
         let Some(wait) = recovery.next(&failure, retry_after) else {
-            return Err(failure);
+            Err(failure)?;
+            return;
         };
-        crate::retry::wait(provider.transport.as_ref(), failure, wait, work).await?;
+        let events = crate::retry::events(provider.transport.as_ref(), failure, wait, retry_after.is_some(), work);
+        let mut events = core::pin::pin!(events);
+        while let Some(event) = events.next().await {
+            match event? {
+                acyclic_harness_core::model::ModelEvent::Wait(wait) => yield Event::Wait(wait),
+                _ => Err(crate::invalid("count recovery emitted a non-wait event"))?,
+            }
+        }
+    }
     }
 }

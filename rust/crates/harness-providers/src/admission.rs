@@ -7,8 +7,11 @@
 //! full credit of accepted requests, so a probe above the learned bound costs at most
 //! one refusal. Request bytes are never changed.
 use crate::{HttpRequest, HttpResponse, HttpTransport, ResolvedModel};
-use acyclic_harness_core::Result;
-use futures::FutureExt as _;
+use acyclic_harness_core::{
+    Result,
+    model::{ModelAdmissionCause, ModelWait},
+};
+use futures::{FutureExt as _, StreamExt as _};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
@@ -50,29 +53,41 @@ impl Endpoints {
     }
 }
 
+/// Original gate observations followed by the value they admitted.
+pub(crate) enum Event<T> {
+    Wait(ModelWait),
+    Ready(T),
+}
+
 /// Sends one model exchange through its endpoint's admission. A successful response
 /// leaves its permit in `held` until the caller finishes reading it. A refusal with a
 /// provider delay leaves an opener there instead: the caller's next send follows its
 /// own wait for that same delay, which is the event that reopens the endpoint.
-pub(crate) async fn send(
-    provider: &ResolvedModel,
+pub(crate) fn send<'a>(
+    provider: &'a ResolvedModel,
     request: HttpRequest,
-    work: acyclic_fs::NativeWork<'_>,
-    held: &mut Option<Permit>,
-) -> Result<HttpResponse> {
-    if let Some(permit) = held.take() {
-        permit.waited();
+    work: acyclic_fs::NativeWork<'a>,
+    held: &'a mut Option<Permit>,
+) -> impl futures::Stream<Item = Result<Event<HttpResponse>>> + acyclic_stream::ProviderTask + 'a {
+    async_stream::try_stream! {
+        if let Some(permit) = held.take() { permit.waited(); }
+        let transport = provider.transport.as_ref();
+        let admission = provider.admission.gate(provider).admit(transport, work);
+        let mut admission = core::pin::pin!(admission);
+        let mut permit = loop {
+            match admission.next().await {
+                Some(Ok(Event::Wait(wait))) => yield Event::Wait(wait),
+                Some(Ok(Event::Ready(permit))) => break permit,
+                Some(Err(error)) => Err(error)?,
+                None => Err(crate::invalid("endpoint admission ended without a permit"))?,
+            }
+        };
+        let response = crate::http::send(transport, request, work)?.await?;
+        if permit.observe(response.status, response.retry_after, transport.now()) {
+            *held = Some(permit);
+        }
+        yield Event::Ready(response);
     }
-    let transport = provider.transport.as_ref();
-    let gate = provider.admission.gate(provider);
-    let mut permit = gate.admit(transport, work).await?;
-    let response = crate::http::send(transport, request, work)?.await;
-    if let Ok(response) = &response
-        && permit.observe(response.status, response.retry_after, transport.now())
-    {
-        *held = Some(permit);
-    }
-    response
 }
 
 #[derive(Default)]
@@ -140,6 +155,13 @@ impl State {
         self.wake();
     }
 
+    fn cause(&self) -> ModelAdmissionCause {
+        match self.closed_until {
+            Some(until) => ModelAdmissionCause::Cooldown { until },
+            None => ModelAdmissionCause::Credit,
+        }
+    }
+
     fn admits(&self) -> bool {
         self.closed_until.is_none() && self.credit.is_none_or(|credit| self.in_flight < credit)
     }
@@ -171,93 +193,127 @@ impl Gate {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    async fn admit(
-        self: Arc<Self>,
+    /// Queue funding is synchronous: an admission failure must release the
+    /// state lock before the event stream can publish that failure.
+    fn enqueue(
+        &self,
         transport: &dyn HttpTransport,
         work: acyclic_fs::NativeWork<'_>,
-    ) -> Result<Permit> {
+    ) -> Result<
+        Option<(
+            u64,
+            ModelAdmissionCause,
+            Duration,
+            acyclic_fs::NativeCustody,
+        )>,
+    > {
+        let mut state = self.lock();
+        if state
+            .closed_until
+            .is_some_and(|until| until <= transport.now())
+        {
+            state.closed_until = None;
+        }
+        if state.waiters.iter().all(|(_, waiter)| waiter.admitted) && state.admits() {
+            state.in_flight += 1;
+            return Ok(None);
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        let mut custody = None;
-        let ticket = {
-            let mut state = self.lock();
-            if state
-                .closed_until
-                .is_some_and(|until| until <= transport.now())
-            {
-                state.closed_until = None;
-            }
-            if state.waiters.iter().all(|(_, waiter)| waiter.admitted) && state.admits() {
-                state.in_flight += 1;
-                drop(state);
-                return Ok(Permit::new(self));
-            }
-            // The waiter's queue node is funded on its work before it exists.
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                custody = work
-                    .map(|work| work.claim(QUEUED_BYTES, 1, acyclic_fs::WorkCounters::UNCHARGED))
-                    .transpose()?;
-            }
-            let ticket = state.next_ticket;
-            state.next_ticket += 1;
-            state.waiters.push_back((
-                ticket,
-                Waiter {
-                    admitted: false,
-                    waker: None,
-                },
-            ));
-            state.wake();
-            ticket
+        let custody = work
+            .map(|work| work.claim(QUEUED_BYTES, 1, acyclic_fs::WorkCounters::UNCHARGED))
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let custody = {
+            let _ = work;
+            None
         };
-        let queued = Queued {
-            gate: &self,
+        let ticket = state.next_ticket;
+        state.next_ticket += 1;
+        let cause = state.cause();
+        let started = transport.now();
+        state.waiters.push_back((
             ticket,
-            #[cfg(not(target_arch = "wasm32"))]
-            _custody: custody,
-        };
-        let mut timer: Option<(Duration, crate::deadline::Wake)> = None;
-        futures::future::poll_fn(|context| -> Poll<Result<()>> {
+            Waiter {
+                admitted: false,
+                waker: None,
+            },
+        ));
+        state.wake();
+        Ok(Some((ticket, cause, started, custody)))
+    }
+
+    fn admit<'a>(
+        self: Arc<Self>,
+        transport: &'a dyn HttpTransport,
+        work: acyclic_fs::NativeWork<'a>,
+    ) -> impl futures::Stream<Item = Result<Event<Permit>>> + acyclic_stream::ProviderTask + 'a
+    {
+        async_stream::try_stream! {
+            let Some((ticket, mut cause, started, _custody)) = self.enqueue(transport, work)? else {
+                yield Event::Ready(Permit::new(self));
+                return;
+            };
+            let queued = Queued {
+                gate: &self,
+                ticket,
+                #[cfg(not(target_arch = "wasm32"))]
+                _custody,
+            };
+            yield Event::Wait(ModelWait::AdmissionStarted { cause });
+            let mut timer: Option<(Duration, crate::deadline::Wake)> = None;
             loop {
-                let mut state = self.lock();
-                let Some(index) = state.position(ticket) else {
-                    return Poll::Ready(Err(crate::invalid("admission waiter disappeared")));
-                };
-                let waiter = &mut state.waiters[index].1;
-                if waiter.admitted {
-                    state.remove(ticket);
-                    return Poll::Ready(Ok(()));
-                }
-                waiter.waker = Some(context.waker().clone());
-                let Some(until) = state.closed_until else {
-                    timer = None;
-                    return Poll::Pending;
-                };
-                drop(state);
-                // The provider's instant is the only event that reopens the endpoint.
-                let wake = match &mut timer {
-                    Some((at, wake)) if *at == until => wake,
-                    slot => {
-                        let wait = until.saturating_sub(transport.now());
-                        &mut slot
-                            .insert((until, crate::deadline::timer(transport, wait, work)?))
-                            .1
+                let (changed, at) = futures::future::poll_fn(|context| -> Poll<Result<_>> {
+                    loop {
+                        let mut state = self.lock();
+                        let Some(index) = state.position(ticket) else {
+                            return Poll::Ready(Err(crate::invalid("admission waiter disappeared")));
+                        };
+                        if state.waiters[index].1.admitted {
+                            state.remove(ticket);
+                            return Poll::Ready(Ok((None, transport.now())));
+                        }
+                        let current = state.cause();
+                        if current != cause {
+                            return Poll::Ready(Ok((Some(current), transport.now())));
+                        }
+                        state.waiters[index].1.waker = Some(context.waker().clone());
+                        let Some(until) = state.closed_until else {
+                            timer = None;
+                            return Poll::Pending;
+                        };
+                        drop(state);
+                        let wake = match &mut timer {
+                            Some((at, wake)) if *at == until => wake,
+                            slot => {
+                                let wait = until.saturating_sub(transport.now());
+                                &mut slot.insert((until, crate::deadline::timer(transport, wait, work)?)).1
+                            }
+                        };
+                        if wake.poll_unpin(context)?.is_pending() { return Poll::Pending; }
+                        timer = None;
+                        let mut state = self.lock();
+                        if state.closed_until == Some(until) {
+                            state.closed_until = None;
+                            state.wake();
+                        }
                     }
-                };
-                if wake.poll_unpin(context)?.is_pending() {
-                    return Poll::Pending;
-                }
-                timer = None;
-                let mut state = self.lock();
-                if state.closed_until == Some(until) {
-                    state.closed_until = None;
-                    state.wake();
+                }).await?;
+                let waited_for = at.saturating_sub(started);
+                if let Some(next) = changed {
+                    cause = next;
+                    yield Event::Wait(ModelWait::AdmissionChanged { cause, waited_for });
+                } else {
+                    // Own granted credit before yielding: cancellation while the
+                    // finish is being observed must return that credit too.
+                    let permit = Permit::new(self.clone());
+                    drop(queued);
+                    let admitted_at = transport.unix_ms()?;
+                    yield Event::Wait(ModelWait::AdmissionFinished { waited_for, admitted_at });
+                    yield Event::Ready(permit);
+                    break;
                 }
             }
-        })
-        .await?;
-        drop(queued);
-        Ok(Permit::new(self))
+        }
     }
 }
 

@@ -36,6 +36,7 @@ impl SummaryKey for (u32, crate::executor::ModelPurpose) {
         *purpose = match self.1 {
             crate::executor::ModelPurpose::Response => 0,
             crate::executor::ModelPurpose::Summary => 1,
+            crate::executor::ModelPurpose::Count => 2,
         };
         Ok(key)
     }

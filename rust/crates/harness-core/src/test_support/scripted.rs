@@ -363,8 +363,8 @@ impl ModelProvider for ScriptedModelProvider {
         &'a self,
         request: &'a PreparedModelRequest,
         _ceiling: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
-        Box::pin(async move {
+    ) -> crate::model::ModelStream<'a> {
+        crate::model::ModelStream::from_count(async move {
             let counter = self.token_counter.as_ref().ok_or_else(|| {
                 Error::Unsupported("selected model token counting is unavailable".into())
             })?;

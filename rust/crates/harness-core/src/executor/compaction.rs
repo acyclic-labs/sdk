@@ -52,7 +52,14 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(input.operation_id));
         }
         let (through, maximum) = self
-            .summary_budget(accounting.capacity, &context, policy, message_limit)
+            .summary_budget(
+                accounting.capacity,
+                &context,
+                policy,
+                message_limit,
+                journal,
+                (input.operation_id, step),
+            )
             .await?;
         let summary = self
             .backstop_marker(journal, input.operation_id, step, (&context, through))
@@ -167,6 +174,8 @@ impl StockExecution<'_> {
         context: &crate::context::Context,
         policy: &crate::context::CapacityCompaction,
         message_limit: Option<usize>,
+        journal: &dyn ExecutionJournal,
+        turn: (OperationId, u32),
     ) -> Result<(usize, usize)> {
         let (through, maximum) = crate::context::plan_compaction_budget(
             policy,
@@ -183,7 +192,7 @@ impl StockExecution<'_> {
             self.stock.limits,
             self.io,
         )?;
-        let mandatory_accounting = self.response_accounting(&mandatory).await?;
+        let mandatory_accounting = self.response_accounting(&mandatory, journal, turn).await?;
         let Some(mandatory_count) = mandatory_accounting
             .count
             .input_tokens(&mandatory, self.io)?
@@ -267,7 +276,9 @@ impl StockExecution<'_> {
                 "automatic compaction is disabled",
             ));
         };
-        let accounting = self.response_accounting(request).await?;
+        let accounting = self
+            .response_accounting(request, journal, (input.operation_id, step))
+            .await?;
         match accounting.count.input_tokens(request, self.io) {
             Ok(Some(final_count)) => {
                 if policy.needs_compaction(capacity, final_count)? {

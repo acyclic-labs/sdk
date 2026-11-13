@@ -19,7 +19,7 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
     registry.load_catalog(file.path())?;
     let selected = registry.resolve("benchmark/fixture")?;
     let (request, _) = request(&selected)?;
-    let mut request = request.request().clone();
+    let request = request.request().clone();
     let request = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let dispatch = ModelDispatch {
         operation_id: acyclic_harness_core::OperationId::new(),
@@ -40,7 +40,12 @@ async fn captured_container_catalog_keeps_exact_host_grants_on_every_route() -> 
     );
     let selected = Arc::new(selected);
     let prepared = crate::prepared::PreparedInput::new(selected.clone(), request.clone()).await?;
-    assert!(prepared.count().await?.input_tokens > 0);
+    assert!(
+        crate::tests::count_result(crate::prepared::PreparedInput::count(Arc::new(prepared)))
+            .await?
+            .input_tokens
+            > 0
+    );
     assert!(transport.counted.lock().unwrap().is_some());
     selected
         .generate(&request, dispatch)
@@ -231,7 +236,7 @@ fn resolution_rejects_mutated_model_identity() -> Result<()> {
         let mut changed = provider.model().clone();
         changed.revision.push_str("-foreign");
         assert!(provider.context_capacity(&changed).is_err());
-        assert!(futures::executor::block_on(provider.count_tokens(&prepared, 0)).is_ok());
+        assert!(futures::executor::block_on(provider.counted(&prepared, 0)).is_ok());
         let mut old = serde_json::to_value(provider.model()).unwrap();
         old["options"] = json!({"tools":[{"type":"forged-native-tool"}]});
         assert!(serde_json::from_value::<Model>(old).is_err());

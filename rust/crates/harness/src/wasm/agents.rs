@@ -347,8 +347,10 @@ impl WasmAgentRegistry {
     /// request bytes, its dispatch identity, an `AbortSignal` and the verified
     /// bytes of each file the request projects in full, and returns an async
     /// iterator; `reconcile` receives the exact retained attempt and never
-    /// redispatches it. Capacity and counting are synchronous, effect-free
-    /// provider operations; Rust validates their results.
+    /// redispatches it. Capacity is synchronous. Counting receives canonical
+    /// request bytes, their digest and an `AbortSignal`, and returns an async
+    /// iterator of original waits followed by one `counted` event. Rust
+    /// validates the count against the request.
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
@@ -366,7 +368,7 @@ impl WasmAgentRegistry {
         )]
         capacity: Option<Function>,
         #[wasm_bindgen(
-            unchecked_param_type = "((request: Uint8Array, request_digest: number[]) => ModelTokenCount | Promise<ModelTokenCount>) | undefined"
+            unchecked_param_type = "((request: Uint8Array, request_digest: number[], signal: AbortSignal) => AsyncIterator<ModelEvent>) | undefined"
         )]
         count_tokens: Option<Function>,
         #[wasm_bindgen(unchecked_param_type = "CompactionPolicy")] compaction: JsValue,

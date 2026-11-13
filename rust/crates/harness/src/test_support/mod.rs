@@ -272,12 +272,9 @@ pub async fn prompt_settled(
     if let TurnOutcome::Failed { message } = &entry.outcome {
         return Ok(PromptOutcome::Failed(message.clone()));
     }
-    let bytes = harness
-        .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
-        .await?;
+    let output = conversation.text(&entry.output).await?;
     let output =
-        serde_json::from_slice(&bytes).map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        serde_json::from_str(&output).map_err(|error| crate::Error::Invalid(error.to_string()))?;
     Ok(PromptOutcome::Settled(entry, output))
 }
 

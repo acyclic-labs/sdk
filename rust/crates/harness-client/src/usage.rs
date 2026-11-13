@@ -212,7 +212,7 @@ impl UsageQuery {
             let mut model_time_ns = self.model_time_ns;
             let mut pending = [Pending::Existing; 2];
             for (index, row) in page.items.iter().enumerate() {
-                let purpose = purpose_slot(row.purpose);
+                let purpose = purpose_slot(row.purpose)?;
                 let projection = row.estimate(self.prices.price(row)).map_err(failed)?;
                 let provider = providers
                     .entry(row.provider.clone())
@@ -243,7 +243,7 @@ impl UsageQuery {
             if !finished {
                 let mut admitted = [None, None];
                 for (index, row) in page.items.into_iter().enumerate() {
-                    let purpose = purpose_slot(row.purpose);
+                    let purpose = purpose_slot(row.purpose)?;
                     if matches!(pending[purpose], Pending::Row(selected) if selected == index) {
                         admitted[purpose] = Some(owned(row, &self.prices)?);
                     }
@@ -284,10 +284,13 @@ impl UsageQuery {
 }
 
 /// Stable slot for the two original model purposes.
-pub fn purpose_slot(purpose: ModelPurpose) -> usize {
+pub fn purpose_slot(purpose: ModelPurpose) -> Result<usize> {
     match purpose {
-        ModelPurpose::Response => 0,
-        ModelPurpose::Summary => 1,
+        ModelPurpose::Response => Ok(0),
+        ModelPurpose::Summary => Ok(1),
+        ModelPurpose::Count => Err(Error::Storage(
+            "token admission cannot carry generation usage".into(),
+        )),
     }
 }
 

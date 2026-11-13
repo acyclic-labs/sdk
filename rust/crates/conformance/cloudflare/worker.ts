@@ -119,8 +119,11 @@ export class Agent extends DurableObject {
         yield { kind: "content", delta: "workerd guest reply" };
         yield { kind: "completed", metadata: {} };
       }, () => null, () => ({ context_tokens: 131072, output_tokens: 8192 }),
-      (bytes: Uint8Array, request_digest: Uint8Array) => ({ request_digest, input_tokens: BigInt(bytes.byteLength),
-        fixed_tokens: bytes.byteLength, message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0) }),
+      async function* (bytes: Uint8Array, request_digest: number[], signal: AbortSignal) {
+        signal.throwIfAborted();
+        yield { kind: "counted", count: { request_digest, input_tokens: BigInt(bytes.byteLength),
+          fixed_tokens: bytes.byteLength, message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0) } };
+      },
       { kind: "disabled" });
   }
   private host(preset: Preset = options.preset): ReturnType<typeof openCloudflareAgent> {

@@ -12,12 +12,6 @@ export type PublicModelCapacity = Readonly<{
     contextTokens: ModelContextCapacity['context_tokens'];
     outputTokens: ModelContextCapacity['output_tokens'];
 }>;
-export type PublicModelTokenCount = Readonly<{
-    requestDigest: Uint8Array;
-    inputTokens: ModelTokenCount['input_tokens'];
-    fixedTokens: ModelTokenCount['fixed_tokens'];
-    messageTokens: readonly ModelTokenCount['message_tokens'][number][];
-}>;
 export type PublicModelGeneration = Readonly<{operationId: ModelDispatch['operation_id']; step: ModelDispatch['step']}>;
 export interface PublicProviderRequest {
     readonly model: PublicModel;

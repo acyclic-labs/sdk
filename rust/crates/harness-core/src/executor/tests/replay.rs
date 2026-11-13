@@ -519,9 +519,17 @@ mod prepared_request_reuse_properties {
             digest[0] ^= 1;
         }
         if matches!(fault, Fault::Recount) {
-            stock_count_tokens(provider.as_ref(), &cold, 0, None)
-                .await
-                .unwrap();
+            stock_count_tokens(
+                provider.as_ref(),
+                &cold,
+                0,
+                None,
+                &journal,
+                (input.operation_id, 0),
+                executor.limits,
+            )
+            .await
+            .unwrap();
         }
         prop_assert!(
             observed.request() == &expected

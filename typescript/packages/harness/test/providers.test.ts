@@ -39,11 +39,18 @@ test("Rust model registry implements the public TS provider contract", async () 
   const admitted = { ...request, serializedInput: prepareModelRequest({ ...request, summary: false }, limits) };
   expect(provider.contextCapacity(model)).toEqual({ contextTokens: 4096, outputTokens: 512 });
   using prepared = await provider.prepare(admitted);
-  const count = await prepared.countTokens();
-  expect(count.inputTokens).toBe(10n);
-  expect(count.requestDigest).toBeInstanceOf(Uint8Array);
-  expect(count.requestDigest.length).toBe(32);
-  expect(count.messageTokens.length).toBe(1);
+  const countEvents: ModelEvent[] = [];
+  for await (const event of prepared.countTokens()) {
+    if (event.kind !== "wait" && event.kind !== "counted") throw new Error("counter emitted generation output");
+    if (countEvents.at(-1)?.kind === "counted") throw new Error("counter emitted an event after its count");
+    countEvents.push(event);
+  }
+  const counted = countEvents.at(-1);
+  if (counted?.kind !== "counted") throw new Error("missing token count");
+  const count = counted.count;
+  expect(count.input_tokens).toBe(10n);
+  expect(count.request_digest.length).toBe(32);
+  expect(count.message_tokens.length).toBe(1);
   expect(submitted).toBeUndefined();
   const events: ModelEvent[] = [];
   const dispatch = { operationId: "00000000-0000-4000-8000-000000000001", step: 0 };
@@ -60,7 +67,7 @@ test("Rust model registry implements the public TS provider contract", async () 
   expect(submitted?.stream).toBe(true);
   expect(submitted?.temperature).toBeUndefined();
   expect(headers?.get("x-owner")).toBe("project");
-  expect(await provider.reconcile({ ...dispatch, requestDigest: count.requestDigest, observed: [] })).toBeUndefined();
+  expect(await provider.reconcile({ ...dispatch, requestDigest: new Uint8Array(count.request_digest), observed: [] })).toBeUndefined();
   selected.free();
   registry.free();
 });

@@ -270,7 +270,7 @@ impl StockExecution<'_> {
                                 work,
                             )?
                             .await?
-                            .map(|result| self.admit_model_event(result)),
+                            .map(|result| stock_admit_model_event(result, self.io)),
                     )
                 } else {
                     Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
@@ -750,27 +750,6 @@ impl StockExecution<'_> {
         Ok(())
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn admit_model_event(
-        &self,
-        result: Result<(ModelEvent, acyclic_fs::NativeAllocation)>,
-    ) -> Result<ModelEvent> {
-        let io = self.io;
-
-        let (event, custody) = result?;
-        let io = io.ok_or_else(|| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "native stock session lacks its original IO",
-            )
-        })?;
-        io.absorb_native_custody(custody)?;
-        // The incoming value moves onto the stack; vector slots fund their own storage.
-        drop(io.guard_owned(std::mem::size_of::<ModelEvent>() as u64)?);
-        Ok(event)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn record_model_phase(&self, admission: &ModelEventAdmission, started: bool) {
         crate::obs::obs_record!(
             "phase" = match (admission.completed, started) {
@@ -786,6 +765,7 @@ fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
     match purpose {
         ModelPurpose::Response => "model",
         ModelPurpose::Summary => "summary",
+        ModelPurpose::Count => "count",
     }
 }
 
@@ -823,11 +803,13 @@ mod tests {
             let mut events = Vec::new();
             for _ in 0..64 {
                 for bytes in &bytes {
-                    let event =
-                        execution.admit_model_event(ModelEvent::decode_with_native_work(
+                    let event = stock_admit_model_event(
+                        ModelEvent::decode_with_native_work(
                             bytes,
                             io.original_native_work().unwrap(),
-                        ))?;
+                        ),
+                        execution.io,
+                    )?;
                     stock_push_model_event(&mut events, event, Some(io))?;
                     stock_retire_event(events.pop().unwrap(), Some(io))?;
                     assert_eq!(

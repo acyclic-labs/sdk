@@ -267,6 +267,10 @@ where
                     load(&mut summary.models, &reader, roots[2], (*step, purpose)).await?;
                 }
             }
+            ExecutionEvent::ModelWait {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            } => {}
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
@@ -329,6 +333,10 @@ where
                 let value = summary.contexts.get(step, io)?.ok_or_else(|| corrupt(io))?;
                 roots[1] = Some(store(writer, roots[1], step.digest(io)?, value, io).await?);
             }
+            ExecutionEvent::ModelWait {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            } => {}
             ExecutionEvent::ModelStarted { step, purpose, .. }
             | ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }

@@ -1852,7 +1852,7 @@ impl ModelProvider for RecordedModel {
         &'a self,
         request: &'a PreparedModelRequest,
         ceiling: u64,
-    ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
+    ) -> ModelStream<'a> {
         self.live.count_tokens(request, ceiling)
     }
     fn generate<'a>(
@@ -1948,13 +1948,7 @@ impl ModelProvider for RecordedModel {
         request: &'a PreparedModelRequest,
         ceiling: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (crate::context::ModelTokenCount, NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, crate::Error>> {
         self.live
             .count_tokens_with_native_work(request, ceiling, work)
     }

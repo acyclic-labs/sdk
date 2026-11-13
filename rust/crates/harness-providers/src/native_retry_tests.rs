@@ -147,7 +147,7 @@ proptest! {
             let result = {
                 let exchange = async {
                     if count {
-                        provider.count_tokens_with_native_work(&request, 0, &work)?.await.map(drop)
+                        provider.counted_with_native_work(&request, 0, &work)?.await.map(drop)
                     } else {
                         let mut stream = provider.generate_with_native_work(&request, dispatch, &work)?.await?;
                         while let Some(event) = stream.next().await { drop(event?); }

@@ -210,28 +210,15 @@ pub(crate) fn generate<'a>(
             } else {
                 work.remaining()?;
             }
-            let mut held = None;
-            let response = dispatch::send(
-                provider,
-                body.clone(),
-                dispatch_id,
-                auth.0.as_deref(),
-                auth.1.as_deref(),
-                Some(work),
-                &mut held,
-            )
-            .await;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
                     let provider = &current;
                     let _name_custody = name_custody;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
-                    attempt.held = held;
-                    let mut response = response;
                     loop {
                     let response_body = {
                         let exchange = attempt.exchange(provider, &body, dispatch_id, &mut auth,
-                            response, Some(&mut auth_custody), Some(work));
+                            Some(&mut auth_custody), Some(work));
                         let mut exchange = core::pin::pin!(exchange);
                         loop {
                             match exchange.next().await {
@@ -285,7 +272,6 @@ pub(crate) fn generate<'a>(
                             yield (event, custody);
                         }
                     }
-                    response = dispatch::send(provider, body.clone(), dispatch_id, auth.0.as_deref(), auth.1.as_deref(), Some(work), &mut attempt.held).await;
                     }
                 }
             }).map(|stream| stream.with_delivery(acyclic_harness_core::model::ModelDelivery::Live))

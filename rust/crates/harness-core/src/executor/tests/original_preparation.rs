@@ -91,16 +91,23 @@ impl StockExecution<'_> {
                 self.io,
             )?;
             let ceiling = self.input_ceiling(capacity)?;
-            let count =
-                stock_count_tokens(self.stock.provider.as_ref(), &prepared, ceiling, self.io)
-                    .await?;
+            let count = stock_count_tokens(
+                self.stock.provider.as_ref(),
+                &prepared,
+                ceiling,
+                self.io,
+                journal,
+                (input.operation_id, step),
+                self.stock.limits,
+            )
+            .await?;
             with_history_io(self.io, |work| count.validate(&prepared, work))?;
             if self.io.is_none() {
                 projection.messages = prepared.into_messages();
             }
             Some(ContextAccounting {
                 capacity,
-                count: InputAccounting::Counted(count.into()),
+                count: InputAccounting::Counted(count),
             })
         } else {
             None

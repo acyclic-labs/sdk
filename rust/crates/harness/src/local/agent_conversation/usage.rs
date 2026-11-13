@@ -62,7 +62,7 @@ fn visit_call(
     row: ModelUsageRecord,
     emit: &mut Visit<'_>,
 ) -> Result<()> {
-    let pending = &mut pending[super::usage_query::purpose_slot(row.purpose)];
+    let pending = &mut pending[super::usage_query::purpose_slot(row.purpose)?];
     if row.completed {
         if pending
             .as_ref()

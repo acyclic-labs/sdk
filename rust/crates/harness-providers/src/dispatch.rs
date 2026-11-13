@@ -43,10 +43,9 @@ pub(crate) fn generate_encoded<'a>(
         let input_bytes = body.len();
         let mut auth = auth;
         let mut attempt = GenerationAttempt::new(provider.config.retry, dispatch);
-        let mut response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None, &mut attempt.held).await;
         loop {
             let response_body = {
-                let exchange = attempt.exchange(provider, &body, dispatch, &mut auth, response,
+                let exchange = attempt.exchange(provider, &body, dispatch, &mut auth,
                     #[cfg(not(target_arch = "wasm32"))] None, None);
                 let mut exchange = core::pin::pin!(exchange);
                 loop {
@@ -88,7 +87,6 @@ pub(crate) fn generate_encoded<'a>(
                 let mut recovery = core::pin::pin!(recovery);
                 while let Some(event) = recovery.next().await { yield event?; }
             }
-            response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref(), None, &mut attempt.held).await;
         }
     }
 }
@@ -113,15 +111,18 @@ pub(crate) async fn authenticate<'a>(
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
 }
 
-pub(crate) async fn send(
-    provider: &ResolvedModel,
+pub(crate) fn send<'a>(
+    provider: &'a ResolvedModel,
     body: bytes::Bytes,
     dispatch: ModelDispatch,
-    key: Option<&str>,
-    account: Option<&str>,
-    work: acyclic_fs::NativeWork<'_>,
-    held: &mut Option<crate::admission::Permit>,
-) -> Result<HttpResponse> {
+    key: Option<&'a str>,
+    account: Option<&'a str>,
+    work: acyclic_fs::NativeWork<'a>,
+    held: &'a mut Option<crate::admission::Permit>,
+) -> impl futures::Stream<Item = Result<crate::admission::Event<HttpResponse>>>
++ acyclic_stream::ProviderTask
++ 'a {
+    async_stream::try_stream! {
     #[cfg(not(target_arch = "wasm32"))]
     let mut allocation = work
         .map(|work| {
@@ -166,7 +167,10 @@ pub(crate) async fn send(
                 .sum::<usize>();
         crate::native::retain(allocation, retained as u64)?;
     }
-    crate::admission::send(provider, request, work, held).await
+    let events = crate::admission::send(provider, request, work, held);
+    let mut events = core::pin::pin!(events);
+    while let Some(event) = events.next().await { yield event?; }
+    }
 }
 
 pub(crate) async fn encode(
@@ -296,7 +300,6 @@ impl GenerationAttempt {
         body: &'a bytes::Bytes,
         dispatch: ModelDispatch,
         auth: &'a mut (Option<Cow<'auth, str>>, Option<String>),
-        mut response: Result<HttpResponse>,
         #[cfg(not(target_arch = "wasm32"))] mut custody: Option<
             &'a mut acyclic_fs::NativeAllocation,
         >,
@@ -304,6 +307,20 @@ impl GenerationAttempt {
     ) -> impl futures::Stream<Item = Result<Exchange>> + acyclic_stream::ProviderTask + 'a {
         async_stream::try_stream! {
         loop {
+            let response = {
+                let events = send(provider, body.clone(), dispatch,
+                    auth.0.as_deref(), auth.1.as_deref(), work, &mut self.held);
+                let mut events = core::pin::pin!(events);
+                loop {
+                    match events.next().await {
+                        Some(Ok(crate::admission::Event::Wait(wait))) =>
+                            yield Exchange::Observation(ModelEvent::Wait(wait)),
+                        Some(Ok(crate::admission::Event::Ready(response))) => break Ok(response),
+                        Some(Err(error)) => break Err(error),
+                        None => break Err(invalid("model send ended without a response")),
+                    }
+                }
+            };
             let (error, retry_after) = match response {
                 Ok(response) if (200..300).contains(&response.status) => {
                     self.attempt.observe(response.status);
@@ -340,16 +357,6 @@ impl GenerationAttempt {
             if let Some(work) = work {
                 work.remaining()?;
             }
-            response = send(
-                provider,
-                body.clone(),
-                dispatch,
-                auth.0.as_deref(),
-                auth.1.as_deref(),
-                work,
-                &mut self.held,
-            )
-            .await;
         }
         }
     }

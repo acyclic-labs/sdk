@@ -1,5 +1,6 @@
 //! Real HTTP exchanges replay the original captured llama.cpp bodies.
 use super::*;
+use crate::tests::CountTestExt as _;
 use crate::{Authentication, Credentials, HttpRequest, HttpResponse, Registry, ReqwestTransport};
 use acyclic_harness_core::{model::ModelProvider as _, wire::ErrorCode};
 use acyclic_stream::BoxProviderFuture;
@@ -315,7 +316,7 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
         "rotation keeps original account scope"
     );
     assert!(
-        provider.count_tokens(&request, 0).await.is_err(),
+        provider.counted(&request, 0).await.is_err(),
         "captured 429 waits and rebinds credentials before a definitive refusal"
     );
     let mut api_key = specification(

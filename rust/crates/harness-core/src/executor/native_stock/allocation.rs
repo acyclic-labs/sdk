@@ -423,3 +423,23 @@ mod tests {
         Ok(())
     }
 }
+
+/// Transfer an original producer's event custody onto the stock preparation IO.
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::executor) fn stock_admit_model_event(
+    result: Result<(ModelEvent, acyclic_fs::NativeAllocation)>,
+    io: Option<&PreparationIo>,
+) -> Result<ModelEvent> {
+    let (event, custody) = result?;
+    let io = io.ok_or_else(|| {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Storage,
+            "native stock session lacks its original IO",
+        )
+    })?;
+    io.absorb_native_custody(custody)?;
+    // The event moves onto the stack; retained containers fund their own slots.
+    drop(io.guard_owned(std::mem::size_of::<ModelEvent>() as u64)?);
+    Ok(event)
+}

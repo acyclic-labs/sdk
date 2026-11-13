@@ -74,7 +74,7 @@ async fn prepared_bodies_keep_the_credential_snapshot_that_selected_native_reaso
         Arc::new(crate::prepared::PreparedInput::new(provider.clone(), request.clone()).await?);
     generation.store(2, Ordering::SeqCst);
     Credentials::changed();
-    prepared.count().await?;
+    crate::tests::count_result(crate::prepared::PreparedInput::count(prepared.clone())).await?;
     generation.store(3, Ordering::SeqCst);
     Credentials::changed();
     let dispatch = ModelDispatch {
@@ -261,13 +261,13 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
                 step,
                 request_digest: prepared.request_digest(),
             };
-            let count = provider.count_tokens(&prepared, 0).await?;
+            let count = provider.counted(&prepared, 0).await?;
             assert_eq!(count.request_digest, dispatch.request_digest);
             let mut custody = Vec::new();
             let events = if native {
                 assert!(provider.supports_native_model(&work)?);
                 let (native_count, hold) = provider
-                    .count_tokens_with_native_work(&prepared, 0, &work)?
+                    .counted_with_native_work(&prepared, 0, &work)?
                     .await?;
                 assert_eq!(native_count, count);
                 drop(hold);

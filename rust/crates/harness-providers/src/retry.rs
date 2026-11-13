@@ -141,55 +141,36 @@ pub(crate) fn events<'a>(
 + 'a {
     async_stream::try_stream! {
         use acyclic_harness_core::model::{ModelEvent, ModelWait};
-        let cause = match error {
-            Error::ModelUnavailable { failure, .. } => Some(failure),
-            _ => None,
-        };
-        let timer = crate::deadline::timer(transport, duration, work)?;
-        yield ModelEvent::Wait(ModelWait::Started { cause, delay: duration, retry_after });
-        let started = transport.now();
-        timer.await?;
-        yield ModelEvent::Wait(ModelWait::Finished {
-            elapsed: transport.now().saturating_sub(started),
-        });
-    }
-}
-
-/// Observe the original recovery timer; it alone determines when redelivery resumes.
-pub(crate) async fn wait(
-    transport: &dyn crate::HttpTransport,
-    error: Error,
-    duration: Duration,
-    work: acyclic_fs::NativeWork<'_>,
-) -> acyclic_harness_core::Result<()> {
-    let primitive = match &error {
+        #[cfg(not(target_arch = "wasm32"))]
+        let primitive = match &error {
         Error::ModelUnavailable {
             failure: acyclic_harness_core::ModelTransportFailure::Status(429),
             ..
         } => "provider rate limit",
         _ => "provider transport",
-    };
-    drop(error);
-    let timer = crate::deadline::timer(transport, duration, work)?;
-    let until = u128::from(transport.unix_ms()?) * 1_000_000 + duration.as_nanos();
-    let (seconds, nanos) = (until / 1_000_000_000, until % 1_000_000_000);
-    tracing::info!(
-        target: "acyclic.provider.wait",
-        until_unix_ns = %until,
-        wait_ns = %duration.as_nanos(),
-        reason = primitive,
-        "waiting for {primitive} until {seconds}.{nanos:09} (Unix seconds)"
-    );
+        };
+        let cause = match error {
+            Error::ModelUnavailable { failure, .. } => Some(failure),
+            _ => None,
+        };
+        yield ModelEvent::Wait(ModelWait::Started { cause, delay: duration, retry_after });
+        let started = transport.now();
+        let timer = crate::deadline::timer(transport, duration, work)?;
     #[cfg(not(target_arch = "wasm32"))]
+    {
     let waiting = acyclic_native_runtime::obs::waiting(
         primitive,
-        format_args!("until {seconds}.{nanos:09} (Unix seconds)"),
+        format_args!("for {duration:?}"),
         timer,
     );
-    #[cfg(not(target_arch = "wasm32"))]
-    return waiting.await;
+    waiting.await?;
+    }
     #[cfg(target_arch = "wasm32")]
-    timer.await
+    { timer.await?; }
+        yield ModelEvent::Wait(ModelWait::Finished {
+            elapsed: transport.now().saturating_sub(started),
+        });
+    }
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
@@ -210,6 +191,74 @@ mod tests {
         Error::ModelUnavailable {
             failure,
             excerpt: String::new(),
+        }
+    }
+
+    #[test]
+    fn recovery_timer_excludes_observer_latency_and_does_not_require_a_wall_clock() {
+        use crate::{HttpRequest, HttpResponse, HttpTransport};
+        use acyclic_stream::BoxProviderFuture;
+        use futures::StreamExt as _;
+        struct Clock {
+            origin: tokio::time::Instant,
+            wall: bool,
+        }
+        impl HttpTransport for Clock {
+            fn send(
+                &self,
+                _: HttpRequest,
+            ) -> BoxProviderFuture<'_, acyclic_harness_core::Result<HttpResponse>> {
+                panic!("timer replay must not issue HTTP")
+            }
+            fn now(&self) -> Duration {
+                self.origin.elapsed()
+            }
+            fn unix_ms(&self) -> acyclic_harness_core::Result<u64> {
+                if self.wall {
+                    Ok(1_000_000)
+                } else {
+                    Err(crate::invalid("wall clock unavailable"))
+                }
+            }
+            fn delay(
+                &self,
+                duration: Duration,
+            ) -> BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
+                Box::pin(async move {
+                    tokio::time::sleep(duration).await;
+                    Ok(())
+                })
+            }
+            fn delay_with_native_work(
+                &self,
+                duration: Duration,
+                work: &acyclic_fs::NativeMaterializationWork,
+            ) -> acyclic_harness_core::Result<
+                acyclic_fs::NativeFutureBundle<'static, (), acyclic_harness_core::Error>,
+            > {
+                acyclic_fs::NativeFutureBundle::new(work, || self.delay(duration))
+            }
+        }
+        for native in [false, true] {
+            for wall in [false, true] {
+                tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().unwrap().block_on(async {
+                    let clock = Clock { origin: tokio::time::Instant::now(), wall };
+                    let work = crate::tests::native_tests::work(&acyclic_fs::CancellationToken::new()).unwrap();
+                    let baseline = work.live_allocation_bytes();
+                    let mut stream = Box::pin(events(&clock, unavailable(ModelTransportFailure::Connect), Duration::from_secs(3), false, native.then_some(&work)));
+                    assert!(matches!(stream.next().await, Some(Ok(acyclic_harness_core::model::ModelEvent::Wait(
+                        acyclic_harness_core::model::ModelWait::Started { .. }
+                    )))));
+                    // The original observer may take time to commit its start.
+                    tokio::time::advance(Duration::from_secs(7)).await;
+                    assert!(matches!(stream.next().await, Some(Ok(acyclic_harness_core::model::ModelEvent::Wait(
+                        acyclic_harness_core::model::ModelWait::Finished { elapsed }
+                    ))) if elapsed == Duration::from_secs(3)));
+                    assert_eq!(clock.now(), Duration::from_secs(10));
+                    drop(stream);
+                    assert_eq!(work.live_allocation_bytes(), baseline);
+                });
+            }
         }
     }
     #[test]

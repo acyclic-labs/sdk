@@ -548,7 +548,7 @@ async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Res
         let (mut provider, script) = provider(adapter, 200);
         provider.capacity.output_tokens = Some(provider.capacity.context_tokens);
         let (request, dispatch) = request(&provider)?;
-        let count = provider.count_tokens(&request, 0).await?;
+        let count = provider.counted(&request, 0).await?;
         assert_eq!(count.request_digest, request.request_digest());
         assert_eq!(count.message_tokens.len(), 2);
         assert!(count.fixed_tokens > 0 && count.message_tokens.iter().all(|count| *count > 0));
@@ -806,7 +806,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             ],
         };
         let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
-        let count = provider.count_tokens(&prepared, 0).await?;
+        let count = provider.counted(&prepared, 0).await?;
         let dispatch = ModelDispatch {
             operation_id: acyclic_harness_core::OperationId::new(),
             step: 1,
@@ -960,3 +960,87 @@ mod files;
 
 #[path = "catalog_capacity_tests.rs"]
 mod catalog_capacity_tests;
+
+/// Existing count-result vectors consume the same event stream as real hosts.
+/// The admission-journal regression consumes and checks wait facts directly.
+pub(crate) trait CountTestExt: acyclic_harness_core::model::ModelProvider {
+    fn counted<'a>(
+        &'a self,
+        request: &'a acyclic_harness_core::model::PreparedModelRequest,
+        ceiling: u64,
+    ) -> acyclic_stream::BoxProviderFuture<
+        'a,
+        acyclic_harness_core::Result<acyclic_harness_core::context::ModelTokenCount>,
+    > {
+        Box::pin(count_result(self.count_tokens(request, ceiling)))
+    }
+
+    fn counted_with_native_work<'a>(
+        &'a self,
+        request: &'a acyclic_harness_core::model::PreparedModelRequest,
+        ceiling: u64,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness_core::Result<
+        acyclic_stream::BoxProviderFuture<
+            'a,
+            acyclic_harness_core::Result<(
+                acyclic_harness_core::context::ModelTokenCount,
+                acyclic_fs::NativeAllocation,
+            )>,
+        >,
+    > {
+        let admitted = self.count_tokens_with_native_work(request, ceiling, work)?;
+        Ok(Box::pin(async move {
+            let mut events = admitted.await?;
+            while let Some(event) = futures::StreamExt::next(&mut events).await {
+                let (event, mut custody) = event?;
+                match event {
+                    acyclic_harness_core::model::ModelEvent::Counted { count } => {
+                        if let Some(trailing) = events.next().await {
+                            let (event, trailing_custody) = trailing?;
+                            drop(event);
+                            drop(trailing_custody);
+                            return Err(crate::invalid("counter emitted an event after its count"));
+                        }
+                        custody.resize(
+                            (std::mem::size_of::<acyclic_harness_core::context::ModelTokenCount>()
+                                + count.message_tokens.capacity() * std::mem::size_of::<u32>())
+                                as u64,
+                        )?;
+                        return Ok((count, custody));
+                    }
+                    acyclic_harness_core::model::ModelEvent::Wait(_) => {
+                        drop(custody);
+                    }
+                    other => {
+                        drop(other);
+                        drop(custody);
+                        return Err(crate::invalid("counter emitted generation output"));
+                    }
+                }
+            }
+            Err(crate::invalid("counter ended without a count"))
+        }))
+    }
+}
+impl<T: acyclic_harness_core::model::ModelProvider + ?Sized> CountTestExt for T {}
+
+pub(crate) async fn count_result(
+    events: impl futures::Stream<Item = Result<ModelEvent>>,
+) -> Result<acyclic_harness_core::context::ModelTokenCount> {
+    let mut events = core::pin::pin!(events);
+    while let Some(event) = events.next().await {
+        match event? {
+            ModelEvent::Wait(_) => {}
+            ModelEvent::Counted { count } => {
+                if let Some(trailing) = events.next().await {
+                    trailing?;
+                    return Err(crate::invalid("counter emitted an event after its count"));
+                }
+                return Ok(count);
+            }
+            _ => return Err(crate::invalid("counter emitted generation output")),
+        }
+    }
+    Err(crate::invalid("counter ended without a count"))
+}

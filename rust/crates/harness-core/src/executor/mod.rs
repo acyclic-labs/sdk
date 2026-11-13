@@ -253,6 +253,8 @@ pub enum ModelPurpose {
     Response,
     /// A retained context summary inside that same execution.
     Summary,
+    /// Token admission during request preparation, separate from generation.
+    Count,
 }
 
 impl ModelPurpose {
@@ -274,7 +276,7 @@ impl ModelPurpose {
             io.preflight(charge)?;
         }
         let operation = match self {
-            Self::Response => execution,
+            Self::Response | Self::Count => execution,
             Self::Summary => {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(b"harness:summary-attempt:v1");

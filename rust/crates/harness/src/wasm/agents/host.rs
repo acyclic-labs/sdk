@@ -4,7 +4,7 @@
 use super::{Error, Result, from_js, to_js};
 use crate::wasm::cancel::Cancel;
 use crate::{
-    context::{ModelContextCapacity, ModelTokenCount},
+    context::ModelContextCapacity,
     conversation::{ContentResidencyVerifier, verified_content_bytes},
     model::{
         FileProjectionPolicy, Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest,
@@ -108,6 +108,15 @@ impl Drop for HostModelIterator {
 }
 
 impl HostModel {
+    fn failure(dispatch: Option<ModelDispatch>, stream: bool) -> Error {
+        match (dispatch.is_some(), stream) {
+            (true, false) => Error::Storage("host model dispatch is uncertain".into()),
+            (true, true) => Error::Storage("host model stream is uncertain".into()),
+            (false, false) => Error::Invalid("model token counting callback failed".into()),
+            (false, true) => Error::Invalid("model token counting stream failed".into()),
+        }
+    }
+
     /// Verified bytes of every non-reference file part, in request order.
     async fn files(&self, request: &PreparedModelRequest) -> Result<js_sys::Array> {
         let files = js_sys::Array::new();
@@ -133,9 +142,13 @@ impl HostModel {
     async fn start(
         &self,
         request: &PreparedModelRequest,
-        dispatch: ModelDispatch,
+        dispatch: Option<ModelDispatch>,
     ) -> Result<HostModelIterator> {
-        let files = self.files(request).await?;
+        let files = if dispatch.is_some() {
+            Some(self.files(request).await?)
+        } else {
+            None
+        };
         let cancel =
             Cancel::new().map_err(|error| Error::Unsupported(format!("browser model {error}")))?;
         let signal = cancel.signal.clone();
@@ -145,17 +158,84 @@ impl HostModel {
         };
         let arguments = js_sys::Array::new();
         arguments.push(&js_sys::Uint8Array::from(request.bytes()));
+        let (callback, identity) = match dispatch {
+            Some(dispatch) => (&self.generate, to_js(&dispatch)),
+            None => (
+                self.count_tokens.as_ref().ok_or_else(|| {
+                    Error::Unsupported("selected model token counting is unavailable".into())
+                })?,
+                to_js(&request.request_digest()),
+            ),
+        };
         arguments.push(
-            &to_js(&dispatch)
-                .map_err(|_| Error::Invalid("model dispatch encoding failed".into()))?,
+            &identity
+                .map_err(|_| Error::Invalid("model request identity encoding failed".into()))?,
         );
         arguments.push(&signal);
-        arguments.push(&files);
-        attempt.iterator = self
-            .generate
+        if let Some(files) = files {
+            arguments.push(&files);
+        }
+        attempt.iterator = callback
             .apply(&JsValue::UNDEFINED, &arguments)
-            .map_err(|_| Error::Storage("host model dispatch is uncertain".into()))?;
+            .map_err(|_| Self::failure(dispatch, false))?;
         Ok(attempt)
+    }
+    fn events<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+        dispatch: Option<ModelDispatch>,
+    ) -> crate::model::ModelStream<'a> {
+        // Pull exactly one event per poll. The stock executor owns admission,
+        // event limits, cancellation, request identity and durable consumption.
+        crate::model::ModelStream::new(Box::pin(futures::stream::try_unfold(
+            None,
+            move |iterator: Option<HostModelIterator>| async move {
+                let iterator = match iterator {
+                    Some(iterator) => iterator,
+                    None => self.start(request, dispatch).await?,
+                };
+                let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
+                    .ok()
+                    .and_then(|value| value.dyn_into::<Function>().ok())
+                    .ok_or_else(|| {
+                        Error::Invalid("host model must return an async iterator".into())
+                    })?;
+                let pending = next
+                    .call0(&iterator.iterator)
+                    .map_err(|_| Self::failure(dispatch, true))?;
+                let item = JsFuture::from(Promise::resolve(&pending))
+                    .await
+                    .map_err(|_| Self::failure(dispatch, true))?;
+                let done = js_sys::Reflect::get(&item, &JsValue::from_str("done"))
+                    .map_err(|_| Error::Invalid("host model iterator result is invalid".into()))?;
+                if done.as_bool() == Some(true) {
+                    return Ok(None);
+                }
+                if done.as_bool() != Some(false) {
+                    return Err(Error::Invalid(
+                        "host model iterator completion flag is invalid".into(),
+                    ));
+                }
+                let value = js_sys::Reflect::get(&item, &JsValue::from_str("value"))
+                    .map_err(|_| Error::Invalid("host model event is missing".into()))?;
+                let event: ModelEvent = from_js(value)
+                    .map_err(|_| Error::Invalid("host model event is invalid".into()))?;
+                if dispatch.is_none() {
+                    match &event {
+                        ModelEvent::Wait(_) => {}
+                        ModelEvent::Counted { count } => {
+                            count.validate(request, &mut None)?;
+                        }
+                        _ => {
+                            return Err(Error::Invalid(
+                                "host counter emitted generation output".into(),
+                            ));
+                        }
+                    }
+                }
+                Ok(Some((event, Some(iterator))))
+            },
+        )))
     }
 }
 
@@ -190,29 +270,8 @@ impl ModelProvider for HostModel {
         &'a self,
         request: &'a PreparedModelRequest,
         _ceiling: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
-        Box::pin(async move {
-            let callback = self.count_tokens.as_ref().ok_or_else(|| {
-                Error::Unsupported("selected model token counting is unavailable".into())
-            })?;
-            let digest = to_js(&request.request_digest())
-                .map_err(|_| Error::Invalid("model counting digest encoding failed".into()))?;
-            let value = callback
-                .call2(
-                    &JsValue::UNDEFINED,
-                    &js_sys::Uint8Array::from(request.bytes()),
-                    &digest,
-                )
-                .map_err(|_| Error::Invalid("model token counting callback failed".into()))?;
-            let value = JsFuture::from(Promise::resolve(&value))
-                .await
-                .map_err(|_| Error::Storage("model token counting callback failed".into()))?;
-            let count: ModelTokenCount = from_js(value).map_err(|_| {
-                Error::Invalid("model counting callback returned invalid data".into())
-            })?;
-            count.validate(request, &mut None)?;
-            Ok(count)
-        })
+    ) -> crate::model::ModelStream<'a> {
+        self.events(request, None)
     }
 
     fn generate<'a>(
@@ -220,44 +279,7 @@ impl ModelProvider for HostModel {
         request: &'a PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> crate::model::ModelStream<'a> {
-        // Pull exactly one event per poll. The stock executor owns admission,
-        // event limits, cancellation, request identity and durable consumption.
-        crate::model::ModelStream::new(Box::pin(futures::stream::try_unfold(
-            None,
-            move |iterator: Option<HostModelIterator>| async move {
-                let iterator = match iterator {
-                    Some(iterator) => iterator,
-                    None => self.start(request, dispatch).await?,
-                };
-                let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
-                    .ok()
-                    .and_then(|value| value.dyn_into::<Function>().ok())
-                    .ok_or_else(|| {
-                        Error::Invalid("host model must return an async iterator".into())
-                    })?;
-                let pending = next
-                    .call0(&iterator.iterator)
-                    .map_err(|_| Error::Storage("host model stream is uncertain".into()))?;
-                let item = JsFuture::from(Promise::resolve(&pending))
-                    .await
-                    .map_err(|_| Error::Storage("host model stream is uncertain".into()))?;
-                let done = js_sys::Reflect::get(&item, &JsValue::from_str("done"))
-                    .map_err(|_| Error::Invalid("host model iterator result is invalid".into()))?;
-                if done.as_bool() == Some(true) {
-                    return Ok(None);
-                }
-                if done.as_bool() != Some(false) {
-                    return Err(Error::Invalid(
-                        "host model iterator completion flag is invalid".into(),
-                    ));
-                }
-                let value = js_sys::Reflect::get(&item, &JsValue::from_str("value"))
-                    .map_err(|_| Error::Invalid("host model event is missing".into()))?;
-                let event = from_js(value)
-                    .map_err(|_| Error::Invalid("host model event is invalid".into()))?;
-                Ok(Some((event, Some(iterator))))
-            },
-        )))
+        self.events(request, Some(dispatch))
     }
 
     fn reconcile<'a>(

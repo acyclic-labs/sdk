@@ -320,31 +320,12 @@ pub struct WasmPreparedModelRequest {
 
 #[wasm_bindgen]
 impl WasmPreparedModelRequest {
-    #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "PublicModelTokenCount")]
-    pub async fn count_tokens(&self) -> Result<JsValue, JsValue> {
-        let count = cancel::run(
-            async { self.prepared.count().await.map_err(model_error) },
+    #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "AsyncIterable<PublicModelEvent>")]
+    pub fn count_tokens(&self) -> JsValue {
+        stream::iterator(
+            Box::pin(crate::prepared::PreparedInput::count(self.prepared.clone())),
             self.signal.clone(),
         )
-        .await?;
-        let result = js_sys::Object::new();
-        Reflect::set(
-            &result,
-            &"requestDigest".into(),
-            &Uint8Array::from(count.request_digest.as_slice()),
-        )?;
-        Reflect::set(
-            &result,
-            &"inputTokens".into(),
-            &js_sys::BigInt::from(count.input_tokens),
-        )?;
-        Reflect::set(&result, &"fixedTokens".into(), &count.fixed_tokens.into())?;
-        Reflect::set(
-            &result,
-            &"messageTokens".into(),
-            &to_js(&count.message_tokens)?,
-        )?;
-        Ok(result.into())
     }
 
     #[wasm_bindgen(unchecked_return_type = "AsyncIterable<PublicModelEvent>")]
@@ -359,8 +340,10 @@ impl WasmPreparedModelRequest {
             request_digest: self.prepared.request.request_digest(),
         };
         Ok(stream::iterator(
-            self.prepared.clone(),
-            dispatch,
+            Box::pin(crate::prepared::PreparedInput::generate(
+                self.prepared.clone(),
+                dispatch,
+            )),
             self.signal.clone(),
         ))
     }

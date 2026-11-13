@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::CountTestExt as _;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use acyclic_harness_core::model::{
     ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelRole, PreparedModelRequest,
@@ -79,13 +80,13 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                 if step == 1 {
                     let count = if native {
                         let (count, hold) = provider
-                            .count_tokens_with_native_work(&prepared, 0, &work)?
+                            .counted_with_native_work(&prepared, 0, &work)?
                             .await?;
                         assert!(hold.work().shares_allocation_context(&work));
                         drop(hold);
                         count
                     } else {
-                        provider.count_tokens(&prepared, 0).await?
+                        provider.counted(&prepared, 0).await?
                     };
                     assert_eq!(
                         count.input_tokens,

@@ -6,6 +6,9 @@ use acyclic_harness_core::model::ModelProvider as _;
 use acyclic_stream::BoxProviderFuture;
 use futures::TryStreamExt as _;
 
+#[path = "admission_observation_tests.rs"]
+mod observations;
+
 const AGENTS: usize = 60;
 const CAPACITY: usize = 4;
 const SERVICE: Duration = Duration::from_secs(10);
@@ -72,6 +75,10 @@ impl HttpTransport for Capacity {
 
     fn now(&self) -> Duration {
         self.origin.elapsed()
+    }
+
+    fn unix_ms(&self) -> Result<u64> {
+        Ok(1_000_000 + u64::try_from(self.now().as_millis()).unwrap())
     }
 }
 
@@ -170,13 +177,13 @@ fn queued_waiters_resume_in_arrival_order_and_cancelled_ones_return_credit() {
             log: Mutex::default(),
         };
         let gate = Arc::new(Gate::default());
-        let mut first = gate.clone().admit(&transport, None).await.unwrap();
+        let mut first = gate.clone().admitted(&transport, None).await.unwrap();
         assert!(!first.observe(429, None, Duration::ZERO));
         drop(first);
         // The refusal learned credit 1; it was released, so one request is admitted.
-        let held = gate.clone().admit(&transport, None).await.unwrap();
-        let mut second = Box::pin(gate.clone().admit(&transport, None));
-        let mut third = Box::pin(gate.clone().admit(&transport, None));
+        let held = gate.clone().admitted(&transport, None).await.unwrap();
+        let mut second = Box::pin(gate.clone().admitted(&transport, None));
+        let mut third = Box::pin(gate.clone().admitted(&transport, None));
         assert!(futures::poll!(second.as_mut()).is_pending());
         assert!(futures::poll!(third.as_mut()).is_pending());
         drop(held);
@@ -213,7 +220,11 @@ fn a_cooldown_outlives_every_permit_and_waiter_of_its_endpoint() {
             transport.clone(),
         );
         let gate = provider.admission.gate(&provider);
-        let mut last = gate.clone().admit(transport.as_ref(), None).await.unwrap();
+        let mut last = gate
+            .clone()
+            .admitted(transport.as_ref(), None)
+            .await
+            .unwrap();
         // A refusal with a provider delay keeps an opener, here abandoned unwaited.
         assert!(last.observe(429, Some(RETRY_AFTER), transport.now()));
         // The last request and every handle on the gate are gone; no waiter remains.
@@ -229,7 +240,7 @@ fn a_cooldown_outlives_every_permit_and_waiter_of_its_endpoint() {
             provider
                 .admission
                 .gate(&provider)
-                .admit(transport.as_ref(), None),
+                .admitted(transport.as_ref(), None),
         );
         assert!(futures::poll!(next.as_mut()).is_pending());
         drop(next.await.unwrap());
@@ -244,9 +255,17 @@ fn a_grant_not_yet_resumed_is_revoked_when_the_endpoint_closes() {
             let transport = capacity();
             let gate = Arc::new(Gate::default());
             gate.lock().credit = Some(2);
-            let first = gate.clone().admit(transport.as_ref(), None).await.unwrap();
-            let mut second = gate.clone().admit(transport.as_ref(), None).await.unwrap();
-            let mut waiter = Box::pin(gate.clone().admit(transport.as_ref(), None));
+            let first = gate
+                .clone()
+                .admitted(transport.as_ref(), None)
+                .await
+                .unwrap();
+            let mut second = gate
+                .clone()
+                .admitted(transport.as_ref(), None)
+                .await
+                .unwrap();
+            let mut waiter = Box::pin(gate.clone().admitted(transport.as_ref(), None));
             assert!(futures::poll!(waiter.as_mut()).is_pending());
             // Credit is granted to the waiter, which has not resumed yet.
             drop(first);
@@ -277,12 +296,12 @@ fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() {
         gate.lock().credit = Some(1);
         let held = gate
             .clone()
-            .admit(transport.as_ref(), Some(&work))
+            .admitted(transport.as_ref(), Some(&work))
             .await
             .unwrap();
         // An immediate admission queues nothing and funds nothing.
         let baseline = work.live_allocation_bytes();
-        let mut waiter = Box::pin(gate.clone().admit(transport.as_ref(), Some(&work)));
+        let mut waiter = Box::pin(gate.clone().admitted(transport.as_ref(), Some(&work)));
         assert!(futures::poll!(waiter.as_mut()).is_pending());
         assert_eq!(work.live_allocation_bytes(), baseline + QUEUED_BYTES);
         drop(held);
@@ -290,4 +309,109 @@ fn a_queued_waiter_funds_its_node_on_its_work_until_it_resumes() {
         assert_eq!(work.live_allocation_bytes(), baseline);
         assert!(gate.lock().waiters.capacity() == 0);
     });
+}
+
+#[test]
+fn admission_span_starts_before_grant_and_retains_cause_changes() {
+    paused().block_on(async {
+        let transport = capacity();
+        let gate = Arc::new(Gate::default());
+        gate.lock().credit = Some(1);
+        let mut held = gate
+            .clone()
+            .admitted(transport.as_ref(), None)
+            .await
+            .unwrap();
+        let mut waiting = Box::pin(gate.clone().admit(transport.as_ref(), None));
+        assert!(matches!(waiting.next().now_or_never(), Some(Some(Ok(Event::Wait(
+            ModelWait::AdmissionStarted { cause: ModelAdmissionCause::Credit }
+        ))))));
+        // Negative control: a collector which buffers until admission cannot
+        // produce the start above while this exact credit is still held.
+        assert!(waiting.next().now_or_never().is_none());
+        tokio::time::advance(Duration::from_secs(7)).await;
+        assert!(held.observe(429, Some(RETRY_AFTER), transport.now()));
+        let until = transport.now() + RETRY_AFTER;
+        assert!(matches!(waiting.next().now_or_never(), Some(Some(Ok(Event::Wait(
+            ModelWait::AdmissionChanged { cause: ModelAdmissionCause::Cooldown { until: at }, waited_for }
+        )))) if at == until && waited_for == Duration::from_secs(7)));
+        assert!(waiting.next().now_or_never().is_none());
+        drop(held);
+        tokio::time::advance(RETRY_AFTER).await;
+        assert!(matches!(waiting.next().await, Some(Ok(Event::Wait(
+            ModelWait::AdmissionFinished { waited_for, admitted_at: 1_010_000 }
+        ))) if waited_for == Duration::from_secs(10)));
+        assert!(matches!(waiting.next().await, Some(Ok(Event::Ready(_)))));
+        assert_eq!(gate.lock().in_flight, 0);
+    });
+}
+
+#[test]
+fn cancelling_an_observed_admission_returns_original_queue_and_grant_credit() {
+    for at_finish in [false, true] {
+        paused().block_on(async {
+            let transport = capacity();
+            let work =
+                crate::tests::native_tests::work(&acyclic_fs::CancellationToken::new()).unwrap();
+            let gate = Arc::new(Gate::default());
+            gate.lock().credit = Some(1);
+            let held = gate
+                .clone()
+                .admitted(transport.as_ref(), Some(&work))
+                .await
+                .unwrap();
+            let baseline = work.live_allocation_bytes();
+            let mut waiting = Box::pin(gate.clone().admit(transport.as_ref(), Some(&work)));
+            assert!(matches!(
+                waiting.next().now_or_never(),
+                Some(Some(Ok(Event::Wait(ModelWait::AdmissionStarted {
+                    cause: ModelAdmissionCause::Credit
+                }))))
+            ));
+            assert_eq!(work.live_allocation_bytes(), baseline + QUEUED_BYTES);
+            assert!(waiting.next().now_or_never().is_none());
+            if at_finish {
+                drop(held);
+                assert!(matches!(
+                    waiting.next().await,
+                    Some(Ok(Event::Wait(ModelWait::AdmissionFinished { .. })))
+                ));
+                assert_eq!(gate.lock().in_flight, 1);
+                drop(waiting);
+            } else {
+                // An interrupted span keeps its original start and has no finish.
+                drop(waiting);
+                assert_eq!(gate.lock().in_flight, 1);
+                drop(held);
+            }
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            assert_eq!(gate.lock().in_flight, 0);
+            assert!(gate.lock().waiters.is_empty());
+            // The next caller has immediate credit rather than a leaked wait.
+            let mut next = Box::pin(gate.clone().admit(transport.as_ref(), Some(&work)));
+            assert!(matches!(
+                next.next().now_or_never(),
+                Some(Some(Ok(Event::Ready(_))))
+            ));
+        });
+    }
+}
+
+// Queue scheduling tests consume the same observations as every other caller.
+// Tests of observation order below inspect the stream directly.
+impl Gate {
+    async fn admitted(
+        self: Arc<Self>,
+        transport: &dyn HttpTransport,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<Permit> {
+        let events = self.admit(transport, work);
+        let mut events = core::pin::pin!(events);
+        while let Some(event) = events.next().await {
+            if let Event::Ready(permit) = event? {
+                return Ok(permit);
+            }
+        }
+        Err(crate::invalid("admission ended without its permit"))
+    }
 }

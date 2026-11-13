@@ -51,6 +51,10 @@ impl ExecutionSummary {
                 self.tail == 0 && *request_digest != [0; 32]
             }
             ExecutionEvent::ConversationItem { .. } => self.tail > 0,
+            ExecutionEvent::ModelWait {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            } => self.tail > 0,
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.tail > 0
                     && !self.contexts.contains_key(step, io)?
@@ -71,6 +75,10 @@ impl ExecutionSummary {
                         .models
                         .contains_key(&(*step, crate::executor::ModelPurpose::Response), io)?
             }
+            ExecutionEvent::ModelStarted {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            } => false,
             ExecutionEvent::ModelStarted {
                 step,
                 purpose,
@@ -149,6 +157,15 @@ impl ExecutionSummary {
             io.check_cancellation()?;
         }
         self.require_next(event, io)?;
+        if matches!(
+            event,
+            ExecutionEvent::ModelWait {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            }
+        ) {
+            return Ok(());
+        }
         if let ExecutionEvent::Model { step, purpose, .. }
         | ExecutionEvent::ModelInline { step, purpose, .. }
         | ExecutionEvent::ModelWait { step, purpose, .. } = event
@@ -257,6 +274,10 @@ impl ExecutionSummary {
                     );
                 }
             }
+            ExecutionEvent::ModelWait {
+                purpose: crate::executor::ModelPurpose::Count,
+                ..
+            } => {}
             ExecutionEvent::Model { step, purpose, .. }
             | ExecutionEvent::ModelInline { step, purpose, .. }
             | ExecutionEvent::ModelWait { step, purpose, .. } => {

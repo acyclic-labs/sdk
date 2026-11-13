@@ -54,7 +54,10 @@ impl StockExecution<'_> {
         let accounting = if self.unchecked()? {
             None
         } else {
-            Some(self.response_accounting(&prepared).await?)
+            Some(
+                self.response_accounting(&prepared, journal, (input.operation_id, step))
+                    .await?,
+            )
         };
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
@@ -294,7 +297,8 @@ impl StockExecution<'_> {
                 crate::context::CompactionPolicy::Disabled
             ) =>
             {
-                self.response_accounting(&prepared).await?
+                self.response_accounting(&prepared, journal, (input.operation_id, step))
+                    .await?
             }
             None => {
                 return Err(stock_boundary(

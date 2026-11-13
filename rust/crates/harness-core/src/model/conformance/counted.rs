@@ -59,7 +59,7 @@ where
         &'a self,
         request: &'a PreparedModelRequest,
         ceiling: u64,
-    ) -> BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
+    ) -> ModelStream<'a> {
         self.record(RequestClass::Token);
         self.inner().count_tokens(request, ceiling)
     }
@@ -98,13 +98,7 @@ where
         request: &'a PreparedModelRequest,
         ceiling: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (crate::context::ModelTokenCount, NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, crate::Error>> {
         self.record(RequestClass::Token);
         self.inner()
             .count_tokens_with_native_work(request, ceiling, work)

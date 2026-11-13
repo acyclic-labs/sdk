@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::CountTestExt as _;
 use acyclic_fs::NativeMaterializationWork;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -117,9 +118,7 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
             ..WorkCounters::UNCHARGED
         })?;
         let baseline = work.live_allocation_bytes();
-        let result = provider
-            .count_tokens_with_native_work(&request, 0, &work)?
-            .await;
+        let result = provider.counted_with_native_work(&request, 0, &work)?.await;
         if total == 65_536 {
             let (count, custody) = result?;
             assert!(custody.work().shares_allocation_context(&work));

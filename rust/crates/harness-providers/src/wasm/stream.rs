@@ -1,5 +1,5 @@
 use super::{error, model_error, to_js_json};
-use acyclic_harness_core::model::{ModelDispatch, ModelEvent};
+use acyclic_harness_core::model::ModelEvent;
 use acyclic_stream::BoxProviderStream;
 use std::{
     cell::{Cell, RefCell},
@@ -61,11 +61,9 @@ struct State {
 pub struct WasmModelStream(Rc<State>);
 
 pub(super) fn iterator(
-    prepared: Rc<crate::prepared::PreparedInput>,
-    dispatch: ModelDispatch,
+    stream: BoxProviderStream<'static, acyclic_harness_core::Result<ModelEvent>>,
     signal: JsValue,
 ) -> JsValue {
-    let stream = Box::pin(crate::prepared::PreparedInput::generate(prepared, dispatch));
     provider_iterator(
         WasmModelStream(Rc::new(State {
             stream: RefCell::new(Some(stream)),

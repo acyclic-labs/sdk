@@ -9,9 +9,16 @@ pub enum ModelEvent {
     /// Abandon the incomplete output of this dispatch and begin its next transport attempt.
     /// Consumers discard all earlier events in this step; request and tool identities stay fixed.
     Restarted,
-    /// Original transport recovery observation. This does not change model
-    /// output, call identity or completion, and contains no remote error text.
+    /// Original provider admission or transport recovery observation. This does
+    /// not change model output, call identity or completion, and contains no
+    /// remote error text.
     Wait(ModelWait),
+    /// Verified token admission, terminating a token-count stream. Generation
+    /// streams terminate with `Completed` instead.
+    Counted {
+        /// Count bound to the exact canonical request.
+        count: crate::context::ModelTokenCount,
+    },
     /// User-visible fragment.
     Content {
         /// Incremental content.
@@ -62,12 +69,35 @@ pub enum ModelEvent {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelWait {
+    /// The shared endpoint admission began waiting for this cause.
+    AdmissionStarted {
+        /// The gate's original reason for withholding admission.
+        cause: ModelAdmissionCause,
+    },
+    /// The gate changed why the same original caller remains queued.
+    AdmissionChanged {
+        /// The gate's current reason for withholding admission.
+        cause: ModelAdmissionCause,
+        /// Elapsed gate wait at this transition, on the transport clock.
+        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: bigint; nanos: number }"))]
+        waited_for: std::time::Duration,
+    },
+    /// The original caller received admission. Cancellation leaves its start
+    /// visible without inventing a successful admission.
+    AdmissionFinished {
+        /// Total gate wait on the original transport's monotonic clock.
+        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: bigint; nanos: number }"))]
+        waited_for: std::time::Duration,
+        /// Admission time in Unix milliseconds.
+        #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
+        admitted_at: u64,
+    },
     /// Redelivery is delayed by the original recovery timer.
     Started {
         /// Typed transport cause; absent for an unclassified unavailable error.
         cause: Option<crate::ModelTransportFailure>,
         /// Exact selected delay, without narrowing the timer's capacity.
-        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: number; nanos: number }"))]
+        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: bigint; nanos: number }"))]
         delay: std::time::Duration,
         /// Whether the provider supplied the delay rather than local backoff.
         retry_after: bool,
@@ -75,10 +105,26 @@ pub enum ModelWait {
     /// The original timer completed successfully, before the next send.
     Finished {
         /// Measured on the transport's monotonic clock around the timer wait.
-        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: number; nanos: number }"))]
+        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: bigint; nanos: number }"))]
         elapsed: std::time::Duration,
     },
 }
+
+/// Why the one shared endpoint admission is withholding a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum ModelAdmissionCause {
+    /// The provider's cooldown, on the original transport's monotonic clock.
+    Cooldown {
+        /// The instant that can reopen the endpoint.
+        #[cfg_attr(feature = "wasm", tsify(type = "{ secs: bigint; nanos: number }"))]
+        until: std::time::Duration,
+    },
+    /// Waiting in arrival order for the endpoint's in-flight credit.
+    Credit,
+}
+
 /// Executor identity supplied separately from canonical model bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +166,18 @@ pub struct ModelStream<'a> {
 }
 
 impl<'a> ModelStream<'a> {
+    /// Carries a local or host-provided count through the same ordered event
+    /// contract as remote counters, without inventing wait observations.
+    pub fn from_count(
+        count: impl std::future::Future<Output = Result<crate::context::ModelTokenCount>>
+        + acyclic_stream::ProviderTask
+        + 'a,
+    ) -> Self {
+        Self::new(Box::pin(futures::stream::once(async move {
+            count.await.map(|count| ModelEvent::Counted { count })
+        })))
+    }
+
     /// Carries a stream whose producer has not declared its delivery path.
     pub fn new(stream: BoxStream<'a, Result<ModelEvent>>) -> Self {
         Self {
@@ -256,6 +314,9 @@ impl ModelEvent {
     pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
         let payload = match self {
             Self::Restarted | Self::Wait(_) => 0,
+            Self::Counted { count } => {
+                (count.message_tokens.capacity() * std::mem::size_of::<u32>()) as u64
+            }
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::MessageCompleted { text } => text.capacity() as u64,
             Self::TextPart { text, native } => add(
@@ -360,12 +421,10 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// within `ceiling`, so no count request precedes generation; otherwise it
     /// is the provider's verified count when a count endpoint exists. Without
     /// one, a usage-anchored bound still reports pressure above the ceiling.
-    fn count_tokens<'a>(
-        &'a self,
-        _: &'a PreparedModelRequest,
-        _ceiling: u64,
-    ) -> BoxFuture<'a, Result<crate::context::ModelTokenCount>> {
-        Box::pin(async { Err(Error::ModelTokenCountUnavailable) })
+    /// The stream emits original wait observations as they occur, followed by
+    /// one [`ModelEvent::Counted`]. Dropping it cancels the original request.
+    fn count_tokens<'a>(&'a self, _: &'a PreparedModelRequest, _ceiling: u64) -> ModelStream<'a> {
+        ModelStream::from_count(async { Err(Error::ModelTokenCountUnavailable) })
     }
     /// Borrows one admitted request and emits ordered events. The stream cannot
     /// outlive that admission; after dropping it the caller can continue the
@@ -413,20 +472,14 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
         work.remaining()?;
         Err(unsupported())
     }
-    /// Paid token DTO for the admitted native request.
+    /// Original-ledger count stream: admission waits precede the paid count.
     #[cfg(not(target_arch = "wasm32"))]
     fn count_tokens_with_native_work<'a>(
         &'a self,
         _: &'a PreparedModelRequest,
         _ceiling: u64,
         work: &'a NativeMaterializationWork,
-    ) -> Result<
-        acyclic_fs::NativeFutureBundle<
-            'a,
-            (crate::context::ModelTokenCount, NativeAllocation),
-            crate::Error,
-        >,
-    > {
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, NativeModelStream<'a>, crate::Error>> {
         work.remaining()?;
         Err(unsupported())
     }
