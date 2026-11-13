@@ -699,12 +699,79 @@ async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
     observe_while_running(serving.as_mut(), async { Ok(runtime.complete().await?) }).await?;
     assert!(records(&*provider, "out/dormant").await?.is_empty());
     assert_eq!(records(&*provider, "out/resident").await?.len(), 1);
-    runtime.place(dormant.clone(), 1).await?;
-    observe_while_running(serving.as_mut(), async { Ok(runtime.complete().await?) }).await?;
+    assert!(!runtime.release(&dormant), "pending placement lost custody");
+    // Restart after a checkpoint can advance for the healthy actor, but before
+    // the owner has committed the requested placement. No new input arrives.
+    drop(serving);
+    drop(runtime);
+    let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
+    let replacement = Runtime::new(
+        store.clone(),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement(Arc::new(move |actor: &ActorReference| {
+        sender.send(actor.clone()).ok();
+    }));
+    let mut serving = Box::pin(replacement.run(|actor, error| panic!("{actor:?}: {error}")));
+    let restored = observe_while_running(serving.as_mut(), async {
+        tokio::select! {
+            biased;
+            actor = requested.recv() => Ok(actor.ok_or("placement requests closed")?),
+            idle = replacement.complete() => Err(format!("pending input was forgotten: {idle:?}").into()),
+        }
+    })
+    .await?;
+    assert_eq!(restored, dormant);
+    replacement.place(dormant.clone(), 1).await?;
+    observe_while_running(serving.as_mut(), async {
+        Ok(replacement.complete().await?)
+    })
+    .await?;
     assert_eq!(records(&*provider, "out/dormant").await?.len(), 1);
     while let Ok(actor) = requested.try_recv() {
         assert_eq!(actor, dormant, "a resident actor was requested");
     }
+    Ok(())
+}
+
+/// A placement request cannot retire an alarm window before its owner admits
+/// the actor. Restarting with no new activation must discover the same alarm.
+#[tokio::test]
+async fn an_unplaced_alarm_retains_its_window_across_restart() -> TestResult {
+    let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
+    let clock = Arc::new(clock);
+    let (provider, store, actor) =
+        armed_before_start(&clock, "pending-alarm", &[b"set 1000"]).await?;
+    time.advance_to(WINDOW_TEN + 120_000)?;
+    for attempt in 0..2 {
+        let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
+        let runtime = Runtime::new(
+            store.clone(),
+            Arc::new(Package::new()?),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        )
+        .with_external_placement(Arc::new(move |actor: &ActorReference| {
+            sender.send(actor.clone()).ok();
+        }));
+        let mut serving = Box::pin(runtime.run(|actor, error| panic!("{actor:?}: {error}")));
+        let restored = observe_while_running(serving.as_mut(), async {
+            tokio::select! {
+                biased;
+                actor = requested.recv() => Ok(actor.ok_or("placement requests closed")?),
+                idle = runtime.complete() => Err(format!("pending alarm was forgotten: {idle:?}").into()),
+            }
+        })
+        .await?;
+        assert_eq!(restored, actor);
+        completed(&runtime, serving.as_mut()).await?;
+        assert!(records(&*provider, "out/pending-alarm").await?.is_empty());
+        if attempt == 1 {
+            runtime.place(actor.clone(), 2).await?;
+            completed(&runtime, serving.as_mut()).await?;
+        }
+    }
+    assert_eq!(records(&*provider, "out/pending-alarm").await?.len(), 1);
     Ok(())
 }
 
