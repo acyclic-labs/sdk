@@ -136,6 +136,15 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
     for field in ["phase", "title", "workspaces", "goal_preview"] {
         assert!(encoded.get(field).is_none(), "removed row retained {field}");
     }
+    for (field, value) in [
+        ("title", serde_json::json!("retained metadata")),
+        ("version", serde_json::json!(2)),
+        ("rev", serde_json::json!(0)),
+    ] {
+        let mut invalid = encoded.clone();
+        invalid[field] = value;
+        assert!(SessionRow::decode(&serde_json::to_vec(&invalid)?).is_err());
+    }
     let late = row
         .changed(Some(profile.clone()))?
         .ok_or("missing late row")?;
