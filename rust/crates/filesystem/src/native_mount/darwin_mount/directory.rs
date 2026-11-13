@@ -112,83 +112,90 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
     filler: DirectoryFiller,
     offset: i64,
 ) -> c_int {
-    ffi(address, false, |context, work| {
-        if offset < 0 {
-            return Err(driver_errno(libc::EINVAL));
-        }
-        let path = mount_path(path, work)?;
-        let binding = context.source.binding_epoch_with_meter(work)?;
-        let epochs = context.cache_epochs(work)?;
-        let _lease = context
-            .source
-            .acquire_binding_lease_with_meter(binding, work)?;
-        if context.lookup(&path, work)?.node.kind != MountNodeKind::Directory {
-            return Err(driver_errno(libc::ENOTDIR));
-        }
-        let mut directory = DirectoryRead::new(path, epochs);
-        directory.keep_current(context, work)?;
-        advance_directory_to_offset(context, &mut directory, offset, work)?;
-        while directory.emitted < 2 {
-            let name = if directory.emitted == 0 { c"." } else { c".." };
-            let next = directory.emitted + 1;
-            // SAFETY: the synchronous fill borrows the bridge output and static name.
-            let full = unsafe {
-                acyclic_fs_darwin_mount_fill_directory(
-                    buffer,
-                    filler,
-                    name.as_ptr(),
-                    ptr::null(),
-                    next,
-                )
-            };
-            if full != 0 {
-                directory.keep_current(context, work)?;
-                return Ok(0);
+    ffi_path_with_root(
+        address,
+        path,
+        0,
+        false,
+        |context, path, work| {
+            if offset < 0 {
+                return Err(driver_errno(libc::EINVAL));
             }
-            directory.emitted = next;
-        }
-        loop {
-            let Some(path) = directory.next_visible(context, work)? else {
-                directory.keep_current(context, work)?;
-                return Ok(0);
-            };
-            let entry = directory
-                .page
-                .as_ref()
-                .and_then(|page| page.entries.last())
-                .ok_or_else(|| driver_errno(libc::EIO))?;
-            let name = native_name(&entry.name, work)?;
-            let attributes = context.attributes_from_lookup(
-                &path,
-                MountLookup {
-                    node: entry.node,
-                    metadata: entry.metadata,
-                },
-                directory.epochs.map(|epochs| epochs.view),
-                work,
-            )?;
-            let next = directory
-                .emitted
-                .checked_add(1)
-                .ok_or(WorkError::Overflow)?;
-            // SAFETY: the synchronous fill borrows the bridge output, name and stat.
-            let full = unsafe {
-                acyclic_fs_darwin_mount_fill_directory(
-                    buffer,
-                    filler,
-                    name.as_ptr(),
-                    &raw const attributes,
-                    next,
-                )
-            };
-            if full != 0 {
-                directory.keep_current(context, work)?;
-                return Ok(0);
+            let path = mount_path(path, work)?;
+            let binding = context.source.binding_epoch_with_meter(work)?;
+            let epochs = context.cache_epochs(work)?;
+            let _lease = context
+                .source
+                .acquire_binding_lease_with_meter(binding, work)?;
+            if context.lookup(&path, work)?.node.kind != MountNodeKind::Directory {
+                return Err(driver_errno(libc::ENOTDIR));
             }
-            directory.pop_entry();
-            directory.emitted = next;
-        }
-    })
+            let mut directory = DirectoryRead::new(path, epochs);
+            directory.keep_current(context, work)?;
+            advance_directory_to_offset(context, &mut directory, offset, work)?;
+            while directory.emitted < 2 {
+                let name = if directory.emitted == 0 { c"." } else { c".." };
+                let next = directory.emitted + 1;
+                // SAFETY: the synchronous fill borrows the bridge output and static name.
+                let full = unsafe {
+                    acyclic_fs_darwin_mount_fill_directory(
+                        buffer,
+                        filler,
+                        name.as_ptr(),
+                        ptr::null(),
+                        next,
+                    )
+                };
+                if full != 0 {
+                    directory.keep_current(context, work)?;
+                    return Ok(0);
+                }
+                directory.emitted = next;
+            }
+            loop {
+                let Some(path) = directory.next_visible(context, work)? else {
+                    directory.keep_current(context, work)?;
+                    return Ok(0);
+                };
+                let entry = directory
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.entries.last())
+                    .ok_or_else(|| driver_errno(libc::EIO))?;
+                let name = native_name(&entry.name, work)?;
+                let attributes = context.attributes_from_lookup(
+                    &path,
+                    MountLookup {
+                        node: entry.node,
+                        metadata: entry.metadata,
+                    },
+                    directory.epochs.map(|epochs| epochs.view),
+                    work,
+                )?;
+                let next = directory
+                    .emitted
+                    .checked_add(1)
+                    .ok_or(WorkError::Overflow)?;
+                // SAFETY: the synchronous fill borrows the bridge output, name and stat.
+                let full = unsafe {
+                    acyclic_fs_darwin_mount_fill_directory(
+                        buffer,
+                        filler,
+                        name.as_ptr(),
+                        &raw const attributes,
+                        next,
+                    )
+                };
+                if full != 0 {
+                    directory.keep_current(context, work)?;
+                    return Ok(0);
+                }
+                directory.pop_entry();
+                directory.emitted = next;
+            }
+        },
+        |views, work| views.read_directory(buffer, filler, offset, work),
+    )
 }
 
 pub(super) fn advance_directory_to_offset(

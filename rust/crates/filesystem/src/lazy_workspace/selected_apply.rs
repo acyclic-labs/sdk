@@ -55,10 +55,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
     {
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
+        let mut ctx = KernelAccounting::native(work, work.cancellation());
         let input = plan.input_digest(destination, &mut ctx)?;
         if let Some(generation) = self.operation_generation(key, &mut ctx).await? {
             return self

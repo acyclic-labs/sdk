@@ -49,7 +49,7 @@ pub struct NativeMountRequest {
     pub writable: bool,
     /// Lists the view in the process's shared native instance at the
     /// destination's parent, named by the destination's last component,
-    /// instead of mounting it at the destination. Linux only.
+    /// instead of mounting it at the destination.
     pub shared: bool,
 }
 

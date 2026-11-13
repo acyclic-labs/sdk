@@ -33,7 +33,7 @@ This file is read-only. It describes the fixed harness loop; nothing here is con
 
 ## Layers
 
-Relative file paths always name project files, including `.git`, `.volumes`, `.system` and `.home-seed-v1`. Auxiliary volumes use explicit addresses: `volume:///<name>/<path>` for this agent, or `volume://<agent>/<name>/<path>` for another agent. These addresses do not create directories in the project; shell commands use the native paths in the volume context or `ACYCLIC_VOLUME_*` discovery variables.
+Relative file paths always name project files, including `.git`, `.volumes`, `.system` and `.home-seed-v1`. Auxiliary volumes use explicit addresses: `volume:///<name>/<path>` for this agent, or `volume://<agent>/<name>/<path>` for another agent. These addresses do not create directories in the project; each shell command sees its own view of a volume at `$ACYCLIC_VOLUME_<NAME>`, named in the volume context. A command's changes land when it completes; changes that overlap another command's are written with git conflict markers and reported for repair.
 
 Every path an agent reads through `volume:///effective/` resolves over the layers, highest first: `home` (the agent's own `volume:///home/`), then `seed` (the harness defaults in `volume:///seed/`). `sys/` is not layered.
 

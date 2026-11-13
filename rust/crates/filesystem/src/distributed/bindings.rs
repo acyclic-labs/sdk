@@ -188,6 +188,23 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         self.fork_records(fork, permit, work, guard).await
     }
 
+    async fn fork_ephemeral(
+        &self,
+        fork: crate::EphemeralForkCommit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<acyclic_stream::EphemeralLease, AuthorityStoreError> {
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        self.ephemeral_records(fork, work).await
+    }
+
+    async fn is_ephemeral(&self, authority: AuthorityId) -> Result<bool, AuthorityStoreError> {
+        self.provider
+            .is_ephemeral(&self.placement.stream_path(authority, "")?)
+            .await
+            .map_err(map_stream_error)
+    }
+
     async fn fork_authority<G: AuthorityGuard>(
         &self,
         source: crate::GenerationForkSource,

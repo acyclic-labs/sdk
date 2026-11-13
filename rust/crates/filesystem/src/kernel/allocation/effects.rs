@@ -34,9 +34,9 @@ impl<'a> EffectCredit<'a> {
 
     pub(crate) fn for_accounting(accounting: &super::KernelAccounting<'a>) -> Option<Self> {
         match accounting {
-            super::KernelAccounting::NativeOriginal { work, cancellation } => {
-                Some(Self::new(work, cancellation))
-            }
+            super::KernelAccounting::NativeOriginal {
+                work, cancellation, ..
+            } => Some(Self::new(work, cancellation)),
             _ => None,
         }
     }
