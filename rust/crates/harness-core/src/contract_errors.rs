@@ -931,10 +931,31 @@ impl Error {
             )
     }
 
-    /// Preserve an undecided host operation across the guest boundary.
+    /// A known capacity refusal delays accepted input without making its outcome unknown.
+    fn retains_guest_input(&self) -> bool {
+        use acyclic_stream::StreamError;
+        if self.uncertain() {
+            return true;
+        }
+        match self {
+            Self::Agent(source) => match &**source {
+                crate::agent::Error::Stream(source) => {
+                    matches!(source.category(), StreamError::Capacity)
+                }
+                crate::agent::Error::Actor(source) => {
+                    matches!(&**source, acyclic_actors::local::Error::Stream(source) if matches!(source.category(), StreamError::Capacity))
+                }
+                crate::agent::Error::Turn(source) => source.retains_guest_input(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Preserve undecided or backpressured host work across the guest boundary.
     pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
         let error = error.into();
-        if error.uncertain() {
+        if error.retains_guest_input() {
             acyclic_actors::guest::GuestError::Pending(error.to_string())
         } else {
             acyclic_actors::guest::GuestError::Handler(error.to_string())

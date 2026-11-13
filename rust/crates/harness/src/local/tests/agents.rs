@@ -5427,30 +5427,32 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let dispatches = AtomicUsize::new(0);
-    let provider = ScriptedModelProvider::new([
-        super::ScriptedTurn::Events(Vec::new()),
-        super::ScriptedTurn::Events(Vec::new()),
-        super::ScriptedTurn::Text("sibling done".into()),
-        super::ScriptedTurn::Text("parent still running".into()),
-    ])
-    .with_context_capacity(super::capacity())
-    .with_dispatch_observer(move |_| {
-        let dispatch = dispatches.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move {
-            match dispatch {
-                0 => Err(Error::Storage("undecided child producer".into())),
-                1 => Err(Error::Invalid("definitive child failure".into())),
-                _ => Ok(()),
-            }
-        })
-    });
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            super::ScriptedTurn::Events(Vec::new()),
+            super::ScriptedTurn::Events(Vec::new()),
+            super::ScriptedTurn::Text("sibling done".into()),
+            super::ScriptedTurn::Text("parent still running".into()),
+        ])
+        .with_context_capacity(super::capacity())
+        .with_dispatch_observer(move |_| {
+            let dispatch = dispatches.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                match dispatch {
+                    0 => Err(Error::Storage("undecided child producer".into())),
+                    1 => Err(Error::Invalid("definitive child failure".into())),
+                    _ => Ok(()),
+                }
+            })
+        }),
+    );
     let directory = tempfile::tempdir().map_err(agent)?;
     let harness = Arc::new(
         super::open_scripted(
             volume_config(
                 directory.path(),
                 volume(directory.path()).await?,
-                Arc::new(provider),
+                provider.clone(),
             )?
             .without_default_tools()
             .workspace_mounting(crate::local::WorkspaceMounting::Physical)
@@ -5490,9 +5492,18 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
                 .input_progress(&child, tail - 1)
                 .await
                 .map_err(agent)?;
+            let outcomes = records(agents.provider(), child.conversation().map_err(agent)?)
+                .await?
+                .iter()
+                .map(|bytes| {
+                    crate::agent::ConversationEntry::decode(bytes).map(|entry| entry.outcome)
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(agent)?;
             assert!(
                 !progress.settled,
-                "unknown work must retain its original input: tail={tail}, completion={completed:?}, state={:?}",
+                "unknown work must retain its original input: tail={tail}, completion={completed:?}, outcomes={outcomes:?}, dispatches={:?}, state={:?}",
+                provider.dispatches(),
                 agents.state(&child).await.map_err(agent)?
             );
             assert!(harness.agents.get().unwrap().runtime.failure().is_none());

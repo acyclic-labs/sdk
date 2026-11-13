@@ -8,6 +8,79 @@ use acyclic_stream::{
 use futures::TryStreamExt as _;
 use tokio::sync::oneshot;
 
+struct ReplayCapacity {
+    inner: MemoryStream,
+    replay: Mutex<Option<(acyclic_stream::StreamPath, u64)>>,
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl acyclic_stream::StreamProvider for ReplayCapacity {
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        self.inner.context()
+    }
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.inner.heads(request).await
+    }
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> std::result::Result<
+        Option<acyclic_stream::IdempotencyObservation>,
+        acyclic_stream::StreamError,
+    > {
+        self.inner.inspect_idempotency(key).await
+    }
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        self.inner.write(request)
+    }
+    async fn read(
+        &self,
+        request: ReadRequest,
+    ) -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        let refused = {
+            let mut replay = self.replay.lock().unwrap();
+            if replay
+                .as_ref()
+                .is_some_and(|(path, from)| path == &request.path && *from == request.from)
+            {
+                replay.take();
+                true
+            } else {
+                false
+            }
+        };
+        if refused {
+            return Err(acyclic_stream::StreamError::Capacity);
+        }
+        self.inner.read(request).await
+    }
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
+        self.inner.follow(request).await
+    }
+    async fn read_commit(
+        &self,
+        id: acyclic_stream::CommitId,
+    ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
+        self.inner.read_commit(id).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for ReplayCapacity {}
+
 struct Opening(Mutex<Option<oneshot::Sender<u64>>>);
 
 impl TurnDriver for Opening {
@@ -38,7 +111,10 @@ impl TurnDriver for Opening {
 #[tokio::test]
 async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
 -> Result<(), Box<dyn std::error::Error>> {
-    let provider = Arc::new(MemoryStream::default());
+    let provider = Arc::new(ReplayCapacity {
+        inner: MemoryStream::default(),
+        replay: Mutex::new(None),
+    });
     let id = AgentId::from_bytes([7; 16]);
     let adopted = ForkAdopted {
         agent: id.clone(),
@@ -144,6 +220,29 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
         Opening(Mutex::new(Some(started))),
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?;
+    // Refuse the original overflow replay, not delivery acquisition. The same
+    // accepted input must remain available to the subsequent real execution.
+    *provider.replay.lock().unwrap() = Some((path.inbox()?, 1));
+    assert!(!Error::Stream(acyclic_stream::StreamError::Capacity).uncertain());
+    let refused = handler
+        .on_record(
+            delivery.clone(),
+            Some(&checkpoint),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(GuestError::Pending(_))),
+        "capacity must retain replay input"
+    );
+    assert!(
+        provider.replay.lock().unwrap().is_none(),
+        "capacity fault did not reach inbox replay"
+    );
+    let retained = crate::agent::actor_store(&provider)?.load(&actor).await?;
+    let retained = retained.state().ok_or("missing retained actor")?;
+    assert_eq!(retained.checkpoint(), Some(&checkpoint));
+    assert_eq!(retained.cursor(INBOX), Some(3));
     let stop = CancellationToken::new();
     let running = handler.on_record(delivery.clone(), Some(&checkpoint), stop.clone());
     tokio::pin!(running);
@@ -262,7 +361,10 @@ async fn unrelated_turn_completion_preserves_a_queued_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::agent::{ConversationEntry, Message, SteeringTranscript, TurnOutcome};
     use acyclic_stream::{CommitCondition, CommitEffect, CommitMutation, CommitRequest};
-    let provider = Arc::new(MemoryStream::default());
+    let provider = Arc::new(ReplayCapacity {
+        inner: MemoryStream::default(),
+        replay: Mutex::new(None),
+    });
     let id = AgentId::from_bytes([17; 16]);
     let adopted = ForkAdopted {
         agent: id.clone(),
