@@ -162,6 +162,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok((GenerationId::from_root(root), head))
     }
 
+    /// Loads authenticated original bytes on their original read allocation.
+    pub(crate) async fn read_original_publication_evidence(
+        &self,
+        volume: &Volume<A, O>,
+        reference: crate::kernel::OriginalEvidence,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<acyclic_stream::OwnedBytes, FsError> {
+        let read = crate::kernel::read_blob_range_with_accounting(
+            self.objects(),
+            reference.root,
+            crate::ByteRange {
+                offset: 0,
+                length: reference.bytes,
+            },
+            crate::kernel::DecodeLimits::for_volume(volume.config),
+            accounting,
+            cancellation,
+            true,
+        )
+        .await?;
+        let capacity = read.logical_owned_bytes();
+        #[cfg(not(target_arch = "wasm32"))]
+        let chunk = if accounting.native_work().is_some() {
+            crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
+        } else {
+            crate::kernel::OwnedSourceChunk::claimed(read.bytes, capacity)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let chunk = crate::kernel::OwnedSourceChunk::claimed(read.bytes, capacity);
+        let bytes = chunk.retain_bytes(accounting)?;
+        crate::kernel::verify_original_publication_evidence(reference, &bytes, accounting)?;
+        Ok(bytes)
+    }
+
     pub(crate) async fn workspace_operation_generation(
         &self,
         workspace: &Volume<A, O>,
@@ -172,7 +207,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         _cancellation: &CancellationToken,
     ) -> Result<
         (
-            Option<(GenerationId, DurableCommit, Option<bytes::Bytes>)>,
+            Option<(
+                GenerationId,
+                DurableCommit,
+                Option<crate::kernel::OriginalEvidence>,
+            )>,
             KernelOwnedAllocation,
         ),
         WorkspaceError,
@@ -212,9 +251,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 Ok((
                     GenerationId::from_root(decoded.publication.generation_root),
-                    decoded
-                        .original_evidence
-                        .map(|bytes| record.payload.slice_ref(bytes)),
+                    decoded.original_evidence,
                 ))
             })
             .transpose()?;

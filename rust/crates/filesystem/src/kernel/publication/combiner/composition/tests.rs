@@ -342,6 +342,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
             fs.objects()
                 .flush_before_publish(
                     crate::PublicationScope {
+                        related_objects: &[],
                         objects: &[root],
                         proven_at: fs.objects().collection_sweeps(),
                     },

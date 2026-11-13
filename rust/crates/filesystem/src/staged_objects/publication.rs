@@ -17,7 +17,6 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .wait_for(self.spill_io.write())
             .await
             .map_err(crate::async_storage::object_error)?;
-        let PublicationScope { objects, .. } = scope;
         let unswept = self
             .collection
             .admit_held(
@@ -31,7 +30,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .map_err(crate::async_storage::object_error)?;
         let targets = {
             let index = self.index();
-            let mut targets = Retained::allocate(objects.len(), &mut work.accounting())
+            let mut targets = Retained::allocate(scope.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             let mut visit = |id: ObjectId| -> Result<(), ObjectStoreError> {
                 work.accounting()
@@ -42,7 +41,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 }
                 Ok(())
             };
-            for &id in objects {
+            for &id in scope.object_ids() {
                 visit(id)?;
             }
             targets

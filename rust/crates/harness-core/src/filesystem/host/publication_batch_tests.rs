@@ -935,7 +935,11 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             media_type: "text/plain",
             display_name: "file",
         };
-        let changes = [add("nested/first"), add("second")];
+        let paths = (0..256)
+            .map(|index| format!("batch/file-{index:04}"))
+            .collect::<Vec<_>>();
+        let mut changes = vec![add("nested/first"), add("second")];
+        changes.extend(paths.iter().map(|path| add(path.as_str())));
         let key = IdempotencyKey::new("conditional-create")?;
         let original = host
             .put_changes(
@@ -991,6 +995,10 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .evidence()
             .ok_or_else(|| proof_io.invalid("receipt absent"))?
             .len() as u64;
+        assert!(
+            receipt_bytes > acyclic_stream::MAX_RECORD_BYTES as u64,
+            "batch did not cross the authority-record boundary"
+        );
         let refused = host
             .observe_changes(
                 &volume,
@@ -1007,7 +1015,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 if matches!(
                     *source,
                     WorkspaceError::Filesystem(acyclic_fs::FsError::Decode(
-                        acyclic_fs::kernel::CanonicalDecodeError::FieldTooLarge { .. }
+                        acyclic_fs::kernel::CanonicalDecodeError::ObjectTooLarge { .. }
                     ))
                 )
         ));
@@ -1206,7 +1214,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 assert_eq!(host.resolve(&workspace, None).await?, before);
             }
             let denied = host
-                .observe_changes(&volume, &write, &key, Some(64_000), delete_access)?
+                .observe_changes(&volume, &write, &key, Some(receipt_bytes), delete_access)?
                 .await
                 .expect_err("a delete ceiling cannot recover a creation receipt");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);

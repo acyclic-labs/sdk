@@ -23,8 +23,28 @@ pub struct PublicationScope<'a> {
     /// published parent's proof in this epoch or under its retained root, every
     /// object it reaches that the parent's closure did not list.
     pub objects: &'a [ObjectId],
+    /// Independently authenticated roots made reachable by the same record.
+    /// Separate slices preserve each proof's original allocation and custody.
+    pub related_objects: &'a [ObjectId],
     /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.
     pub proven_at: u64,
+}
+
+impl PublicationScope<'_> {
+    /// Every admitted object, without copying independent proof buffers.
+    pub fn object_ids(&self) -> impl Iterator<Item = &ObjectId> {
+        self.objects.iter().chain(self.related_objects)
+    }
+
+    /// Number of references supplied by both original proofs.
+    pub fn len(&self) -> usize {
+        self.objects.len() + self.related_objects.len()
+    }
+
+    /// Whether this publication introduces no immutable objects.
+    pub fn is_empty(&self) -> bool {
+        self.objects.is_empty() && self.related_objects.is_empty()
+    }
 }
 
 contract! {

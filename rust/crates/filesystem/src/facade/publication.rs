@@ -153,6 +153,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 self.volume.fs.clone(),
                 request,
                 PublicationIntent {
+                    original_evidence_reference: None,
+                    original_evidence_custody: None,
                     preconditions,
                     operation_context,
                     original_evidence: operation_evidence.clone(),
@@ -361,6 +363,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     self.volume.fs.clone(),
                     request,
                     PublicationIntent {
+                        original_evidence_reference: None,
+                        original_evidence_custody: None,
                         preconditions,
                         operation_context,
                         original_evidence: operation_evidence.clone(),
