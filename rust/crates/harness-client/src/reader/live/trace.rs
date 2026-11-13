@@ -2,42 +2,19 @@
 use super::{Custody, Error, Reader, Source, Want};
 use acyclic_stream::{
     RetainedRecord, StreamPath,
-    trace::{Mechanism, MechanismTotals, QueryError, TraceQuery},
+    trace::{Mechanism, QueryError, QuerySnapshot, TraceQuery},
 };
 use std::{collections::BTreeMap, num::NonZeroU32};
 
 /// Self-scoped public file view; its backing is the admitted trace stream.
 pub const PATH: &str = "live/agents/self/trace.json";
 
-/// Current file value. Coverage is explicit and does not claim producer finality.
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Value<'a> {
-    /// Original stream position after every consumed row, including rejections.
-    pub covered_through: u64,
-    /// Latest original tail observed by the shared Reader, if known.
-    pub observed_tail: Option<u64>,
-    /// All currently observed rows were consumed; this is not agent settlement.
-    pub caught_up: bool,
-    /// Source records the shared projection rejected; totals exclude them.
-    pub rejected_records: u128,
-    /// Per-mechanism measurements and caller-policy outliers.
-    pub mechanisms: &'a BTreeMap<Mechanism, MechanismTotals>,
-    /// Starts with no observed terminal delta in this coverage.
-    pub active_spans: usize,
-    /// Active spans specifically awaiting settlement/readiness.
-    pub active_waits: usize,
-    /// Original starts naming no nonempty public guarantee.
-    pub missing_guarantees: u128,
-    /// Terminal observations outside paired coverage; no duration was inferred.
-    pub unpaired_finishes: u128,
-}
-
 /// A read-only projection over one explicitly selected original source.
 pub struct File {
     source: Source,
     custody: Custody,
     query: TraceQuery<()>,
+    from: u64,
     next: u64,
     rejected: u128,
 }
@@ -95,6 +72,7 @@ impl File {
             source,
             custody,
             query: TraceQuery::new((), thresholds_ns),
+            from,
             next: from,
             rejected: 0,
         })
@@ -111,20 +89,14 @@ impl File {
     }
 
     /// Borrow the current public value without IO or an aggregate history scan.
-    pub fn value<'a>(&'a self, reader: &'a Reader) -> Result<Value<'a>, Error<'a>> {
+    pub fn value<'a>(&'a self, reader: &'a Reader) -> Result<QuerySnapshot<'a>, Error<'a>> {
         self.custody.check(reader, &self.source)?;
-        let observed_tail = self.source.observed_tail(reader)?;
-        Ok(Value {
-            covered_through: self.next,
-            observed_tail,
-            caught_up: observed_tail.is_some_and(|tail| self.next >= tail),
-            rejected_records: self.rejected,
-            mechanisms: self.query.totals(),
-            active_spans: self.query.active().len(),
-            active_waits: self.query.active_waits(),
-            missing_guarantees: self.query.missing_guarantees(),
-            unpaired_finishes: self.query.unpaired_finishes(),
-        })
+        Ok(self.query.snapshot(
+            self.from,
+            self.next,
+            self.source.observed_tail(reader)?,
+            self.rejected,
+        ))
     }
 
     /// Shared projection, including lazy access to active original evidence.

@@ -48,6 +48,33 @@ pub struct MechanismTotals {
     pub longest: Option<(u64, RetainedRecord)>,
 }
 
+/// Borrowed file value for an explicitly selected source window. Coverage is
+/// supplied by the original reader; catching its tail does not prove settlement.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuerySnapshot<'a> {
+    /// First selected cursor, so a suffix cannot look like complete history.
+    pub covered_from: u64,
+    /// Cursor after consumed rows, including rejected rows.
+    pub covered_through: u64,
+    /// Tail captured by the original reader, if known.
+    pub observed_tail: Option<u64>,
+    /// All rows through the observed tail were consumed, not settled.
+    pub caught_up: bool,
+    /// Rejected rows, excluded from measurements.
+    pub rejected_records: u128,
+    /// The same fixed-cardinality mechanism aggregates.
+    pub mechanisms: &'a BTreeMap<Mechanism, MechanismTotals>,
+    /// Starts without an observed terminal in this window.
+    pub active_spans: usize,
+    /// Active readiness or settlement waits.
+    pub active_waits: usize,
+    /// Starts without a nonempty public guarantee.
+    pub missing_guarantees: u128,
+    /// Terminals whose starts are outside this window.
+    pub unpaired_finishes: u128,
+}
+
 /// One new query observation, using the caller's explicit outlier policy.
 #[derive(Debug)]
 pub enum Observation {
@@ -180,6 +207,29 @@ impl<S> TraceQuery<S> {
         self.active
             .range((after.map_or(Unbounded, Excluded), Unbounded))
             .take(count.get() as usize)
+    }
+
+    /// Project one file value without IO, copying history or walking active
+    /// spans. The original source owner supplies its consumed window and tail.
+    pub fn snapshot(
+        &self,
+        from: u64,
+        through: u64,
+        observed_tail: Option<u64>,
+        rejected: u128,
+    ) -> QuerySnapshot<'_> {
+        QuerySnapshot {
+            covered_from: from,
+            covered_through: through,
+            observed_tail,
+            caught_up: observed_tail.is_some_and(|tail| through >= tail),
+            rejected_records: rejected,
+            mechanisms: &self.totals,
+            active_spans: self.active.len(),
+            active_waits: self.active_waits,
+            missing_guarantees: self.missing_guarantees,
+            unpaired_finishes: self.unpaired_finishes,
+        }
     }
 
     /// Fixed-cardinality mechanism aggregates, borrowed without scanning history.

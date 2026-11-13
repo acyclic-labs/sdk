@@ -9,7 +9,9 @@ use crate::RetainedRecord;
 #[cfg(feature = "serde")]
 mod query;
 #[cfg(feature = "serde")]
-pub use query::{ActiveSpan, MechanismTotals, Observation, QueryError, QueryViolation, TraceQuery};
+pub use query::{
+    ActiveSpan, MechanismTotals, Observation, QueryError, QuerySnapshot, QueryViolation, TraceQuery,
+};
 
 /// Identity assigned by one process, also identifying its monotonic clock domain.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
