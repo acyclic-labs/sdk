@@ -23,6 +23,7 @@ mod retry;
 mod subscriptions;
 
 mod conditional;
+mod handler_failure;
 mod scheduling;
 
 fn root() -> Result<StreamPath, StreamError> {
