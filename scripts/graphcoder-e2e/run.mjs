@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { chmod, mkdir, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
@@ -295,6 +295,16 @@ async function execute(test, prepared) {
       const result = await processes.run("git", ["check-ignore", "--no-index", "--quiet", path],
         { cwd: fixture.workspace, env: fixture.env });
       assert.equal(result.code, ignored ? 0 : 1, `Git exclusion for ${path}: ${result.stderr}`);
+    }
+    for (const [name, paths] of Object.entries(test.assert.excludes_environment ?? {})) {
+      const canaries = test.inputs.map(input => input.environment?.[name]).filter(value => typeof value === "string" && value.length);
+      assert.ok(canaries.length, "environment exclusion requires an explicit fixture value");
+      for (const path of paths) {
+        assert.ok(!isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "export assertion path must stay in its workspace");
+        const bytes = await readFile(join(fixture.workspace, path));
+        for (const value of canaries) assert.ok(!bytes.includes(Buffer.from(value)),
+          "export contains a selected host environment value");
+      }
     }
     // Check while the mock's held response is still open. Killing the mock
     // first would let an unfenced descendant exit and produce a false pass.

@@ -154,6 +154,8 @@
       "cases": [
         "instructions-and-skills",
         "skill-invocation",
+        "evals-no-secrets-plain",
+        "evals-no-secrets-git",
         "evals-projection-plain",
         "evals-projection-git",
         "evals-to-skill-plain",
