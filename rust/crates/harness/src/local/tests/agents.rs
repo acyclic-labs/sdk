@@ -5529,7 +5529,7 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
                                 ],
                             }],
                         ),
-                        store.activation(&actor),
+                        store.activation(&actor).map_err(agent)?,
                     ],
                 })
                 .await
