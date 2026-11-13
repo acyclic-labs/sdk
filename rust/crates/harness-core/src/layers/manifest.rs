@@ -53,6 +53,23 @@ impl<'a, A, O> Manifest<'a, A, O> {
         super::ORDER.into_iter().zip(self.generations)
     }
 
+    /// Evaluates a staged home against the original issuer sources. This does
+    /// not publish it or change any of the other five layer positions.
+    ///
+    /// # Errors
+    /// A candidate from another workspace cannot replace the subject's home.
+    pub fn with_home<'m>(
+        &'m self,
+        home: &'m Generation<A, O>,
+    ) -> Result<Manifest<'m, A, O>, WorkspaceError> {
+        if home.workspace_id() != self.generations[5].workspace_id() {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let mut generations: [&'m Generation<A, O>; 6] = self.generations;
+        generations[5] = home;
+        Ok(Manifest::new(generations))
+    }
+
     /// Resolves evaluator imports against this exact cut, using the caller's
     /// original operation and byte bound. Native evaluation and typed result
     /// decoding use that operation's allowance. Cached backing retains its
@@ -148,6 +165,66 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
 impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStore + 'static>
     Manifest<'_, StreamAuthorityStore<P>, O>
 {
+    /// Checks an admitted candidate's actual changed paths against the
+    /// original permissions, then contributes its publication to the caller's
+    /// commit. Evaluate `with_home(candidate)` before calling this method;
+    /// decoded candidate policy never supplies its own issuer authority.
+    ///
+    /// No head or caller record is published during preparation. All six
+    /// original source heads fence the same commit as the home publication.
+    /// A denial leaves the commit untouched. A later preparation failure may
+    /// retain source conditions, but never a partial home publication. Unknown
+    /// submission outcomes retain the original sealed commit for exact retry.
+    ///
+    /// # Errors
+    /// Foreign candidates, denied changes and original filesystem failures
+    /// retain their typed cause. Work uses only the supplied preparation IO.
+    pub async fn prepare_apply(
+        &self,
+        filesystem: &Fs<StreamAuthorityStore<P>, O>,
+        apply: HomeApply<'_, StreamAuthorityStore<P>, O>,
+        commit: &mut FilesystemCommit,
+        io: &crate::filesystem::PreparationIo,
+    ) -> crate::Result<()> {
+        let expected = self.generations[5];
+        self.with_home(apply.candidate)?;
+        let mut changes = io.sdk(
+            expected
+                .changed_paths_to(apply.candidate, io, io.cancellation())
+                .await,
+        )?;
+        while let Some(change) = io.sdk(changes.next().await)? {
+            if !apply.permissions.allows_change(&change, apply.now) {
+                return Err(crate::executor::stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "configuration change is denied by original permissions",
+                ));
+            }
+        }
+        drop(changes);
+        io.sdk(
+            self.condition(filesystem, commit, io, io.cancellation())
+                .await,
+        )?;
+        io.sdk(
+            filesystem
+                .prepare_publish_many(
+                    &[acyclic_fs::PublishSpec {
+                        expected,
+                        generation: apply.candidate.id(),
+                        operation: apply.operation,
+                        permit: apply.permit,
+                    }],
+                    &[],
+                    commit,
+                    io,
+                    io.cancellation(),
+                )
+                .await,
+        )
+    }
+
     /// Adds every source-head condition to the SAME caller commit, spending
     /// one original work source. Nothing is published here. The caller submits
     /// its commit once through the original filesystem submission path;
@@ -169,4 +246,19 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStor
             .require_heads(&self.generations, commit, work, cancellation)
             .await
     }
+}
+
+/// A staged subject-home apply under the host's original policy and filesystem
+/// publication authority. The caller retains the candidate through submission.
+pub struct HomeApply<'a, A: 'static, O: 'static> {
+    /// Immutable, unpublished candidate already admitted by the settings fold.
+    pub candidate: &'a Generation<A, O>,
+    /// Original issuer/advisory meet and signed caller ceiling.
+    pub permissions: &'a crate::config::policy::Permissions,
+    /// Host clock observation used for permission expiry.
+    pub now: u64,
+    /// Stable filesystem publication identity, unchanged on exact retry.
+    pub operation: acyclic_fs::OperationId,
+    /// Original filesystem admission; the shared publication core checks it.
+    pub permit: acyclic_fs::PublicationPermit,
 }
