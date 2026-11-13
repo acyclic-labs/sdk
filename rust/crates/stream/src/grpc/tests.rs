@@ -822,6 +822,17 @@ fn attributed_unavailability_survives_transport_round_trips() {
     let cause = acyclic_auth::refusal::Cause::new("stream.lock", "poisoned");
     let original = StreamError::unavailable(cause.clone());
     let encoded = Status::from(original);
+    for category in StreamError::ALL {
+        let mut attributed = Status::from(&category);
+        *attributed.metadata_mut() = encoded.metadata().clone();
+        let decoded = status(&attributed);
+        assert_eq!(decoded.category(), category);
+        assert_eq!(decoded.uncertain(), category.uncertain());
+        assert_eq!(
+            self::original(&Status::from(decoded)),
+            self::original(&attributed)
+        );
+    }
     let decoded = status(&encoded);
     let refusal = decoded
         .source()

@@ -218,8 +218,18 @@ impl Refusal {
         canonical: Canonical<'_>,
         cause: Option<Cause>,
     ) -> Option<Self> {
-        let cause = cause.or_else(|| reported_cause(metadata));
-        let original = differs(code, message, details, metadata, canonical).then(|| {
+        let reported = reported_cause(metadata);
+        let has_reported_cause = reported.is_some();
+        let cause = cause.or(reported);
+        let original = differs(
+            code,
+            message,
+            details,
+            metadata,
+            canonical,
+            has_reported_cause,
+        )
+        .then(|| {
             let mut retained = HeaderMap::new();
             for (name, value) in metadata.iter().filter(|(name, _)| product(name, canonical)) {
                 retained.append(name, value.clone());
@@ -243,7 +253,9 @@ impl Refusal {
         canonical: Canonical<'_>,
         cause: Option<Cause>,
     ) -> Option<Self> {
-        let cause = cause.or_else(|| reported_cause(&parts.metadata));
+        let reported = reported_cause(&parts.metadata);
+        let has_reported_cause = reported.is_some();
+        let cause = cause.or(reported);
         let original = differs(
             parts.code,
             &parts.message,
@@ -359,13 +371,14 @@ fn differs(
     metadata: &HeaderMap,
     canonical: Canonical<'_>,
 ) -> bool {
-    code != canonical.code
+    // A cause-only refusal classifies as unavailable; other status classes need their parts.
+    (has_reported_cause && code != 14)
+        || code != canonical.code
         || message != canonical.message
         || details != canonical.details
-        || metadata.keys().any(|name| {
-            product(name, canonical)
-                && (name != CAUSE_METADATA || reported_cause(metadata).is_none())
-        })
+        || metadata
+            .keys()
+            .any(|name| product(name, canonical) && (name != CAUSE_METADATA || !has_reported_cause))
 }
 
 impl std::fmt::Display for Refusal {
