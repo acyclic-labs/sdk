@@ -25,13 +25,12 @@ DNS failures carry the shared Rust `IdentityError`/`DnsError` codes.
 The single vector source is
 [`resource-identity-v1.json`](../rust/crates/auth/tests/fixtures/resource-identity-v1.json).
 Rust tests consume it directly; `conformance/addressing/shared-vectors.ts` reads that same file for the
-Rust WASM-backed TypeScript tests in auth, Actors, Stream, Objects, filesystem,
-Machines, Workers and the umbrella SDK. Each public product package exposes `./addressing` as a
-re-export of `@acyclic-labs/auth/addressing`, so no second codec or validator can
-diverge. The subpath keeps existing package imports and resource APIs unchanged.
+Rust WASM-backed TypeScript tests in Auth, Stream, Objects, Filesystem,
+Machines, Workers and the umbrella SDK. These packages expose `./addressing` as a
+re-export of `@acyclic-labs/auth/addressing`, sharing one codec and validator.
 
 Run the shared tests after building auth WASM and the package declarations:
-`bun test typescript/packages/{auth,actors,stream,objects,filesystem,machines,workers,sdk}/test/addressing.test.ts`.
+`bun test typescript/packages/{auth,stream,objects,filesystem,machines,workers,sdk}/test/addressing.test.ts`.
 `node --test conformance/addressing/type-controls.test.mjs` checks every public
 entrypoint's accepted byte fields and rejected string/mutable-field consumers.
 

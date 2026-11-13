@@ -3,7 +3,7 @@ import { Opened, closeAfterFailure, streamOpening } from "./opened.js";
 import { recordsFromFrames } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
-import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";

@@ -2,7 +2,7 @@ import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { refusalFromGrpcHeaders } from "@acyclic-labs/auth/grpc-refusal";
 import type { Opened } from "./opened.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
-import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
@@ -22,7 +22,7 @@ import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
-import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/core/observe";
 
 export interface StreamGrpcOptions extends CredentialOptions {
   readonly endpoint: string;

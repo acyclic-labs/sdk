@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-test("package-local build graphs schedule Auth before every identity facade", () => {
+test("package-local build graphs schedule Auth before dependent packages", () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const compiler = join(root, "node_modules/typescript/bin/tsc");
   const packages = ["actors", "stream", "objects", "filesystem", "machines", "workers", "sdk"];
   const requiresAuth = config => assert.ok(
     config.references?.some(reference => reference.path === "../auth"),
-    "an identity facade must reference its Auth declaration producer",
+    "a dependent package must reference its Auth declaration producer",
   );
   for (const name of packages) {
     const configPath = join(root, "typescript/packages", name, "tsconfig.json");
@@ -32,13 +32,13 @@ test("package-local build graphs schedule Auth before every identity facade", ()
 });
 
 test("all public identity bindings accept byte fields and reject text and mutable field shapes", () => {
-  // The umbrella SDK declares all eight dependencies. Put its temporary consumer
+  // The umbrella SDK declares these dependencies. Put its temporary consumer
   // inside that package so isolated installs resolve the declared graph; the
   // repository root deliberately has no SDK runtime dependencies to hoist.
   const directory = mkdtempSync(fileURLToPath(new URL(
     "../../typescript/packages/sdk/test/.type-consumer-", import.meta.url,
   )));
-  const packages = ["auth", "actors", "stream", "objects", "fs", "machines", "workers", "sdk"];
+  const packages = ["auth", "stream", "objects", "fs", "machines", "workers", "sdk"];
   const imports = packages.map((name, index) =>
     `import { ResourceIdentity as Identity${index}, ActorReference as Actor${index} } from "@acyclic-labs/${name}/addressing";`).join("\n");
   const positive = packages.map((_, index) => `{

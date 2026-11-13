@@ -2,7 +2,7 @@ import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/se
 import { StreamSessions } from "./session.js";
 import type { Opened } from "./opened.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
-import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -10,7 +10,7 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
-import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
+import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/core/observe";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {
