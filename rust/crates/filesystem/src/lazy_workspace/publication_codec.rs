@@ -243,7 +243,7 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let mut accounting =
             KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-        for version in [0_u16, 1, 2, u16::MAX] {
+        for version in [0_u16, 1, 2, 3, u16::MAX] {
             let mut bytes = SNAPSHOT_DOMAIN.to_vec();
             bytes.extend_from_slice(&version.to_le_bytes());
             assert!(matches!(

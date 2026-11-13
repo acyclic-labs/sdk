@@ -214,7 +214,7 @@ where
         let to = self.generation(to).await?;
         let value = if let Some(from) = from {
             let from = self.generation(from).await?;
-            let diff = git_compatible_diff_counts(
+            let diff = git_compatible_diff(
                 &from,
                 &to,
                 &self.repository,

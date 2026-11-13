@@ -35,8 +35,8 @@ where
             .union(&target.tracked_paths)
             .cloned()
             .collect();
-        let child = self.generation(target_tree).await?;
-        let parent = self.generation(parent_tree).await?;
+        let child = self.generation(&target_tree).await?;
+        let parent = self.generation(&parent_tree).await?;
         let cancellation = CancellationToken::new();
         let plan = child
             .workspace()

@@ -64,6 +64,7 @@ fn accounting(cancellation: &CancellationToken, budget: WorkBudget) -> KernelAcc
 
 fn status(path: &str) -> StatusRecord {
     StatusRecord {
+        cancelled_input: None,
         phase: Phase::WaitingUser { path: path.into() },
         cursor: 3,
         conversation: 2,

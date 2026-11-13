@@ -105,6 +105,7 @@ async fn prepared() -> Result<Snapshot, Box<dyn std::error::Error>> {
     let agent = AgentPath::root(&AgentId::from_bytes([1; 16]));
     let child = agent.child(&AgentId::from_bytes([2; 16]))?;
     let status = StatusRecord {
+        cancelled_input: None,
         child_settlement: None,
         child_wakes: None,
         phase: Phase::WaitingUser {

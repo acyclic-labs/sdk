@@ -29,7 +29,7 @@ async fn retained_snapshot_rejects_the_previous_overlay_format_before_loading_it
     old_hash.update(&cut.shadows.into_bytes());
     let previous = LazySnapshotRef {
         id: LazySnapshotId(*old_hash.finalize().as_bytes()),
-        ..cut
+        ..cut.clone()
     };
     assert!(matches!(
         root.validate_snapshot(&previous, accounting!()).await,

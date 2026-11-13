@@ -1,6 +1,58 @@
 use super::*;
 use serde::Serialize;
 
+#[test]
+fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
+    use acyclic_fs::{
+        Digest, GenerationId, LazyOverlayId, LazyShadowId, LazySnapshotRef, ObjectId, ObjectKind,
+        WorkspaceId, demand::SourceReference,
+    };
+    let cancel = acyclic_fs::CancellationToken::new();
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::standalone(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancel,
+    );
+    let scalar = |identity| SourceReference {
+        identity: [identity; 16],
+        epoch: 7,
+        components: Default::default(),
+    };
+    let source = SourceReference::pair([3; 16], &scalar(1), &scalar(2), &mut accounting).unwrap();
+    let snapshot = LazySnapshotRef::new(
+        WorkspaceId::from_bytes([4; 16]),
+        GenerationId::from_root(ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: Digest::from_bytes([5; 32]),
+            storage: None,
+        }),
+        source,
+        LazyOverlayId::from_bytes([6; 32]),
+        LazyShadowId::from_bytes([7; 32]),
+    );
+    assert_layout_covers_decode(&snapshot);
+    let object = serde_json::to_value(&snapshot).unwrap();
+    let sequence = serde_json::to_vec(&[
+        &object["id"],
+        &object["workspace_id"],
+        &object["authored_generation"],
+        &object["source"],
+        &object["overlay"],
+        &object["shadows"],
+    ])
+    .unwrap();
+    let reserved = layout_reservation::<LazySnapshotRef>(&sequence)
+        .expect("sequence fields must align with serde");
+    let mut decoded = None;
+    let physical = acyclic_test_support::measure(|| {
+        decoded = Some(serde_json::from_slice::<LazySnapshotRef>(&sequence).unwrap());
+    });
+    assert_eq!(decoded.as_ref(), Some(&snapshot));
+    assert!(
+        reserved >= physical.bytes_max as u64,
+        "source components were not funded"
+    );
+}
+
 mod borrowed_records {
     use super::*;
     use proptest::prelude::*;
