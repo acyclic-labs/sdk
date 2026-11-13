@@ -781,7 +781,9 @@ async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), F
                 "copy-active"
             })?);
             fork.join(CommitEffect::hard(
-                Vec::new(),
+                vec![CommitCondition::Absent {
+                    path: store.path(&child)?,
+                }],
                 vec![CommitMutation::Fork {
                     source: store.path(&actor)?,
                     destination: store.path(&child)?,
