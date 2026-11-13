@@ -75,6 +75,7 @@ impl IssuerModel {
             environment: "test".into(),
             environment_keys: environment.anchor(),
             environment_keys_valid_until: None,
+            not_before_unix_seconds: 0,
             account: "account".into(),
             issuer_keys: vec![SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes()],
             minimum_key_epoch: root.minimum_key_epoch(),
