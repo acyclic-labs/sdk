@@ -854,6 +854,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         ))?)
     }
 
+    /// Whether this store owns committed state for `actor`, including a dormant
+    /// actor absent from the runtime's resident table. One offset-only lookup
+    /// reads no checkpoint body and contacts no other node.
+    pub async fn contains(&self, actor: &ActorReference) -> Result<bool, Error> {
+        match self.provider.tail(self.path(actor)?).await {
+            Ok(tail) => Ok(tail != 0),
+            Err(error) if error.category() == StreamError::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
     /// Recover the actor address from a direct child of the state root.
     pub fn actor(&self, path: &StreamPath) -> Result<ActorReference, Error> {
         let name = path

@@ -768,6 +768,24 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
     publication.join(store.activation(&forked)?)?;
     store.submit(publication).await?;
 
+    if !store.contains(&created).await? || !store.contains(&forked).await? {
+        return Err(Failure::Violation {
+            case: "local-membership",
+            detail:
+                "created and forked actors must remain locally owned without resident registrations"
+                    .into(),
+        });
+    }
+    let foreign = Store::new(
+        Arc::clone(store.provider()),
+        StreamPath::new(format!("{}/other-node", store.root())).map_err(Error::from)?,
+    );
+    if foreign.contains(&created).await? {
+        return Err(Failure::Violation {
+            case: "local-membership",
+            detail: "another store's actor must not count as local membership".into(),
+        });
+    }
     let created_cut = store.load(&created).await?;
     let forked_cut = store.load(&forked).await?;
     let require = |valid: bool, detail: &str| {
