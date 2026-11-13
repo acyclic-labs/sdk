@@ -199,7 +199,14 @@ pub fn workspace_environment<T>(
         );
     }
     let temporary = temporary.as_ref().map_or_else(
-        || mounts.scratch_root.as_deref().unwrap_or(home_root),
+        || {
+            mounts.scratch_root.as_deref().unwrap_or_else(|| {
+                mounts
+                    .native_mounts()
+                    .find(|(_, _, mount)| !mount.mode.read_only())
+                    .map_or(home_root, |(_, root, _)| root)
+            })
+        },
         |temporary| temporary.as_path(),
     );
     let temporary = temporary
