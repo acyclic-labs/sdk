@@ -273,6 +273,21 @@ fn runtime_appearance_and_read_only_home() -> Result<(), Box<dyn std::error::Err
     std::fs::rename(parked, runtime)?;
     // A login directory appears while the original home becomes read-only.
     // Original exclusion and IN_ACCESS wake delivery must still be usable.
+    // Clone the view first: even a bind remount refuses read-only mode while
+    // that same mount owns the host's writable descriptor. The clone has no
+    // writers, retains exactly the original inodes, and supplies the RO view.
+    if unsafe {
+        libc::mount(
+            target.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    } < 0
+    {
+        return Err(format!("clone original home view: {}", io::Error::last_os_error()).into());
+    }
     if unsafe {
         libc::mount(
             std::ptr::null(),
