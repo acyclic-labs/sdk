@@ -1052,7 +1052,8 @@ impl Error {
 
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
-    pub(crate) fn is_tool_failure(&self) -> bool {
+    #[must_use]
+    pub fn is_tool_failure(&self) -> bool {
         if let Self::Agent(source) = self {
             return match &**source {
                 crate::agent::Error::Turn(source) => source.is_tool_failure(),
