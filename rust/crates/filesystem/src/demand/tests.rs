@@ -71,6 +71,32 @@ async fn native_source(
     .map_err(|failure| failure.error)
 }
 
+#[tokio::test]
+async fn native_root_refuses_a_composite_source_reference() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let scalar = |identity| SourceReference {
+        identity: [identity; 16],
+        epoch: 1,
+        components: Default::default(),
+    };
+    let composite = SourceReference::pair([3; 16], &scalar(1), &scalar(2), &mut accounting)?;
+    let result = NativeDemandSource::open(
+        std::borrow::Cow::Borrowed(directory.path()),
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+        Some(composite),
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await;
+    assert!(matches!(result, Err(failure) if matches!(failure.error, DemandError::InvalidRequest)));
+    Ok(())
+}
+
 #[derive(Default)]
 struct RecordedChanges(Mutex<(Vec<SourceChange>, bool)>, std::sync::Condvar);
 

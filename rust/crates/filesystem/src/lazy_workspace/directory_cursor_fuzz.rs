@@ -73,6 +73,13 @@ pub fn check(bytes: &[u8]) -> bool {
     valid
 }
 
+#[test]
+fn seeded_continuations_preserve_scalar_and_composite_cuts() {
+    for (_, seed) in seeds().unwrap() {
+        assert!(check(&seed));
+    }
+}
+
 /// Capture every durable continuation phase with plain and sealed generations.
 pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     let cancellation = CancellationToken::new();
