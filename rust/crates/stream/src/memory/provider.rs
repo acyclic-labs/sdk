@@ -198,8 +198,10 @@ impl MemoryStream {
                 .min(request.limit - request.selection_count()?);
         }
         view.snapshot = self.revisions.at(state.decision);
+        let remaining =
+            crate::MAX_COMMAND_BYTES.saturating_sub(crate::wire_codec::requests::heads_len(view));
         view.children = children
-            .map(|request| children_at(&state, request))
+            .map(|request| children_at(&state, request, remaining))
             .transpose()?;
         if !request.at_least.proven_by(Some(&view.snapshot)) {
             return Err(StreamError::InvalidResponse);
@@ -370,7 +372,11 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
     ))
 }
 
-fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
+fn children_at(
+    state: &State,
+    request: ChildrenPageRequest,
+    remaining: usize,
+) -> Result<ChildrenPage, StreamError> {
     validate_limit(request.limit)?;
     if request.after.as_ref().is_some_and(|after| {
         !request.parent.as_ref().map_or_else(
@@ -433,8 +439,10 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
         let candidate_bytes =
             children_bytes.saturating_add(crate::wire_codec::requests::block_len(size));
         let next_after = (has_more || index + 1 < count).then_some(&child.path);
-        if crate::wire_codec::requests::children_page_len(candidate_bytes, next_after)
-            > crate::MAX_COMMAND_BYTES
+        if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
+            candidate_bytes,
+            next_after,
+        )) > remaining
         {
             if children.is_empty() {
                 return Err(StreamError::LimitExceeded);
@@ -450,6 +458,13 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
     } else {
         None
     };
+    if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
+        children_bytes,
+        next_after.as_ref(),
+    )) > remaining
+    {
+        return Err(StreamError::LimitExceeded);
+    }
     let result = ChildrenPage {
         hierarchy_version: state.hierarchy_version,
         children,

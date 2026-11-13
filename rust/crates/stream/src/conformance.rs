@@ -989,6 +989,14 @@ pub async fn verify_page_tail_bytes(
     {
         return Err(violated!());
     }
+    let Some(AppendOutcome::Committed(first)) = outcomes.first() else {
+        return Err(violated!());
+    };
+    let selected = crate::RetainedRecord {
+        commit_id: first.commit_id,
+        path: path("conformance/page-bytes/0000/status")?,
+        sequence: 0,
+    };
     let mut request = ChildrenPageRequest {
         parent: Some(path("conformance/page-bytes")?),
         after: None,
@@ -998,7 +1006,23 @@ pub async fn verify_page_tail_bytes(
     };
     let mut seen = 0;
     while seen < count {
-        let page = provider.children_page(request.clone()).await?;
+        let heads_request = crate::HeadsRequest {
+            retained: [selected.clone()].into_iter().collect(),
+            durable_through: None,
+            projection: crate::HeadProjection::Watermarks,
+            paths: [selected.path.clone()].into_iter().collect(),
+            children: Some(request.clone()),
+            limit: request.limit + 2,
+            at_least: Default::default(),
+        };
+        let view = provider.heads(heads_request.clone()).await?;
+        view.validate_for(&heads_request)?;
+        if prost::Message::encoded_len(&crate::wire_codec::heads_to_wire(view.clone())?)
+            > crate::MAX_COMMAND_BYTES
+        {
+            return Err(violated!());
+        }
+        let page = view.children.ok_or(violated!())?;
         page.validate_for(&request)?;
         if page.children.is_empty() || page.children.len() > count - seen {
             return Err(violated!());
@@ -1020,11 +1044,6 @@ pub async fn verify_page_tail_bytes(
         }
         request.after = page.next_after.clone();
         request.hierarchy_version = Some(page.hierarchy_version);
-        if prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
-            > crate::MAX_COMMAND_BYTES
-        {
-            return Err(violated!());
-        }
     }
     Ok(())
 }
