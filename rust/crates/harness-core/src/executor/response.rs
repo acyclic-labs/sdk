@@ -369,6 +369,18 @@ impl StockExecution<'_> {
             Some(tokens) => policy.needs_compaction(accounting.capacity, tokens)?,
             None => true,
         };
+        if let Some(request) = self
+            .review_response(
+                journal,
+                turn,
+                &projection,
+                accounting.capacity,
+                token_pressure,
+            )
+            .await?
+        {
+            return Ok(request);
+        }
         let selected_base = step == 0 && input.selected_context.is_some();
         let possible_message_pressure = selected_base
             && self

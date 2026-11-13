@@ -125,8 +125,14 @@ impl StockExecution<'_> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         let mut phase = DispatchPhase::new();
-        let result =
-            ExecutionProgress::controlled(self.execute_turn(input, journal, &mut phase).await);
+        let result = ExecutionProgress::controlled(
+            self.with_context_review(
+                journal,
+                input,
+                self.execute_turn(input, journal, &mut phase),
+            )
+            .await,
+        );
         phase
             .finish(result, journal, input.operation_id, self.io)
             .await
@@ -235,6 +241,8 @@ impl StockExecution<'_> {
                         return Err(error);
                     }
                 };
+                self.request_context_review(journal, input, step, &prior_messages, &model_events)
+                    .await?;
                 self.retire_working_history(&mut prior_messages, Some(&mut steering))
                     .await?;
                 if let Some(control) = journal.supervision().await? {

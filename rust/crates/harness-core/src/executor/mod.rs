@@ -50,6 +50,7 @@ mod binding;
 mod compaction;
 mod composition;
 mod content;
+mod context_review;
 mod dispatch;
 pub(crate) use tool_changes::decode_tool_table;
 mod event_page;
@@ -725,6 +726,7 @@ pub struct StockExecutor {
     // publish private summaries, and none elsewhere. An explicit policy is
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
+    context_management: bool,
     reconciliation_only: bool,
 }
 

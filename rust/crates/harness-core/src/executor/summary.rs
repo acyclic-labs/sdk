@@ -44,6 +44,7 @@ impl StockExecution<'_> {
             working_tail: tokio::sync::Mutex::new(Default::default()),
             request_cache: tokio::sync::Mutex::new(Default::default()),
             content_admission: Default::default(),
+            review: Default::default(),
         };
         let input = TurnInput {
             max_steps: Some(1),
