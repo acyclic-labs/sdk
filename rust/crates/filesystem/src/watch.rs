@@ -3976,11 +3976,14 @@ impl NativeWatch {
         let result = self.poll_with_work(maximum_changes, &mut work, Some(&original), |_| Ok(()));
         let spent = original.receipt();
         result
-            .map(|(mut value, allocation)| {
+            .and_then(|(mut value, allocation)| {
+                let allocation = allocation.ok_or(NativeWatchError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?;
                 if let WatchBatch::Changes { original, .. } = &mut value {
-                    original.storage = allocation;
+                    original.storage = Some(allocation);
                 }
-                OperationReceipt { value, work: spent }
+                Ok(OperationReceipt { value, work: spent })
             })
             .map_err(|error| OperationFailure::new(error, spent))
     }
