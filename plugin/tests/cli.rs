@@ -354,9 +354,18 @@ where
 #[tokio::test]
 async fn chat_without_counter_honors_file_and_argument_compaction_choices() {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-    for (choice, session_client) in ["automatic", "argument", "file", "invalid_file"]
-        .into_iter()
-        .flat_map(|choice| [false, true].map(|session| (choice, session)))
+    for (choice, session_client) in [
+        "automatic",
+        "argument",
+        "file",
+        "invalid_file",
+        "explicit_model",
+        "explicit_compaction",
+        "explicit_both",
+        "invalid_model",
+    ]
+    .into_iter()
+    .flat_map(|choice| [false, true].map(|session| (choice, session)))
     {
         let fixture = fixture();
         let model = model_adapter(
@@ -367,13 +376,21 @@ async fn chat_without_counter_honors_file_and_argument_compaction_choices() {
         )
         .await;
         let compaction = match choice {
-            "file" => "\n[compaction]\nkind = 'disabled'\n",
-            "invalid_file" => "\n[compaction]\nkind = 'unrecognized'\n",
+            "file" | "explicit_model" | "invalid_model" => "\n[compaction]\nkind = 'disabled'\n",
+            "invalid_file" | "explicit_compaction" | "explicit_both" => {
+                "\n[compaction]\nkind = 'unrecognized'\n"
+            }
             _ => "",
         };
+        let default_model =
+            if matches!(choice, "explicit_model" | "explicit_both" | "invalid_model") {
+                ""
+            } else {
+                "tiny"
+            };
         std::fs::write(
             fixture.settings.join(".codex/config.toml"),
-            format!("model = 'tiny'\nmodel_provider = 'graphcoder-qual'\n{compaction}"),
+            format!("model = '{default_model}'\nmodel_provider = 'graphcoder-qual'\n{compaction}"),
         )
         .unwrap();
         let mut command = graphcoder_command(&fixture);
@@ -386,20 +403,26 @@ async fn chat_without_counter_honors_file_and_argument_compaction_choices() {
         if session_client {
             command.arg("--new-session");
         }
-        if choice == "argument" {
+        if matches!(choice, "argument" | "explicit_compaction" | "explicit_both") {
             command.arg("--no-compaction");
         }
+        if matches!(choice, "explicit_model" | "explicit_both") {
+            command.args(["--model", "graphcoder-qual/tiny"]);
+        }
         let output = capture(command, "").await;
-        if matches!(choice, "argument" | "file") {
+        if matches!(
+            choice,
+            "argument" | "file" | "explicit_model" | "explicit_compaction" | "explicit_both"
+        ) {
             assert_eq!(succeeded(&output), "fixture answer\n");
             assert_eq!(model.generated(), 1);
         } else {
             assert!(!output.status.success());
             assert!(
-                String::from_utf8_lossy(&output.stderr).contains(if choice == "invalid_file" {
-                    "compaction"
-                } else {
-                    "configure a verified input token counter"
+                String::from_utf8_lossy(&output.stderr).contains(match choice {
+                    "invalid_file" => "compaction",
+                    "invalid_model" => "model must be a nonempty string",
+                    _ => "configure a verified input token counter",
                 }),
                 "{output:?}"
             );
