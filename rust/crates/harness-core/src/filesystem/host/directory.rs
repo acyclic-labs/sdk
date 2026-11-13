@@ -487,6 +487,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )))
         }
         .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(cut) = &selection.snapshot {
+            self.validate_private_snapshot(cut, io).await?;
+        }
         selection.require_current(io).await?;
         request.grant.recheck(Some(io))?;
         Ok(selected)
