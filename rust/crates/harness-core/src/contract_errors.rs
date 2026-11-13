@@ -527,6 +527,21 @@ pub(crate) fn native_work_error_code(
 }
 
 /// Classify the original cause without formatting or copying its diagnostic.
+fn namespace_path_error_code(source: &acyclic_fs::kernel::NamespacePathError) -> ErrorCode {
+    use acyclic_fs::kernel::NamespacePathError as Path;
+    match source {
+        Path::Cancelled => ErrorCode::Cancelled,
+        Path::Work(_) | Path::AllocationFailed => ErrorCode::Storage,
+        Path::PrefixOutOfRange
+        | Path::ComponentLengthOverflow
+        | Path::PathTooLong
+        | Path::Name(_)
+        | Path::Path(_)
+        | Path::NonUnicodeProjection => ErrorCode::Invalid,
+    }
+}
+
+/// Classify the original cause without formatting or copying its diagnostic.
 fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
     use acyclic_fs::{AuthorityStoreError, FsError};
     match source {
@@ -534,6 +549,9 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
         FsError::UnauthenticatedAccessFacts => ErrorCode::Unsupported,
         FsError::Authority(AuthorityStoreError::Missing) => ErrorCode::NotFound,
         FsError::Cancelled(_) => ErrorCode::Cancelled,
+        FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(source)) => {
+            namespace_path_error_code(source)
+        }
         #[cfg(not(target_arch = "wasm32"))]
         FsError::NativeKernel(cause) => native_work_error_code(cause),
         _ => ErrorCode::Storage,
@@ -571,11 +589,10 @@ fn lazy_source_error_code(source: &acyclic_fs::LazyWorkspaceError) -> ErrorCode 
         Lazy::WorkspaceCause(source) => Error::workspace_error_code(source),
         Lazy::Filesystem(source) => filesystem_error_code(source),
         Lazy::NotFound => ErrorCode::NotFound,
-        Lazy::NamespacePath(_)
-        | Lazy::NotDirectory
-        | Lazy::NotRegularFile
-        | Lazy::TooLarge
-        | Lazy::InvalidPageBound => ErrorCode::Invalid,
+        Lazy::NamespacePath(source) => namespace_path_error_code(source),
+        Lazy::NotDirectory | Lazy::NotRegularFile | Lazy::TooLarge | Lazy::InvalidPageBound => {
+            ErrorCode::Invalid
+        }
         Lazy::UnsupportedNode => ErrorCode::Unsupported,
         Lazy::Concurrent | Lazy::StaleSource | Lazy::StaleCursor | Lazy::StaleIdentity => {
             ErrorCode::Conflict
@@ -596,6 +613,24 @@ fn lazy_source_error_code(source: &acyclic_fs::LazyWorkspaceError) -> ErrorCode 
         | Lazy::NativeRecordCorrupt(..)
         | Lazy::NativeRecordMaterializationInProgress
         | Lazy::NativeRecordIntegrity => ErrorCode::Storage,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn workspace_has_native_work(source: &acyclic_fs::WorkspaceError) -> bool {
+    matches!(
+        source,
+        acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::NativeKernel(_))
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn lazy_has_native_work(source: &acyclic_fs::LazyWorkspaceError) -> bool {
+    use acyclic_fs::LazyWorkspaceError as Lazy;
+    match source {
+        Lazy::NativeWork(_) | Lazy::Filesystem(acyclic_fs::FsError::NativeKernel(_)) => true,
+        Lazy::WorkspaceCause(source) => workspace_has_native_work(source),
+        _ => false,
     }
 }
 
@@ -630,6 +665,7 @@ impl Error {
         match source {
             WorkspaceError::AccessDenied => ErrorCode::Unauthorized,
             WorkspaceError::Filesystem(source) => filesystem_error_code(source),
+            WorkspaceError::NamespacePath(source) => namespace_path_error_code(source),
             WorkspaceError::GitCompat(source) => match source.as_ref() {
                 acyclic_fs::StreamGitCompatStoreError::Authority(
                     acyclic_fs::AuthorityStoreError::Missing,
@@ -650,7 +686,6 @@ impl Error {
             | WorkspaceError::StaleIdentity => ErrorCode::Conflict,
             WorkspaceError::Name(_)
             | WorkspaceError::Path(_)
-            | WorkspaceError::NamespacePath(_)
             | WorkspaceError::ReadLimitExceeded
             | WorkspaceError::NotRegularFile
             | WorkspaceError::NotDirectory
@@ -667,9 +702,8 @@ impl Error {
             | WorkspaceError::ChangedPathLimit
             | WorkspaceError::EmptyContentSet
             | WorkspaceError::NotFork
-            | WorkspaceError::ContentLengthOverflow
-            | WorkspaceError::Work(_)
-            | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
+            | WorkspaceError::ContentLengthOverflow => ErrorCode::Invalid,
+            WorkspaceError::Work(_) | WorkspaceError::WorkMerge { .. } => ErrorCode::Storage,
             WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
             WorkspaceError::Engine(_) => ErrorCode::Storage,
         }
@@ -1035,26 +1069,24 @@ impl Error {
             return true;
         }
         // A retained workspace cause is model feedback only as a definitive
-        // refusal; exhausted work stays a harness failure despite its Invalid code.
+        // refusal; native accounting work is not a tool refusal.
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::NativeWorkspace { source, .. } = self {
             use crate::wire::ErrorCode;
-            return !matches!(
-                **source,
-                acyclic_fs::WorkspaceError::Work(_) | acyclic_fs::WorkspaceError::WorkMerge { .. }
-            ) && matches!(
-                Self::workspace_error_code(source),
-                ErrorCode::Invalid
-                    | ErrorCode::NotFound
-                    | ErrorCode::Conflict
-                    | ErrorCode::Unauthorized
-            );
+            return !workspace_has_native_work(source)
+                && matches!(
+                    Self::workspace_error_code(source),
+                    ErrorCode::Invalid
+                        | ErrorCode::NotFound
+                        | ErrorCode::Conflict
+                        | ErrorCode::Unauthorized
+                );
         }
         // A lazy source's definitive refusal (an absent path, a directory read
         // as a file) is the request's error; exhausted native work is not.
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::NativeSource { source, .. } = self {
-            return !matches!(**source, acyclic_fs::LazyWorkspaceError::NativeWork(_))
+            return !lazy_has_native_work(source)
                 && matches!(
                     lazy_source_error_code(source),
                     ErrorCode::Invalid
@@ -1569,6 +1601,66 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn nested_source_causes_preserve_classification_and_settlement() {
+        use acyclic_fs::kernel::{NamespacePathError as Path, PathLookupError};
+        use acyclic_fs::{FsError, LazyWorkspaceError as Lazy, WorkspaceError as Workspace};
+        for (source, code, settles) in [
+            (Path::Cancelled, ErrorCode::Cancelled, false),
+            (
+                Path::Work(acyclic_fs::WorkError::Overflow),
+                ErrorCode::Storage,
+                false,
+            ),
+            (Path::AllocationFailed, ErrorCode::Storage, false),
+            (Path::PrefixOutOfRange, ErrorCode::Invalid, true),
+        ] {
+            for source in [
+                Lazy::NamespacePath(source.clone()),
+                Lazy::WorkspaceCause(Workspace::NamespacePath(source.clone())),
+                Lazy::Filesystem(FsError::Path(PathLookupError::NamespacePath(
+                    source.clone(),
+                ))),
+                Lazy::WorkspaceCause(Workspace::Filesystem(FsError::Path(
+                    PathLookupError::NamespacePath(source.clone()),
+                ))),
+            ] {
+                let error = Error::from(source);
+                assert_eq!(error.code(), code, "{error:?}");
+                assert_eq!(error.settles_tool_call(), settles, "{error:?}");
+            }
+            let workspace = Error::from(Workspace::NamespacePath(source));
+            assert_eq!(workspace.code(), code);
+            assert_eq!(workspace.settles_tool_call(), settles);
+        }
+        for source in [
+            Lazy::NativeWork(acyclic_fs::NativeTreeMaterializationError::MissingEntry),
+            Lazy::Filesystem(FsError::NativeKernel(
+                acyclic_fs::NativeTreeMaterializationError::MissingEntry,
+            )),
+            Lazy::WorkspaceCause(Workspace::Filesystem(FsError::NativeKernel(
+                acyclic_fs::NativeTreeMaterializationError::MissingEntry,
+            ))),
+        ] {
+            let error = Error::from(source);
+            assert_eq!(error.code(), ErrorCode::NotFound);
+            assert!(
+                !error.settles_tool_call(),
+                "native work became a tool refusal: {error:?}"
+            );
+        }
+        let workspace = Error::from(Workspace::Filesystem(FsError::NativeKernel(
+            acyclic_fs::NativeTreeMaterializationError::MissingEntry,
+        )));
+        assert!(!workspace.settles_tool_call());
+        let work = Error::from(Lazy::WorkspaceCause(Workspace::Work(
+            acyclic_fs::WorkError::Overflow,
+        )));
+        assert_eq!(work.code(), ErrorCode::Storage);
+        assert!(!work.settles_tool_call());
+    }
 
     fn cause(index: usize) -> Error {
         match index {
