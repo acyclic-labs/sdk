@@ -1223,7 +1223,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     &write,
                     &[ContentChange::Delete { path: first.path() }],
                     &IdempotencyKey::new(format!("absent-delete-{index}"))?,
-                    64,
+                    Some(64),
                     delete_access,
                     None,
                 )?
@@ -1254,7 +1254,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 &write,
                 &[add("progress")],
                 &IdempotencyKey::new("progress-create")?,
-                64,
+                Some(64),
                 update_access,
                 None,
             )?
@@ -1283,7 +1283,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                             bytes,
                         }],
                         &IdempotencyKey::new("forged-progress-source")?,
-                        64,
+                        Some(64),
                         update_access,
                         None,
                     )?
@@ -1295,7 +1295,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                         &volume,
                         &write,
                         &IdempotencyKey::new("forged-progress-source")?,
-                        64_000,
+                        Some(64_000),
                         update_access,
                     )?
                     .await?
@@ -1312,7 +1312,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     &write,
                     &changes,
                     &IdempotencyKey::new(key)?,
-                    64,
+                    Some(64),
                     update_access,
                     None,
                 )?
@@ -1328,7 +1328,7 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 &volume,
                 &write,
                 &IdempotencyKey::new("progress-same")?,
-                64_000,
+                Some(64_000),
                 update_access,
             )?
             .await?
