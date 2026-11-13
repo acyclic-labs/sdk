@@ -980,6 +980,10 @@ const ALLOWED_SYSCALLS: &[libc::c_long] = &[
     libc::SYS_membarrier,
     libc::SYS_sched_yield,
     libc::SYS_sched_getaffinity,
+    // POSIX thread runtimes query scheduling by thread ID. These reads acquire
+    // no scheduler control; all scheduling mutations remain outside this list.
+    libc::SYS_sched_getparam,
+    libc::SYS_sched_getscheduler,
     libc::SYS_restart_syscall,
     // Descriptor events and this process's clocks/identity expose no
     // independently named host mutation or external message channel.

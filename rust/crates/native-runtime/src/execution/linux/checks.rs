@@ -254,6 +254,7 @@ proptest! {
             libc::SYS_semget, libc::SYS_semop, libc::SYS_semctl,
             libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
             libc::SYS_process_madvise, libc::SYS_process_mrelease,
+            libc::SYS_sched_setparam, libc::SYS_sched_setscheduler, libc::SYS_sched_setattr,
             libc::SYS_capset] {
             prop_assert_eq!(evaluate(code, ARCH, u32::try_from(call).map_err(|_| TestCaseError::fail("syscall number outside seccomp ABI"))?, arguments)?, DENY);
         }

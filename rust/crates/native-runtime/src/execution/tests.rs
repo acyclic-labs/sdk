@@ -157,6 +157,13 @@ fn sandbox_policy_probe() {
     allowed(std::fs::read(&outside).map(|_| ()), !confined);
     #[cfg(target_os = "linux")]
     outside_attributes(Path::new(&outside), confined, false);
+    #[cfg(target_os = "linux")]
+    {
+        scheduler_queries(confined);
+        std::thread::spawn(move || scheduler_queries(confined))
+            .join()
+            .unwrap();
+    }
     allowed(std::fs::write(&outside, b"escaped"), !confined);
     assert_eq!(std::fs::read("readable").unwrap(), b"workspace data");
     assert_eq!(
@@ -215,6 +222,48 @@ fn sandbox_policy_probe() {
         std::net::TcpStream::connect(std::env::var("ACYCLIC_POLICY_DESTINATION").unwrap())
             .map(|_| ()),
         !confined,
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code, reason = "native pthread and scheduler boundary probes")]
+fn scheduler_queries(confined: bool) {
+    // SAFETY: gettid has no pointer arguments and returns this live thread's ID.
+    let thread = libc::pid_t::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap();
+    let mut parameters = libc::sched_param { sched_priority: 0 };
+    // SAFETY: the current thread exists and the output parameter is writable.
+    assert_eq!(unsafe { libc::sched_getparam(thread, &mut parameters) }, 0);
+    // SAFETY: querying this live thread needs no borrowed storage.
+    let policy = unsafe { libc::sched_getscheduler(thread) };
+    assert!(
+        policy >= 0,
+        "scheduler query: {}",
+        io::Error::last_os_error()
+    );
+    let mut pthread_policy = -1;
+    let mut pthread_parameters = libc::sched_param { sched_priority: -1 };
+    // SAFETY: pthread_self is a live pthread handle; both outputs are writable.
+    let result = unsafe {
+        libc::pthread_getschedparam(
+            libc::pthread_self(),
+            &mut pthread_policy,
+            &mut pthread_parameters,
+        )
+    };
+    assert_eq!(result, 0, "pthread scheduler query failed: {result}");
+    assert_eq!(pthread_policy, policy);
+    assert_eq!(pthread_parameters.sched_priority, parameters.sched_priority);
+
+    // A negative PID cannot change any thread. The unconfined control reaches
+    // the kernel's EINVAL; confinement must still reject the mutation with EPERM.
+    // SAFETY: parameters is valid; the deliberately invalid PID names no process.
+    assert_eq!(
+        unsafe { libc::sched_setscheduler(-1, policy, &parameters) },
+        -1
+    );
+    assert_eq!(
+        io::Error::last_os_error().raw_os_error(),
+        Some(if confined { libc::EPERM } else { libc::EINVAL })
     );
 }
 
