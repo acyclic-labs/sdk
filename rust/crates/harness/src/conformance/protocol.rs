@@ -11,7 +11,7 @@ use acyclic_harness_core::{
         StatusRecord,
     },
     approvals::ApprovalPolicy,
-    interaction::ApprovalBinding,
+    interaction::{ApprovalBinding, ApprovalSubject, Interaction},
     model::{ModelContent, ModelEvent, ToolCall},
     tool::ToolDefinition,
 };
@@ -191,6 +191,27 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 return Err("an unapproved tool ran".into());
             }
             let pending = items.pop().ok_or("approval missing")?;
+            let request_bytes = read(
+                endpoint,
+                &root,
+                ReadTarget::Approval {
+                    status: pending.status,
+                },
+            )
+            .await?;
+            if !matches!(
+                serde_json::from_slice::<Interaction>(&request_bytes)?,
+                Interaction::Approval {
+                    operation_id,
+                    action_digest,
+                    subject: ApprovalSubject::Tool { tool, call_id, arguments, .. },
+                    ..
+                } if operation_id == pending.binding.operation_id
+                    && action_digest == pending.binding.action_digest
+                    && tool == TOOL && call_id == "call-0" && arguments == json!({})
+            ) {
+                return Err("the original approval request differs from its pending action".into());
+            }
             let ApprovalBinding {
                 operation_id,
                 action_digest,
@@ -218,6 +239,18 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 != serde_json::to_value(call(endpoint, &exact).await??)?
             {
                 return Err("a settled decision did not replay its exact receipt".into());
+            }
+            if request_bytes
+                != read(
+                    endpoint,
+                    &root,
+                    ReadTarget::Approval {
+                        status: pending.status,
+                    },
+                )
+                .await?
+            {
+                return Err("settlement changed the original approval request bytes".into());
             }
         }
         endpoint.drain(&root).await?;
