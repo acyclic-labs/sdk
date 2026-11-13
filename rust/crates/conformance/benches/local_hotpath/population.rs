@@ -169,7 +169,7 @@ impl Fixture {
             handler: bound.handler(),
             entries: entries.clone(),
         });
-        let bound = bound.hosting(handler)?;
+        let bound = bound.hosting(acyclic_actors::guest::Requests::default(), handler)?;
         Ok(Self {
             stream,
             requests,
