@@ -9,10 +9,14 @@ async fn durable(provider: &LocalStream, path: StreamPath, through: u64) -> Resu
 
 /// Both device publication policies and an ambient deferred-write scope must
 /// leave acknowledgements behind the same physical journal durability oracle.
-async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool, Failure> {
+async fn acknowledged_cuts(
+    policy: LocalDurability,
+    bypass: bool,
+    confirmation_faults: bool,
+) -> Result<bool, Failure> {
     let directory = tempfile::tempdir()?;
-    let provider = Arc::new(
-        LocalStream::open(
+    let provider = Arc::new(Faulty {
+        inner: LocalStream::open(
             directory.path(),
             LocalStreamLimits {
                 durability: policy,
@@ -20,7 +24,19 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
             },
         )
         .await?,
-    );
+        plan: if confirmation_faults {
+            vec![
+                Fault::LoseDurabilityAck(StreamError::AccessDenied),
+                Fault::None, // exact creation replay
+                Fault::None, // claim
+                Fault::None, // invocation admission
+                Fault::LoseDurabilityAck(StreamError::AccessDenied),
+            ]
+        } else {
+            Vec::new()
+        },
+        calls: AtomicUsize::new(0),
+    });
     let store = Store::new(provider.clone(), path("durability/actors")?);
     let actor = ActorReference::new(b"account", b"agents", b"durability")?;
     acyclic_stream::deferring_durability(async {
@@ -45,9 +61,18 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
             // omitting the Actors durability boundary.
             PreparedPublish::settle(&provider.commit(creation.into_request()?).await?)?;
         } else {
-            store.submit(creation).await?;
+            match store.submit(creation).await {
+                Ok(()) if !confirmation_faults => {}
+                Err(Error::Unknown {
+                    publication,
+                    source,
+                }) if confirmation_faults && source == StreamError::AccessDenied => {
+                    store.submit(*publication).await?;
+                }
+                _ => return Ok(false),
+            }
         }
-        if !durable(&provider, store.path(&actor)?, 1).await? {
+        if !durable(&provider.inner, store.path(&actor)?, 1).await? {
             return Ok(false);
         }
         store
@@ -57,7 +82,7 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
                 IdempotencyKey::new(b"claim".to_vec())?,
             )
             .await?;
-        if !durable(&provider, store.path(&actor)?, 2).await? {
+        if !durable(&provider.inner, store.path(&actor)?, 2).await? {
             return Ok(false);
         }
         let invocation = crate::invocation::Invocation::new(
@@ -69,7 +94,7 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
         )?;
         let ticket = store.enqueue_invoke(&invocation).await?;
         if !durable(
-            &provider,
+            &provider.inner,
             path("durability/inbox")?,
             ticket.record().sequence + 1,
         )
@@ -102,27 +127,38 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
         // durability confirmation. A response observer runs at this cut.
         PreparedPublish::settle(&provider.commit(publication.request.clone()).await?)?;
         assert!(
-            !durable(&provider, store.path(&actor)?, before.tail + 1).await?,
+            !durable(&provider.inner, store.path(&actor)?, before.tail + 1).await?,
             "the simulation must hold the publisher before its durable cut"
         );
         let call = ticket.call()?;
-        let completed = store.wait_invocation(ticket).await?;
-        let observed_durable = durable(
-            &provider,
-            store.path(&actor)?,
-            completed.receipt().revision(),
-        )
-        .await?
+        let observed = store.wait_invocation(ticket.clone()).await;
+        let original = match observed {
+            Ok(completed) if !confirmation_faults => completed.receipt().call().clone(),
+            Err(Error::InvocationDurabilityUnknown { receipt, source })
+                if confirmation_faults && source == StreamError::AccessDenied =>
+            {
+                if receipt.outcome
+                    != crate::call::Outcome::Ok(Bytes::from_static(b"completed").into())
+                {
+                    return Ok(false);
+                }
+                *receipt
+            }
+            _ => return Ok(false),
+        };
+        let observed_durable = durable(&provider.inner, store.path(&actor)?, before.tail + 1)
+            .await?
             && durable(
-                &provider,
+                &provider.inner,
                 call.log().clone(),
-                completed.receipt().terminal().sequence + 1,
+                original.terminal.sequence + 1,
             )
             .await?;
         // Resume the original publisher with its exact request. Its later
         // acknowledgement cannot retroactively certify the observer's reply.
         store.submit(publication).await?;
-        Ok(observed_durable)
+        let completed = store.wait_invocation(ticket).await?;
+        Ok(observed_durable && *completed.receipt().call() == original)
     })
     .await
 }
@@ -130,10 +166,12 @@ async fn acknowledged_cuts(policy: LocalDurability, bypass: bool) -> Result<bool
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_actor_acknowledgement_is_covered_by_the_device_durable_cut() -> Result<(), Failure> {
     for policy in [LocalDurability::FullFlush, LocalDurability::Barrier] {
-        assert!(
-            acknowledged_cuts(policy, false).await?,
-            "Actors acknowledged a publication before its device durable cut: {policy:?}"
-        );
+        for confirmation_faults in [false, true] {
+            assert!(
+                acknowledged_cuts(policy, false, confirmation_faults).await?,
+                "Actors acknowledged a publication before its device durable cut: {policy:?}, confirmation_faults={confirmation_faults}"
+            );
+        }
     }
     Ok(())
 }
@@ -141,6 +179,6 @@ async fn every_actor_acknowledgement_is_covered_by_the_device_durable_cut() -> R
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn negative_control_unsealed_acceptance_fails_the_durable_cut_oracle() -> Result<(), Failure>
 {
-    assert!(!acknowledged_cuts(LocalDurability::FullFlush, true).await?);
+    assert!(!acknowledged_cuts(LocalDurability::FullFlush, true, false).await?);
     Ok(())
 }

@@ -29,10 +29,12 @@ enum Fault {
     LoseAck,
     /// The provider refuses this request before applying it.
     Refuse(StreamError),
+    /// The device confirms persistence, then that confirmation reply is lost.
+    LoseDurabilityAck(StreamError),
 }
 
-struct Faulty {
-    inner: MemoryStream,
+struct Faulty<P = MemoryStream> {
+    inner: P,
     plan: Vec<Fault>,
     calls: AtomicUsize,
 }
@@ -40,9 +42,16 @@ struct Faulty {
 macro_rules! delegate {
     ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
         #[async_trait::async_trait]
-        impl StreamProvider for Faulty {
+        impl<P: StreamProvider> StreamProvider for Faulty<P> {
             fn context(&self) -> acyclic_stream::ProviderContext<'_> {
-                acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
+                self.inner.context()
+            }
+            async fn durability_barrier(&self) -> Result<(), StreamError> {
+                self.inner.durability_barrier().await?;
+                match self.calls.load(Ordering::SeqCst).checked_sub(1).and_then(|call| self.plan.get(call)) {
+                    Some(Fault::LoseDurabilityAck(error)) => Err(error.clone()),
+                    _ => Ok(()),
+                }
             }
             $(async fn $name(&self, $arg: $input) -> Result<$output, StreamError> {
                 self.inner.$name($arg).await
@@ -58,7 +67,7 @@ macro_rules! delegate {
                 Box::pin(async move {
                     let call = self.calls.fetch_add(1, Ordering::SeqCst);
                     match self.plan.get(call).cloned().unwrap_or(Fault::None) {
-                        Fault::None => self.inner.write(request).await,
+                        Fault::None | Fault::LoseDurabilityAck(_) => self.inner.write(request).await,
                         Fault::Drop => Err(StreamError::Unavailable),
                         Fault::Refuse(error) => Err(error),
                         Fault::LoseAck => {
