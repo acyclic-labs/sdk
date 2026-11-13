@@ -22,16 +22,20 @@ where
             let files = files.clone();
             let stream = stream.clone();
             async move {
+                let started = std::time::Instant::now();
                 let result = async {
-                    let observed = Value::Array(
-                        execution::run_with_filesystem(
-                            Scenario::from_value(case.clone())?,
-                            files,
-                            stream,
-                        )
-                        .await?
-                        .trace()
-                        .await?,
+                    let outcome = execution::run_with_filesystem(
+                        Scenario::from_value(case.clone())?,
+                        files,
+                        stream,
+                    )
+                    .await?;
+                    let executed = started.elapsed();
+                    let observed = Value::Array(outcome.trace().await?);
+                    eprintln!(
+                        "substrate case {name}/{}: execute={executed:?} replay={:?}",
+                        path.display(),
+                        started.elapsed() - executed,
                     );
                     if &observed != expected {
                         return Err("scenario traces differ".into());
