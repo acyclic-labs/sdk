@@ -323,6 +323,10 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             publication.publish(&client, 1, 4096).await.is_err(),
             "peer append authority published directory metadata"
         );
+        assert!(matches!(
+            stream.tail(publication.path()?).await,
+            Err(StreamError::NotFound)
+        ));
         let mut foreign = publication.clone();
         foreign.actor = message.to.clone();
         assert!(
