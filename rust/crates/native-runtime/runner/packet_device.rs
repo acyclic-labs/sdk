@@ -2,6 +2,7 @@
 //! No callback, namespace lookup, or wait for an owner runs in this process.
 
 use super::packet_device_receipt::Receipt;
+use super::packet_device_writer::Writer;
 use super::{fuse_protocol, receive_handles, sys};
 use core::ptr;
 use sys::{Errno, Fd};
@@ -58,6 +59,16 @@ struct Session {
     stream: Fd,
     input: Option<Packet>,
     output: Option<Packet>,
+    notification: Option<Packet>,
+    notification_next: *mut Session,
+    notification_previous: *mut Session,
+    notification_queued: bool,
+    notification_in_flight: bool,
+    retiring: bool,
+    // A bounded admission window applies backpressure, never a request limit.
+    // Retained original identities let owner-death replies release inode locks
+    // before the notifier's borrowed device and packet can be surrendered.
+    requests: [u64; 64],
     protocol: Option<fuse_protocol::Session>,
     response: Response,
     initializing: bool,
@@ -76,6 +87,102 @@ enum Response {
 // Both supported Linux architectures have pages of at least 4096 bytes.
 // Client funding owns one whole page for this fixed metadata mapping.
 const _: () = assert!(core::mem::size_of::<Session>() <= 4096);
+
+struct Notifications {
+    writer: Writer,
+    first: *mut Session,
+    last: *mut Session,
+}
+
+impl Notifications {
+    fn new() -> Result<Self, Errno> {
+        Ok(Self {
+            writer: Writer::new()?,
+            first: ptr::null_mut(),
+            last: ptr::null_mut(),
+        })
+    }
+
+    fn enqueue(&mut self, session: &mut Session) {
+        assert!(!session.notification_queued && !session.notification_in_flight);
+        let current = ptr::from_mut(session);
+        session.notification_queued = true;
+        session.notification_previous = self.last;
+        // SAFETY: queued sessions retain their mapping until removal. These
+        // links belong exclusively to this host's event-loop thread.
+        unsafe {
+            if self.last.is_null() {
+                self.first = current;
+            } else {
+                (*self.last).notification_next = current;
+            }
+        }
+        self.last = current;
+    }
+
+    fn remove(&mut self, session: &mut Session) {
+        if !session.notification_queued {
+            return;
+        }
+        // SAFETY: the original list owns these live neighboring sessions;
+        // retirement removes a ready node before its mapping can be freed.
+        unsafe {
+            if session.notification_previous.is_null() {
+                self.first = session.notification_next;
+            } else {
+                (*session.notification_previous).notification_next = session.notification_next;
+            }
+            if session.notification_next.is_null() {
+                self.last = session.notification_previous;
+            } else {
+                (*session.notification_next).notification_previous = session.notification_previous;
+            }
+        }
+        session.notification_next = ptr::null_mut();
+        session.notification_previous = ptr::null_mut();
+        session.notification_queued = false;
+    }
+
+    fn start(&mut self) -> Result<(), Errno> {
+        if self.writer.busy() || self.first.is_null() {
+            return Ok(());
+        }
+        // SAFETY: this queue retains its original session mapping and packet.
+        let session = unsafe { &mut *self.first };
+        self.remove(session);
+        let (bytes, length) = {
+            let packet = session.notification.as_ref().ok_or(Errno(sys::EINVAL))?;
+            (packet.bytes, packet.filled)
+        };
+        // SAFETY: retirement preserves this exact device and packet until
+        // complete; no caller mutates the notification slot while in flight.
+        unsafe {
+            self.writer.submit(
+                ptr::from_mut(session).expose_provenance(),
+                session.device,
+                bytes,
+                length,
+            )?;
+        }
+        session.notification_in_flight = true;
+        Ok(())
+    }
+
+    fn complete(&mut self) -> Result<(*mut Session, Result<(), Errno>), Errno> {
+        let (token, result) = self.writer.complete()?;
+        let pointer = ptr::with_exposed_provenance_mut::<Session>(token);
+        // SAFETY: an in-flight session cannot be closed or unmapped until
+        // this original worker completion releases its physical borrow.
+        let session = unsafe { &mut *pointer };
+        session.notification_in_flight = false;
+        session
+            .notification
+            .as_mut()
+            .ok_or(Errno(sys::EINVAL))?
+            .filled = 0;
+        Ok((pointer, result))
+    }
+}
 
 impl Session {
     fn new(control: Fd) -> Result<*mut Self, Errno> {
@@ -97,6 +204,13 @@ impl Session {
                 stream: -1,
                 input: None,
                 output: None,
+                notification: None,
+                notification_next: ptr::null_mut(),
+                notification_previous: ptr::null_mut(),
+                notification_queued: false,
+                notification_in_flight: false,
+                retiring: false,
+                requests: [0; 64],
                 protocol: None,
                 response: Response::Backend,
                 initializing: false,
@@ -114,6 +228,20 @@ impl Session {
                 self.device,
                 !self.device_registered,
                 sys::EPOLL_IN,
+                base | DEVICE,
+            )?;
+            self.device_registered = true;
+        } else if self.retiring {
+            let output = self.output.as_ref().ok_or(Errno(sys::EINVAL))?;
+            sys::interest(
+                queue,
+                self.device,
+                !self.device_registered,
+                if output.filled == 0 && self.requests.iter().all(|unique| *unique == 0) {
+                    sys::EPOLL_IN
+                } else {
+                    sys::EPOLL_OUT
+                },
                 base | DEVICE,
             )?;
             self.device_registered = true;
@@ -182,6 +310,7 @@ impl Session {
         }
         self.input = Some(Packet::new(capacity)?);
         self.output = Some(Packet::new(capacity)?);
+        self.notification = Some(Packet::new(capacity)?);
         sys::nonblocking(self.device)?;
         sys::nonblocking(self.stream)?;
         sys::interest(
@@ -292,7 +421,10 @@ impl Session {
         self.interest(queue)?;
         write_control(self.control, &0_i32.to_ne_bytes())
     }
-    fn progress(&mut self) -> Result<(), Errno> {
+    fn progress(&mut self, notifications: &mut Notifications) -> Result<(), Errno> {
+        if self.retiring {
+            return self.refuse_pending(notifications);
+        }
         let protocol = self.protocol.as_ref().ok_or(Errno(sys::EINVAL))?;
         let output = self.output.as_mut().ok_or(Errno(sys::EINVAL))?;
         if protocol.ready() && matches!(self.response, Response::Backend) {
@@ -313,7 +445,7 @@ impl Session {
                 output.filled += count;
             }
         }
-        self.publish()?;
+        self.publish(notifications)?;
         let input = self.input.as_mut().ok_or(Errno(sys::EINVAL))?;
         let output = self.output.as_mut().ok_or(Errno(sys::EINVAL))?;
         let protocol = self.protocol.as_ref().ok_or(Errno(sys::EINVAL))?;
@@ -337,7 +469,15 @@ impl Session {
                 Err(fuse_protocol::Error::Errno(sys::EACCES))
             };
             match prepared {
-                Ok(fuse_protocol::Prepared::Backend) => input.routed = true,
+                Ok(fuse_protocol::Prepared::Backend) => {
+                    if !matches!(request.opcode, 2 | 42) {
+                        let Some(credit) = self.requests.iter_mut().find(|slot| **slot == 0) else {
+                            return Ok(());
+                        };
+                        *credit = request.unique;
+                    }
+                    input.routed = true;
+                }
                 Ok(fuse_protocol::Prepared::Reply { length, transition }) => {
                     output.filled = length;
                     self.response = Response::Session {
@@ -388,13 +528,13 @@ impl Session {
             }
         }
         if local {
-            self.publish()?;
+            self.publish(notifications)?;
         }
         Ok(())
     }
 
     /// The only positive publication boundary is the physical device write.
-    fn publish(&mut self) -> Result<(), Errno> {
+    fn publish(&mut self, notifications: &mut Notifications) -> Result<(), Errno> {
         let output = self.output.as_mut().ok_or(Errno(sys::EINVAL))?;
         if output.filled < 4 {
             return Ok(());
@@ -407,21 +547,53 @@ impl Session {
             return Ok(());
         }
         let notification = needed >= 16 && output.slice(8, 16) == [0; 8];
+        if notification {
+            if !matches!(self.response, Response::Backend)
+                || self.notification_queued
+                || self.notification_in_flight
+            {
+                return Err(Errno(sys::EINVAL));
+            }
+            core::mem::swap(&mut self.output, &mut self.notification);
+            notifications.enqueue(self);
+            return Ok(());
+        }
+        let unique = if needed >= 16 {
+            u64::from_ne_bytes(
+                output
+                    .slice(8, 16)
+                    .try_into()
+                    .map_err(|_| Errno(sys::EINVAL))?,
+            )
+        } else {
+            0
+        };
         let count = match write(self.device, output.slice(0, needed)) {
             Ok(Some(count)) => count,
             Ok(None) => return Ok(()),
-            Err(error) if matches!(self.response, Response::Backend) => {
+            Err(error)
+                if matches!(self.response, Response::Backend)
+                    || (self.retiring && error.0 == sys::ENOENT) =>
+            {
                 // A failed atomic device write publishes no bytes. Preserve
                 // the original errno for the caller's policy (cache invalidation
                 // can legitimately miss an inode) and keep the session alive.
                 output.filled = 0;
-                send_receipt(self.control, Receipt::Rejected(notification, error.0))?;
+                if let Some(credit) = self.requests.iter_mut().find(|slot| **slot == unique) {
+                    *credit = 0;
+                }
+                if !self.retiring {
+                    send_receipt(self.control, Receipt::Rejected(notification, error.0))?;
+                }
                 return Ok(());
             }
             Err(error) => return Err(error),
         };
         if count != needed {
             return Err(Errno(sys::EPIPE));
+        }
+        if let Some(credit) = self.requests.iter_mut().find(|slot| **slot == unique) {
+            *credit = 0;
         }
         if self.initialization_trace >= 0 && matches!(self.response, Response::Session { .. }) {
             let input = self.input.as_mut().ok_or(Errno(sys::EINVAL))?;
@@ -479,7 +651,83 @@ impl Session {
         }
         write_control(self.control, &response)
     }
+    fn begin_retirement(&mut self, queue: Fd, notifications: &mut Notifications) -> bool {
+        notifications.remove(self);
+        if !self.notification_in_flight {
+            return true;
+        }
+        if !self.retiring {
+            self.retiring = true;
+            // Keep only the borrowed physical device and its original packet.
+            // The dead backend cannot finish its outstanding requests; answer
+            // those with EIO so their kernel inode locks release the notifier.
+            for file in [
+                &mut self.stream,
+                &mut self.owner,
+                &mut self.initialization_trace,
+            ] {
+                if *file >= 0 {
+                    sys::unwatch(queue, *file);
+                    sys::close(*file);
+                    *file = -1;
+                }
+            }
+            sys::unwatch(queue, self.control);
+            if let Some(input) = self.input.as_mut() {
+                input.filled = 0;
+                input.sent = 0;
+                input.routed = false;
+            }
+            if let Some(output) = self.output.as_mut() {
+                output.filled = 0;
+            }
+        }
+        let _ = self.refuse_pending(notifications);
+        let _ = self.interest(queue);
+        false
+    }
+
+    fn refuse_pending(&mut self, notifications: &mut Notifications) -> Result<(), Errno> {
+        self.publish(notifications)?;
+        if self.output.as_ref().ok_or(Errno(sys::EINVAL))?.filled != 0 {
+            return Ok(());
+        }
+        let unique = if let Some(unique) = self.requests.iter().copied().find(|unique| *unique != 0)
+        {
+            unique
+        } else {
+            let input = self.input.as_mut().ok_or(Errno(sys::EINVAL))?;
+            let Some(count) = read(self.device, input.slice(0, input.capacity))? else {
+                return Ok(());
+            };
+            if count == 0 {
+                return Err(Errno(sys::EPIPE));
+            }
+            let request = fuse_protocol::Request::parse(input.slice(0, count)).map_err(Errno)?;
+            if matches!(request.opcode, 2 | 42) {
+                return Ok(());
+            }
+            self.requests[0] = request.unique;
+            request.unique
+        };
+        let output = self.output.as_mut().ok_or(Errno(sys::EINVAL))?;
+        output.filled = fuse_protocol::reply(
+            output.slice(0, output.capacity),
+            unique,
+            &[],
+            Some(sys::EIO),
+        )
+        .map_err(Errno)?;
+        self.response = Response::Session {
+            transition: None,
+            failure: None,
+            close: false,
+        };
+        self.publish(notifications)
+    }
+
     fn close(&mut self, queue: Fd) {
+        assert!(!self.notification_in_flight && !self.notification_queued);
         self.active = false;
         // Device closure must precede the control EOF acknowledging retirement.
         for file in [
@@ -513,7 +761,7 @@ fn read(file: Fd, bytes: &mut [u8]) -> Result<Option<usize>, Errno> {
     }
 }
 
-fn write(file: Fd, bytes: &[u8]) -> Result<Option<usize>, Errno> {
+pub(super) fn write(file: Fd, bytes: &[u8]) -> Result<Option<usize>, Errno> {
     loop {
         match sys::write(file, bytes) {
             Err(Errno(sys::EINTR)) => {}
@@ -589,16 +837,26 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
     const ADMISSION: Fd = 4;
     const ADMISSION_EVENTS: Fd = 5;
     const RELEASED: u64 = u64::MAX;
+    const NOTIFIED: u64 = u64::MAX - 1;
     sys::nonblocking(listener)?;
     let queue = sys::epoll()?;
     sys::interest(queue, listener, true, sys::EPOLL_IN, 0)?;
     sys::interest(queue, ADMISSION_EVENTS, true, sys::EPOLL_IN, RELEASED)?;
+    let mut notifications = Notifications::new()?;
+    sys::interest(
+        queue,
+        notifications.writer.completion(),
+        true,
+        sys::EPOLL_IN,
+        NOTIFIED,
+    )?;
     let mut first: *mut Session = ptr::null_mut();
     let mut events = [sys::EpollEvent {
         events: 0,
         token: 0,
     }; 64];
     loop {
+        notifications.start()?;
         let count = sys::events(queue, &mut events)?;
         let mut garbage: *mut Session = ptr::null_mut();
         for event in &events[..count] {
@@ -614,6 +872,29 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 let _ = read(ADMISSION_EVENTS, &mut [0; 4096])?;
                 continue;
             }
+            if token == NOTIFIED {
+                let (session, outcome) = notifications.complete()?;
+                // SAFETY: the original worker completion releases this
+                // session's last physical borrow before retirement can unlink it.
+                unsafe {
+                    let current = &mut *session;
+                    let result = if current.retiring || matches!(outcome, Err(Errno(sys::EPIPE))) {
+                        Err(Errno(sys::EPIPE))
+                    } else {
+                        send_receipt(
+                            current.control,
+                            match outcome {
+                                Ok(()) => Receipt::Published(true),
+                                Err(error) => Receipt::Rejected(true, error.0),
+                            },
+                        )
+                    };
+                    if result.is_err() {
+                        retire_session(queue, session, &mut first, &mut garbage);
+                    }
+                }
+                continue;
+            }
             let session = ptr::with_exposed_provenance_mut::<Session>((token & !3) as usize);
             // SAFETY: event tokens name live list entries. Retired entries stay
             // mapped until this entire event batch has surrendered its tokens.
@@ -623,7 +904,11 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                     continue;
                 }
                 let kind = token & 3;
-                let result = if kind == OWNER
+                let result = if current.retiring {
+                    current
+                        .progress(&mut notifications)
+                        .and_then(|()| current.interest(queue))
+                } else if kind == OWNER
                     || (event.events & sys::EPOLL_HUP != 0
                         && !(kind == DEVICE && current.waiting_helper))
                 {
@@ -637,25 +922,17 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 } else if current.waiting_helper {
                     current.helper_ready(queue)
                 } else {
-                    current.progress().and_then(|()| current.interest(queue))
+                    current
+                        .progress(&mut notifications)
+                        .and_then(|()| current.interest(queue))
                 };
                 // An accepted stream that has not sent its first message waits
                 // on the same readable event; other sessions keep progressing.
                 if matches!(result, Err(Errno(sys::EAGAIN))) {
                     continue;
                 }
-                if result.is_err() {
-                    current.close(queue);
-                    if current.previous.is_null() {
-                        first = current.next;
-                    } else {
-                        (*current.previous).next = current.next;
-                    }
-                    if !current.next.is_null() {
-                        (*current.next).previous = current.previous;
-                    }
-                    current.garbage = garbage;
-                    garbage = session;
+                if result.is_err() && current.begin_retirement(queue, &mut notifications) {
+                    retire_session(queue, session, &mut first, &mut garbage);
                 }
             }
         }
@@ -699,6 +976,31 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
         if retire_host {
             return Ok(());
         }
+    }
+}
+
+/// The ready queue and physical writer must have surrendered this session.
+unsafe fn retire_session(
+    queue: Fd,
+    session: *mut Session,
+    first: &mut *mut Session,
+    garbage: &mut *mut Session,
+) {
+    // SAFETY: caller owns the live session's event token and no worker or
+    // ready-queue link borrows it; its storage remains through this event batch.
+    unsafe {
+        let current = &mut *session;
+        current.close(queue);
+        if current.previous.is_null() {
+            *first = current.next;
+        } else {
+            (*current.previous).next = current.next;
+        }
+        if !current.next.is_null() {
+            (*current.next).previous = current.previous;
+        }
+        current.garbage = *garbage;
+        *garbage = session;
     }
 }
 

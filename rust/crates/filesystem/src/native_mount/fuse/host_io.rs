@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 #[cfg(test)]
 thread_local! {
     static SOCKET_COMPLETION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    pub(super) static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -477,7 +477,8 @@ impl std::task::Wake for HostIo {
 }
 
 /// Fund the external packet owner before handing it a physical device.
-/// One additional buffer pair participates in the same negotiation as the
+/// The host's request/reply pair and independent notification storage
+/// participate in the same negotiation as the
 /// callback workers; it cannot silently exceed the caller's original budget.
 pub(super) struct FundedDevice {
     pub(super) capacity: u32,
@@ -489,7 +490,7 @@ pub(super) fn fund_device(
     work: &crate::NativeMaterializationWork,
 ) -> Result<FundedDevice, super::NativeMountError> {
     let workers =
-        std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS + 1).ok_or(libc::EINVAL)?;
+        std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS + 2).ok_or(libc::EINVAL)?;
     // SAFETY: sysconf takes no pointer arguments.
     let page =
         u32::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).map_err(|_| libc::EOVERFLOW)?;
@@ -497,7 +498,7 @@ pub(super) fn fund_device(
     let maximum_write = super::packet_buffers::maximum_write(work, workers, page)?;
     let capacity = maximum_write.checked_add(4096).ok_or(libc::EOVERFLOW)?;
     let bytes = acyclic_native_runtime::PacketDevice::storage_bytes(capacity)?;
-    let allocation = work.claim(bytes, 3, crate::WorkCounters::UNCHARGED)?;
+    let allocation = work.claim(bytes, 4, crate::WorkCounters::UNCHARGED)?;
     Ok(FundedDevice {
         capacity,
         maximum_write,

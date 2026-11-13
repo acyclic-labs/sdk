@@ -43,7 +43,8 @@ impl PacketDevice {
         Self::admit(File::from(OwnedFd::from(socket)), capacity, 3)
     }
 
-    /// Anonymous mapping bytes: two packet envelopes and one metadata page.
+    /// Anonymous mapping bytes: request, reply and notification envelopes,
+    /// plus one metadata page.
     /// The host checks its fixed metadata against Linux's minimum page size.
     pub fn storage_bytes(capacity: u32) -> io::Result<u64> {
         // SAFETY: sysconf has no pointer arguments.
@@ -57,7 +58,7 @@ impl PacketDevice {
             .checked_mul(page)
             .ok_or(io::ErrorKind::InvalidInput)?;
         envelope
-            .checked_mul(2)
+            .checked_mul(3)
             .and_then(|bytes| bytes.checked_add(page))
             .ok_or_else(|| io::ErrorKind::InvalidInput.into())
     }

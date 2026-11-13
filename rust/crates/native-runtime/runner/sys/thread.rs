@@ -4,9 +4,9 @@
 use super::*;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-const STACK_BYTES: usize = 4096;
-const STORAGE_BYTES: usize = 4096 + STACK_BYTES;
-const FLAGS: usize = 0x0100 | 0x0200 | 0x0400 | 0x0800 | 0x10000 | 0x40000 | 0x200000 | 0x1000000;
+// VM, FILES, SIGHAND and THREAD share only the host's necessary execution
+// state. CHILD_SETTID/CLEARTID provide the original kernel join event.
+const FLAGS: usize = 0x0100 | 0x0400 | 0x0800 | 0x10000 | 0x200000 | 0x1000000;
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -48,6 +48,7 @@ unsafe extern "C" {
 
 pub(crate) struct Thread {
     storage: *mut u8,
+    storage_bytes: usize,
 }
 
 impl Thread {
@@ -57,9 +58,23 @@ impl Thread {
         entry: extern "C" fn(usize) -> !,
         argument: usize,
     ) -> Result<Self, Errno> {
-        let storage = map(STORAGE_BYTES)?;
+        let page = page_size()?;
+        let storage_bytes = page.checked_mul(3).ok_or(Errno(ENOMEM))?;
+        let storage = map(storage_bytes)?;
+        #[cfg(target_arch = "x86_64")]
+        const MPROTECT: usize = 10;
+        #[cfg(target_arch = "aarch64")]
+        const MPROTECT: usize = 226;
+        // SAFETY: the middle native page belongs to this fresh mapping. It
+        // separates the kernel join word from the notifier's one-page stack.
+        if let Err(error) = unsafe { call(MPROTECT, [storage.add(page).addr(), page, 0, 0, 0, 0]) }
+        {
+            // SAFETY: no borrower exists before clone.
+            unsafe { unmap(storage, storage_bytes) };
+            return Err(error);
+        }
         // SAFETY: the mapping is exclusively owned and page-aligned. The
-        // first page retains the kernel's clear-child-tid word; the second
+        // first page retains the kernel's clear-child-tid word; the last
         // owns the notifier's stack through its join receipt.
         let tid = unsafe {
             let tid = storage.cast::<AtomicI32>();
@@ -70,7 +85,7 @@ impl Thread {
         // trampoline's argument/function pair, never a parent return frame.
         let stack = unsafe {
             let stack = storage
-                .add(STORAGE_BYTES - 2 * size_of::<usize>())
+                .add(storage_bytes - 2 * size_of::<usize>())
                 .cast::<usize>();
             stack.write(argument);
             stack.add(1).write(entry as usize);
@@ -81,10 +96,13 @@ impl Thread {
         let result = unsafe { acyclic_host_clone_thread(FLAGS, stack, tid.as_ptr()) };
         if result < 0 {
             // SAFETY: no thread was created, so the whole mapping is private.
-            unsafe { unmap(storage, STORAGE_BYTES) };
+            unsafe { unmap(storage, storage_bytes) };
             return Err(Errno(i32::try_from(-result).unwrap_or(EINVAL)));
         }
-        Ok(Self { storage })
+        Ok(Self {
+            storage,
+            storage_bytes,
+        })
     }
 }
 
@@ -110,8 +128,42 @@ impl Drop for Thread {
         }
         // SAFETY: the kernel cleared the original tid after the thread's last
         // userspace access; neither its stack nor its argument can be borrowed.
-        unsafe { unmap(self.storage, STORAGE_BYTES) };
+        unsafe { unmap(self.storage, self.storage_bytes) };
     }
+}
+
+fn page_size() -> Result<usize, Errno> {
+    let file = open(c"/proc/self/auxv", O_RDONLY | O_CLOEXEC)?;
+    let result = (|| loop {
+        let mut entry = [0; 2 * size_of::<usize>()];
+        let mut filled = 0;
+        while filled < entry.len() {
+            match read(file, &mut entry[filled..]) {
+                Ok(0) => return Err(Errno(EINVAL)),
+                Ok(length) => filled += length,
+                Err(Errno(EINTR)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let tag = usize::from_ne_bytes(
+            entry[..size_of::<usize>()]
+                .try_into()
+                .map_err(|_| Errno(EINVAL))?,
+        );
+        let value = usize::from_ne_bytes(
+            entry[size_of::<usize>()..]
+                .try_into()
+                .map_err(|_| Errno(EINVAL))?,
+        );
+        if tag == 6 && value.is_power_of_two() && value >= 4096 {
+            return Ok(value);
+        }
+        if tag == 0 {
+            return Err(Errno(EINVAL));
+        }
+    })();
+    close(file);
+    result
 }
 
 pub(crate) fn exit_thread() -> ! {

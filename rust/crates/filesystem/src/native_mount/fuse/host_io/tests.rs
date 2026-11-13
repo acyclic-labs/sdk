@@ -130,7 +130,7 @@ fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_i
     let (receive, send) = UnixStream::pair()?;
     let allocation = work.claim(
         PacketDevice::storage_bytes(capacity)?,
-        3,
+        4,
         crate::WorkCounters::UNCHARGED,
     )?;
     let device = PacketDevice::receive_device(receive, capacity)?;

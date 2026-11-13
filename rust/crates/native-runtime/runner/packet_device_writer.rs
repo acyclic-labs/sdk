@@ -91,6 +91,10 @@ impl Writer {
         self.completion
     }
 
+    pub(super) fn busy(&self) -> bool {
+        self.busy
+    }
+
     /// The device and immutable packet must remain live until `complete`.
     /// Only one submission may be in flight; the host owns its ready queue.
     pub(super) unsafe fn submit(
@@ -187,11 +191,10 @@ extern "C" fn run(argument: usize) -> ! {
 
 fn publish(queue: Fd, device: Fd, bytes: &[u8]) -> Result<(), Errno> {
     loop {
-        match sys::write(device, bytes) {
-            Ok(length) if length == bytes.len() => return Ok(()),
-            Ok(_) => return Err(Errno(sys::EPIPE)),
-            Err(Errno(sys::EINTR)) => {}
-            Err(Errno(sys::EAGAIN)) => {
+        match super::packet_device::write(device, bytes) {
+            Ok(Some(length)) if length == bytes.len() => return Ok(()),
+            Ok(Some(_)) => return Err(Errno(sys::EPIPE)),
+            Ok(None) => {
                 sys::interest(queue, device, true, sys::EPOLL_OUT, 0)?;
                 let mut events = [sys::EpollEvent {
                     events: 0,
