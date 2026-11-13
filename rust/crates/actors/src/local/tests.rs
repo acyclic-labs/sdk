@@ -380,12 +380,12 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         result.clone(),
         key("invoked/publish")?,
     )?;
-    let original_request = publication.request().clone();
+    let original_request = publication.request.clone();
     assert!(matches!(
         publication.join(reply_fork),
         Err(Error::Invalid("effect changes the host's invocation reply"))
     ));
-    assert_eq!(publication.request(), &original_request);
+    assert_eq!(publication.request, original_request);
     store.submit(publication).await?;
     // Lost reply and acknowledgement: replay the same original publication,
     // then reopen the Store and retry the public operation identity.

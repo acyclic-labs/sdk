@@ -282,7 +282,7 @@ async fn publication_and_reopen() -> TestResult {
         let mut prepared = binding.prepare_publish(&record(0), None, update, key("hot/joined")?)?;
         let retained = prepared.journal.as_ref().ok_or("missing journal fence")?;
         let appended = prepared
-            .request()
+            .request
             .mutations()
             .find_map(|mutation| match mutation {
                 CommitMutation::Append { path, .. } if path == retained => Some(path),

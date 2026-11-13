@@ -565,7 +565,7 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
     let Err(Error::Unknown { publication, .. }) = result else {
         return Err("lost invocation acknowledgement did not retain custody".into());
     };
-    let original = publication.request().clone();
+    let original = publication.request.clone();
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
@@ -577,7 +577,7 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
         return Err("retry refusal settled an uncertain invocation".into());
     };
     assert_eq!(source, StreamError::AccessDenied);
-    assert_eq!(publication.request(), &original);
+    assert_eq!(publication.request, original);
     assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
     store.submit(*publication).await?;

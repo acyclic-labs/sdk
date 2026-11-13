@@ -68,7 +68,7 @@ async fn checkpoint(provider: &Observed, cut: u64) -> Result {
     let path = provider
         .take_commits()
         .iter()
-        .find_map(cursor_publication)
+        .find_map(|request| cursor_publication(request.mutations()))
         .map(|(path, _)| path.clone())
         .ok_or("dispatcher state was not published")?;
     saved_cursor(provider, path, cut).await
@@ -157,8 +157,8 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
         else {
             return Err(format!("cursor crash lost its original publication: {error}").into());
         };
-        let failed = publication.request().clone();
-        let (path, cut) = cursor_publication(&failed)
+        let failed = publication.request();
+        let (path, cut) = cursor_publication(failed.mutations())
             .ok_or("cursor crash did not retain its original dispatcher publication")?;
         drop(host);
         drop(provider);
@@ -170,11 +170,11 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
         })
         .await?;
         if matches!(fault, Fault::Before)
-            && reopened
+            && !reopened
                 .take_commits()
                 .iter()
                 .find(|request| cursor_advance(request))
-                != Some(&failed)
+                .is_some_and(|request| failed == *request)
         {
             return Err("uncommitted cursor did not retry its exact request/key".into());
         }
@@ -186,11 +186,13 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
 }
 
 fn cursor_advance(request: &acyclic_stream::CommitRequest) -> bool {
-    cursor_publication(request).is_some_and(|(_, cursor)| cursor > 0)
+    cursor_publication(request.mutations()).is_some_and(|(_, cursor)| cursor > 0)
 }
 
-fn cursor_publication(request: &acyclic_stream::CommitRequest) -> Option<(&StreamPath, u64)> {
-    request.mutations().find_map(|mutation| match mutation {
+fn cursor_publication<'a>(
+    mut mutations: impl Iterator<Item = &'a CommitMutation>,
+) -> Option<(&'a StreamPath, u64)> {
+    mutations.find_map(|mutation| match mutation {
         CommitMutation::Append { path, records } => records.iter().find_map(|record| {
             State::decode(record.value.as_ref())
                 .ok()?

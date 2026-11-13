@@ -394,7 +394,28 @@ impl std::fmt::Debug for PreparedPublish {
             .finish_non_exhaustive()
     }
 }
+/// A read-only view of a prepared publication's request. It neither clones
+/// into nor dereferences to a [`CommitRequest`], so no caller can commit it:
+/// a prepared publication commits only through [`Store::submit_retained`],
+/// which settles first, or through the guarded [`PreparedPublish::into_request`].
+#[derive(Debug)]
+pub struct RequestView<'a>(&'a CommitRequest);
+impl<'a> RequestView<'a> {
+    /// Every mutation, in effect order.
+    pub fn mutations(&self) -> impl Iterator<Item = &'a CommitMutation> + 'a {
+        self.0.mutations()
+    }
+}
+impl PartialEq<CommitRequest> for RequestView<'_> {
+    fn eq(&self, other: &CommitRequest) -> bool {
+        self.0 == other
+    }
+}
 impl PreparedPublish {
+    /// The request, including the actor's own Head/Absent condition.
+    pub const fn request(&self) -> RequestView<'_> {
+        RequestView(&self.request)
+    }
     /// Join the sealed authored state with its confirmed publication range.
     fn retained(&mut self, receipt: &CommitReceipt) -> Result<Option<Snapshot>, Error> {
         let Some(path) = &self.own else {
@@ -473,10 +494,6 @@ impl PreparedPublish {
                 idempotency_key: key,
             },
         }
-    }
-    /// The request, including the actor's own Head/Absent condition.
-    pub const fn request(&self) -> &CommitRequest {
-        &self.request
     }
     /// Join admission fences without manufacturing a companion mutation. The
     /// original state fence cannot be weakened, and disagreeing cuts are refused.
@@ -686,8 +703,19 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self.root
     }
 
-    /// The activation-log append that rides in every state-creating commit.
-    /// It is unconditioned, so concurrent creations never contend on it.
+    /// The activation-log append that rides in every state-creating commit,
+    /// every resume, and every commit that appends an actor's input. It is
+    /// unconditioned, so concurrent creations never contend on it.
+    ///
+    /// Delivery rests on two invariants. First, every input append commits
+    /// with this entry, so a dispatcher replaying its shard from a checkpoint
+    /// finds all input. This pairing is NOT enforced: each producer joins the
+    /// entry itself, and the stream primitive has no subscription trigger
+    /// that would add it. Moving it into the primitive is a tracked
+    /// follow-up. Second, an unpaused actor's undelivered work keeps a
+    /// carried wake through each later checkpoint, so a claim or crash never
+    /// strands it. Only a paused actor's entries pass as finished work, which
+    /// is why [`Self::set_paused`] (and any resume) appends this entry again.
     pub fn activation(&self, actor: &ActorReference) -> Result<CommitEffect, Error> {
         let (path, record) = self.activation_record(actor)?;
         Ok(acyclic_stream::CommitEffect::hard(
@@ -700,7 +728,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     /// Original wake record for composition with a producer's delivery commit.
-    /// Appending input without this record cannot wake a dormant actor.
+    /// Every input append must commit with this record (see
+    /// [`Self::activation`]): input appended without it cannot wake a dormant
+    /// actor. Nothing enforces the pairing yet; each producer joins it.
     pub fn activation_record(
         &self,
         actor: &ActorReference,
@@ -1489,14 +1519,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             })
             .map(|deadline| self.deadline(&self.actor(&previous.path)?, deadline))
             .transpose()?;
-        // A pause withdraws the alarm from scheduling, and the dispatcher may
-        // pass its window meanwhile. Resuming a pending alarm therefore
-        // appends the actor's activation, which a restart replays until the
-        // resumed actor's delivery holds the alarm again.
-        let resumed = (created.is_none()
+        // A resume is the one transition that makes committed input
+        // deliverable after the dispatcher finished it: a paused actor's
+        // activation entries and alarm window pass without a carried wake.
+        // So every resume appends the actor's activation in the same commit;
+        // its in-memory wake dies with the host, and a restart replays this
+        // entry until delivery holds the input. (A claim needs none: an
+        // unpaused actor's undelivered input keeps a carried wake.)
+        let deliverable = (created.is_none()
             && !state.paused
-            && state.alarm.pending().is_some()
-            && previous.state().is_some_and(|state| state.paused))
+            && previous.state().is_some_and(|before| before.paused))
         .then(|| self.activation(&self.actor(&previous.path)?))
         .transpose()?;
         let encoded = state.encode();
@@ -1523,7 +1555,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 idempotency_key: key,
             },
         };
-        for effect in created.into_iter().chain(armed).chain(resumed) {
+        for effect in created.into_iter().chain(armed).chain(deliverable) {
             prepared.join_host(effect)?;
         }
         for effect in effects {

@@ -246,13 +246,30 @@ async fn hibernated_alarms_fire_in_the_running_host() -> TestResult {
     Ok(())
 }
 
-/// A resumed alarm whose window passed while it was paused fires after a
-/// restart that follows the resume commit, before any host delivered it.
-#[tokio::test]
-async fn a_resumed_alarm_survives_a_restart_past_its_window() -> TestResult {
+/// Input a paused actor holds while its host's dispatcher passes it.
+#[derive(Clone, Copy, Debug)]
+enum Held {
+    /// An alarm whose window the dispatcher passes.
+    Alarm,
+    /// A subscription record whose activation entry the dispatcher passes.
+    Record,
+}
+
+/// The host pauses the actor, checkpoints past its held input and stops;
+/// the resume commits and no host delivers before a restart. Returns the
+/// restarted host's output. `forget` strips the resume's activation from
+/// its commit, leaving only an in-memory wake: the negative control.
+async fn resumed_after_checkpoint(
+    held: Held,
+    forget: bool,
+) -> Result<Vec<Bytes>, Box<dyn std::error::Error>> {
     let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
     let clock = Arc::new(clock);
-    let (provider, store, actor) = armed_before_start(&clock, "resumed", &[b"set 1000"]).await?;
+    let (name, command) = match held {
+        Held::Alarm => ("resumed-alarm", b"set 1000".as_slice()),
+        Held::Record => ("resumed-record", b"emit".as_slice()),
+    };
+    let (provider, store, actor) = armed_before_start(&clock, name, &[command]).await?;
     {
         let host = Runtime::new(
             store.clone(),
@@ -265,31 +282,71 @@ async fn a_resumed_alarm_survives_a_restart_past_its_window() -> TestResult {
             host.pause(&actor, true).await.map_err(Into::into)
         })
         .await?;
-        time.advance_to(WINDOW_TEN + 120_000)?;
-        // The host checkpoints past the paused alarm's window, then stops.
-        observe_while_running(
-            serving.as_mut(),
-            checkpointed(
-                &host,
-                "deadline",
-                crate::local::scheduling::window(WINDOW_TEN) + 1,
-            ),
-        )
-        .await?;
+        let passed = match held {
+            Held::Alarm => {
+                time.advance_to(WINDOW_TEN + 120_000)?;
+                checkpointed(
+                    &host,
+                    "deadline",
+                    crate::local::scheduling::window(WINDOW_TEN) + 1,
+                )
+            }
+            Held::Record => {
+                let mut input = PreparedPublish::foreign(key("resumed/input")?);
+                input.join(acyclic_stream::CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new(format!("agents/{name}"))?,
+                        records: vec![Bytes::from_static(b"emit").into()],
+                    }],
+                ))?;
+                input.join(store.activation(&actor)?)?;
+                store.submit(input).await?;
+                let tail = provider.tail(store.scheduling_path(0)?).await?;
+                checkpointed(&host, "activation", tail)
+            }
+        };
+        observe_while_running(serving.as_mut(), passed).await?;
     }
     let snapshot = store.load(&actor).await?;
-    let epoch = snapshot.state().ok_or("missing actor state")?.epoch();
-    store
-        .set_paused(&snapshot, epoch, false, key("resumed/resume")?)
-        .await?;
+    let mut state = snapshot.state().ok_or("missing actor state")?.clone();
+    state.paused = false;
+    let mut resume = store.prepare(&snapshot, state, Vec::new(), key("resumed/resume")?)?;
+    if forget {
+        let shard = store.scheduling_path(store.scheduling_shard(&actor))?;
+        resume.request.effects[0]
+            .mutations
+            .retain(|mutation| CommitMutation::path(mutation) != &shard);
+    }
+    store.submit(resume).await?;
     let host = Runtime::new(store, Arc::new(Package::new()?), clock);
     let mut serving = Box::pin(host.run(|_, error| panic!("delivery failed: {error}")));
     completed(&host, serving.as_mut()).await?;
-    assert_eq!(
-        records(provider.as_ref(), "out/resumed").await?,
-        vec![Bytes::from_static(b"a1")],
-        "the restarted host lost the resumed alarm"
-    );
+    Ok(records(provider.as_ref(), &format!("out/{name}")).await?)
+}
+
+/// A crash after a resume commits and before any host delivers loses no
+/// held input: the resume itself carries the durable activation.
+#[tokio::test]
+async fn a_resume_survives_a_crash_before_delivery() -> TestResult {
+    for (held, delivered) in [
+        (Held::Alarm, vec![Bytes::from_static(b"a1")]),
+        (
+            Held::Record,
+            vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")],
+        ),
+    ] {
+        assert_eq!(
+            resumed_after_checkpoint(held, false).await?,
+            delivered,
+            "{held:?}: the restarted host lost the resumed input"
+        );
+        assert_ne!(
+            resumed_after_checkpoint(held, true).await?,
+            delivered,
+            "{held:?}: the negative control must lose the resumed input"
+        );
+    }
     Ok(())
 }
 
