@@ -282,8 +282,9 @@ impl CheckoutPublisher {
                 } else if mount.view.source.is_none() {
                     if let Some(mounted) = &physical.mounted {
                         mounted.sync().await.map_err(storage)?;
-                    } else if capture::needs_baseline(watcher, &physical)
-                        || matches!(&publication, Publication::Replace(_)) {
+                    } else {
+                        // Completed native edits must enter the transaction cut
+                        // before the writer decides destination type/existence.
                         self.tools.capture((&physical, view), watcher, operation, 0, PublicationPermit::Unrestricted)?.await?;
                     }
                 }
