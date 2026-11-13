@@ -74,23 +74,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         if self.view_gate.generation() != candidate.epoch {
             return Ok(None);
         }
+        let original = carrier
+            .original_native_work()
+            .ok_or(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ))?;
         let (recorded_stamp, recorded, notify) = record(carrier, candidate.stamp)?;
         // Record invalidation before adoption, then dispatch only after every lease drops.
-        let result = async move {
+        let mut wait = NativeDemandCarrier::Native(original);
+        let composition = async move {
             recorded?;
-            let state =
-                await_with_cancellation(self.lock(), carrier, cancellation, lifetime).await?;
+            let mut state = self.lock().await;
             if self.view_gate.generation() != candidate.epoch
                 || state.publication_operation.is_some()
                     && state.publication_operation != candidate.operation
             {
                 return Ok(None);
             }
-            let original = carrier
-                .original_native_work()
-                .ok_or(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ))?;
+            // One canonical root is composed at a time. The existing phase
+            // excludes another installer, while allowing reads against the
+            // current root after the state guard is released. Private mutation
+            // I/O has already completed before entering this phase.
+            let _phase = state
+                ._view
+                .take()
+                .expect("original exclusive checkout lease")
+                .into_mutation_phase();
             let CheckoutCandidate {
                 base,
                 checkout,
@@ -207,9 +216,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let mut state = match state {
                 Some(state) => state,
                 None => {
-                    let state =
-                        await_with_cancellation(self.lock(), carrier, cancellation, lifetime)
-                            .await?;
+                    let state = SharedCheckoutGuard {
+                        _view: None,
+                        state: self.state.write().await,
+                    };
                     if self.view_gate.generation() != candidate.epoch
                         || state.publication_operation.is_some()
                             && state.publication_operation != candidate.operation
@@ -246,8 +256,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     facts,
                 },
             )))
-        }
-        .await;
+        };
+        let result = await_with_cancellation(composition, &mut wait, cancellation, lifetime)
+            .await
+            .and_then(|result| result);
         notify();
         result
     }

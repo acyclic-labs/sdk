@@ -182,6 +182,8 @@ mod work;
 mod workspace_creation;
 
 pub use crate::kernel::{DirectoryBindingChange, FileRecordChange, GenerationDiff};
+#[cfg(test)]
+pub(crate) use access_policy::policy_confirmation;
 pub(crate) use access_policy::policy_revision_is_current;
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;

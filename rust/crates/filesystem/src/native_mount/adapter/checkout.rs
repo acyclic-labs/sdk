@@ -17,7 +17,7 @@ pub struct SharedCheckout<A: 'static, O: 'static> {
 
 /// Exclusive access that excludes native callbacks.
 pub struct SharedCheckoutGuard<'a, A: 'static, O: 'static> {
-    _view: ViewWriteLease,
+    _view: Option<ViewWriteLease>,
     state: tokio::sync::RwLockWriteGuard<'a, SharedCheckoutState<A, O>>,
 }
 
@@ -137,7 +137,10 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
             {
                 *state = original;
             }
-            return SharedCheckoutGuard { _view: view, state };
+            return SharedCheckoutGuard {
+                _view: Some(view),
+                state,
+            };
         }
     }
 

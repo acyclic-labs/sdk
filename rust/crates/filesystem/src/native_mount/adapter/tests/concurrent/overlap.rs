@@ -462,12 +462,11 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
 
     // Force an actual merge against a newer root before delaying the provider.
     // Each exit retains the original pin and mutation/publication leases.
-    for exit in ["return", "superseded", "abandoned", "cancelled"] {
+    for exit in ["return", "queued", "abandoned", "cancelled"] {
         source.runtime.wait(|| async {
             let stop = CancellationToken::new();
             let pending_work = capture_meter(BOUNDARY_BUDGET, &stop)?;
             let bytes = match exit {
-                "superseded" => b"refused",
                 "abandoned" => b"abandon",
                 "cancelled" => b"cancel!",
                 _ => b"outside",
@@ -491,7 +490,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                 )
                 .await?;
             let seed = match exit {
-                "superseded" => b"seed-b",
+                "queued" => b"seed-b",
                 "abandoned" => b"seed-c",
                 "cancelled" => b"seed-d",
                 _ => b"seed-a",
@@ -531,20 +530,34 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                 "same-file successor cannot reach provider I/O during rebase"
             );
             match exit {
-                "superseded" => {
-                    source
-                        .checkout
-                        .install_change(
-                            winner,
-                            ViewChange::Node(right),
-                            None,
-                            &work,
-                            source.cancellation(),
-                            None,
-                        )
-                        .await?;
+                "queued" => {
+                    let successor = source.checkout.install_change(
+                        winner,
+                        ViewChange::Node(right),
+                        None,
+                        &work,
+                        source.cancellation(),
+                        None,
+                    );
+                    tokio::pin!(successor);
+                    assert!(
+                        futures::poll!(successor.as_mut()).is_pending(),
+                        "canonical composition waits for its original phase"
+                    );
+                    let mut reader = NativeDemandCarrier::Native(&work);
+                    let observation = source.checkout.observe(
+                        ViewGate::callback_owner()?,
+                        &mut reader,
+                        work.cancellation(),
+                        None,
+                    );
+                    tokio::pin!(observation);
+                    match futures::poll!(observation.as_mut()) {
+                        Poll::Ready(result) => drop(result?),
+                        Poll::Pending => panic!("composition excludes an independent observation"),
+                    }
                     objects.release();
-                    assert!(matches!(rebase.await, Err(MountSourceError::Stale)));
+                    futures::try_join!(rebase, successor)?;
                 }
                 "abandoned" => {
                     drop(winner);
@@ -554,17 +567,12 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                 "cancelled" => {
                     drop(winner);
                     stop.cancel();
-                    objects.release();
                     let result = rebase.await;
                     assert!(
-                        matches!(
-                            result,
-                            Err(MountSourceError::NativeWork(
-                                crate::NativeTreeMaterializationError::Cancelled
-                            ))
-                        ),
+                        matches!(result, Err(MountSourceError::Cancelled)),
                         "original native cancellation cause: {result:?}"
                     );
+                    objects.release();
                 }
                 _ => {
                     drop(winner);
@@ -597,9 +605,8 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         );
     }
 
-    // Project the original private candidate while a disjoint candidate wins.
-    // The original read is released by its provider; adoption must then refuse
-    // the changed base instead of returning facts for a different root.
+    // Final facts retain the same composition phase until adoption. A disjoint
+    // candidate is admitted next, without discarding either accepted write.
     source.runtime.wait(|| async {
         let pending = staged_write(&source.checkout, left, b"stale!!", &work).await?;
         let winner = staged_write(&source.checkout, right, b"winner", &work).await?;
@@ -618,24 +625,26 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
             source.checkout.state.try_write().is_ok(),
             "fact I/O retains no shared checkout guard"
         );
-        source
-            .checkout
-            .install_change(
-                winner,
-                ViewChange::Node(right),
-                None,
-                &work,
-                source.cancellation(),
-                None,
-            )
-            .await?;
+        let successor = source.checkout.install_change(
+            winner,
+            ViewChange::Node(right),
+            None,
+            &work,
+            source.cancellation(),
+            None,
+        );
+        tokio::pin!(successor);
+        assert!(futures::poll!(successor.as_mut()).is_pending());
         objects.release();
-        assert!(matches!(projection.await, Err(MountSourceError::Stale)));
+        let (projected, _) = futures::try_join!(projection, successor)?;
+        let projected = projected.facts.expect("original final facts");
+        assert_eq!(projected.lookup.node.file_id, left);
+        assert_eq!(projected.lookup.node.logical_bytes, 7);
         Ok(())
     })?;
     assert_eq!(
         source.open_file(&paths[0])?.read_up_to(0, 16)?.as_ref(),
-        b"outside"
+        b"stale!!"
     );
     assert_eq!(
         source.open_file(&paths[1])?.read_up_to(0, 16)?.as_ref(),
@@ -741,6 +750,125 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
             )
             .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn canonical_composition_cancellation_releases_phase_before_storage()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::task::{Context, Wake, Waker};
+
+    #[derive(Default)]
+    struct Wakes(AtomicUsize);
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    for final_facts in [false, true] {
+        for cancel_mount in [false, true] {
+            // Each cancellation owns its source, provider pause and ledger.
+            let (source, objects) = paused_source()?;
+            let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+            let paths = ["left", "right"].map(native_test_path);
+            let left = source
+                .create_file(&paths[0], metadata(), None, &work)?
+                .lookup
+                .node
+                .file_id;
+            let right = source
+                .create_file(&paths[1], metadata(), None, &work)?
+                .lookup
+                .node
+                .file_id;
+            source.write_range(&paths[0], 0, Bytes::from_static(b"original"))?;
+            source.runtime.wait(|| async {
+                let caller = CancellationToken::new();
+                let pending_work = capture_meter(BOUNDARY_BUDGET, &caller)?;
+                let mut carrier = NativeDemandCarrier::Native(&pending_work);
+                let mut candidate = source
+                    .checkout
+                    .file_candidate(left, &mut carrier, &caller, Some(source.cancellation()))
+                    .await?;
+                candidate
+                    .checkout
+                    .change_content(
+                        left,
+                        ContentChange::Write {
+                            offset: 0,
+                            bytes: OwnedBytes::from_static(b"refused!"),
+                        },
+                        ContentTimes::Preserve,
+                        &pending_work,
+                        &caller,
+                    )
+                    .await?;
+                if !final_facts {
+                    write(&source, right, 0, b"new base", &work).await?;
+                }
+                let reads = objects.entered.load(Ordering::Acquire);
+                objects.paused_reads.store(true, Ordering::Release);
+                let mut operation = Box::pin(source.checkout.install_change(
+                    candidate,
+                    ViewChange::Node(left),
+                    final_facts.then_some(MutationSelection::Facts(left)),
+                    &pending_work,
+                    source.cancellation(),
+                    None,
+                ));
+                let wakes = Arc::new(Wakes::default());
+                let waker = Waker::from(Arc::clone(&wakes));
+                let mut context = Context::from_waker(&waker);
+                assert!(operation.as_mut().poll(&mut context).is_pending());
+                assert_eq!(objects.entered.load(Ordering::Acquire), reads + 1);
+                let before = wakes.0.load(Ordering::Acquire);
+                if cancel_mount {
+                    source.cancellation().cancel();
+                } else {
+                    caller.cancel();
+                }
+                assert!(
+                    wakes.0.load(Ordering::Acquire) > before,
+                    "original cancellation must wake pending composition"
+                );
+                let result = operation.as_mut().poll(&mut context);
+                assert!(
+                    if cancel_mount {
+                        matches!(result, Poll::Ready(Err(MountSourceError::Stale)))
+                    } else {
+                        matches!(result, Poll::Ready(Err(MountSourceError::Cancelled)))
+                    },
+                    "pending composition lost cancellation: {result:?}"
+                );
+                drop(operation);
+                let lock = source.checkout.lock();
+                tokio::pin!(lock);
+                match futures::poll!(lock.as_mut()) {
+                    Poll::Ready(guard) => drop(guard),
+                    Poll::Pending => panic!("cancelled composition retained its phase"),
+                }
+                assert!(source.checkout.publication_fence.try_write().is_ok());
+                assert!(
+                    source
+                        .checkout
+                        .file_mutations
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .entries
+                        .is_empty()
+                );
+                objects.release();
+                Ok(())
+            })?;
+            if !cancel_mount {
+                assert_eq!(
+                    source.open_file(&paths[0])?.read_up_to(0, 16)?.as_ref(),
+                    b"original"
+                );
+            }
+        }
+    }
     Ok(())
 }
 

@@ -767,10 +767,10 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
         // cancellation waker, immediately before Condvar's atomic wait.
         observed.recv()?;
         assert!(!worker.is_finished());
-        assert_eq!(
-            root.receipt().allocation_operations,
-            before.allocation_operations + u64::from(cancellable)
-        );
+        // A cancellable wait funds both its token-list waiter and its
+        // notification waker. Accepted cleanup must remain allocation-free.
+        let registered = before.allocation_operations + 2 * u64::from(cancellable);
+        assert_eq!(root.receipt().allocation_operations, registered);
         root_stop.cancel();
         if cancellable {
             wait.cancel();
@@ -797,6 +797,7 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
         }
         assert!(source.capture_retired());
         assert!(!source.shutdown_accepted_cleanup()?.into_result()?);
+        assert_eq!(root.receipt().allocation_operations, registered);
     }
     Ok(())
 }

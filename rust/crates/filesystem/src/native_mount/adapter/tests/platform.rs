@@ -232,9 +232,19 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "linux_fsync_on_clean_descriptor_publishes_other_descriptor_write" => {
                     let path = temporary.path().join("cross-descriptor-fsync");
-                    std::fs::write(&path, b"old")?;
-                    let syncer = std::fs::OpenOptions::new().read(true).open(&path)?;
-                    let mut writer = std::fs::OpenOptions::new().write(true).open(&path)?;
+                    // RELEASE is asynchronous, and CloseAndSync can publish
+                    // another handle's writes. Keep every fixture descriptor
+                    // alive until both explicit fsync assertions have finished.
+                    let mut writer = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)?;
+                    writer.write_all(b"old")?;
+                    writer.sync_all()?;
+                    writer.seek(SeekFrom::Start(0))?;
+                    let mut syncer = std::fs::OpenOptions::new().read(true).open(&path)?;
+                    let directory = std::fs::File::open(temporary.path())?;
                     writer.write_all(b"new")?;
                     assert!(checkout_state(&source).1, "write remains pending");
                     syncer.sync_all()?;
@@ -242,16 +252,17 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                         !checkout_state(&source).1,
                         "explicit fsync published the write"
                     );
-                    assert_eq!(std::fs::read(&path)?, b"new");
+                    let mut observed = [0; 3];
+                    syncer.read_exact(&mut observed)?;
+                    assert_eq!(&observed, b"new");
                     writer.write_all(b"2")?;
                     assert!(checkout_state(&source).1, "second write remains pending");
-                    std::fs::File::open(temporary.path())?.sync_all()?;
+                    directory.sync_all()?;
                     assert!(
                         !checkout_state(&source).1,
                         "directory fsync published the write"
                     );
-                    drop(writer);
-                    drop(syncer);
+                    drop((directory, writer, syncer));
                 }
                 "linux_concurrent_truncates_do_not_fence_unrelated_files" => {
                     let paths = (0..8)

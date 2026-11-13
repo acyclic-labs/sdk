@@ -19,10 +19,6 @@ pub(super) async fn observe_current_policy<A: AsyncAuthorityStore, O: AsyncObjec
         )
         .await?
         .map_err(MountSourceError::from)?;
-        #[cfg(test)]
-        if super::tests::return_fence::skip_retry() && observed.is_none() {
-            return Err(MountSourceError::AccessDenied);
-        }
         // Retry only the accounted policy observation, never the data.
         Ok(observed)
     })

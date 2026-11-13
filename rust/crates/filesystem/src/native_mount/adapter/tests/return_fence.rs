@@ -6,28 +6,11 @@ thread_local! {
     static OMIT_DEADLINE: Cell<bool> = const { Cell::new(false) };
     static OMIT: Cell<bool> = const { Cell::new(false) };
     static NOW: Cell<Option<u64>> = const { Cell::new(None) };
-    static SKIP_RETRY: Cell<bool> = const { Cell::new(false) };
     static OBSERVE_DATA: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(in crate::native_mount::adapter) fn override_unix_seconds() -> Option<u64> {
     NOW.get()
-}
-
-pub(in crate::native_mount::adapter) fn skip_retry() -> bool {
-    SKIP_RETRY.get()
-}
-
-struct Retry(bool);
-impl Retry {
-    fn enter(broken: bool) -> Self {
-        Self(SKIP_RETRY.replace(broken))
-    }
-}
-impl Drop for Retry {
-    fn drop(&mut self) {
-        SKIP_RETRY.set(self.0);
-    }
 }
 
 pub(in crate::native_mount::adapter) fn omitted() -> bool {
@@ -420,11 +403,15 @@ fn revoked_return_after_prefix(
             let _pause = PauseOwner(&objects);
             OBSERVE_DATA.set(true);
             let _old = Omit::enter(broken && !matches!(change, Change::Data));
-            let _retry = Retry::enter(broken && matches!(change, Change::Data));
-            if prefix_read {
-                source.lookup(&MountPath::root())?;
-            }
-            read(&source, pinned.as_ref(), op)
+            crate::facade::policy_confirmation::without(
+                broken && matches!(change, Change::Data),
+                || {
+                    if prefix_read {
+                        source.lookup(&MountPath::root())?;
+                    }
+                    read(&source, pinned.as_ref(), op)
+                },
+            )
         }
     });
     pending.recv()?;
@@ -629,7 +616,7 @@ fn removed_pinned_expiry_fence_negative_control() {
 }
 
 #[test]
-fn policy_observation_retries_data_only_publication_without_rereading_data()
+fn policy_observation_confirms_data_only_publication_without_rereading_data()
 -> Result<(), Box<dyn std::error::Error>> {
     for prefix_read in [false, true] {
         revoked_return_after_prefix(Read::Bytes, false, Change::Data, prefix_read)?;
@@ -640,13 +627,13 @@ fn policy_observation_retries_data_only_publication_without_rereading_data()
 
 #[test]
 #[should_panic(expected = "data-only commit invalidated native result")]
-fn missing_policy_observation_retry_negative_control() {
+fn missing_policy_observation_confirmation_negative_control() {
     revoked_return(Read::Bytes, true, Change::Data).unwrap();
 }
 
 #[test]
 #[should_panic(expected = "data-only commit invalidated native result")]
-fn missing_policy_observation_retry_after_prefix_negative_control() {
+fn missing_policy_observation_confirmation_after_prefix_negative_control() {
     revoked_return_after_prefix(Read::Bytes, true, Change::Data, true).unwrap();
 }
 

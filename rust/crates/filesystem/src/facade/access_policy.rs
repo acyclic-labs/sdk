@@ -282,6 +282,10 @@ macro_rules! policy_revision {
             if observed.epoch != current.epoch {
                 return Ok(None);
             }
+            #[cfg(test)]
+            if policy_confirmation::omitted() {
+                return Err(FsError::InvalidAccessPolicy);
+            }
             // A data publication need not revoke the selected policy. Capture
             // one confirming committed root after the selected metadata IO,
             // then verify its immutable revision. That head is the return cut;
@@ -341,6 +345,30 @@ pub(crate) fn policy_revision_is_current(
     confirmed: &crate::kernel::MetadataField<ObjectId>,
 ) -> bool {
     observed.epoch == current.epoch && selected == confirmed
+}
+
+#[cfg(test)]
+pub(crate) mod policy_confirmation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static OMIT: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn omitted() -> bool {
+        OMIT.get()
+    }
+
+    pub(crate) fn without<T>(omit: bool, run: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                OMIT.set(self.0);
+            }
+        }
+        let _restore = Restore(OMIT.replace(omit));
+        run()
+    }
 }
 
 async fn policy_revision_at<A: AsyncAuthorityStore, O: AsyncObjectStore>(
