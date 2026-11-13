@@ -42,6 +42,7 @@ pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
     pub inbox: u64,
     initial_through: u64,
     pub files: Arc<AgentInternalFiles<A, O>>,
+    journal_reader: Arc<FilesystemContentVerifier<A, O>>,
     pub writer: Arc<dyn ContentPublisher>,
     maximum: Option<u64>,
     admitted: Mutex<Admitted>,
@@ -66,6 +67,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
         agent: AgentState,
         identity: (OperationId, u64, u64),
         files: Arc<AgentInternalFiles<A, O>>,
+        journal_reader: Arc<FilesystemContentVerifier<A, O>>,
         writer: Arc<dyn ContentPublisher>,
         maximum: Option<u64>,
     ) -> Self {
@@ -79,6 +81,7 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             inbox: identity.1,
             initial_through: identity.2,
             files,
+            journal_reader,
             writer,
             maximum,
             admitted: Mutex::default(),
@@ -178,9 +181,25 @@ where
             }
             let content = crate::agent::model_input_at(&self.agent.path, inbox, &input.input)
                 .map_err(Error::from)?;
+            // Notice envelopes retain host custody; their described paths
+            // never enter the agent's content grants.
+            if waking_notice {
+                let content =
+                    crate::agent::expand_attachments(content, self.journal_reader.as_ref()).await?;
+                let ModelContent::Part(ModelContentPart::Notices { notices: events }) = content
+                else {
+                    return Err(Error::Invalid(
+                        "staged steering Notice lost its event block".into(),
+                    ));
+                };
+                for notice in events {
+                    notices
+                        .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
+                        .push(notice)?;
+                }
+                continue;
+            }
             let external = content.file_refs().cloned().collect::<Vec<_>>();
-            // Staged inputs retain the original exact-file admission. Notice
-            // JSON itself carries no authority to the paths it describes.
             if external.is_empty() {
                 messages.push(ModelMessage {
                     role: ModelRole::User,
@@ -210,20 +229,6 @@ where
                 None,
             )?;
             let mut content = crate::agent::expand_attachments(content, &*reader).await?;
-            if waking_notice {
-                let ModelContent::Part(ModelContentPart::Notices { notices: events }) = content
-                else {
-                    return Err(Error::Invalid(
-                        "staged steering Notice lost its event block".into(),
-                    ));
-                };
-                for notice in events {
-                    notices
-                        .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
-                        .push(notice)?;
-                }
-                continue;
-            }
             // The envelope delegates its validated immutable contents, not its
             // own exact-file grant. Derive those files under the same original
             // admission; an admitted caller's ceiling remains unchanged.
