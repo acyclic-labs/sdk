@@ -10,6 +10,8 @@ pub enum ReadPathKind {
     Directory,
 }
 
+crate::core::ownership::owned_enum!(ReadPathKind { File, Directory });
+
 impl ReadPathKind {
     /// Checks a tool address after separating its explicit volume qualifier.
     pub(crate) fn validate_address(

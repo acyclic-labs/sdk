@@ -112,6 +112,13 @@ pub struct FilePathSelection {
     pub byte_length: u64,
 }
 
+crate::core::ownership::owned_struct!(FilePathSelection {
+    volume,
+    path,
+    generation,
+    byte_length
+});
+
 impl FilePathSelection {
     /// Whether a complete descriptor names this authored generation and path.
     /// Authored path producers encode the generation key as lowercase hex in

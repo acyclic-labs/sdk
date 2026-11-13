@@ -247,3 +247,60 @@ async fn native_linked_search_keeps_file_custody_and_current_authority()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn native_file_cursor_preserves_range_custody_and_authority()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let fixture = linked_fixture().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(error, _)| error)?;
+    let baseline = work.live_allocation_bytes();
+    let root = crate::context::ContextRoot {
+        volume: fixture.storage.volume().clone(),
+        directory: "decisions".into(),
+    };
+    let (cursor, custody) = FileCursor::new_with_native_work(
+        &root,
+        "decisions",
+        FileRootKind::Directory,
+        b"accepted specimen",
+        &work,
+    )?;
+    let budget = NonZeroU32::new(2).ok_or("invalid test chunk")?;
+    let (first, first_custody) = cursor
+        .page_with_native_work(fixture.storage.content_reader(), None, budget, &work)?
+        .await?;
+    assert!(first.matches.is_empty());
+    let next = first.next.as_ref().ok_or("missing file continuation")?;
+    let (denied, denied_custody) = next
+        .page_with_native_work(fixture.foreign.content_reader(), None, budget, &work)?
+        .await?;
+    assert!(denied.matches.is_empty());
+    drop(denied);
+    drop(denied_custody);
+    let (second, second_custody) = next
+        .page_with_native_work(fixture.storage.content_reader(), None, budget, &work)?
+        .await?;
+    assert_eq!(second.matches.len(), 1);
+    assert_eq!(second.matches[0].offset, 64 * 1024 - 3);
+    assert!(second.matches[0].file.matches_content(&fixture.file));
+    drop(second);
+    drop(second_custody);
+    drop(first);
+    drop(first_custody);
+    cancellation.cancel();
+    assert!(
+        cursor
+            .page_with_native_work(fixture.storage.content_reader(), None, budget, &work,)
+            .is_err()
+    );
+    drop(cursor);
+    drop(custody);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}

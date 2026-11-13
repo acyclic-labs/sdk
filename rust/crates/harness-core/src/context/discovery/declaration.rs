@@ -12,7 +12,19 @@ pub struct ContextRoot {
     pub directory: String,
 }
 
+crate::core::ownership::owned_struct!(ContextRoot { volume, directory });
+
 impl ContextRoot {
+    pub(crate) fn clone_in_quota(
+        &self,
+        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<Self> {
+        Ok(Self {
+            volume: self.volume.clone_in_quota(quota)?,
+            directory: crate::core::copy_text(&self.directory, quota)?,
+        })
+    }
+
     #[doc(hidden)]
     pub fn validate(
         &self,
@@ -256,10 +268,7 @@ impl PinnedContextPath {
                 quota.work(),
             )?;
             let pinned = Self {
-                root: ContextRoot {
-                    volume: root.volume.clone_in_quota(quota)?,
-                    directory: crate::core::copy_text(&root.directory, quota)?,
-                },
+                root: root.clone_in_quota(quota)?,
                 generation,
                 path: crate::core::copy_text(path, quota)?,
             };

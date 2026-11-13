@@ -1,11 +1,16 @@
 //! The file-tree adapter over the existing generation-bound content reader.
 use super::*;
+use crate::executor::{
+    PreparationIo, stock_boundary, stock_string_copy, stock_string_push, stock_vec_push,
+};
 use crate::{
     context::ContextRoot,
     conversation::{ContentAccess, FilePathSelection, PrivateDirectoryEntryKind},
     resources::GenerationRef,
 };
 use std::num::NonZeroU32;
+mod ownership;
+use ownership::{generation, retire};
 
 pub use crate::tool::ReadPathKind as FileRootKind;
 
@@ -75,10 +80,20 @@ impl FileCursor {
         kind: FileRootKind,
         pattern: Vec<u8>,
     ) -> Result<Self> {
+        Self::new_using(root, path, kind, pattern, None)
+    }
+
+    fn new_using(
+        root: ContextRoot,
+        path: String,
+        kind: FileRootKind,
+        pattern: Vec<u8>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
         let mut cursor = Self {
             version: 1,
             root,
-            path: path.clone(),
+            path: stock_string_copy(&path, io)?,
             kind,
             pattern,
             generation: None,
@@ -86,14 +101,18 @@ impl FileCursor {
             pending: None,
         };
         match kind {
-            FileRootKind::Directory => cursor.directories.push(Directory {
-                path,
-                after: None,
-                done: false,
-            }),
+            FileRootKind::Directory => stock_vec_push(
+                &mut cursor.directories,
+                Directory {
+                    path,
+                    after: None,
+                    done: false,
+                },
+                io,
+            )?,
             FileRootKind::File => cursor.pending = Some(Position { path, offset: 0 }),
         }
-        cursor.validate()?;
+        cursor.validate_with_io(io)?;
         Ok(cursor)
     }
 
@@ -102,38 +121,50 @@ impl FileCursor {
         (&self.root, &self.path, self.kind, &self.pattern)
     }
 
-    fn validate(&self) -> Result<()> {
-        self.root.validate(&mut None)?;
-        let valid = |path: &str| {
-            within(&self.root.directory, path)
-                && within(&self.path, path)
-                && (path.is_empty()
-                    || crate::conversation::validate_content_path(path, &mut None).is_ok())
+    fn validate_with_io(&self, io: Option<&PreparationIo>) -> Result<()> {
+        crate::executor::with_history_io(io, |work| self.root.validate(work))?;
+        let valid = |path: &str| -> Result<bool> {
+            if !within(&self.root.directory, path) || !within(&self.path, path) {
+                return Ok(false);
+            }
+            if !path.is_empty() {
+                crate::executor::with_history_io(io, |work| {
+                    crate::conversation::validate_content_path(path, work)
+                })?;
+            }
+            Ok(true)
+        };
+        let invalid = || {
+            stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "file search cursor differs from its root",
+            )
         };
         if self.version != 1
             || (self.kind == FileRootKind::File && self.path.is_empty())
-            || !valid(&self.path)
-            || self.directories.iter().any(|directory| {
-                !valid(&directory.path)
-                    || directory
-                        .after
-                        .as_ref()
-                        .is_some_and(|token| token.is_empty())
-            })
-            || self
-                .pending
-                .as_ref()
-                .is_some_and(|pending| !valid(&pending.path))
-            || (self.kind == FileRootKind::File
-                && (!self.directories.is_empty()
-                    || self
-                        .pending
-                        .as_ref()
-                        .is_some_and(|pending| pending.path != self.path)))
+            || !valid(&self.path)?
         {
-            return Err(Error::Invalid(
-                "file search cursor differs from its root".into(),
-            ));
+            return Err(invalid());
+        }
+        for directory in &self.directories {
+            if !valid(&directory.path)? || directory.after.as_ref().is_some_and(String::is_empty) {
+                return Err(invalid());
+            }
+        }
+        if let Some(pending) = &self.pending
+            && !valid(&pending.path)?
+        {
+            return Err(invalid());
+        }
+        if self.kind == FileRootKind::File
+            && (!self.directories.is_empty()
+                || self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.path != self.path))
+        {
+            return Err(invalid());
         }
         Ok(())
     }
@@ -148,14 +179,24 @@ impl FileCursor {
         ceiling: Option<&Capabilities>,
         budget: NonZeroU32,
     ) -> Result<FilePage> {
-        self.validate()?;
-        let mut cursor = self.clone();
+        self.page_using(reader, ceiling, budget, None).await
+    }
+
+    async fn page_using(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        ceiling: Option<&Capabilities>,
+        budget: NonZeroU32,
+        io: Option<&PreparationIo>,
+    ) -> Result<FilePage> {
+        self.validate_with_io(io)?;
+        let mut cursor = self.copy_with_io(io)?;
         let mut matches = Vec::new();
         let mut work = 0;
         while work < budget.get() {
             if let Some(position) = cursor.pending.take() {
                 cursor
-                    .range(reader, ceiling, position, &mut matches)
+                    .range(reader, ceiling, position, &mut matches, io)
                     .await?;
                 work += 1;
                 continue;
@@ -164,7 +205,7 @@ impl FileCursor {
                 break;
             };
             if directory.done {
-                cursor.directories.pop();
+                retire(cursor.directories.pop(), io)?;
                 continue;
             }
             let page = reader
@@ -176,18 +217,21 @@ impl FileCursor {
                     directory.after.as_deref(),
                     1,
                     ceiling,
-                    None,
+                    io,
                 )?
                 .await?;
             work += 1;
-            let Some((page, _hold)) = page else {
-                cursor.directories.pop();
+            let Some(read) = page else {
+                retire(cursor.directories.pop(), io)?;
                 continue;
             };
-            page.validate()?;
+            let (page, _) = &read;
+            page.validate_with_io(io)?;
             if page.examined > 1 || page.entries.len() > 1 {
-                return Err(Error::Storage(
-                    "file search directory exceeded its page".into(),
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "file search directory exceeded its page",
                 ));
             }
             if cursor
@@ -195,30 +239,56 @@ impl FileCursor {
                 .as_ref()
                 .is_some_and(|generation| *generation != page.generation)
             {
-                return Err(Error::Conflict("file search generation changed".into()));
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "file search generation changed",
+                ));
             }
-            cursor.generation = Some(page.generation);
+            if cursor.generation.is_none() {
+                cursor.generation = Some(generation(&page.generation, io)?);
+            }
             directory.done = !page.has_more;
-            directory.after = page.next;
-            if let Some(entry) = page.entries.into_iter().next() {
-                let path = if directory.path.is_empty() {
-                    entry.name
-                } else {
-                    format!("{}/{}", directory.path, entry.name)
-                };
+            retire(directory.after.take(), io)?;
+            directory.after = page
+                .next
+                .as_ref()
+                .map(|token| stock_string_copy(token, io))
+                .transpose()?;
+            if let Some(entry) = page.entries.first() {
+                let mut path = stock_string_copy(&directory.path, io)?;
+                if !path.is_empty() {
+                    stock_string_push(&mut path, "/", None, "search path size overflow", io)?;
+                }
+                stock_string_push(
+                    &mut path,
+                    &entry.name,
+                    None,
+                    "search path size overflow",
+                    io,
+                )?;
                 match entry.kind {
-                    PrivateDirectoryEntryKind::Directory => cursor.directories.push(Directory {
-                        path,
-                        after: None,
-                        done: false,
-                    }),
+                    PrivateDirectoryEntryKind::Directory => stock_vec_push(
+                        &mut cursor.directories,
+                        Directory {
+                            path,
+                            after: None,
+                            done: false,
+                        },
+                        io,
+                    )?,
                     PrivateDirectoryEntryKind::File => {
                         cursor.pending = Some(Position { path, offset: 0 })
                     }
                 }
             }
         }
-        let next = (!cursor.directories.is_empty() || cursor.pending.is_some()).then_some(cursor);
+        let next = if !cursor.directories.is_empty() || cursor.pending.is_some() {
+            Some(cursor)
+        } else {
+            retire(cursor, io)?;
+            None
+        };
         Ok(FilePage {
             matches,
             work,
@@ -232,6 +302,7 @@ impl FileCursor {
         ceiling: Option<&Capabilities>,
         position: Position,
         matches: &mut Vec<FileMatch>,
+        io: Option<&PreparationIo>,
     ) -> Result<()> {
         let requested = source_window(position.offset, &self.pattern);
         let read = reader.read_private_range(
@@ -240,36 +311,58 @@ impl FileCursor {
             &position.path,
             self.generation.as_ref(),
             requested,
-            ContentAccess { ceiling, io: None },
+            ContentAccess { ceiling, io },
         )?;
-        let (file, bytes, _hold) = match read.await {
+        let read = match read.await {
             Ok(read) => read,
-            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => return Ok(()),
+            Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => {
+                retire(position, io)?;
+                return Ok(());
+            }
             Err(error) => return Err(error),
         };
+        let (file, bytes, _) = &read;
         if self
             .generation
             .as_ref()
             .is_some_and(|generation| *generation != file.generation)
         {
-            return Err(Error::Conflict("file search generation changed".into()));
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "file search generation changed",
+            ));
         }
-        self.generation = Some(file.generation.clone());
+        if self.generation.is_none() {
+            self.generation = Some(generation(&file.generation, io)?);
+        }
         match inspect_window(
             file.byte_length,
             position.offset,
             &self.pattern,
             bytes.as_slice(),
-            None,
+            io,
         )? {
-            Window::Match(offset) => matches.push(FileMatch { file, offset }),
+            Window::Match(offset) => {
+                let (file, bytes, hold) = read;
+                if let Some(hold) = hold {
+                    hold.into_retained()?;
+                }
+                stock_vec_push(matches, FileMatch { file, offset }, io)?;
+                drop(bytes);
+                retire(position, io)?;
+            }
             Window::More(offset) => {
+                drop(read);
                 self.pending = Some(Position {
                     path: position.path,
                     offset,
                 })
             }
-            Window::Done => {}
+            Window::Done => {
+                drop(read);
+                retire(position, io)?;
+            }
         }
         Ok(())
     }
