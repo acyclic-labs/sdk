@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Retain the exact deferred invocation and its typed wake event.
-            version: "6".into(),
+            // Completed answers commit before their deferred workspace integration.
+            version: "7".into(),
         });
     &IDENTITY
 }
