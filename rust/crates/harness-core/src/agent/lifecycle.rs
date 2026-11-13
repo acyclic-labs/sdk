@@ -59,6 +59,7 @@ pub struct AgentComposer<P: ?Sized> {
     provider: Arc<P>,
     volumes: Option<Arc<dyn SpawnVolumes>>,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
+    delegate: Option<Arc<dyn Composer>>,
 }
 
 impl<P: ?Sized> AgentComposer<P> {
@@ -73,6 +74,18 @@ impl<P: ?Sized> AgentComposer<P> {
             provider,
             volumes,
             lifecycle,
+            delegate: None,
+        }
+    }
+
+    /// Every agent hosting entrance owns the shared retirement protocol;
+    /// other participants retain the host's original composer and custody.
+    pub(super) fn wrapping(provider: Arc<P>, delegate: Option<Arc<dyn Composer>>) -> Self {
+        Self {
+            provider,
+            volumes: None,
+            lifecycle: None,
+            delegate,
         }
     }
 }
@@ -90,6 +103,19 @@ impl<P: acyclic_stream::StreamProvider + ?Sized + 'static> Composer for AgentCom
         next: &Checkpoint,
         participant: &Participant,
     ) -> Result<Box<dyn Composition>, GuestError> {
+        if participant.kind == super::cancellation::RETIRE {
+            return super::cancellation::open_retirement(
+                self,
+                actor,
+                previous,
+                delivered,
+                next,
+                participant,
+            );
+        }
+        if let Some(delegate) = &self.delegate {
+            return delegate.open(actor, previous, delivered, next, participant);
+        }
         if participant.kind != CLOSE {
             return match &self.volumes {
                 Some(volumes) => volumes.open(actor, previous, delivered, next, participant),

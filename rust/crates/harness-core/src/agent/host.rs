@@ -150,7 +150,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Host for agents whose turns run in `handler`, such as the agent guest
     /// artifact's [`AgentHandler`] reached through [`acyclic_actors::guest::wire`].
     /// This host keeps scheduling and publication; `composer` opens each
-    /// transition's participant request, as [`SpawnVolumes`] does.
+    /// transition's participant request, as [`SpawnVolumes`] does. The shared
+    /// agent composer always owns terminal-fact revalidation, including when
+    /// no external participant composer is supplied.
     pub fn hosting(
         provider: Arc<P>,
         within: ActorReference,
@@ -158,10 +160,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         clock: Arc<dyn Clock>,
         composer: Option<Arc<dyn Composer>>,
     ) -> Result<Self, Error> {
-        let published = match composer {
-            Some(composer) => actor_store(&provider)?.with_composer(composer),
-            None => actor_store(&provider)?,
-        };
+        let published = actor_store(&provider)?.with_composer(Arc::new(AgentComposer::wrapping(
+            Arc::clone(&provider),
+            composer,
+        )));
         Ok(Self {
             agents: Agents::new(actor_store(&provider)?),
             // Agents of other bindings may share this stream's actor root;

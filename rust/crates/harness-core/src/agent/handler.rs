@@ -487,6 +487,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             return Err(Error::Record("agent inbox subscription differs"));
         }
         let was_open = saved.as_ref().is_none_or(|state| !state.closed);
+        let previously_steered = saved.as_ref().map_or(0, |state| state.steered_through);
         let mut state = saved;
         if let Some(state) = state.as_mut().filter(|_| failure.is_none()) {
             // Overflowed input precedes this delivery; read it back first.
@@ -589,13 +590,29 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         };
         let step = prepared.step();
         let mut request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
-        super::cancellation::complete(
+        let retired = step.state.turn.as_ref().and_then(|turn| {
+            step.outs.iter().find_map(|out| match out {
+                Out::Steered(through) => Some(super::BoundaryCut {
+                    from: previously_steered.max(turn.inbox.saturating_add(1)),
+                    through: *through,
+                }),
+                _ => None,
+            })
+        });
+        let guarded = super::cancellation::complete(
             self.agents.store.provider().as_ref(),
             &path,
             &step.outs,
+            retired,
+            step.state.conversation_tail,
             &mut request,
         )
         .await?;
+        let participant = if guarded {
+            Some(super::cancellation::retirement_participant(participant)?)
+        } else {
+            participant
+        };
         let mut effects = request.effects;
         let spawned: BTreeSet<_> = step
             .outs

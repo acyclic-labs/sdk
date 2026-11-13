@@ -1,8 +1,10 @@
 //! Targeted cancellation, published with its source inbox control.
 use super::{AgentRecord as _, Error};
-use acyclic_stream::{ReadRequest, StreamPath};
+use acyclic_stream::{ReadRequest, StreamPath, StreamProviderExt as _};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
+mod retirement;
+pub(super) use retirement::{RETIRE, open_retirement, retirement_participant};
 /// Terminal input facts share one stream's atomic order. The first indexed
 /// fact for an input wins, including cancellation racing with settlement.
 #[derive(Serialize, Deserialize)]
@@ -43,7 +45,7 @@ pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
     Ok(())
 }
 
-fn input_events(agent: &super::AgentPath) -> Result<StreamPath, Error> {
+pub(super) fn input_events(agent: &super::AgentPath) -> Result<StreamPath, Error> {
     StreamPath::new(format!("{agent}/context/input-events")).map_err(Error::Stream)
 }
 
@@ -74,10 +76,17 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     agent: &super::AgentPath,
     outs: &[super::Out],
+    retired: Option<super::BoundaryCut>,
+    conversation: u64,
     request: &mut acyclic_stream::CommitRequest,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let mut completed = std::collections::BTreeSet::new();
     let mut records = Vec::new();
+    let mut ranges = Vec::new();
+    let mut fence = None;
+    if let Some(retired) = retired {
+        ranges.push(retired);
+    }
     for out in outs {
         if let super::Out::InputCancelled {
             input,
@@ -93,18 +102,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 // A continuation can retire without a conversation entry.
                 // Index its run in the same terminal-fact append and commit
                 // as its physical input's cancellation, never a global floor.
-                records.push(acyclic_stream::AppendRecord {
-                    value: InputFact::Cancelled {
-                        conversation: *conversation,
-                    }
-                    .encode()?
-                    .into(),
-                    headers: acyclic_stream::RecordHeaders::new(
-                        vec![run.into_bytes().to_vec().into()],
-                        Vec::new(),
-                    )
-                    .map_err(Error::Stream)?,
-                });
+                records.push(goal_cancellation(run, *conversation)?);
             }
         }
         let super::Out::Conversation(record) = out else {
@@ -113,11 +111,20 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         let entry = super::ConversationEntry::decode(record)?;
         completed.insert(entry.inbox);
         let Some(cut) = entry.steering else { continue };
-        let mut from = entry.inbox.saturating_add(1);
+        // Settlement carries its complete admitted interval. A parked turn's
+        // frontier is supplied separately, so neither path depends on a later
+        // cancellation delivery finding the retired input still queued.
+        ranges.push(super::BoundaryCut {
+            from: entry.inbox.saturating_add(1),
+            through: cut.through,
+        });
+    }
+    for cut in ranges {
+        let mut from = cut.from;
         while from < cut.through {
             let limit = (cut.through - from).min(super::MAX_QUEUED as u64) as u32;
             let end = from + u64::from(limit);
-            let mut records = provider
+            let mut sources = provider
                 .read(ReadRequest {
                     key: None,
                     path: agent.inbox()?,
@@ -128,17 +135,43 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 .await
                 .map_err(Error::Stream)?;
             while from < end {
-                let record = records
+                let record = sources
                     .try_next()
                     .await
                     .map_err(Error::Stream)?
                     .filter(|record| record.sequence == from)
                     .ok_or(Error::Record("settled steering input is unavailable"))?;
-                if matches!(
-                    super::InboxRecord::decode(&record.value)?,
-                    super::InboxRecord::Message(_)
-                ) {
+                let source = super::InboxRecord::decode(&record.value)?;
+                if matches!(source, super::InboxRecord::Message(_)) {
                     completed.insert(from);
+                    if let Some(input) = super::input::input(from, source)
+                        && let Some(run) = super::goal::continuing(agent, &input.input)
+                    {
+                        // The first terminal fact and this retirement must
+                        // observe the same order. A changed tail is a source
+                        // event that revalidates this actor publication.
+                        if fence.is_none() {
+                            let path = input_events(agent)?;
+                            fence = Some(match provider.head(path.clone()).await {
+                                Ok(head) => acyclic_stream::CommitCondition::Tail {
+                                    path,
+                                    expected: head.tail,
+                                },
+                                Err(error)
+                                    if error.category()
+                                        == acyclic_stream::StreamError::NotFound =>
+                                {
+                                    acyclic_stream::CommitCondition::Absent { path }
+                                }
+                                Err(error) => return Err(Error::Stream(error)),
+                            });
+                        }
+                        if cancelled(provider, agent, from).await?.is_some() {
+                            // A caller's requested frontier is not evidence of
+                            // retirement; this commit's conversation cut is.
+                            records.push(goal_cancellation(run, conversation)?);
+                        }
+                    }
                 }
                 from += 1;
             }
@@ -165,11 +198,20 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         records.extend(completions);
     }
     if !records.is_empty() {
-        let effect = request
+        let index = request
             .effects
-            .iter_mut()
-            .find(|effect| !effect.soft)
-            .ok_or(Error::Record("input settlement has no owning commit"))?;
+            .iter()
+            .position(|effect| !effect.soft)
+            .unwrap_or_else(|| {
+                request
+                    .effects
+                    .push(acyclic_stream::CommitEffect::hard(Vec::new(), Vec::new()));
+                request.effects.len() - 1
+            });
+        let effect = &mut request.effects[index];
+        if let Some(condition) = &fence {
+            effect.conditions.push(condition.clone());
+        }
         let path = input_events(agent)?;
         if let Some(acyclic_stream::CommitMutation::Append { records: original, .. }) = effect.mutations.iter_mut()
             .find(|mutation| matches!(mutation, acyclic_stream::CommitMutation::Append {path: candidate, ..} if candidate == &path)) {
@@ -178,7 +220,21 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             effect.mutations.push(acyclic_stream::CommitMutation::Append { path, records });
         }
     }
-    Ok(())
+    Ok(fence.is_some())
+}
+
+fn goal_cancellation(
+    run: crate::OperationId,
+    conversation: u64,
+) -> Result<acyclic_stream::AppendRecord, Error> {
+    Ok(acyclic_stream::AppendRecord {
+        value: InputFact::Cancelled { conversation }.encode()?.into(),
+        headers: acyclic_stream::RecordHeaders::new(
+            vec![run.into_bytes().to_vec().into()],
+            Vec::new(),
+        )
+        .map_err(Error::Stream)?,
+    })
 }
 
 pub(super) async fn cancelled<P: acyclic_stream::StreamProvider + ?Sized>(
