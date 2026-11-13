@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/demand/computed.rs
++++ b/rust/crates/filesystem/src/demand/computed.rs
+@@ -184,7 +184,6 @@
+             .provider
+             .snapshot(provider, path, ctx, cancellation)
+             .await?;
+-        ctx.check()?;
+         // Waiting must not rebind an admitted request to a replacement source.
+         // Version hashing also retains the original provider identity.
+         if self.provider.reference().identity != provider.identity {

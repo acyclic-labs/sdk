@@ -75,8 +75,11 @@ carry across original calls. Same-byte file writes and recovered no-op receipts
 do not count as authored progress.
 
 Native command owners publish their original capture's logical content comparison
-before reporting physical completion. A physical capture compares its accepted generation with the
-actual serial predecessor recorded by that operation; an unchanged generation's
+after reporting physical completion and before settling the final tool result.
+`completed.json` proves process-tree completion; it does not prove that the
+content comparison is available. The final `result.json` follows that comparison.
+A physical capture compares its accepted generation with the actual serial
+predecessor recorded by that operation; an unchanged generation's
 older parent cannot supply progress. Mounted captures retain both original
 source-backed cuts, including their overlays and identity shadows. An edit,
 regular-file creation or removal can count; metadata, source promotion and

@@ -121,3 +121,24 @@ idempotent and distinguish unavailable evidence from positive progress.
 the same regression must fail at
 `completed native measurements did not settle their own pending calls`.
 Reverse it and require the identical regression to pass again.
+
+The shared computed-file demand boundary awaits only the requested path's
+provider snapshot. Run the exact SDK regression:
+
+```sh
+cargo nextest run --locked -p acyclic-fs --lib --features test-support \
+  -E 'test(=demand::computed_tests::computed_snapshot_wait_keeps_the_requested_path_cut_and_cancellation)'
+```
+
+It waits on channels, advances the source while its original snapshot is
+pending, and distinguishes a healthy retained cut from cancellation and source
+replacement. `computed-cancel-after-wait.patch` removes the post-wait cancellation
+check and must fail at `cancelled snapshot projected data after its provider wait`.
+`computed-source-after-wait.patch` removes the source-identity recheck and must
+fail at `snapshot rebound to another provider after its wait`. Apply each patch
+independently, require the unchanged regression's actual assertion failure,
+reverse the patch, and require that regression to pass again. Existing computed
+overlay/fork, opened-file version, bounded page/range, idle-cost and mounted
+override-removal regressions use the same asynchronous provider boundary.
+The harness native signal-file adapter remains a separate integration obligation;
+this SDK primitive proof alone does not establish that mounted integration.
