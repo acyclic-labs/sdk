@@ -79,13 +79,12 @@ impl Subscriptions {
             if !self.paths.contains_key(path) {
                 let registration = self.ready.register(path.clone())?;
                 let waker = registration.waker();
-                let next = Some(open(provider, path, *from));
                 self.paths.insert(
                     path.clone(),
                     Watch {
                         _registration: registration,
                         waker,
-                        next,
+                        next: None,
                         next_from: *from,
                         notification: None,
                         observers: BTreeMap::new(),
@@ -94,6 +93,8 @@ impl Subscriptions {
             }
             let watch = self.paths.get_mut(path).expect("registered follow");
             watch.observers.insert(actor.clone(), *from);
+            // A registration starts idle: every follow this opens is polled
+            // through its own wake, the first one included.
             if watch.next.is_none() {
                 watch.next = Some(open(provider, path, watch.next_from));
                 watch.waker.wake_by_ref();
