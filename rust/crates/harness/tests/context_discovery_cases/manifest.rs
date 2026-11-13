@@ -35,10 +35,10 @@ async fn storage(
             &private,
             &verifier,
             &scope,
-            32_768,
+            None,
             None,
         )?,
-        FilesystemContentVerifier::new(fixture.host.clone(), &verifier, &scope, 32_768, None)?,
+        FilesystemContentVerifier::new(fixture.host.clone(), &verifier, &scope, None, None)?,
         private,
         scope,
     ))
@@ -530,7 +530,6 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         &tools()?,
     )?;
     let limits = Limits {
-        render_bytes: Some(32_768),
         file_bytes: Some(32_768),
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
