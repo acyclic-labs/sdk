@@ -174,10 +174,18 @@ where
                     crate::conversation::ContentAccess::default(),
                 )?
                 .await?;
-            let summary = format!(
-                "Child approvals require a decision. Read {}{path}\n",
-                crate::layers::PRIVATE_PATH,
-            );
+            let summary = crate::conversation::wire::Notice {
+                source: "harness".into(),
+                kind: "approval.required".into(),
+                body: serde_json::json!({
+                    "text": "Child approvals require a decision.",
+                    "path": format!("{}{path}", crate::layers::PRIVATE_PATH),
+                }),
+                wake: true,
+                coalesce_key: None,
+            };
+            let summary = crate::contract::canonical_json_bytes(&summary)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
             let publisher = FilesystemContentPublisher::new(
                 Arc::clone(&self.host),
                 &bindings.journal.volume,
@@ -190,9 +198,9 @@ where
                 publisher
                     .stage_once(
                         operation,
-                        &format!("inputs/approval-summary-{operation}.txt"),
-                        summary.as_bytes(),
-                        "text/plain",
+                        &format!("inputs/approval-summary-{operation}.json"),
+                        &summary,
+                        crate::agent::NOTICE_MEDIA_TYPE,
                         "approval-summary",
                         crate::conversation::ContentAccess::default(),
                     )?
