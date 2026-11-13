@@ -162,9 +162,30 @@ impl ResourceAuthorization {
             memory_bytes: 0,
         };
         let authorize = |request: &Request<'_>, policy, scope| {
-            capability
-                .authorize(snapshot.trust.as_ref(), request, policy, scope)
-                .map_err(|_| StreamError::AccessDenied)
+            let work = || {
+                capability
+                    .authorize(snapshot.trust.as_ref(), request, policy, scope)
+                    .map_err(|_| StreamError::AccessDenied)
+            };
+            #[cfg(feature = "serde")]
+            {
+                crate::trace::observe_sync(
+                    crate::trace::Request {
+                        name: "stream.resource_authorize",
+                        mechanism: crate::trace::Mechanism::AuthCheck,
+                        parent: None,
+                        guarantee: Some("current_trust_entry_facts_and_owner_policy"),
+                    },
+                    work,
+                    |result| {
+                        result
+                            .is_ok()
+                            .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                    },
+                )
+            }
+            #[cfg(not(feature = "serde"))]
+            work()
         };
         if let Some((resource, action)) = &self.call {
             // The call grant remains necessary after suspension or renewal.

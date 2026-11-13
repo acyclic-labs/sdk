@@ -1082,6 +1082,8 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     let authority = authority(State::new());
     let mut slots = Slots::default();
     authority.register(&mut slots, 0, &token("records", |_| {}), 1)?;
+    let resource = testing::resource_authorization(&fs_token("fs:/volume", |_| {}), "fs:/volume")?;
+    let attributes = RecordAttributes::default();
     let trace = crate::Stream::new(Arc::new(crate::MemoryStream::default()), "owner/trace")?;
     let recorder = Arc::new(Recorder::new(trace.clone(), [39; 16]));
     let root = recorder
@@ -1099,6 +1101,11 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
         let result = root.within_sync(|| authority.bind(&slots, 0, &path, Default::default(), 1));
         assert_eq!(result.is_ok(), allowed);
     }
+    for (policy, allowed) in [(PolicyDecision::Allow, true), (PolicyDecision::Deny, false)] {
+        let result =
+            root.within_sync(|| resource.authorize("fs:/volume/public", &[], &attributes, policy));
+        assert_eq!(result.is_ok(), allowed);
+    }
     let mut query = TraceQuery::new(
         trace.follow(0, Default::default()).await?,
         Default::default(),
@@ -1106,7 +1113,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     let mut settled = 0;
     let mut succeeded = 0;
     let mut unsettled = 0;
-    while settled != 2 {
+    while settled != 4 {
         let Some(event) = query.next().await? else {
             return Err("diagnostic source ended".into());
         };
@@ -1117,12 +1124,19 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
             ..
         } = event
         {
-            assert_eq!(start.name, "stream.session_authorize");
+            assert!(matches!(
+                start.name.as_str(),
+                "stream.session_authorize" | "stream.resource_authorize"
+            ));
             assert_eq!(start.parent, Some(parent));
             assert_eq!(start.mechanism, Mechanism::AuthCheck);
             assert_eq!(
                 start.guarantee.as_deref(),
-                Some("current_trust_credential_and_resource_admission")
+                Some(if start.name == "stream.session_authorize" {
+                    "current_trust_credential_and_resource_admission"
+                } else {
+                    "current_trust_entry_facts_and_owner_policy"
+                })
             );
             match result {
                 Outcome::Succeeded => {
@@ -1138,7 +1152,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
             settled += 1;
         }
     }
-    assert_eq!((succeeded, unsettled), (1, 1));
+    assert_eq!((succeeded, unsettled), (2, 2));
     root.finish_submitted(None, Outcome::Succeeded)?;
     Ok(())
 }
