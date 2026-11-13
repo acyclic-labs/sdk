@@ -656,6 +656,8 @@ Ordinary, guarded and prepared writes share the physical acquisition entrances:
 | --- | --- | --- |
 | `stream.visibility_lock` | Lock | `serialized_mutation_snapshot_and_compaction_cut`: a mutation's journal/snapshot cut excludes other mutations and compaction. |
 | `stream.publication_lock` | Lock | `accepted_reads_exclude_incomplete_journal_frames`: accepted readers cannot observe a frame before its publication writer releases it. |
+| `stream.publication_read_lock` | Lock | `accepted_snapshot_excludes_incomplete_journal_frames`: a snapshot reads only after its original publication writer releases the frame. |
+| `stream.visibility_read_lock` | Lock | `prepared_commit_reads_one_mutation_snapshot_cut`: preparation reads a cut excluded from concurrent mutation and compaction. |
 | `stream.journal_cut_wait` | Wait | `requested_journal_cut_device_flushed` or `requested_journal_cut_writes_ordered`: the caller's requested cut is confirmed at its selected durability strength. |
 | `stream.journal_flush` | Fsync | `journal_cut_device_flushed` or `journal_cut_writes_ordered`: the original group flush confirms its cut at that strength. |
 
@@ -667,3 +669,10 @@ is not the number of bytes flushed. Acquisition and settlement waits report zero
 bytes. Errors without retained failure evidence remain explicitly unsettled.
 These observations do not yet account separately for every blocking-thread lock,
 native syscall, copy, authority check or transport hop.
+
+A pending snapshot keeps its original owner when it moves from its inline probe
+to the existing cancellable snapshot worker. The cancelled probe and the worker's
+actual acquisition are distinct attempts: an abandoned acquisition is unsettled,
+and only the attempt receiving the original read guard succeeds. Retiring a
+consumer still removes the original lock reservation before the held writer is
+released; tracing neither keeps that reservation nor replaces the cursor.

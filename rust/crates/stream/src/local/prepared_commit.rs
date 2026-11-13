@@ -27,7 +27,7 @@ impl LocalStream {
                         let result = LocalInner::observe(
                             &mut failed,
                             async {
-                                let _visibility = stream.inner.visibility.read().await;
+                                let _visibility = stream.inner.visibility_read().await;
                                 stream.check_available()?;
                                 let copied = work.record(request.try_clone_native(&work.meter))?;
                                 let (command, command_claim) = copied.into_parts();

@@ -32,6 +32,38 @@ struct LocalInner {
 }
 
 impl LocalInner {
+    async fn publication_read(&self) -> impl std::ops::Deref<Target = ()> + '_ {
+        let acquire = self.publication.read();
+        #[cfg(feature = "serde")]
+        let acquire = crate::trace::observe_value(
+            crate::trace::Request {
+                name: "stream.publication_read_lock",
+                mechanism: crate::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("accepted_snapshot_excludes_incomplete_journal_frames"),
+            },
+            acquire,
+            |_| Some((Some(0), crate::trace::Outcome::Succeeded)),
+        );
+        acquire.await
+    }
+
+    async fn visibility_read(&self) -> impl std::ops::Deref<Target = ()> + '_ {
+        let acquire = self.visibility.read();
+        #[cfg(feature = "serde")]
+        let acquire = crate::trace::observe_value(
+            crate::trace::Request {
+                name: "stream.visibility_read_lock",
+                mechanism: crate::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("prepared_commit_reads_one_mutation_snapshot_cut"),
+            },
+            acquire,
+            |_| Some((Some(0), crate::trace::Outcome::Succeeded)),
+        );
+        acquire.await
+    }
+
     async fn visibility_write(&self) -> impl std::ops::DerefMut<Target = ()> + '_ {
         let acquire = self.visibility.write();
         #[cfg(feature = "serde")]

@@ -803,7 +803,7 @@ impl LocalStream {
             self.check_available()?;
             let mut failed = self.inner.failed.subscribe();
             let read = std::pin::pin!(async {
-                let _visibility = self.inner.publication.read().await;
+                let _visibility = self.inner.publication_read().await;
                 self.check_available()?;
                 Ok(read.await)
             });
