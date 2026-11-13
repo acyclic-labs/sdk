@@ -6,6 +6,7 @@ use tokio::sync::oneshot;
 async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::create_dir(directory.path().join("selected")).map_err(storage)?;
     let harness = LocalHarness::open(
         crate::LocalHarnessConfig::native_host(directory.path())
             .workspace_mounting(WorkspaceMounting::Physical)
@@ -62,6 +63,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         .bootstrap_scope("selected-volumes", &grants, Some(selected_agent), &mut None)?;
     let mut session_bindings = harness.session_bindings().to_vec();
     session_bindings[0].name = "repository".into();
+    session_bindings[0].root = "selected".into();
     session_bindings[1].source = crate::agent::WorkspaceSource::Volume(private_home.clone());
     for (role, name) in [
         (crate::agent::WorkspaceRole::Private, "display"),
@@ -82,6 +84,23 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         "results".into(),
         private_ui.clone(),
     ));
+    session_bindings
+        .iter_mut()
+        .find(|entry| entry.name == "display")
+        .unwrap()
+        .root = "ui".into();
+    session_bindings
+        .iter_mut()
+        .find(|entry| entry.name == "results")
+        .unwrap()
+        .root = "ui".into();
+    let mut archive = crate::agent::WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::User,
+        "archive".into(),
+        private_ui.clone(),
+    );
+    archive.root = "reports".into();
+    session_bindings.push(archive);
     session_bindings
         .iter_mut()
         .find(|entry| entry.name == "shared")
@@ -167,19 +186,25 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     let private = second.mounts.named(Some("display"))?.1;
     assert_eq!(private.view.volume, private_ui);
     assert!(private.native_root.override_path().is_none());
-    private.check(acyclic_fs::access::Action::Write, "bound-note", 0)?;
+    private.check(acyclic_fs::access::Action::Write, "ui/bound-note", 0)?;
     let output = second.mounts.named(Some("results"))?.1;
     assert!(output.mode.read_only());
-    output.check(acyclic_fs::access::Action::Read, "bound-note", 0)?;
+    output.check(acyclic_fs::access::Action::Read, "ui/bound-note", 0)?;
     assert!(
         output
-            .check(acyclic_fs::access::Action::Write, "bound-note", 0)
+            .check(acyclic_fs::access::Action::Write, "ui/bound-note", 0)
             .is_err()
     );
     assert_ne!(
         private.view.source.as_ref().unwrap().destination,
         output.view.source.as_ref().unwrap().destination,
         "different binding modes shared a native projection",
+    );
+    let archive = second.mounts.named(Some("archive"))?.1;
+    assert_ne!(
+        private.view.source.as_ref().unwrap().destination,
+        archive.view.source.as_ref().unwrap().destination,
+        "different roots shared a native projection"
     );
     let logical = workspace.context_task_view(
         view().await?,
@@ -223,6 +248,15 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     );
     assert!(remounted.named(Some("project")).is_err());
     assert!(remounted.named(Some("results"))?.1.mode.read_only());
+    assert_eq!(remounted.named(Some("results"))?.1.view.root, "ui");
+    assert_eq!(
+        remounted.native_root_for(remounted.named(None)?.1),
+        Some(second.path.join("selected").as_path()),
+    );
+    assert!(
+        remounted.native_read_roots.is_empty(),
+        "a scoped view must not add opaque read roots outside its subtree"
+    );
     let mut read_only_primary = session_bindings.clone();
     read_only_primary[0].mode = crate::agent::WorkspaceMode::ReadOnly;
     let read_only = workspace.context_task_view(
@@ -233,10 +267,10 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     )?;
     let primary = read_only.mounts.named(None)?.1;
     assert!(primary.mode.read_only());
-    primary.check(acyclic_fs::access::Action::Read, "file", 0)?;
+    primary.check(acyclic_fs::access::Action::Read, "selected/file", 0)?;
     assert!(
         primary
-            .check(acyclic_fs::access::Action::Write, "file", 0)
+            .check(acyclic_fs::access::Action::Write, "selected/file", 0)
             .is_err()
     );
     let options = read_only
@@ -279,6 +313,33 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             &harness.verifier,
             harness.limits.file_bytes,
         );
+        let scope = crate::runtime::RuntimeScope::new(
+            crate::Capabilities::new(signed.capabilities().iter()),
+            Default::default(),
+        )?;
+        let capture = crate::local::checkout_tools::capture::configuration(selected);
+        let commands = super::super::git::Commands {
+            workspace: selected,
+            signed: &signed,
+            verifier: &harness.verifier,
+            clock: harness.clock.as_ref(),
+            capture_options: &capture.0,
+            capture_policy: &capture.1,
+        };
+        for command in [
+            "status",
+            "show HEAD:outside-root",
+            "--volume display status",
+        ] {
+            assert!(
+                matches!(
+                    commands.fs_arguments(command, &scope),
+                    Err(Error::Unauthorized(_))
+                ),
+                "whole-volume version-control access escaped the selected root: {command}"
+            );
+        }
+        commands.fs_arguments("--volume home status", &scope)?;
         let (file, _) = crate::conversation::ContentPublisher::stage_once(
             &publisher,
             OperationId::new(),
@@ -313,6 +374,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         )?
         .await?;
         assert_eq!(file.volume(), &private_ui);
+        assert_eq!(file.path(), "ui/bound-note");
         let reference = crate::filesystem::workspace_ref(
             private_ui.provider().clone(),
             &private_ui.storage_name(&mut None)?,
@@ -320,10 +382,45 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         assert_eq!(
             harness
                 .files
-                .read(&reference, None, "/bound-note", 64, None)
+                .read(&reference, None, "/ui/bound-note", 64, None)
                 .await?
                 .as_ref(),
             b"model-visible private state",
+        );
+        let (file, _) = crate::conversation::ContentPublisher::stage_once(
+            &publisher,
+            OperationId::new(),
+            "volume:///repository/project-note",
+            b"selected project subtree",
+            "text/plain",
+            "project-note",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(file.path(), "selected/project-note");
+        assert_eq!(
+            std::fs::read(directory.path().join("selected/project-note")).map_err(storage)?,
+            b"selected project subtree"
+        );
+        assert!(!directory.path().join("project-note").exists());
+        let (file, _) = crate::conversation::ContentPublisher::stage_once(
+            &publisher,
+            OperationId::new(),
+            "volume:///archive/bound-note",
+            b"separate source root",
+            "text/plain",
+            path,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+        assert_eq!(file.path(), "reports/bound-note");
+        assert_eq!(
+            harness
+                .files
+                .read(&reference, None, "/reports/bound-note", 64, None)
+                .await?
+                .as_ref(),
+            b"separate source root"
         );
         for name in ["interaction", "project", "unknown", "results"] {
             let path = format!("volume:///{name}/bound-note");
@@ -475,9 +572,12 @@ async fn shared_selection(
     owner: &dyn ViewOwner,
 ) -> Result<()> {
     use crate::local::checkout_tools::capture;
-    let (options, policy) = capture::configuration(bound);
+    // The admitted owner performs this whole-volume branch transition. The
+    // scoped task cannot invoke that raw facade, but must observe the same
+    // original checkout selection and retain its own path restrictions.
+    let (options, policy) = capture::configuration(admitted);
     let commands = super::super::git::Commands {
-        workspace: bound,
+        workspace: admitted,
         signed: &harness.signed,
         verifier: &harness.verifier,
         clock: &*harness.clock,

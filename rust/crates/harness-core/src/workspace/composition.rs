@@ -18,6 +18,9 @@ pub struct VolumeView<T> {
     pub agent: String,
     /// Provider-owned volume identity.
     pub volume: VolumeRef,
+    /// Canonical source-relative directory exposed as this binding's root.
+    /// Empty selects the whole volume; this is never a native path.
+    pub root: String,
     /// Root-first ancestry of the owning task.
     pub lineage: Vec<String>,
     /// Selected published generation sequence.
@@ -65,7 +68,7 @@ pub struct Mount<T> {
 }
 
 impl<T> Mount<T> {
-    /// Uses the same compiled decision for tools and native provider callbacks.
+    /// Checks a source-relative path, including this binding's source root.
     pub fn check(&self, action: Action, path: &str, now: u64) -> Result<()> {
         self.check_with_work(action, path, now, None)
     }
@@ -82,6 +85,7 @@ impl<T> Mount<T> {
         if let Some(work) = work {
             work.remaining()?;
         }
+        self.relative_path_with_work(path, work)?;
         if self.access.decide(action, path, now).allowed {
             return Ok(());
         }
@@ -90,6 +94,88 @@ impl<T> Mount<T> {
             "filesystem policy or signed capability denied access",
             work,
         ))
+    }
+
+    /// Maps an immutable source path back into its projected namespace.
+    pub fn relative_path<'a>(&self, path: &'a str) -> Result<&'a str> {
+        crate::tool::ReadPathKind::Directory.validate(path, &mut None)?;
+        self.relative_path_with_work(path, None)
+    }
+
+    fn relative_path_with_work<'a>(
+        &self,
+        path: &'a str,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<&'a str> {
+        if self.view.root.is_empty() {
+            return Ok(path);
+        }
+        if path == self.view.root {
+            return Ok("");
+        }
+        path.strip_prefix(self.view.root.as_str())
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .ok_or_else(|| {
+                path_error(
+                    crate::wire::ErrorCode::Unauthorized,
+                    "source path is outside the workspace root",
+                    work,
+                )
+            })
+    }
+
+    /// Converts a namespace-relative path exactly once, using the invocation's
+    /// original allocation ledger. Native roots are already projected and do
+    /// not use this source path for their OS cwd.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn source_path<'a>(
+        &'a self,
+        path: &'a str,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> Result<Cow<'a, str>> {
+        let io = work
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?;
+        let io = io.as_ref();
+        crate::executor::with_history_io(io, |history| {
+            crate::tool::ReadPathKind::Directory.validate(path, history)
+        })?;
+        self.source_path_validated(path, io)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_path_validated<'a>(
+        &'a self,
+        path: &'a str,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<Cow<'a, str>> {
+        if self.view.root.is_empty() {
+            return Ok(Cow::Borrowed(path));
+        }
+        if path.is_empty() {
+            return Ok(Cow::Borrowed(&self.view.root));
+        }
+        let mut source = crate::executor::stock_string_copy(&self.view.root, io)?;
+        for suffix in ["/", path] {
+            crate::executor::stock_string_push(
+                &mut source,
+                suffix,
+                u64::MAX,
+                "workspace source path size overflow",
+                io,
+            )?;
+        }
+        Ok(Cow::Owned(source))
+    }
+
+    /// Checks paths inside an already projected native directory without
+    /// mistaking them for source-volume coordinates.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn check_relative(&self, action: Action, path: &str, now: u64) -> Result<()> {
+        if self.view.root.is_empty() {
+            return self.check(action, path, now);
+        }
+        self.check(action, &self.source_path(path, None)?, now)
     }
 }
 
@@ -217,7 +303,7 @@ impl<T> MountTable<T> {
                     work,
                 ));
             }
-            return Ok((mount, Cow::Borrowed(path)));
+            return Ok((mount, mount.source_path_validated(path, io)?));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let io = work
@@ -239,6 +325,7 @@ impl<T> MountTable<T> {
                 work,
             ));
         }
+        mount.relative_path_with_work(path, work)?;
         Ok((mount, Cow::Borrowed(path)))
     }
     /// Resolves a qualifier through the visible namespace, never by opening a
@@ -384,6 +471,9 @@ pub fn compose<T>(
     let primary_address = format!("volume:///{}", primary.name);
     let mut mounts = BTreeMap::new();
     for (index, view) in std::iter::once(primary).chain(volumes).enumerate() {
+        if !view.root.is_empty() {
+            crate::conversation::validate_content_path(&view.root, &mut None)?;
+        }
         let access = PathTrie::compile(
             &view.policy,
             principal,
@@ -399,7 +489,7 @@ pub fn compose<T>(
             capability,
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mode = access.subtree_mode("", context.now);
+        let mode = access.subtree_mode(&view.root, context.now);
         let path = if index == 0 {
             String::new()
         } else {
@@ -433,15 +523,16 @@ pub fn compose<T>(
                 "foreign mount must select its latest published generation".into(),
             ));
         }
+        let native_root = if index == 0 && view.root.is_empty() {
+            NativeRoot::Composed
+        } else {
+            NativeRoot::Logical
+        };
         entry.insert(Some(Mount {
             view,
             mode,
             access,
-            native_root: if index == 0 {
-                NativeRoot::Composed
-            } else {
-                NativeRoot::Logical
-            },
+            native_root,
         }));
     }
     let mut mounted = Vec::new();

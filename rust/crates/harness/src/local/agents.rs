@@ -750,18 +750,6 @@ impl LocalHarness {
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 workspace: self.workspace.clone(),
             };
-            if project == &self.project
-                && scratch == &self.scratch
-                && agent.volumes.iter().any(|binding| {
-                    binding.role == WorkspaceRole::Shared
-                        && binding.as_volume() == Some(&self.shared)
-                })
-            {
-                return Ok(TurnBindings {
-                    harness: Arc::clone(&self.harness),
-                    context,
-                });
-            }
             let home_content = crate::runtime::ContentBindings {
                 volume: scratch.clone(),
                 reader: Arc::clone(&content.reader),
@@ -774,6 +762,7 @@ impl LocalHarness {
                     None,
                 )?),
             };
+
             #[cfg(any(test, not(target_arch = "wasm32")))]
             if super::open::uses_native_execution(&self.tools)?
                 && let Some(workspace) = &self.workspace

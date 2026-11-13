@@ -95,20 +95,27 @@ pub(super) async fn attach(
         if mount.mode.read_only() {
             directory.push_str("-ro");
         }
+        if !mount.view.root.is_empty() {
+            directory.push('-');
+            directory.push_str(blake3::hash(mount.view.root.as_bytes()).to_hex().as_str());
+        }
         let destination = root.path().join(&directory);
         let options = if native {
-            Some(
-                authority
-                    .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
-                    .mount_options(
-                        &source,
-                        Some(&mount.view.volume),
-                        !mount.mode.read_only(),
-                        &work,
-                    )
-                    .await?
-                    .publication(MountPublication::Manual),
-            )
+            let options = authority
+                .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
+                .mount_options(
+                    &source,
+                    Some(&mount.view.volume),
+                    !mount.mode.read_only(),
+                    &work,
+                )
+                .await?;
+            let options = if mount.view.root.is_empty() {
+                options
+            } else {
+                options.subdirectory(format!("/{}", mount.view.root))
+            };
+            Some(options.publication(MountPublication::Manual))
         } else {
             None
         };

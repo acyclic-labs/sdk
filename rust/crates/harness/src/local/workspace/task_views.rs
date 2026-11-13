@@ -241,9 +241,16 @@ impl LocalWorkspace {
         let primary = mounts::primary(bindings, project)?;
         let mounts = Arc::new(mounts::owner(
             &self.path,
-            (&primary.name, project, primary.mode, None),
-            mounts::auxiliary(bindings)
-                .map(|(entry, volume)| (entry.name.clone(), volume.clone(), entry.mode, None)),
+            (&primary.name, project, &primary.root, primary.mode, None),
+            mounts::auxiliary(bindings).map(|(entry, volume)| {
+                (
+                    entry.name.clone(),
+                    volume.clone(),
+                    entry.root.clone(),
+                    entry.mode,
+                    None,
+                )
+            }),
         )?);
         Ok(Arc::new(self.unmounted_task_view(view, mounts, authority)))
     }

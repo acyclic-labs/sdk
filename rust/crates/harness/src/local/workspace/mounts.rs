@@ -39,10 +39,10 @@ pub(super) fn auxiliary(
 
 pub(super) fn owner<T>(
     root: &Path,
-    primary: (&str, &VolumeRef, WorkspaceMode, T),
-    volumes: impl IntoIterator<Item = (String, VolumeRef, WorkspaceMode, T)>,
+    primary: (&str, &VolumeRef, &str, WorkspaceMode, T),
+    volumes: impl IntoIterator<Item = (String, VolumeRef, String, WorkspaceMode, T)>,
 ) -> Result<crate::workspace::MountTable<T>> {
-    let (name, volume, mode, source) = primary;
+    let (name, volume, source_root, mode, source) = primary;
     let principal = Principal {
         kind: PrincipalKind::Agent,
         id: "owner".into(),
@@ -81,7 +81,7 @@ pub(super) fn owner<T>(
     let capability = Capability {
         layers: vec![
             std::iter::once(volume)
-                .chain(volumes.iter().map(|(_, volume, _, _)| volume))
+                .chain(volumes.iter().map(|(_, volume, _, _, _)| volume))
                 .flat_map(|volume| {
                     Capability::whole_volume(Some(volume.id().into()), ActionSet::Owner.actions())
                         .layers
@@ -92,10 +92,11 @@ pub(super) fn owner<T>(
         ],
         expires_at: None,
     };
-    let view = |name, volume, mode, source| crate::workspace::VolumeView {
+    let view = |name, volume, root, mode, source| crate::workspace::VolumeView {
         name,
         agent: principal.id.clone(),
         volume,
+        root,
         lineage: principal.lineage.clone(),
         generation: 0,
         head: 0,
@@ -116,10 +117,16 @@ pub(super) fn owner<T>(
             now: 0,
             approvals: 0,
         },
-        view(name.into(), volume.clone(), mode, source),
+        view(
+            name.into(),
+            volume.clone(),
+            source_root.into(),
+            mode,
+            source,
+        ),
         volumes
             .into_iter()
-            .map(|(name, volume, mode, source)| view(name, volume, mode, source)),
+            .map(|(name, volume, root, mode, source)| view(name, volume, root, mode, source)),
     )
 }
 
@@ -140,8 +147,8 @@ mod tests {
             let volume = |name: &str| VolumeRef::new(provider.clone(), name.into(),
                 VolumeClass::Project, VolumeOwner::Project("owner".into()), &mut None).unwrap();
             let root = std::env::current_dir().unwrap();
-            let mut mounts = owner(&root, ("project", &volume("project"), WorkspaceMode::ReadWrite, sources[0]),
-                [("data".into(), volume("data"), WorkspaceMode::ReadWrite, sources[1])]).unwrap();
+            let mut mounts = owner(&root, ("project", &volume("project"), "", WorkspaceMode::ReadWrite, sources[0]),
+                [("data".into(), volume("data"), String::new(), WorkspaceMode::ReadWrite, sources[1])]).unwrap();
             let before: Vec<_> = mounts.mounts().map(|(path, mount)|
                 (path.to_owned(), mount.view.volume.clone(), mount.mode, mount.view.source)).collect();
             for (_, mount) in mounts.mounts_mut() {

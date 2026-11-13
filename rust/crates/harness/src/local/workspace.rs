@@ -163,7 +163,14 @@ impl LocalWorkspace {
                 &work,
             )
             .await
-            .map(|options| options.publication(acyclic_fs::MountPublication::Manual))
+            .map(|options| {
+                let options = if primary.view.root.is_empty() {
+                    options
+                } else {
+                    options.subdirectory(format!("/{}", primary.view.root))
+                };
+                options.publication(acyclic_fs::MountPublication::Manual)
+            })
     }
     pub(in crate::local) fn held_task_mount_root(&self) -> Result<acyclic_fs::HeldRoot> {
         acyclic_fs::hold_root(&self.mount_directory).map_err(storage)
@@ -176,6 +183,7 @@ impl LocalWorkspace {
             (
                 &primary.view.name,
                 &primary.view.volume,
+                &primary.view.root,
                 mounts::mode(primary),
                 None,
             ),
@@ -186,17 +194,33 @@ impl LocalWorkspace {
                     (
                         mount.view.name.clone(),
                         mount.view.volume.clone(),
+                        mount.view.root.clone(),
                         mounts::mode(mount),
                         mount.view.source.clone(),
                     )
                 }),
         )?;
         mounts.scratch_root = self.mounts.scratch_root.clone();
-        mounts.native_read_roots = self
-            .opaque_native_directories()?
-            .into_iter()
-            .map(|(_, path)| (path, self.source_root.clone()))
-            .collect();
+        if primary.view.root.is_empty() {
+            mounts.native_read_roots = self
+                .opaque_native_directories()?
+                .into_iter()
+                .map(|(_, path)| (path, self.source_root.clone()))
+                .collect();
+        } else {
+            // Native mounts already project the subtree. Physical capture
+            // retains the whole-volume root; only the process root is scoped.
+            let exposed = if self.mounted.is_some() {
+                path.to_path_buf()
+            } else {
+                path.join(&primary.view.root)
+            };
+            for (relative, mount) in mounts.mounts_mut() {
+                if relative.is_empty() {
+                    mount.native_root = crate::workspace::NativeRoot::Path(exposed.clone());
+                }
+            }
+        }
         volumes::bind_roots(&mut mounts)?;
         Ok(Arc::new(mounts))
     }
@@ -250,16 +274,24 @@ impl LocalWorkspace {
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
-            (&primary.name, project, primary.mode, None),
+            (&primary.name, project, &primary.root, primary.mode, None),
             mounts::auxiliary(bindings).map(|(entry, volume)| {
                 let source = self
                     .mounts
                     .mounts()
                     .find(|(_, mount)| {
-                        &mount.view.volume == volume && mounts::mode(mount) == entry.mode
+                        &mount.view.volume == volume
+                            && mounts::mode(mount) == entry.mode
+                            && mount.view.root == entry.root
                     })
                     .and_then(|(_, mount)| mount.view.source.clone());
-                (entry.name.clone(), volume.clone(), entry.mode, source)
+                (
+                    entry.name.clone(),
+                    volume.clone(),
+                    entry.root.clone(),
+                    entry.mode,
+                    source,
+                )
             }),
         )?;
         mounts.scratch_root = self.mounts.scratch_root.clone();
@@ -491,6 +523,7 @@ pub(super) async fn open(
         (
             "project",
             volume,
+            "",
             crate::agent::WorkspaceMode::ReadWrite,
             None,
         ),
@@ -498,6 +531,7 @@ pub(super) async fn open(
             (
                 name.into(),
                 volume.clone(),
+                String::new(),
                 crate::agent::WorkspaceMode::ReadWrite,
                 None,
             )

@@ -298,6 +298,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         (
             "project",
             &mounts.named(None)?.1.view.volume,
+            "",
             crate::agent::WorkspaceMode::ReadWrite,
             None,
         ),
@@ -305,6 +306,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
             (
                 name.to_owned(),
                 mount.view.volume.clone(),
+                String::new(),
                 crate::agent::WorkspaceMode::ReadWrite,
                 Some(source),
             )
@@ -371,6 +373,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         (
             "project",
             &mounts.named(None)?.1.view.volume,
+            "",
             crate::agent::WorkspaceMode::ReadWrite,
             None,
         ),
@@ -378,6 +381,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
             (
                 name.to_owned(),
                 mount.view.volume.clone(),
+                String::new(),
                 crate::agent::WorkspaceMode::ReadWrite,
                 Some(source),
             )
@@ -434,12 +438,14 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
             (
                 "project",
                 &mount.view.volume,
+                "",
                 crate::agent::WorkspaceMode::ReadWrite,
                 Some(Arc::clone(primary)),
             ),
             [(
                 "home".into(),
                 mount.view.volume.clone(),
+                String::new(),
                 crate::agent::WorkspaceMode::ReadWrite,
                 Some(Arc::clone(named)),
             )],

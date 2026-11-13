@@ -15,10 +15,15 @@ fn workspace_hints(environment: &BTreeMap<String, String>) -> BTreeMap<String, S
 
 #[cfg(unix)]
 fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
-    table_with_home(root, false)
+    table_with_roots(root, "", "", false)
 }
 
-fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile::TempDir>>> {
+fn table_with_roots(
+    root: PathBuf,
+    primary: &str,
+    data: &str,
+    home: bool,
+) -> Result<MountTable<Arc<tempfile::TempDir>>> {
     let native = Arc::new(tempfile::tempdir().map_err(Error::process_io)?);
     let resource = ResourcePattern {
         lineage_root: None,
@@ -71,6 +76,12 @@ fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile:
                 VolumeOwner::Project("project".into()),
                 &mut None,
             )?,
+            root: match name {
+                "project" => primary,
+                "data" => data,
+                _ => "",
+            }
+            .into(),
             lineage: principal.lineage.clone(),
             generation: 1,
             head: 1,
@@ -84,7 +95,7 @@ fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile:
         volumes.push(volume("home")?);
     }
     let mut mounts = compose(
-        root,
+        root.clone(),
         &principal,
         &capability,
         Context {
@@ -97,6 +108,10 @@ fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile:
     for (relative, mount) in mounts.mounts_mut() {
         if relative == "volume:///shared" {
             mount.native_root = crate::workspace::NativeRoot::Logical;
+        } else if relative.is_empty() && !primary.is_empty() {
+            // The host provided an already projected directory: its source
+            // path does not exist as a second directory below the OS root.
+            mount.native_root = crate::workspace::NativeRoot::Path(root.clone());
         } else if !relative.is_empty() {
             mount.native_root = crate::workspace::NativeRoot::Path(native.path().to_path_buf());
         }
@@ -142,7 +157,7 @@ async fn abandoned_preparation_retains_its_root_and_leaves_the_executor_availabl
     for refuse in [false, true] {
         let project = tempfile::tempdir().map_err(Error::process_io)?;
         let root = project.path().canonicalize().map_err(Error::process_io)?;
-        let mounts = Arc::new(table_with_home(root.clone(), true)?);
+        let mounts = Arc::new(table_with_roots(root.clone(), "", "", true)?);
         let home = mounts
             .native_mounts()
             .find(|(name, _, _)| *name == "volume:///home")
@@ -224,8 +239,10 @@ async fn abandoned_preparation_retains_its_root_and_leaves_the_executor_availabl
 #[tokio::test]
 async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> Result<()> {
     let project = tempfile::tempdir().map_err(Error::process_io)?;
-    let mut mounts = table_with_home(
+    let mut mounts = table_with_roots(
         project.path().canonicalize().map_err(Error::process_io)?,
+        "",
+        "",
         true,
     )?;
     let home = mounts
@@ -910,9 +927,12 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     let root = temp.path().join("view");
     std::fs::create_dir_all(&root).map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(root.join("src")).map_err(|error| Error::Storage(error.to_string()))?;
-    let mounts = table(
+    let mounts = table_with_roots(
         root.canonicalize()
             .map_err(|error| Error::Storage(error.to_string()))?,
+        "source/code",
+        "source/data",
+        false,
     )?;
     std::fs::write(
         mounts

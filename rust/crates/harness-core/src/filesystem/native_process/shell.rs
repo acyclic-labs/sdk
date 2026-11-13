@@ -56,7 +56,7 @@ pub fn prepare<T>(
     input.validate()?;
     let relative = Path::new(input.cwd.as_deref().unwrap_or(""));
     let (mount, path) = mounts.resolve(relative)?;
-    mount.check(Action::List, &path, now)?;
+    mount.check_relative(Action::List, &path, now)?;
     if matches!(mount.native_root, crate::workspace::NativeRoot::Logical) {
         return Err(Error::Unsupported(
             "logical volume has no native shell directory".into(),
@@ -89,10 +89,10 @@ pub fn prepare<T>(
         let selected = selected
             .to_str()
             .ok_or_else(|| Error::Invalid("shell cwd is not UTF-8".into()))?;
-        mount.check(Action::List, &selected.replace('\\', "/"), now)?;
+        mount.check_relative(Action::List, &selected.replace('\\', "/"), now)?;
     } else if selected != Path::new(&path) {
         let (mount, path) = mounts.resolve(selected)?;
-        mount.check(Action::List, &path, now)?;
+        mount.check_relative(Action::List, &path, now)?;
     }
     invocation.cwd = cwd;
     for (name, value) in mounts.environment()? {

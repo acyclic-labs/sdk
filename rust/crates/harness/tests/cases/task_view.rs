@@ -112,6 +112,7 @@ fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>
             VolumeOwner::Project("project".into()),
             &mut None,
         )?,
+        root: String::new(),
         lineage: vec!["root".into(), agent.into()],
         generation: 10,
         head: 10,
@@ -122,6 +123,92 @@ fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>
 }
 fn root() -> PathBuf {
     std::env::current_dir().unwrap().join("task-view")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn source_roots_route_once_and_refuse_peer_paths_before_native_exposure() -> Result<()> {
+    let caller = principal("B");
+    let policy = policy(false);
+    let mut project = volume("B", "project", policy.clone())?;
+    project.root = "packages/app".into();
+    let project_volume = project.volume.clone();
+    let mut data = volume("B", "data", policy.clone())?;
+    data.root = "reports".into();
+    let mut table = compose(root(), &caller, &capability(), CONTEXT, project, [data])?;
+    assert!(
+        workspace_hints(&table.environment()?).is_empty(),
+        "a source subtree must not expose its whole native volume implicitly"
+    );
+    let (project, path) = table.file(None, "src/file")?;
+    assert_eq!(path, "packages/app/src/file");
+    project.check(Action::Read, &path, CONTEXT.now)?;
+    project.check_relative(Action::Read, "src/file", CONTEXT.now)?;
+    assert_eq!(project.relative_path(&path)?, "src/file");
+    let (_, explicit) = table.file(Some(&project_volume), &path)?;
+    assert_eq!(
+        explicit, path,
+        "immutable source paths must not be prefixed again"
+    );
+    let (_, directory) = table.path_with_work(
+        None,
+        "",
+        acyclic_harness::tool::ReadPathKind::Directory,
+        None,
+    )?;
+    assert_eq!(directory, "packages/app");
+    for path in ["src/file", "packages/app-peer/file", "packages/other/file"] {
+        assert!(
+            table.file(Some(&project_volume), path).is_err(),
+            "unadmitted source path {path}"
+        );
+        assert!(project.check(Action::Read, path, CONTEXT.now).is_err());
+    }
+    assert!(project.source_path("../other/file", None).is_err());
+    assert!(project.relative_path("packages/app/../peer").is_err());
+    assert!(table.file(None, "volume:///data/../peer").is_err());
+    let (data, path) = table.file(None, "volume:///data/result")?;
+    assert_eq!(path, "reports/result");
+    data.check(Action::Write, &path, CONTEXT.now)?;
+    let (_, native_relative) = table.resolve(Path::new("volume:///data/result"))?;
+    assert_eq!(
+        native_relative, "result",
+        "native projections already select the source root"
+    );
+    let projected = root().with_file_name("projected-app");
+    for (relative, mount) in table.mounts_mut() {
+        if relative.is_empty() {
+            mount.native_root = NativeRoot::Path(projected.clone());
+        }
+    }
+    assert_eq!(
+        Path::new(&workspace_hints(&table.environment()?)["project"]),
+        projected.as_path()
+    );
+    for invalid in ["../peer", "/absolute", "packages/../peer"] {
+        let mut project = volume("B", "project", policy.clone())?;
+        project.root = invalid.into();
+        assert!(compose(root(), &caller, &capability(), CONTEXT, project, []).is_err());
+    }
+    // The mount mode belongs to the selected subtree, not a permission union
+    // over unrelated paths in the same volume.
+    let restricted = Arc::new(Policy {
+        schema_version: POLICY_SCHEMA_VERSION,
+        version: 1,
+        layers: vec![vec![rule(
+            "other",
+            &[Action::Read, Action::List],
+            true,
+            "elsewhere/**",
+        )]],
+    });
+    let mut project = volume("B", "project", restricted)?;
+    project.root = "packages/app".into();
+    assert!(matches!(
+        compose(root(), &caller, &capability(), CONTEXT, project, []),
+        Err(Error::Unauthorized(_))
+    ));
+    Ok(())
 }
 
 #[test]
