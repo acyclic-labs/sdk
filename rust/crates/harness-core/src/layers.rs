@@ -130,7 +130,7 @@ pub fn read_only(path: &str) -> bool {
 /// A host-published read-only layer, shared by every agent in a composition.
 /// The generation is part of the binding, so a later host publication cannot
 /// change what an already-open composition reads.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
 pub struct PinnedLayer {
     /// The volume on the composition's original content reader.
     pub volume: crate::conversation::VolumeRef,
