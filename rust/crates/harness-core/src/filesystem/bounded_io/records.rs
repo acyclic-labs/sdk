@@ -49,7 +49,8 @@ records!(
     Vec<crate::tool::ToolDefinition> => ToolDefinitions,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
     crate::core::ExtensionConfiguration => None,
-    FileRef => None, Vec<crate::conversation::Attachment> => None,
+    FileRef => None, crate::conversation::FileVersion => None,
+    Vec<crate::conversation::Attachment> => None,
     crate::conversation::FilePathSelection => None,
     crate::conversation::PathSelection => None,
 );
