@@ -624,7 +624,7 @@ mod tests {
                 .observe_staged_once(
                     refused,
                     None,
-                    None,
+                    Some(4096),
                     crate::conversation::ContentAccess::default()
                 )?
                 .await?
