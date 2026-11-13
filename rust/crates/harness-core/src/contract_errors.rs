@@ -1182,15 +1182,24 @@ pub struct CommandFailure {
 #[derive(Debug)]
 enum CommandCause {
     Original(Error),
+    #[cfg(not(target_arch = "wasm32"))]
+    Shared(std::sync::Arc<Error>),
+    #[cfg(not(target_arch = "wasm32"))]
+    External(Box<dyn std::error::Error + Send + Sync>),
     Projection(Option<String>),
 }
 
 impl CommandFailure {
-    /// The actual local failure, if this command failed on this host.
+    /// The original local SDK failure. Foreign I/O errors are exposed through
+    /// [`std::error::Error::source`] without manufacturing an SDK cause.
     #[must_use]
     pub fn original(&self) -> Option<&Error> {
         match &self.cause {
             CommandCause::Original(error) => Some(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(error) => Some(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::External(_) => None,
             CommandCause::Projection(_) => None,
         }
     }
@@ -1201,6 +1210,8 @@ impl CommandFailure {
         match &self.cause {
             CommandCause::Projection(diagnostic) => diagnostic.as_deref(),
             CommandCause::Original(_) => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(_) | CommandCause::External(_) => None,
         }
     }
 }
@@ -1209,6 +1220,14 @@ impl std::fmt::Display for CommandFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.cause {
             CommandCause::Original(error) => {
+                write!(formatter, "command {}: {error}", self.operation)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(error) => {
+                write!(formatter, "command {}: {error}", self.operation)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::External(error) => {
                 write!(formatter, "command {}: {error}", self.operation)
             }
             CommandCause::Projection(diagnostic) => formatter.write_str(
@@ -1222,6 +1241,10 @@ impl std::fmt::Display for CommandFailure {
 
 impl std::error::Error for CommandFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let CommandCause::External(error) = &self.cause {
+            return Some(error.as_ref());
+        }
         self.original().map(|error| error as &dyn std::error::Error)
     }
 }
@@ -1239,6 +1262,31 @@ impl Error {
             operation,
             classification,
             cause: CommandCause::Original(self),
+        }))
+    }
+
+    /// Observe a shared producer failure without erasing its original cause.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn shared_for_request(source: std::sync::Arc<Self>, operation: OperationId) -> Self {
+        let classification = source.classification();
+        Self::Command(Box::new(CommandFailure {
+            operation,
+            classification,
+            cause: CommandCause::Shared(source),
+        }))
+    }
+
+    /// Retain a foreign I/O cause with the request owner's semantic decision.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn external_for_request(
+        operation: OperationId,
+        classification: ErrorClassification,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Command(Box::new(CommandFailure {
+            operation,
+            classification,
+            cause: CommandCause::External(Box::new(source)),
         }))
     }
 

@@ -136,27 +136,10 @@ impl ReqwestTransport {
 #[cfg(not(target_arch = "wasm32"))]
 fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness_core::Error {
     use acyclic_harness_core::ModelTransportFailure;
-    let mut root: &(dyn std::error::Error + 'static) = error;
-    let mut tls = false;
-    loop {
-        tls |= root.is::<rustls::Error>();
-        // An `io::Error`'s `source` skips the error it wraps, and rustls reports through nested
-        // ones, so descend into the wrapped error first.
-        let next = match root
-            .downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::get_ref)
-        {
-            Some(wrapped) => Some(wrapped as &(dyn std::error::Error + 'static)),
-            None => root.source(),
-        };
-        match next {
-            Some(next) => root = next,
-            None => break,
-        }
-    }
+    let (code, root) = acyclic_harness_core::http::transport_failure(error);
     let failure = if error.is_timeout() {
         ModelTransportFailure::Timeout
-    } else if tls {
+    } else if code == acyclic_harness_core::wire::ErrorCode::Unauthorized {
         ModelTransportFailure::Tls
     } else if error.is_connect() {
         ModelTransportFailure::Connect
