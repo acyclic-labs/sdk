@@ -752,9 +752,9 @@ impl LocalStream {
             let pending = spawn(publication_scope(async move {
                 let task = std::pin::pin!(async {
                     let (result, required) = {
-                        let _visibility = stream.inner.visibility.write().await;
+                        let _visibility = stream.inner.visibility_write().await;
                         stream.check_available()?;
-                        let publication = stream.inner.publication.write().await;
+                        let publication = stream.inner.publication_write().await;
                         stream.check_available()?;
                         let result = mutation(stream.clone()).await;
                         stream.inner.commit_clock.unpin();

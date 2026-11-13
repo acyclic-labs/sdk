@@ -172,9 +172,12 @@ without first owning that credit. A saturated producer skips observation and
 increments `suppressed_spans`; a nonzero value explicitly means incomplete
 coverage. Original business work remains ready and is never queued behind trace
 IO. These are publication credits, not a history or agent-count limit. The
-suppression counter is currently exposed on the producer; projecting it into the
-stream-backed file query remains necessary before that file can claim complete
-coverage under saturation.
+producer's cumulative suppression counter is also sampled into subsequent submitted
+terminal batches as a Coverage record. The shared finite/live file query reports
+`largestReportedSuppression`, the largest count observed from any one producer.
+Repeated reports are not summed, and this lower bound does not retain an index
+of past producer incarnations. Zero does not prove complete coverage: a crash or
+absence of a subsequent terminal can leave omissions unreported.
 A registry-bound producer also carries its own admitted lease count. The final
 lease retires new inherited child observations even when the original request
 still retains its recorder or another agent remains followed. This is an inline
@@ -643,3 +646,24 @@ Pass divan options after `--`, for example `-- --sample-count 10 put_small`.
 Name the bench with `--bench`: the library's test harness rejects those options.
 The `bench-fs` and `bench-objects` examples in their owning crates measure whole
 workloads (see its README).
+
+Local publication workers inherit the original optional trace owner at submission
+and restore it on each poll. Diagnostic publication carries disabled ownership,
+so writing a trace through a local provider cannot recursively trace its flush.
+Ordinary, guarded and prepared writes share the physical acquisition entrances:
+
+| Span | Mechanism | Public guarantee |
+| --- | --- | --- |
+| `stream.visibility_lock` | Lock | `serialized_mutation_snapshot_and_compaction_cut`: a mutation's journal/snapshot cut excludes other mutations and compaction. |
+| `stream.publication_lock` | Lock | `accepted_reads_exclude_incomplete_journal_frames`: accepted readers cannot observe a frame before its publication writer releases it. |
+| `stream.journal_cut_wait` | Wait | `requested_journal_cut_device_flushed` or `requested_journal_cut_writes_ordered`: the caller's requested cut is confirmed at its selected durability strength. |
+| `stream.journal_flush` | Fsync | `journal_cut_device_flushed` or `journal_cut_writes_ordered`: the original group flush confirms its cut at that strength. |
+
+Lock spans measure acquisition, returning the original guard without extending
+its lifetime through diagnostic IO. Wait success requires the original cut check;
+a watch wake alone is insufficient. Flush time includes native submission and
+acknowledgement. Physical byte counts remain unknown because journal file length
+is not the number of bytes flushed. Acquisition and settlement waits report zero
+bytes. Errors without retained failure evidence remain explicitly unsettled.
+These observations do not yet account separately for every blocking-thread lock,
+native syscall, copy, authority check or transport hop.

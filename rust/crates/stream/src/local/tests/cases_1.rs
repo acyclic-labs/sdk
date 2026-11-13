@@ -85,13 +85,22 @@ async fn local_append_retains_original_flush_guarantee() -> Result<(), Box<dyn s
             idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .await?;
+        assert!(
+            provider.inner.visibility.try_write().is_ok(),
+            "visibility guard survived original append"
+        );
+        assert!(
+            provider.inner.publication.try_write().is_ok(),
+            "publication guard survived original append"
+        );
         let mut query = TraceQuery::new(
             trace.follow(0, Default::default()).await?,
             Default::default(),
         );
         let mut flush = None;
         let mut wait = None;
-        while flush.is_none() || wait.is_none() {
+        let mut locks = std::collections::BTreeSet::new();
+        while flush.is_none() || wait.is_none() || locks.len() != 2 {
             if let Some(Observation::Completed {
                 id,
                 start,
@@ -130,6 +139,20 @@ async fn local_append_retains_original_flush_guarantee() -> Result<(), Box<dyn s
                         );
                         assert_eq!(bytes, Some(0));
                         assert!(wait.replace(id).is_none());
+                    }
+                    "stream.visibility_lock" | "stream.publication_lock" => {
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(start.mechanism, Mechanism::Lock);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some(if start.name == "stream.visibility_lock" {
+                                "serialized_mutation_snapshot_and_compaction_cut"
+                            } else {
+                                "accepted_reads_exclude_incomplete_journal_frames"
+                            })
+                        );
+                        assert_eq!(bytes, Some(0));
+                        assert!(locks.insert(start.name));
                     }
                     _ => return Err("unexpected local publication span".into()),
                 }
