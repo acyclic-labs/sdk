@@ -53,7 +53,9 @@ mod tests {
             )
             .await?,
         );
-        let conversation = Conversation::open(harness.connect().await?);
+        let owner = harness.connect_sessions().await?;
+        let session = acyclic_harness::local::sessions::create(&owner, "recall", None).await?;
+        let conversation = Conversation::open(session);
         let original = "first\r\nsecond\rlast";
         conversation.send("original", original).await?;
         conversation.wait_current_input().await?;
