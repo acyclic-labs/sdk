@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Retain original deadlines with deferred wait releases.
-            version: "8".into(),
+            // Freeze review pages and retain deadlines with deferred wait releases.
+            version: "9".into(),
         });
     &IDENTITY
 }

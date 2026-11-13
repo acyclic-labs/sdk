@@ -266,8 +266,48 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// Completed control review, before any worker context is opened.
+pub struct OpenTriage {
+    /// One merged escalation; absent when every selected ask was resolved.
+    pub summary: Option<FileRef>,
+    /// Original approval-request inbox sequences, in increasing order.
+    pub consumed: Vec<u64>,
+    /// Decision wakes published with the control's actor checkpoint.
+    pub outs: Vec<Out>,
+}
+
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
+    /// Freeze the original approval input page and its trusted policy before
+    /// inference. Unsupported hosts refuse without opening a worker executor.
+    fn select_approvals<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        inbox: u64,
+        cursor: u64,
+    ) -> BoxFuture<'a, crate::Result<super::ApprovalSelection>> {
+        let _ = (agent, inbox, cursor);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "parent review is not bound".into(),
+            ))
+        })
+    }
+    /// Review only this frozen page outside worker context. Decisive results
+    /// retain their original decision owner; only escalation produces a summary.
+    fn triage<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        selection: &'a super::ApprovalSelection,
+    ) -> BoxFuture<'a, crate::Result<OpenTriage>> {
+        let _ = (agent, selection);
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "parent review is not bound".into(),
+            ))
+        })
+    }
+
     /// Saves workspace effects before a pending operation releases the delivery.
     /// Unlike settlement, this does not complete the turn or merge a child.
     /// Required, so no wrapping host can silently drop a save.
@@ -324,6 +364,22 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
     ) -> BoxFuture<'a, crate::Result<()>> {
         (**self).park(agent, operation)
     }
+    fn select_approvals<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        inbox: u64,
+        cursor: u64,
+    ) -> BoxFuture<'a, crate::Result<super::ApprovalSelection>> {
+        (**self).select_approvals(agent, inbox, cursor)
+    }
+    fn triage<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        selection: &'a super::ApprovalSelection,
+    ) -> BoxFuture<'a, crate::Result<OpenTriage>> {
+        (**self).triage(agent, selection)
+    }
+
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -604,6 +660,8 @@ struct Checkpoint {
     /// Whether the original announcement delta was committed before execution.
     opened: bool,
     notices: Option<super::NoticeSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    triage: Option<super::ApprovalSelection>,
 }
 
 /// The input of the turn a step continues (kept in the checkpoint) and its
@@ -801,11 +859,11 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
                 _ => ModelContent::Part(event),
             }
         }
-        TurnInput::ApprovalRequested { child, id } => ModelContent::Part(notice(
-            child.as_str().to_owned(),
-            "approval.requested",
-            serde_json::json!({"id": id}),
-        )),
+        TurnInput::ApprovalRequested { .. } => {
+            return Err(Error::Record(
+                "approval requests require independent review",
+            ));
+        }
         TurnInput::Approval { id } => ModelContent::Part(notice(
             "approval".to_owned(),
             "approval.resolved",
@@ -1212,6 +1270,93 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 };
                 return settle_selection(agent, &open, turn, inbox, input, refusal).await;
             }
+            if matches!(&input, TurnInput::ApprovalRequested { .. }) {
+                let selection = checkpoint(agent)?.and_then(|checkpoint| checkpoint.triage);
+                let Some(selection) = selection else {
+                    let Some(selection) = opened(
+                        crate::core::until_turn_stopped(
+                            Some(cancellation.clone()),
+                            self.host.select_approvals(agent, inbox, cursor),
+                        )
+                        .await,
+                        &cancellation,
+                    )?
+                    else {
+                        return Ok(cancelled_open(agent, inbox));
+                    };
+                    selection.validate(&agent.path, inbox)?;
+                    if selection.range.end > cursor {
+                        return Err(Error::Record(
+                            "approval selection exceeds its original delivery",
+                        ));
+                    }
+                    return Ok(TurnStep {
+                        checkpoint: Some(encode(&Checkpoint {
+                            inbox,
+                            input,
+                            segment,
+                            announcements: Vec::new(),
+                            opened: false,
+                            notices: None,
+                            triage: Some(selection),
+                        })?),
+                        outs: Vec::new(),
+                        wait: Wait::Continue,
+                        drops: None,
+                    });
+                };
+                selection.validate(&agent.path, inbox)?;
+                let Some(reviewed) = opened(
+                    crate::core::until_turn_stopped(
+                        Some(cancellation.clone()),
+                        self.host.triage(agent, &selection),
+                    )
+                    .await,
+                    &cancellation,
+                )?
+                else {
+                    return Ok(cancelled_open(agent, inbox));
+                };
+                if reviewed.consumed.first() != Some(&inbox)
+                    || reviewed
+                        .consumed
+                        .iter()
+                        .any(|sequence| !selection.range.contains(sequence))
+                {
+                    return Err(Error::Record(
+                        "review consumed inputs outside its original selection",
+                    ));
+                }
+                let mut outs = reviewed.outs;
+                outs.push(Out::ConsumedInputs(reviewed.consumed));
+                let checkpoint = reviewed
+                    .summary
+                    .map(|summary| {
+                        encode(&Checkpoint {
+                            inbox,
+                            input: TurnInput::Notice {
+                                id: super::IntentId::try_from(format!("approval-summary-{inbox}"))?,
+                                notice: Box::new(summary),
+                            },
+                            segment,
+                            announcements: Vec::new(),
+                            opened: false,
+                            notices: None,
+                            triage: None,
+                        })
+                    })
+                    .transpose()?;
+                return Ok(TurnStep {
+                    wait: if checkpoint.is_some() {
+                        Wait::Continue
+                    } else {
+                        Wait::Input
+                    },
+                    checkpoint,
+                    outs,
+                    drops: None,
+                });
+            }
             if agent.turn.is_none()
                 && let Some(notices) = super::NoticeSelection::pending(agent)
             {
@@ -1220,6 +1365,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // the same source range, never a newer pending batch.
                 return Ok(TurnStep {
                     checkpoint: Some(encode(&Checkpoint {
+                        triage: None,
                         inbox,
                         input,
                         segment,
@@ -1257,6 +1403,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // the same selection instead of rebuilding it from new heads.
                 return Ok(TurnStep {
                     checkpoint: Some(encode(&Checkpoint {
+                        triage: None,
                         inbox,
                         input,
                         segment,
@@ -1383,6 +1530,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                                     // conflicting rewrite through its original actor.
                                     return Ok(TurnStep {
                                         checkpoint: Some(encode(&Checkpoint {
+                                            triage: None,
                                             inbox,
                                             input,
                                             segment,
@@ -1474,6 +1622,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         .ok_or(Error::Record("turn effect segments exhausted"))?;
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
+                            triage: None,
                             inbox,
                             input,
                             segment,
@@ -1509,6 +1658,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     outs.extend(pending_spawns(agent, &open).await?);
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
+                            triage: None,
                             inbox,
                             input,
                             segment,
@@ -1551,6 +1701,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     outs.extend(pending_spawns(agent, &open).await?);
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
+                            triage: None,
                             inbox,
                             input,
                             segment,
