@@ -190,9 +190,15 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
             ContentGrant::verify_directory_read(&verifier, &owner, &inherited, "", &mut None)?;
         let inherited_guest =
             ContentGrant::verify_directory_read(&verifier, &guest, &inherited, "", &mut None)?;
+        let fork_owner = storage.issuer.bootstrap_scope(
+            "fork-owner",
+            &Capabilities::new(inherited_capabilities.iter()),
+            Some(agent),
+            &mut None,
+        )?;
         let inherited_write = ContentGrant::verify(
             &verifier,
-            &owner,
+            &fork_owner,
             &inherited,
             VolumeOperation::Write,
             &mut None,
@@ -209,7 +215,7 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
                 &inherited,
                 &inherited_write,
                 None,
-                &IdempotencyKey::new("inherited-role-ceiling")?,
+                &crate::IdempotencyKey::new("inherited-role-ceiling")?,
             )
             .await?;
         let mut restricted: Policy =
