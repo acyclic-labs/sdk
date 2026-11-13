@@ -118,6 +118,10 @@ where
 
     /// Select visible names at one immutable generation under current policy.
     /// An authorized absent directory yields an empty page at that same cut.
+    /// Continuations are opaque and bound to the volume, path and selected cut.
+    /// Resume with `next`, including after an empty page whose `has_more` is true;
+    /// every resume applies current read/list authority before disclosing names.
+    /// A smaller subsequent row credit retains the undisclosed suffix.
     pub async fn directory_page(
         &self,
         agent: &AgentPath,
@@ -128,6 +132,9 @@ where
     }
 
     /// Apply row and byte credit before publishing a confidential continuation.
+    /// The selector's continuation estimate bounds the returned token's bytes.
+    /// A retained suffix remains bounded by its original physical page; the
+    /// returned row count also respects this request's `maximum_entries`.
     pub async fn directory_page_select<F>(
         &self,
         agent: &AgentPath,
@@ -202,11 +209,6 @@ where
                     crate::wire::ErrorCode::Invalid,
                 )
                 .map_err(turn)?;
-            if page.entries.len() > query.maximum_entries as usize {
-                return Err(Error::Record(
-                    "directory remainder exceeds requested page bound",
-                ));
-            }
             host.authorize_directory_remainder(
                 super::super::host::DirectoryListing {
                     volume: &binding.volume,
@@ -273,15 +275,23 @@ where
         } else {
             None
         };
-        let kept = select(&page, &|name| {
+        let selected = select(&page, &|name| {
             if generation.is_none() {
                 return lazy_remainder_bound;
             }
             super::super::host::directory::cursor::encoded_len(generation_bytes, name.len())
         })?;
-        if kept > page.entries.len() || (kept == 0 && !page.entries.is_empty()) {
+        if selected > page.entries.len() || (selected == 0 && !page.entries.is_empty()) {
             return Err(Error::Record(
                 "directory byte credit cannot admit its first entry",
+            ));
+        }
+        // A continuation retains at most its original physical page. A smaller
+        // subsequent row credit splits that same suffix without another read.
+        let kept = selected.min(query.maximum_entries as usize);
+        if kept == 0 && !page.entries.is_empty() {
+            return Err(Error::Record(
+                "directory row credit cannot admit its first entry",
             ));
         }
         if kept < page.entries.len() {

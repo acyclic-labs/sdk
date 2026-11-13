@@ -235,7 +235,10 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
     let second = bound
         .directory_page_select(
             &root,
-            query(Some(&first.generation), Some(cursor)),
+            DirectoryQuery {
+                maximum_entries: 1,
+                ..query(Some(&first.generation), Some(cursor))
+            },
             |page, estimate| {
                 advertised.store(
                     estimate(&page.entries[0].name).ok_or(Error::Record("missing token bound"))?,
@@ -248,7 +251,7 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
                         .collect::<Vec<_>>(),
                     ["b", "c"]
                 );
-                Ok(1)
+                Ok(page.entries.len())
             },
         )
         .await?;
