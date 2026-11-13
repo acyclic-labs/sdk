@@ -11,6 +11,12 @@
           "streaming ",
           "**test answer**"
         ]
+      },
+      {
+        "when": {
+          "contains": "What slowed you down or blocked you? Append feedback records; reply none if nothing."
+        },
+        "text": ["none"]
       }
     ]
   },
@@ -38,12 +44,13 @@
               "**test answer**"
             ]
           },
+          "after_request": { "path": "responses", "step": 1 },
           "detach": true
         }
       ]
     }
   ],
   "assert": {
-    "requests": 1
+    "requests": 2
   }
 }

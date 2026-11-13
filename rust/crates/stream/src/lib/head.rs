@@ -39,6 +39,7 @@ pub enum HeadProjection {
 /// the path's current head or ancestry. Inherited fork records belong to their
 /// original publication and destination, not to the inheriting path.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RetainedRecord {
     /// Original publication identity.
     pub commit_id: CommitId,

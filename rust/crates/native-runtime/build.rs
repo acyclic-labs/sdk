@@ -12,7 +12,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rustc-check-cfg=cfg(tokio_unstable)");
     for path in [
         "runner/main.rs",
+        "runner/ancillary.rs",
+        "runner/fuse_protocol.rs",
         "runner/request.rs",
+        "runner/packet_device.rs",
+        "src/process_tree/packet_device_receipt.rs",
         "runner/sys.rs",
         "src/process_tree/record.rs",
         "src/process_tree/warden.rs",

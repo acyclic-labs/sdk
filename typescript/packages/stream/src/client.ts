@@ -44,6 +44,16 @@ export class StreamClient {
   readonly tokens: { create(request: CreateTokenRequest): Promise<AccessToken> };
   /** Creates a deterministic process-local client for tests and examples. */
   static memory(): StreamClient { return new StreamClient(new MemoryStreamProvider()); }
+  static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
+    const callback = environment?.credential;
+    return new StreamClient(new DefaultStreamProvider({
+      endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
+      ...(callback === undefined
+        ? { token: environment?.token ?? environmentValue("ACYCLIC_API_KEY") }
+        : { credential: callback }),
+      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
+    }));
+  }
   constructor(readonly provider: StreamProvider) {
     this.tokens = { create: async request => {
       if (provider.createToken === undefined) throw new StreamError("unsupported", "provider does not support token creation");
@@ -169,16 +179,6 @@ export class Pending {
 
 /** Handle for one permanent Stream path. */
 export class Stream<Value = Uint8Array> {
-  static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
-    const callback = environment?.credential;
-    return new StreamClient(new DefaultStreamProvider({
-      endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
-      ...(callback === undefined
-        ? { token: environment?.token ?? environmentValue("ACYCLIC_API_KEY") }
-        : { credential: callback }),
-      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
-    }));
-  }
   constructor(readonly provider: StreamProvider, readonly path: string, readonly codec: Codec<Value>) {
     validatePathValue(path);
   }

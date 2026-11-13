@@ -50,6 +50,7 @@ pub mod runtime;
 ))]
 pub mod session;
 pub mod testing;
+pub mod trace;
 // The WASM adapter consumes this module on browser builds; native builds keep
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;

@@ -4,9 +4,9 @@
 //! Fields are decoded without casting caller storage to aligned Rust structs.
 
 use super::*;
+use acyclic_native_runtime::fuse_protocol;
 
-pub(super) const INPUT_HEADER: usize = 40;
-pub(super) const OUTPUT_HEADER: usize = 16;
+pub(super) use fuse_protocol::OUTPUT_HEADER;
 
 pub(super) struct PacketRequest<'a> {
     pub(super) opcode: u32,
@@ -19,21 +19,13 @@ pub(super) struct PacketRequest<'a> {
 
 impl<'a> PacketRequest<'a> {
     pub(super) fn parse(packet: &'a [u8]) -> Result<Self, i32> {
-        if packet.len() < INPUT_HEADER {
-            return Err(libc::EPROTO);
-        }
-        let mut input = PacketInput::new(packet);
-        let len = usize::try_from(input.u32()?).map_err(|_| libc::EOVERFLOW)?;
-        let opcode = input.u32()?;
-        let unique = input.u64()?;
-        let inode = input.u64()?;
-        let owner = (input.u32()?, input.u32()?);
-        let _pid = input.u32()?;
-        let padding = input.u32()?;
-        if len != packet.len() || padding != 0 || (unique == 0 && !matches!(opcode, 2 | 42)) {
-            return Err(libc::EPROTO);
-        }
-        let body = input.remaining();
+        let fuse_protocol::Request {
+            opcode,
+            unique,
+            inode,
+            owner,
+            body,
+        } = fuse_protocol::Request::parse(packet)?;
         Ok(Self {
             opcode,
             unique,
@@ -70,49 +62,29 @@ fn minimum_payload(opcode: u32, body: &[u8]) -> Result<usize, i32> {
     })
 }
 
-pub(super) struct PacketInput<'a> {
-    remaining: &'a [u8],
-}
+pub(super) struct PacketInput<'a>(fuse_protocol::Input<'a>);
 
 impl<'a> PacketInput<'a> {
     pub(super) fn new(bytes: &'a [u8]) -> Self {
-        Self { remaining: bytes }
+        Self(fuse_protocol::Input::new(bytes))
     }
     pub(super) fn take(&mut self, len: usize) -> Result<&'a [u8], i32> {
-        let (value, tail) = self.remaining.split_at_checked(len).ok_or(libc::EPROTO)?;
-        self.remaining = tail;
-        Ok(value)
+        self.0.take(len)
     }
     pub(super) fn u32(&mut self) -> Result<u32, i32> {
-        Ok(u32::from_ne_bytes(
-            self.take(4)?.try_into().map_err(|_| libc::EPROTO)?,
-        ))
+        self.0.u32()
     }
     pub(super) fn u64(&mut self) -> Result<u64, i32> {
-        Ok(u64::from_ne_bytes(
-            self.take(8)?.try_into().map_err(|_| libc::EPROTO)?,
-        ))
+        self.0.u64()
     }
     pub(super) fn name(&mut self) -> Result<&'a OsStr, i32> {
-        let end = self
-            .remaining
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(libc::EPROTO)?;
-        let value = self.take(end + 1)?;
-        Ok(OsStr::from_bytes(
-            value.strip_suffix(&[0]).ok_or(libc::EPROTO)?,
-        ))
+        self.0.name().map(OsStr::from_bytes)
     }
     pub(super) fn remaining(&self) -> &'a [u8] {
-        self.remaining
+        self.0.remaining()
     }
     pub(super) fn end(self) -> Result<(), i32> {
-        if self.remaining.is_empty() {
-            Ok(())
-        } else {
-            Err(libc::EPROTO)
-        }
+        self.0.end()
     }
 }
 
@@ -199,26 +171,10 @@ impl<'a> PacketOutput<'a> {
         self.bytes(&value.to_ne_bytes())
     }
     pub(super) fn finish(&mut self, unique: u64, errno: Option<i32>) -> Result<usize, i32> {
-        if let Some(errno) = errno {
-            if errno <= 0 {
-                return Err(libc::EINVAL);
-            }
-            self.length = OUTPUT_HEADER;
+        self.length = fuse_protocol::reply_header(self.bytes, self.length, unique, errno)?;
+        if errno.is_some() {
             self.payload = None;
-            self.bytes
-                .get_mut(4..8)
-                .ok_or(libc::ENOBUFS)?
-                .copy_from_slice(&(-errno).to_ne_bytes());
         }
-        let length = u32::try_from(self.length).map_err(|_| libc::EOVERFLOW)?;
-        self.bytes
-            .get_mut(..4)
-            .ok_or(libc::ENOBUFS)?
-            .copy_from_slice(&length.to_ne_bytes());
-        self.bytes
-            .get_mut(8..16)
-            .ok_or(libc::ENOBUFS)?
-            .copy_from_slice(&unique.to_ne_bytes());
         Ok(self.length)
     }
     fn timestamp(value: SystemTime) -> Result<(u64, u32), i32> {

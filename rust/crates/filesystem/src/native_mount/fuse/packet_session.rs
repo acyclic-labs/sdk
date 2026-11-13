@@ -1,17 +1,11 @@
 //! FUSE negotiation and physical reply completion, shared by every transport.
 
-use super::packet::{PacketInput, PacketOutput, PacketRequest};
+use super::packet::{PacketInput, PacketRequest};
 use super::packet_dispatch::{PacketCompletion, PacketFailure};
 use super::packet_router::PacketRouter;
 use super::*;
-use std::sync::atomic::AtomicU8;
-
-const COLD: u8 = 0;
-const NEGOTIATING: u8 = 1;
-const READY: u8 = 2;
-const CLOSED: u8 = 3;
-const PROTOCOL_MAJOR: u32 = 7;
-const PROTOCOL_MINOR: u32 = 31;
+use acyclic_native_runtime::fuse_protocol::{self, Prepared, Transition};
+use std::sync::atomic::AtomicBool;
 
 #[cfg(test)]
 thread_local! {
@@ -20,14 +14,19 @@ thread_local! {
     };
 }
 // The same maximum as the host session replaced by this entry.
-pub(super) const MAXIMUM_WRITE: u32 = 16 * 1024 * 1024;
+pub(super) use fuse_protocol::MAXIMUM_WRITE;
 
 pub(super) struct PacketSession {
     pub(super) guest: Option<Arc<dyn super::super::GuestSource>>,
     router: PacketRouter,
-    phase: AtomicU8,
+    protocol: Protocol,
     maximum_write: u32,
-    page_size: std::num::NonZeroU32,
+}
+
+enum Protocol {
+    Kernel(fuse_protocol::Session),
+    // Logical backend retirement is independent of the external kernel session.
+    Backend(AtomicBool),
 }
 
 /// A reply retains projection leases and original work until publication.
@@ -37,7 +36,7 @@ pub(super) struct PacketSession {
 pub(super) struct PacketReply<'a> {
     session: &'a PacketSession,
     completion: PacketCompletion,
-    next_phase: Option<u8>,
+    next_phase: Option<Transition>,
     pending: bool,
 }
 
@@ -54,16 +53,27 @@ impl PacketReply<'_> {
     }
 
     pub(super) fn delivered(mut self) {
-        if let Some(next) = self.next_phase {
-            // A concurrent close must never be undone by late publication.
-            let _ = self.session.phase.compare_exchange(
-                NEGOTIATING,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+        if let Some(next) = self.next_phase
+            && let Protocol::Kernel(protocol) = &self.session.protocol
+        {
+            protocol.delivered(next);
         }
         self.pending = false;
+    }
+
+    pub(super) fn rejected(
+        mut self,
+        request: &PacketRequest<'_>,
+        response: &[u8],
+    ) -> Result<(), PacketFailure> {
+        if self.next_phase.is_some() {
+            return Err(libc::EPROTO.into());
+        }
+        if let Some(core) = self.completion.view_core().or(self.session.single_core()) {
+            self.completion.discard_rejected(core, request, response)?;
+        }
+        self.pending = false;
+        Ok(())
     }
 }
 
@@ -86,28 +96,52 @@ impl PacketSession {
         maximum_write: u32,
         page_size: std::num::NonZeroU32,
     ) -> Result<Self, NativeMountError> {
-        if !(4096..=MAXIMUM_WRITE).contains(&maximum_write)
-            || !page_size.get().is_power_of_two()
-            || page_size.get() < 4096
-            || maximum_write % page_size.get() != 0
-        {
-            return Err(libc::EINVAL.into());
-        }
+        let protocol = fuse_protocol::Session::new(fuse_protocol::Configuration {
+            maximum_write,
+            page_size: page_size.get(),
+            cache_capabilities: router.cache_capabilities()?.bits(),
+        })?;
         Ok(Self {
             guest: None,
             router,
-            phase: AtomicU8::new(COLD),
+            protocol: Protocol::Kernel(protocol),
             maximum_write,
-            page_size,
+        })
+    }
+
+    /// The external host already owns the native kernel session. This endpoint
+    /// serves only logical filesystem requests under the original source work.
+    pub(super) fn backend(
+        router: PacketRouter,
+        maximum_write: u32,
+        page_size: std::num::NonZeroU32,
+    ) -> Result<Self, NativeMountError> {
+        fuse_protocol::Configuration {
+            maximum_write,
+            page_size: page_size.get(),
+            cache_capabilities: 0,
+        }
+        .validate()?;
+        Ok(Self {
+            guest: None,
+            router,
+            protocol: Protocol::Backend(AtomicBool::new(false)),
+            maximum_write,
         })
     }
 
     pub(super) fn ready(&self) -> bool {
-        self.phase.load(Ordering::Acquire) == READY
+        match &self.protocol {
+            Protocol::Kernel(protocol) => protocol.ready(),
+            Protocol::Backend(closed) => !closed.load(Ordering::Acquire),
+        }
     }
 
     pub(super) fn closed(&self) -> bool {
-        self.phase.load(Ordering::Acquire) == CLOSED
+        match &self.protocol {
+            Protocol::Kernel(protocol) => protocol.closed(),
+            Protocol::Backend(closed) => closed.load(Ordering::Acquire),
+        }
     }
 
     pub(super) fn packet_capacity(&self) -> usize {
@@ -122,7 +156,10 @@ impl PacketSession {
     }
 
     pub(super) fn close(&self) {
-        self.phase.store(CLOSED, Ordering::Release);
+        match &self.protocol {
+            Protocol::Kernel(protocol) => protocol.close(),
+            Protocol::Backend(closed) => closed.store(true, Ordering::Release),
+        }
         #[cfg(test)]
         if let Some(probe) = BEFORE_CLOSE.take() {
             probe();
@@ -183,38 +220,42 @@ impl PacketSession {
             guest.posix().require_identity(request.owner)?;
             super::guest::require_metadata(guest.posix(), request)?;
         }
-        let (completion, next_phase) = if request.opcode == 26 {
-            self.phase
-                .compare_exchange(COLD, NEGOTIATING, Ordering::AcqRel, Ordering::Acquire)
-                .map_err(|phase| {
-                    if phase == CLOSED {
-                        PacketFailure::TransportClosed
-                    } else {
-                        libc::EPROTO.into()
-                    }
-                })?;
-            self.initialize(request, response)?
-        } else {
-            match self.phase.load(Ordering::Acquire) {
-                READY => {}
-                CLOSED => return Err(PacketFailure::TransportClosed),
-                _ => return Err(libc::EPROTO.into()),
-            }
-            if request.opcode == 38 {
-                PacketInput::new(request.body).end()?;
-                let mut output = PacketOutput::new(response, 0)?;
-                let completion = PacketCompletion::reply(output.finish(request.unique, None)?);
-                self.close();
-                (completion, None)
-            } else {
-                if matches!(request.opcode, 15 | 16 | 28 | 44) {
-                    let mut input = PacketInput::new(request.body);
-                    input.take(16)?;
-                    if input.u32()? > self.maximum_write {
-                        return Err(libc::EMSGSIZE.into());
-                    }
+        let prepared = match &self.protocol {
+            Protocol::Kernel(protocol) => protocol
+                .prepare(
+                    &fuse_protocol::Request {
+                        opcode: request.opcode,
+                        unique: request.unique,
+                        inode: request.inode,
+                        owner: request.owner,
+                        body: request.body,
+                    },
+                    response,
+                )
+                .map_err(PacketFailure::from)?,
+            Protocol::Backend(closed) => {
+                if closed.load(Ordering::Acquire) {
+                    return Err(PacketFailure::TransportClosed);
                 }
-                (self.router.dispatch(request, response)?, None)
+                if matches!(request.opcode, 26 | 38) {
+                    return Err(libc::EPROTO.into());
+                }
+                Prepared::Backend
+            }
+        };
+        let (completion, next_phase) = match prepared {
+            Prepared::Backend => (self.router.dispatch(request, response)?, None),
+            Prepared::Reply { length, transition } => {
+                let mut completion = PacketCompletion::reply(length);
+                if transition == Some(Transition::Ready)
+                    && let Some(work) = self.router.initialize()?
+                {
+                    completion = completion.retaining_work(work);
+                }
+                if request.opcode == 38 {
+                    self.close();
+                }
+                (completion, transition)
             }
         };
         Ok(PacketReply {
@@ -223,80 +264,5 @@ impl PacketSession {
             next_phase,
             pending: true,
         })
-    }
-
-    fn initialize(
-        &self,
-        request: &PacketRequest<'_>,
-        response: &mut [u8],
-    ) -> Result<(PacketCompletion, Option<u8>), PacketFailure> {
-        let mut input = PacketInput::new(request.body);
-        let major = input.u32()?;
-        let minor = input.u32()?;
-        if major > PROTOCOL_MAJOR {
-            let mut output = PacketOutput::new(response, 8)?;
-            output.u32(PROTOCOL_MAJOR)?;
-            output.u32(PROTOCOL_MINOR)?;
-            return Ok((
-                PacketCompletion::reply(output.finish(request.unique, None)?),
-                Some(COLD),
-            ));
-        }
-        // This entry uses the current fixed layouts, without a second legacy
-        // decoder. All virtio-fs kernels support at least this protocol.
-        if major != PROTOCOL_MAJOR || minor < PROTOCOL_MINOR {
-            return Err(libc::EPROTO.into());
-        }
-        let readahead = input.u32()?.min(self.maximum_write);
-        let capabilities = InitFlags::from_bits_retain(u64::from(input.u32()?));
-        // Without MAX_PAGES the kernel keeps its default 32-page read bound,
-        // regardless of max_write. Do not admit a bound the transport cannot
-        // fund. With MAX_PAGES, both reads and writes fit the same page-aligned
-        // admitted capacity (Linux fs/fuse/{inode,file}.c).
-        if !capabilities.contains(InitFlags::FUSE_MAX_PAGES)
-            && u64::from(self.maximum_write) < 32 * u64::from(self.page_size.get())
-        {
-            return Err(
-                NativeMountError::FuseUnsupportedCapabilities(InitFlags::FUSE_MAX_PAGES).into(),
-            );
-        }
-        if capabilities.contains(InitFlags::FUSE_INIT_EXT) {
-            input.take(48)?;
-        }
-        input.end()?;
-        let mut output = PacketOutput::new(response, 64)?;
-        let flags = capabilities
-            & (self.router.cache_capabilities()?
-                | InitFlags::FUSE_ASYNC_READ
-                | InitFlags::FUSE_BIG_WRITES
-                | InitFlags::FUSE_MAX_PAGES);
-        let work = self.router.initialize()?;
-        output.u32(PROTOCOL_MAJOR)?;
-        output.u32(PROTOCOL_MINOR)?;
-        output.u32(readahead)?;
-        output.u32(u32::try_from(flags.bits()).map_err(|_| libc::EOVERFLOW)?)?;
-        output.bytes(&16_u16.to_ne_bytes())?;
-        output.bytes(&12_u16.to_ne_bytes())?;
-        output.u32(self.maximum_write)?;
-        output.u32(1)?; // nanosecond timestamp granularity
-        let pages = if flags.contains(InitFlags::FUSE_MAX_PAGES) {
-            self.maximum_write
-                .max(readahead)
-                .div_ceil(self.page_size.get())
-        } else {
-            0
-        };
-        output.bytes(
-            &u16::try_from(pages)
-                .map_err(|_| libc::EOVERFLOW)?
-                .to_ne_bytes(),
-        )?;
-        output.bytes(&0_u16.to_ne_bytes())?;
-        output.bytes(&[0; 32])?; // flags2 and reserved fields
-        let mut completion = PacketCompletion::reply(output.finish(request.unique, None)?);
-        if let Some(work) = work {
-            completion = completion.retaining_work(work);
-        }
-        Ok((completion, Some(READY)))
     }
 }

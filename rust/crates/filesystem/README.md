@@ -32,6 +32,33 @@ uses `umount2(MNT_DETACH)`; owner-exit cleanup uses `umount -i -l` (internal
 kernel unmount, with filesystem helpers disabled). Neither requires fusermount.
 Only an unprivileged mount denied by the kernel uses the setuid FUSE helper.
 
+Linux FUSE devices and kernel sessions belong to one external mount-host process
+shared by owners in the same OS user, mount namespace and network namespace.
+Agents and views create no additional server process. The host receives each
+device before the mounted namespace becomes accessible, handles kernel protocol
+negotiation and publishes replies. The SDK retains the filesystem backend;
+blocking access through its own view does not require the embedder's Tokio
+executor to advance. General task spawning and executor retirement are unchanged.
+
+The host watches a mount-free owner thread through a thread pidfd. Killing an
+owner therefore closes its devices even when another owner thread is blocked in
+a request to its own mount. Admission requires Linux thread-pidfd support and
+refuses unsupported kernels before mounting. Other owners keep their connections;
+the host exits after its last connection retires. Canonical OS runtime and account
+home directories supply trusted private admission authorities independently of
+HOME/XDG settings. Clients acquire every usable authority in fixed order and join
+any existing host before creating one, so login-directory changes cannot split
+the host. A service without a writable home can use its OS runtime directory;
+read-only existing authorities still retain their original exclusion. Private
+socket endpoints use the shared IPC directory-descriptor adapter for deep paths.
+Kernel access/close events wake retirement after a contender releases its locks. There are
+no timed readiness checks or reconnect loops. Original reply payloads and
+allocation credit remain held until physical device publication, and retirement
+requires an explicit receipt after device closure. A missing receipt is an error,
+not evidence of successful cleanup.
+Physical write errors return their original errno to the caller without retiring
+the connection; an already-evicted cache entry therefore cannot disconnect a mount.
+
 Streams-backed generation locators use the versioned
 `acyclic-fs-stream-generation-locator-v1` record: two little-endian `u64`
 offsets identify the original lineage record and its same-commit changes cut.

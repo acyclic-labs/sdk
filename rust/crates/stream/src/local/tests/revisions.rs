@@ -308,6 +308,12 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
     let key = crate::IdempotencyKey::unique();
     let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
     let issued = append(&provider, key.clone()).await?;
+    // Recover more commands than the bounded replay channel can hold. Both
+    // channel capacity and replay validation must yield the controlled worker
+    // on their original events, rather than blocking the seeded driver.
+    for _ in 0..REPLAY_PIPELINE_COMMANDS {
+        append(&provider, crate::IdempotencyKey::unique()).await?;
+    }
     let foreign = crate::AppliedRevisions::in_process().at(0);
     assert_eq!(
         provider
@@ -344,6 +350,11 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
         .await?;
     assert!(served.same_authority(&issued) && served.index >= issued.index);
     assert_eq!(append(&provider, key).await?, issued);
+    assert_eq!(
+        provider.tail(path()).await?,
+        u64::try_from(REPLAY_PIPELINE_COMMANDS)? + 1,
+        "recovery must retain every command and deduplicate the original append"
+    );
     drop(provider);
 
     // Negative control: wiping the same store issues a new incarnation, which

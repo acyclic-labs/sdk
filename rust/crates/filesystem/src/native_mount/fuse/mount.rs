@@ -1,4 +1,7 @@
-use nix::mount::{MntFlags, MsFlags};
+use acyclic_native_runtime::PacketDevice;
+#[cfg(test)]
+use acyclic_native_runtime::receive_packet_device_reply_for_test as receive_device;
+use nix::mount::MntFlags;
 use std::{
     ffi::CStr,
     fs::{File, OpenOptions},
@@ -10,8 +13,9 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
-mod reply;
-use reply::receive_device;
+#[cfg(test)]
+#[path = "mount/reply_check.rs"]
+mod reply_check;
 #[cfg(test)]
 mod tests;
 
@@ -36,13 +40,28 @@ pub(super) struct Mount {
     detachment_poll: Option<Box<dyn FnMut(i32) -> io::Result<bool> + Send>>,
 }
 
+pub(super) enum Device {
+    Hosted {
+        device: PacketDevice,
+        allocation: crate::NativeAllocation,
+        maximum_write: u32,
+    },
+    #[cfg(test)]
+    InProcess(File),
+}
+
+#[cfg(test)]
+pub(super) fn in_process_negative_control<T>(operation: impl FnOnce() -> T) -> T {
+    tests::with_in_process(operation)
+}
+
 impl Mount {
     pub(super) fn open_into(
         &mut self,
         path: &Path,
         writable: bool,
         program: impl FnOnce() -> Result<&'static CStr, super::NativeMountError>,
-        device: &mut Option<OwnedFd>,
+        device: &mut Option<Device>,
         fence: &File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), super::NativeMountError> {
@@ -72,37 +91,42 @@ impl Mount {
             .map_err(|error| {
                 super::NativeMountError::host_operation("open /dev/fuse", path, error)
             })?;
-        let options = format!(
-            "fd={},rootmode={mode:o},user_id={},group_id={},default_permissions",
-            file.as_raw_fd(),
-            nix::unistd::getuid(),
-            nix::unistd::getgid()
-        );
-        let mut flags = MsFlags::MS_NODEV | MsFlags::MS_NOSUID | MsFlags::MS_NOATIME;
-        if !writable {
-            flags |= MsFlags::MS_RDONLY;
+        // Transfer before installing the namespace: the owner must never hold
+        // /dev/fuse while another of its threads can enter the mounted volume.
+        #[cfg(test)]
+        if tests::in_process() {
+            tests::mount_in_process(path, writable, &file, mode)?;
+            *device = Some(Device::InProcess(file));
+            return Ok(());
         }
-        match nix::mount::mount(
-            Some("acyclic-fs"),
-            path,
-            Some("fuse"),
-            flags,
-            Some(options.as_str()),
+        let funded = super::host_io::fund_device(work)?;
+        let hosted = PacketDevice::prepare(file, funded.capacity)?;
+        match hosted.mount_fuse(
+            &directory,
+            mode,
+            nix::unistd::getuid().as_raw(),
+            nix::unistd::getgid().as_raw(),
+            writable,
         ) {
             Ok(()) => {
-                *device = Some(file.into());
+                *device = Some(Device::Hosted {
+                    device: hosted,
+                    allocation: funded.allocation,
+                    maximum_write: funded.maximum_write,
+                });
                 return Ok(());
             }
-            Err(nix::errno::Errno::EPERM) => {}
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => {}
             Err(error) => {
                 return Err(super::NativeMountError::host_operation(
-                    "mount(2) FUSE",
+                    "mount(2) FUSE in device host",
                     path,
-                    error.into(),
+                    error,
                 ));
             }
         }
-        drop(file);
+        drop(hosted);
+        drop(funded);
         // Only kernel permission refusal requires the unprivileged helper.
         // Replace the still-unused direct cleanup before admitting its mount.
         self.cancel_exit_action().map_err(|error| {
@@ -116,7 +140,7 @@ impl Mount {
         self.program = Some(program);
         self.arm_exit_action(program, &["-u", "-q", "-z", "--"], path, fence, work)
             .map_err(|error| error.during("arm unprivileged FUSE owner-exit action", path))?;
-        self.open_helper(program, path, writable, device)
+        self.open_helper(program, path, writable, device, work)
             .map_err(|error| error.during("mount FUSE via unprivileged helper", path))
     }
 
@@ -152,9 +176,12 @@ impl Mount {
         program: &'static CStr,
         path: &Path,
         writable: bool,
-        device: &mut Option<OwnedFd>,
+        device: &mut Option<Device>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), super::NativeMountError> {
         let (receive, child) = UnixStream::pair()?;
+        let funded = super::host_io::fund_device(work)?;
+        let hosted = PacketDevice::receive_device(receive, funded.capacity)?;
         let mut diagnostic = File::from(
             rustix::fs::memfd_create(c"acyclic-fusermount", rustix::fs::MemfdFlags::CLOEXEC)
                 .map_err(io::Error::from)?,
@@ -175,11 +202,14 @@ impl Mount {
                 .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?
                 .activity()?,
         )?);
-        let received = receive_device(&receive);
-        drop(receive);
+        let received = hosted.wait_mounted();
         let received_device = received.is_ok();
-        if let Ok(fd) = received {
-            *device = Some(fd);
+        if received_device {
+            *device = Some(Device::Hosted {
+                device: hosted,
+                allocation: funded.allocation,
+                maximum_write: funded.maximum_write,
+            });
             self.phase = MountPhase::Mounted;
         }
         self.helper

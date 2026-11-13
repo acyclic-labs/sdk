@@ -428,7 +428,7 @@ impl GatedSource {
                 .released
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = released.recv_timeout(Duration::from_secs(10));
+            let _ = released.recv();
         }
     }
 }
@@ -587,6 +587,9 @@ pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
     });
     let temporary = tempfile::tempdir()?;
     let mut session = mount(gated, volume_id, temporary.path())?;
+    // Move gate release after the session in drop order: every early return
+    // or unwind closes it before session teardown joins the parked workers.
+    let release = release;
     let root = temporary.path().to_path_buf();
 
     let slow = root.join("slow").join("blocked-lookup");

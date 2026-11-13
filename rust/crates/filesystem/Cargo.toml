@@ -172,7 +172,7 @@ windows = { version = "0.62.2", features = [
 tooling = []
 conformance = ["acyclic-stream/conformance", "acyclic-objects/conformance"]
 test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects/test-support", "bytes/serde"]
-fuzzing = []
+fuzzing = ["acyclic-native-runtime/test-support"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
 browser = ["acyclic-stream/wasm", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 typescript = ["dep:tsify", "dep:wasm-bindgen"]

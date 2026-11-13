@@ -1,6 +1,6 @@
 //! The executor turn driver: one turn is one executor operation, resumed by identity.
 
-use super::{Result, adopted, id, intent};
+use super::{Result, adopted, id, intent, step_to_rest, steps_to_rest};
 use acyclic_harness_core::{
     Error as CoreError, OperationId,
     agent::*,
@@ -320,7 +320,7 @@ async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Resu
             re: None,
             attachments: None,
         });
-        let settled = step(
+        let settled = step_to_rest(
             &driver,
             &path,
             Some(state.clone()),
@@ -481,7 +481,7 @@ async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Resul
             ..Script::default()
         });
         let driver = ExecutorDriver::new(Host(script.clone(), None));
-        let result = step(
+        let result = step_to_rest(
             &driver,
             &path,
             Some(AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts")),
@@ -527,7 +527,7 @@ async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Resul
         );
         // The next input starts a new turn, which completes normally.
         script.progress.lock().expect("lock").push_back(ready());
-        let next = step(
+        let next = step_to_rest(
             &driver,
             &path,
             Some(settled.state),
@@ -576,17 +576,34 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
                 body: body.clone(),
                 attachments: None,
             });
-        let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
+        let mut state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
         let input = Queued {
             steering: false,
             inbox: 0,
             input: request("input")?.1,
         };
-        let step = driver
+        // The opening step only freezes the turn's selection; the actor
+        // resumes the turn from that checkpoint.
+        let opened = driver
             .step(
                 &state,
                 1,
                 Some(input),
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+        assert!(opened.outs.is_empty() && matches!(opened.wait, Wait::Continue));
+        state.turn = Some(Progress {
+            inbox: 0,
+            checkpoint: opened
+                .checkpoint
+                .ok_or("opening step froze no checkpoint")?,
+        });
+        let step = driver
+            .step(
+                &state,
+                1,
+                None,
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await?;
@@ -627,7 +644,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
             brief: Box::new(file("promised.md")?),
             profile,
         });
-        let first = step(
+        let first = step_to_rest(
             &driver,
             &path,
             Some(state),
@@ -650,7 +667,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
         assert!(first.state.turn.is_some());
         assert_eq!(first.state.reserved_spawns, u64::from(mode == "team:1"));
         // An unrelated approval does not resume the paused operation.
-        let other = step(
+        let other = step_to_rest(
             &driver,
             &path,
             Some(first.state.clone()),
@@ -670,7 +687,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
         assert_eq!(other.state.turn, first.state.turn);
         // A client arrival cannot steal the successful tool call's reservation.
         // The unrestricted policy is the control: it admits both workers.
-        let client = step(
+        let client = step_to_rest(
             &driver,
             &path,
             Some(other.state),
@@ -702,7 +719,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
             ));
         }
         script.progress.lock().unwrap().push_back(ready());
-        let resumed = step(
+        let resumed = step_to_rest(
             &driver,
             &path,
             Some(client.state),
@@ -830,6 +847,44 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
     sends.into_iter().next()
 }
 
+/// Delivers inbox `sequence` until the agent rests, committing each opening
+/// step to `streams` as the actor does, and returns the resting step for the
+/// caller to commit.
+async fn settle_committing(
+    driver: &ExecutorDriver<Host>,
+    path: &AgentPath,
+    state: Option<AgentState>,
+    sequence: u64,
+    wake: Wake,
+    streams: &[&acyclic_stream::MemoryStream],
+) -> Result<Step> {
+    use acyclic_stream::{CommitOutcome, StreamProviderExt as _};
+    let mut steps = steps_to_rest(
+        driver,
+        path,
+        state,
+        (sequence, 0),
+        wake,
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    let settled = steps.pop().ok_or("delivery took no step")?;
+    for (index, opening) in steps.iter().enumerate() {
+        for stream in streams {
+            let commit = lower(
+                opening,
+                sequence + 1,
+                delivery_key(&opening.state, &format!("goal-{sequence}-{index}"))?,
+            )?;
+            assert!(matches!(
+                stream.commit(commit).await?,
+                CommitOutcome::Committed(_)
+            ));
+        }
+    }
+    Ok(settled)
+}
+
 #[tokio::test]
 async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_blocks_it() -> Result {
     use acyclic_stream::{CommitOutcome, MemoryStream, StreamProviderExt as _};
@@ -864,13 +919,13 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
     let mut sent = Vec::new();
     for sequence in 1..=3 {
         let record = next.take().expect("a continuation woke the agent");
-        let mut settled = step(
+        let mut settled = settle_committing(
             &driver,
             &path,
             Some(state.clone()),
-            (sequence, 0),
+            sequence,
             Wake::Inbox { sequence, record },
-            acyclic_actors::guest::CancellationToken::new(),
+            &[&provider, &missing_completion, &wrong_completion],
         )
         .await?;
         assert_eq!(settled.state.phase, Phase::Idle);
@@ -1012,16 +1067,16 @@ ship it
             return Err("original input is not a message".into());
         };
         message.id = intent(&format!("m{sequence}"));
-        let mut settled = step(
+        let mut settled = settle_committing(
             &driver,
             &path,
             Some(state),
-            (sequence, 0),
+            sequence,
             Wake::Inbox {
                 sequence,
                 record: user,
             },
-            acyclic_actors::guest::CancellationToken::new(),
+            &[&provider],
         )
         .await?;
         assert!(continuation(&settled, &path).is_none());
@@ -1081,7 +1136,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
         };
         for sequence in 1..=turns {
             let previous_id = message.id.clone();
-            let settled = step(
+            let settled = step_to_rest(
                 &driver,
                 &path,
                 Some(state),

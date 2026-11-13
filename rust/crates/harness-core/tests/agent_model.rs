@@ -41,6 +41,64 @@ mod wired;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// [`step`], followed by each continuation the actor host delivers at once
+/// ([`Alarm::At`] [`CONTINUE_NOW`], as [`Wake::Alarm`]) until the agent rests:
+/// every step the actor commits, in order. A driver may split one turn across
+/// steps, so a test observes a settled turn only through this.
+async fn steps_to_rest<T: TurnDriver + ?Sized>(
+    driver: &T,
+    path: &AgentPath,
+    state: Option<AgentState>,
+    clock: (u64, u64),
+    wake: Wake,
+    cancellation: acyclic_actors::guest::CancellationToken,
+) -> std::result::Result<Vec<Step>, Error> {
+    let mut steps = vec![step(driver, path, state, clock, wake, cancellation.clone()).await?];
+    while let Some(last) = steps.last()
+        && last.alarm == Alarm::At(CONTINUE_NOW)
+    {
+        let state = last.state.clone();
+        steps.push(
+            step(
+                driver,
+                path,
+                Some(state),
+                clock,
+                Wake::Alarm,
+                cancellation.clone(),
+            )
+            .await?,
+        );
+    }
+    Ok(steps)
+}
+
+/// [`steps_to_rest`] as one step: the resting state, status and alarm, with
+/// every step's effects in commit order.
+async fn step_to_rest<T: TurnDriver + ?Sized>(
+    driver: &T,
+    path: &AgentPath,
+    state: Option<AgentState>,
+    clock: (u64, u64),
+    wake: Wake,
+    cancellation: acyclic_actors::guest::CancellationToken,
+) -> std::result::Result<Step, Error> {
+    let mut steps = steps_to_rest(driver, path, state, clock, wake, cancellation)
+        .await?
+        .into_iter();
+    let mut rest = steps.next().ok_or(Error::Record("no step"))?;
+    for next in steps {
+        rest.outs.extend(next.outs);
+        rest = Step {
+            state: next.state,
+            outs: rest.outs,
+            status: next.status.or(rest.status),
+            alarm: next.alarm,
+        };
+    }
+    Ok(rest)
+}
+
 fn id(byte: u8) -> AgentId {
     AgentId::from_bytes([byte; 16])
 }

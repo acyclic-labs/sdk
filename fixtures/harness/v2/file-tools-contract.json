@@ -50,7 +50,7 @@
       "value": {
         "path": "source.txt",
         "text": "🦀",
-        "version": "authored-file-v1:{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"generation\":{\"kind\":\"generation\",\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"key\":[103,101,110,101,114,97,116,105,111,110,45,49],\"version\":null},\"byte_length\":18}"
+        "version": "authored-path-v2:{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"generation\":{\"kind\":\"generation\",\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"key\":[103,101,110,101,114,97,116,105,111,110,45,49],\"version\":null}}"
       }
     },
     "input": {
@@ -58,13 +58,14 @@
       "range": {
         "end": 9,
         "start": 5
-      }
+      },
+      "wait": false
     },
     "reference": {
       "kind": "json",
       "value": {
         "path": "source.txt",
-        "version": "authored-file-v1:{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"generation\":{\"kind\":\"generation\",\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"key\":[103,101,110,101,114,97,116,105,111,110,45,49],\"version\":null},\"byte_length\":18}"
+        "version": "authored-path-v2:{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"generation\":{\"kind\":\"generation\",\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"key\":[103,101,110,101,114,97,116,105,111,110,45,49],\"version\":null}}"
       }
     }
   },
@@ -140,7 +141,8 @@
     },
     "input": {
       "path": "source.txt",
-      "version": "{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"version\":\"generation-1\",\"descriptor\":{\"sha256\":[159,11,173,16,70,100,181,179,188,132,6,49,141,46,22,171,176,2,45,236,231,189,189,66,110,99,139,89,193,36,129,108],\"byte_length\":18,\"media_type\":\"text/plain\"},\"display_name\":\"source.txt\"}"
+      "version": "{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"version\":\"generation-1\",\"descriptor\":{\"sha256\":[159,11,173,16,70,100,181,179,188,132,6,49,141,46,22,171,176,2,45,236,231,189,189,66,110,99,139,89,193,36,129,108],\"byte_length\":18,\"media_type\":\"text/plain\"},\"display_name\":\"source.txt\"}",
+      "wait": false
     },
     "reference": {
       "kind": "parts",
@@ -697,14 +699,15 @@
         "end": 9,
         "start": 5
       },
-      "version": "{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"version\":\"generation-1\",\"descriptor\":{\"sha256\":[159,11,173,16,70,100,181,179,188,132,6,49,141,46,22,171,176,2,45,236,231,189,189,66,110,99,139,89,193,36,129,108],\"byte_length\":18,\"media_type\":\"text/plain\"},\"display_name\":\"source.txt\"}"
+      "version": "{\"volume\":{\"provider\":{\"namespace\":\"file-contract\",\"family\":\"filesystem\",\"version\":\"1\"},\"id\":\"private\",\"class\":\"agent_private\",\"owner\":{\"kind\":\"agent\",\"id\":\"33333333-3333-3333-3333-333333333333\"}},\"path\":\"source.txt\",\"version\":\"generation-1\",\"descriptor\":{\"sha256\":[159,11,173,16,70,100,181,179,188,132,6,49,141,46,22,171,176,2,45,236,231,189,189,66,110,99,139,89,193,36,129,108],\"byte_length\":18,\"media_type\":\"text/plain\"},\"display_name\":\"source.txt\"}",
+      "wait": false
     },
     "reference": {
       "kind": "parts",
       "parts": [
         {
           "kind": "text",
-          "text": "Read bytes 5..9; 5 source bytes omitted before and 9 after. Selected text is retained in the canonical tool result and omitted from this model projection."
+          "text": "Read 4 UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection."
         },
         {
           "file": {
@@ -831,7 +834,7 @@
   "tool_definitions": [
     {
       "definition": {
-        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -857,6 +860,49 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -985,7 +1031,7 @@
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
-              "description": "Public path relative to the agent's project volume.",
+              "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
             },
             "range": {
@@ -997,7 +1043,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+              "description": "Optional UTF-8 byte interval, clipped to the source. Offsets past EOF\nreturn an empty page. Large intervals return a continuation page."
             },
             "selection": {
               "anyOf": [
@@ -1016,6 +1062,11 @@
                 "string",
                 "null"
               ]
+            },
+            "wait": {
+              "default": false,
+              "description": "Wait on the provider's change event until the current path exists.\nNo default deadline; cancellation releases the interest. Cannot be\ncombined with an immutable version.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -1027,6 +1078,135 @@
         "name": "read",
         "output_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -1240,6 +1420,54 @@
               ],
               "type": "object"
             },
+            "ReadFileResult": {
+              "additionalProperties": false,
+              "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/FileReadSource",
+                  "description": "Original immutable source, used for grant and replay validation."
+                },
+                "media": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadSelection"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Native media selection; the immutable file supplies its bytes."
+                },
+                "outputs": {
+                  "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+                  "items": {
+                    "$ref": "#/$defs/NotebookOutput"
+                  },
+                  "type": "array"
+                },
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "text": {
+                  "description": "Exact selected UTF-8 text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file",
+                "text"
+              ],
+              "type": "object"
+            },
             "ReadPage": {
               "additionalProperties": false,
               "description": "Exact provenance and continuation for a projected read.",
@@ -1249,6 +1477,10 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
                 },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
@@ -1270,12 +1502,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -1283,6 +1522,50 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "after",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -1569,56 +1852,154 @@
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileReadSource",
-              "description": "Original immutable source, used for grant and replay validation."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiagnosticReadResult",
+              "description": "A bounded immutable host file query."
             },
-            "media": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadSelection"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Native media selection; the immutable file supplies its bytes."
+            {
+              "$ref": "#/$defs/ReadFileResult",
+              "description": "File bytes and their original source."
             },
-            "outputs": {
-              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
-              "items": {
-                "$ref": "#/$defs/NotebookOutput"
-              },
-              "type": "array"
-            },
-            "page": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadPage"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
-            },
-            "text": {
-              "description": "Exact selected UTF-8 text.",
-              "type": "string"
+            {
+              "$ref": "#/$defs/DirectoryReadResult",
+              "description": "Namespace entries at one immutable generation."
             }
-          },
-          "required": [
-            "file",
-            "text"
           ],
-          "title": "ReadFileResult",
-          "type": "object"
+          "description": "Canonical results for file and directory selections.",
+          "title": "ReadResult"
         },
         "projection_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -1712,6 +2093,48 @@
               ],
               "type": "object"
             },
+            "JsonProjection": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DirectoryReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection2": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "MediaPart": {
               "oneOf": [
                 {
@@ -1784,6 +2207,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
+                },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
                   "format": "uint64",
@@ -1804,15 +2231,61 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
+            },
+            "ReadProjection": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/FileView"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "parts",
+                      "type": "string"
+                    },
+                    "parts": {
+                      "items": {
+                        "$ref": "#/$defs/MediaPart"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "parts"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
@@ -1919,87 +2392,59 @@
               "type": "object"
             }
           },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
           "oneOf": [
             {
-              "properties": {
-                "kind": {
-                  "const": "json",
-                  "type": "string"
-                },
-                "value": {
-                  "$ref": "#/$defs/FileView"
-                }
-              },
-              "required": [
-                "kind",
-                "value"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/ReadProjection"
             },
             {
-              "properties": {
-                "kind": {
-                  "const": "parts",
-                  "type": "string"
-                },
-                "parts": {
-                  "items": {
-                    "$ref": "#/$defs/MediaPart"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "kind",
-                "parts"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/JsonProjection"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection2"
             }
-          ],
-          "title": "ReadProjection"
+          ]
         },
-        "revision": "portable-10"
+        "revision": "portable-13"
       },
       "definition_digest": [
-        135,
-        172,
-        75,
-        255,
+        254,
+        227,
         245,
-        173,
-        70,
-        1,
-        166,
-        154,
-        211,
-        24,
-        75,
-        71,
-        161,
-        24,
-        27,
-        207,
-        79,
-        136,
-        192,
-        85,
-        155,
-        11,
-        47,
-        139,
-        83,
+        196,
+        215,
+        122,
+        170,
+        113,
+        35,
+        226,
         208,
-        178,
-        126,
-        25,
-        46
+        12,
+        224,
+        162,
+        11,
+        177,
+        254,
+        60,
+        145,
+        203,
+        68,
+        182,
+        149,
+        45,
+        200,
+        239,
+        217,
+        218,
+        26,
+        152,
+        122,
+        119
       ],
       "variant": "exact_read_full"
     },
     {
       "definition": {
-        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -2025,6 +2470,49 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -2153,7 +2641,7 @@
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
-              "description": "Public path relative to the agent's project volume.",
+              "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
             },
             "range": {
@@ -2165,7 +2653,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+              "description": "Optional UTF-8 byte interval, clipped to the source. Offsets past EOF\nreturn an empty page. Large intervals return a continuation page."
             },
             "selection": {
               "anyOf": [
@@ -2184,6 +2672,11 @@
                 "string",
                 "null"
               ]
+            },
+            "wait": {
+              "default": false,
+              "description": "Wait on the provider's change event until the current path exists.\nNo default deadline; cancellation releases the interest. Cannot be\ncombined with an immutable version.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -2195,6 +2688,135 @@
         "name": "read",
         "output_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -2408,6 +3030,54 @@
               ],
               "type": "object"
             },
+            "ReadFileResult": {
+              "additionalProperties": false,
+              "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/FileReadSource",
+                  "description": "Original immutable source, used for grant and replay validation."
+                },
+                "media": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadSelection"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Native media selection; the immutable file supplies its bytes."
+                },
+                "outputs": {
+                  "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+                  "items": {
+                    "$ref": "#/$defs/NotebookOutput"
+                  },
+                  "type": "array"
+                },
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "text": {
+                  "description": "Exact selected UTF-8 text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file",
+                "text"
+              ],
+              "type": "object"
+            },
             "ReadPage": {
               "additionalProperties": false,
               "description": "Exact provenance and continuation for a projected read.",
@@ -2417,6 +3087,10 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
                 },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
@@ -2438,12 +3112,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -2451,6 +3132,50 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "after",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -2737,56 +3462,154 @@
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileReadSource",
-              "description": "Original immutable source, used for grant and replay validation."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiagnosticReadResult",
+              "description": "A bounded immutable host file query."
             },
-            "media": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadSelection"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Native media selection; the immutable file supplies its bytes."
+            {
+              "$ref": "#/$defs/ReadFileResult",
+              "description": "File bytes and their original source."
             },
-            "outputs": {
-              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
-              "items": {
-                "$ref": "#/$defs/NotebookOutput"
-              },
-              "type": "array"
-            },
-            "page": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadPage"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
-            },
-            "text": {
-              "description": "Exact selected UTF-8 text.",
-              "type": "string"
+            {
+              "$ref": "#/$defs/DirectoryReadResult",
+              "description": "Namespace entries at one immutable generation."
             }
-          },
-          "required": [
-            "file",
-            "text"
           ],
-          "title": "ReadFileResult",
-          "type": "object"
+          "description": "Canonical results for file and directory selections.",
+          "title": "ReadResult"
         },
         "projection_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -2901,6 +3724,48 @@
                 }
               ]
             },
+            "JsonProjection2": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DirectoryReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection3": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -2935,6 +3800,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
+                },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
                   "format": "uint64",
@@ -2955,12 +3824,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -3150,50 +4026,56 @@
             },
             {
               "$ref": "#/$defs/JsonProjection"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection2"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection3"
             }
           ]
         },
-        "revision": "portable-10"
+        "revision": "portable-13"
       },
       "definition_digest": [
-        224,
-        111,
-        103,
-        233,
-        150,
-        139,
-        222,
+        113,
+        100,
+        152,
+        67,
+        153,
+        208,
+        216,
+        92,
+        1,
+        215,
+        188,
+        70,
+        135,
+        80,
+        172,
+        18,
         237,
-        251,
-        81,
-        85,
-        167,
-        8,
-        244,
-        81,
-        19,
-        178,
-        97,
-        126,
-        47,
-        150,
-        33,
-        245,
-        195,
-        43,
-        83,
-        39,
-        48,
-        118,
-        10,
-        235,
-        45
+        44,
+        192,
+        165,
+        13,
+        186,
+        208,
+        46,
+        22,
+        184,
+        129,
+        142,
+        107,
+        171,
+        241,
+        220
       ],
       "variant": "exact_read_reference"
     },
     {
       "definition": {
-        "description": "Write UTF-8 content to a workspace path, creating or replacing the file",
+        "description": "Write UTF-8 content to a workspace path. The self feedback file appends one original execution record. Other paths use ifVersion: any replaces unconditionally; absent creates only when missing; an opaque read version replaces only that source",
         "input_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3202,6 +4084,13 @@
             "content": {
               "description": "Exact content bytes encoded as UTF-8.",
               "type": "string"
+            },
+            "ifVersion": {
+              "description": "`any` (or omission) replaces unconditionally; `absent` creates only\nwhen missing; an opaque read version replaces exactly that source.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "path": {
               "description": "Valid public destination path.",
@@ -3218,6 +4107,30 @@
         "name": "write",
         "output_schema": {
           "$defs": {
+            "Cost": {
+              "additionalProperties": false,
+              "description": "Agent estimates, not measured usage or billing facts.",
+              "properties": {
+                "seconds": {
+                  "description": "Estimated wall seconds lost.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "tokens": {
+                  "description": "Estimated tokens lost.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -3279,6 +4192,50 @@
               ],
               "type": "object"
             },
+            "FileResult": {
+              "additionalProperties": false,
+              "description": "Canonical successful write/edit result, independent of model projection.",
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/FileRef",
+                  "description": "Exact retained publication result with workspace and content identity."
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            },
+            "Kind": {
+              "description": "The public vocabulary for productivity feedback.",
+              "oneOf": [
+                {
+                  "const": "defect",
+                  "description": "A tool or harness misbehaved.",
+                  "type": "string"
+                },
+                {
+                  "const": "slow",
+                  "description": "Time spent waiting on the system.",
+                  "type": "string"
+                },
+                {
+                  "const": "unclear",
+                  "description": "An ambiguous result or surface.",
+                  "type": "string"
+                },
+                {
+                  "const": "limit",
+                  "description": "Something prevented progress.",
+                  "type": "string"
+                },
+                {
+                  "const": "other",
+                  "description": "Another source of lost productivity.",
+                  "type": "string"
+                }
+              ]
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -3300,6 +4257,69 @@
                 "namespace",
                 "family",
                 "version"
+              ],
+              "type": "object"
+            },
+            "RecordResult": {
+              "additionalProperties": false,
+              "description": "Authored payload retained by the original tool completion. Provenance is\nprojected from its authenticated execution record, never from this payload.",
+              "properties": {
+                "report": {
+                  "$ref": "#/$defs/Report",
+                  "description": "Original validated authored report."
+                }
+              },
+              "required": [
+                "report"
+              ],
+              "type": "object"
+            },
+            "Report": {
+              "additionalProperties": false,
+              "description": "One model-authored line. Unknown fields are refused, including provenance.",
+              "properties": {
+                "cost": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Cost"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional estimate of productivity lost."
+                },
+                "evidence": {
+                  "description": "Command, path, error text or step reference supporting the report.",
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/$defs/Kind",
+                  "description": "What kind of obstacle occurred."
+                },
+                "suggestion": {
+                  "description": "Optional proposed improvement.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "description": "Persisted schema version, currently one.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "what": {
+                  "description": "One line describing the obstacle.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "kind",
+                "what",
+                "evidence"
               ],
               "type": "object"
             },
@@ -3409,19 +4429,18 @@
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileResult",
+              "description": "A replaceable volume file."
+            },
+            {
+              "$ref": "#/$defs/RecordResult",
+              "description": "An append-only execution observation."
             }
-          },
-          "required": [
-            "file"
           ],
-          "title": "FileResult",
-          "type": "object"
+          "description": "Original publication results of the shared write tool.",
+          "title": "WriteResult"
         },
         "projection_schema": {
           "$defs": {
@@ -3467,6 +4486,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
+                },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
                   "format": "uint64",
@@ -3487,12 +4510,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -3520,47 +4550,47 @@
           ],
           "title": "JsonProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-8"
       },
       "definition_digest": [
-        138,
-        148,
-        55,
-        204,
-        94,
-        85,
         194,
-        24,
-        121,
-        195,
+        112,
+        46,
+        200,
+        168,
+        145,
+        173,
+        81,
         79,
-        5,
-        218,
-        217,
-        84,
-        34,
-        242,
-        15,
-        126,
-        207,
-        14,
-        140,
-        65,
-        21,
-        107,
-        47,
-        58,
-        196,
-        101,
-        227,
-        158,
-        174
+        189,
+        224,
+        99,
+        28,
+        61,
+        228,
+        85,
+        171,
+        77,
+        62,
+        149,
+        69,
+        33,
+        102,
+        87,
+        1,
+        180,
+        240,
+        147,
+        167,
+        147,
+        232,
+        89
       ],
       "variant": "write_full"
     },
     {
       "definition": {
-        "description": "Write UTF-8 content to a workspace path, creating or replacing the file",
+        "description": "Write UTF-8 content to a workspace path. The self feedback file appends one original execution record. Other paths use ifVersion: any replaces unconditionally; absent creates only when missing; an opaque read version replaces only that source",
         "input_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
@@ -3569,6 +4599,13 @@
             "content": {
               "description": "Exact content bytes encoded as UTF-8.",
               "type": "string"
+            },
+            "ifVersion": {
+              "description": "`any` (or omission) replaces unconditionally; `absent` creates only\nwhen missing; an opaque read version replaces exactly that source.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "path": {
               "description": "Valid public destination path.",
@@ -3585,6 +4622,30 @@
         "name": "write",
         "output_schema": {
           "$defs": {
+            "Cost": {
+              "additionalProperties": false,
+              "description": "Agent estimates, not measured usage or billing facts.",
+              "properties": {
+                "seconds": {
+                  "description": "Estimated wall seconds lost.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "tokens": {
+                  "description": "Estimated tokens lost.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -3646,6 +4707,50 @@
               ],
               "type": "object"
             },
+            "FileResult": {
+              "additionalProperties": false,
+              "description": "Canonical successful write/edit result, independent of model projection.",
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/FileRef",
+                  "description": "Exact retained publication result with workspace and content identity."
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            },
+            "Kind": {
+              "description": "The public vocabulary for productivity feedback.",
+              "oneOf": [
+                {
+                  "const": "defect",
+                  "description": "A tool or harness misbehaved.",
+                  "type": "string"
+                },
+                {
+                  "const": "slow",
+                  "description": "Time spent waiting on the system.",
+                  "type": "string"
+                },
+                {
+                  "const": "unclear",
+                  "description": "An ambiguous result or surface.",
+                  "type": "string"
+                },
+                {
+                  "const": "limit",
+                  "description": "Something prevented progress.",
+                  "type": "string"
+                },
+                {
+                  "const": "other",
+                  "description": "Another source of lost productivity.",
+                  "type": "string"
+                }
+              ]
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -3667,6 +4772,69 @@
                 "namespace",
                 "family",
                 "version"
+              ],
+              "type": "object"
+            },
+            "RecordResult": {
+              "additionalProperties": false,
+              "description": "Authored payload retained by the original tool completion. Provenance is\nprojected from its authenticated execution record, never from this payload.",
+              "properties": {
+                "report": {
+                  "$ref": "#/$defs/Report",
+                  "description": "Original validated authored report."
+                }
+              },
+              "required": [
+                "report"
+              ],
+              "type": "object"
+            },
+            "Report": {
+              "additionalProperties": false,
+              "description": "One model-authored line. Unknown fields are refused, including provenance.",
+              "properties": {
+                "cost": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Cost"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional estimate of productivity lost."
+                },
+                "evidence": {
+                  "description": "Command, path, error text or step reference supporting the report.",
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/$defs/Kind",
+                  "description": "What kind of obstacle occurred."
+                },
+                "suggestion": {
+                  "description": "Optional proposed improvement.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "version": {
+                  "description": "Persisted schema version, currently one.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "what": {
+                  "description": "One line describing the obstacle.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "version",
+                "kind",
+                "what",
+                "evidence"
               ],
               "type": "object"
             },
@@ -3776,19 +4944,18 @@
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileResult",
+              "description": "A replaceable volume file."
+            },
+            {
+              "$ref": "#/$defs/RecordResult",
+              "description": "An append-only execution observation."
             }
-          },
-          "required": [
-            "file"
           ],
-          "title": "FileResult",
-          "type": "object"
+          "description": "Original publication results of the shared write tool.",
+          "title": "WriteResult"
         },
         "projection_schema": {
           "$defs": {
@@ -4057,41 +5224,41 @@
           ],
           "title": "ReferenceProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-8"
       },
       "definition_digest": [
-        164,
-        109,
-        148,
-        108,
-        117,
-        188,
-        126,
-        111,
-        37,
-        144,
-        115,
-        30,
-        164,
-        176,
-        163,
-        39,
-        69,
-        108,
-        238,
-        225,
-        138,
-        103,
+        175,
+        174,
+        28,
+        94,
+        128,
+        224,
+        35,
+        29,
+        23,
+        44,
+        119,
         70,
-        253,
-        235,
-        227,
-        96,
-        146,
-        111,
-        63,
-        235,
-        21
+        169,
+        193,
+        234,
+        218,
+        223,
+        129,
+        41,
+        171,
+        50,
+        176,
+        165,
+        127,
+        216,
+        113,
+        123,
+        21,
+        77,
+        19,
+        6,
+        246
       ],
       "variant": "write_reference"
     },
@@ -4547,6 +5714,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
+                },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
                   "format": "uint64",
@@ -4567,12 +5738,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -4603,38 +5781,38 @@
         "revision": "portable-9"
       },
       "definition_digest": [
-        112,
-        203,
-        69,
-        89,
-        108,
-        174,
-        121,
-        56,
-        46,
-        174,
-        104,
-        78,
-        226,
-        84,
-        249,
-        84,
-        40,
-        28,
-        73,
-        238,
-        39,
-        59,
-        25,
-        254,
-        208,
-        231,
-        5,
-        141,
         41,
-        231,
-        137,
-        116
+        196,
+        37,
+        179,
+        6,
+        47,
+        242,
+        228,
+        140,
+        183,
+        221,
+        40,
+        177,
+        215,
+        239,
+        177,
+        244,
+        118,
+        77,
+        77,
+        64,
+        162,
+        249,
+        75,
+        216,
+        196,
+        216,
+        143,
+        25,
+        139,
+        81,
+        200
       ],
       "variant": "exact_edit_full"
     },
@@ -5110,6 +6288,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
+                },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
                   "format": "uint64",
@@ -5130,12 +6312,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -5166,44 +6355,44 @@
         "revision": "portable-patch-4"
       },
       "definition_digest": [
-        51,
-        40,
-        98,
-        91,
-        44,
-        32,
-        215,
-        102,
-        118,
-        223,
-        165,
-        164,
-        14,
-        47,
-        152,
-        11,
-        228,
-        231,
-        80,
         138,
-        99,
-        63,
+        125,
+        236,
+        28,
+        210,
+        185,
+        145,
+        218,
         78,
-        212,
-        6,
-        168,
-        163,
-        7,
-        29,
-        67,
-        212,
-        117
+        108,
+        49,
+        122,
+        165,
+        63,
+        180,
+        9,
+        42,
+        195,
+        142,
+        226,
+        61,
+        113,
+        160,
+        205,
+        31,
+        190,
+        206,
+        102,
+        220,
+        115,
+        205,
+        228
       ],
       "variant": "patch_edit_full"
     },
     {
       "definition": {
-        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -5229,6 +6418,49 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -5357,7 +6589,7 @@
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
-              "description": "Public path relative to the agent's project volume.",
+              "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
             },
             "range": {
@@ -5369,7 +6601,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+              "description": "Optional UTF-8 byte interval, clipped to the source. Offsets past EOF\nreturn an empty page. Large intervals return a continuation page."
             },
             "selection": {
               "anyOf": [
@@ -5388,6 +6620,11 @@
                 "string",
                 "null"
               ]
+            },
+            "wait": {
+              "default": false,
+              "description": "Wait on the provider's change event until the current path exists.\nNo default deadline; cancellation releases the interest. Cannot be\ncombined with an immutable version.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -5399,6 +6636,135 @@
         "name": "read",
         "output_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -5612,6 +6978,54 @@
               ],
               "type": "object"
             },
+            "ReadFileResult": {
+              "additionalProperties": false,
+              "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/FileReadSource",
+                  "description": "Original immutable source, used for grant and replay validation."
+                },
+                "media": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadSelection"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Native media selection; the immutable file supplies its bytes."
+                },
+                "outputs": {
+                  "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+                  "items": {
+                    "$ref": "#/$defs/NotebookOutput"
+                  },
+                  "type": "array"
+                },
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "text": {
+                  "description": "Exact selected UTF-8 text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file",
+                "text"
+              ],
+              "type": "object"
+            },
             "ReadPage": {
               "additionalProperties": false,
               "description": "Exact provenance and continuation for a projected read.",
@@ -5621,6 +7035,10 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
                 },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
@@ -5642,12 +7060,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -5655,6 +7080,50 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "after",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -5941,56 +7410,154 @@
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileReadSource",
-              "description": "Original immutable source, used for grant and replay validation."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiagnosticReadResult",
+              "description": "A bounded immutable host file query."
             },
-            "media": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadSelection"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Native media selection; the immutable file supplies its bytes."
+            {
+              "$ref": "#/$defs/ReadFileResult",
+              "description": "File bytes and their original source."
             },
-            "outputs": {
-              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
-              "items": {
-                "$ref": "#/$defs/NotebookOutput"
-              },
-              "type": "array"
-            },
-            "page": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadPage"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
-            },
-            "text": {
-              "description": "Exact selected UTF-8 text.",
-              "type": "string"
+            {
+              "$ref": "#/$defs/DirectoryReadResult",
+              "description": "Namespace entries at one immutable generation."
             }
-          },
-          "required": [
-            "file",
-            "text"
           ],
-          "title": "ReadFileResult",
-          "type": "object"
+          "description": "Canonical results for file and directory selections.",
+          "title": "ReadResult"
         },
         "projection_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -6084,6 +7651,48 @@
               ],
               "type": "object"
             },
+            "JsonProjection": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DirectoryReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection2": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "MediaPart": {
               "oneOf": [
                 {
@@ -6156,6 +7765,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
+                },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
                   "format": "uint64",
@@ -6176,15 +7789,61 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
+            },
+            "ReadProjection": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/FileView"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "kind": {
+                      "const": "parts",
+                      "type": "string"
+                    },
+                    "parts": {
+                      "items": {
+                        "$ref": "#/$defs/MediaPart"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "parts"
+                  ],
+                  "type": "object"
+                }
+              ]
             },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
@@ -6291,87 +7950,59 @@
               "type": "object"
             }
           },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
           "oneOf": [
             {
-              "properties": {
-                "kind": {
-                  "const": "json",
-                  "type": "string"
-                },
-                "value": {
-                  "$ref": "#/$defs/FileView"
-                }
-              },
-              "required": [
-                "kind",
-                "value"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/ReadProjection"
             },
             {
-              "properties": {
-                "kind": {
-                  "const": "parts",
-                  "type": "string"
-                },
-                "parts": {
-                  "items": {
-                    "$ref": "#/$defs/MediaPart"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "kind",
-                "parts"
-              ],
-              "type": "object"
+              "$ref": "#/$defs/JsonProjection"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection2"
             }
-          ],
-          "title": "ReadProjection"
+          ]
         },
-        "revision": "portable-10"
+        "revision": "portable-13"
       },
       "definition_digest": [
-        135,
-        172,
-        75,
-        255,
+        254,
+        227,
         245,
-        173,
-        70,
-        1,
-        166,
-        154,
-        211,
-        24,
-        75,
-        71,
-        161,
-        24,
-        27,
-        207,
-        79,
-        136,
-        192,
-        85,
-        155,
-        11,
-        47,
-        139,
-        83,
+        196,
+        215,
+        122,
+        170,
+        113,
+        35,
+        226,
         208,
-        178,
-        126,
-        25,
-        46
+        12,
+        224,
+        162,
+        11,
+        177,
+        254,
+        60,
+        145,
+        203,
+        68,
+        182,
+        149,
+        45,
+        200,
+        239,
+        217,
+        218,
+        26,
+        152,
+        122,
+        119
       ],
       "variant": "range_read_full"
     },
     {
       "definition": {
-        "description": "Read text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. A page returns its source interval and continuation",
+        "description": "Read directory pages, text, images, PDFs or notebook cells from a project path. Reuse the opaque version to pin later reads/edits; select byte ranges or zero-based line/cell offset and limit. Text pages report total source bytes and eof, with next only before EOF. Reads past EOF return empty pages",
         "input_schema": {
           "$defs": {
             "ImageDetail": {
@@ -6397,6 +8028,49 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -6525,7 +8199,7 @@
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
             "path": {
-              "description": "Public path relative to the agent's project volume.",
+              "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
             },
             "range": {
@@ -6537,7 +8211,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional UTF-8 byte interval. Large intervals return a continuation page."
+              "description": "Optional UTF-8 byte interval, clipped to the source. Offsets past EOF\nreturn an empty page. Large intervals return a continuation page."
             },
             "selection": {
               "anyOf": [
@@ -6556,6 +8230,11 @@
                 "string",
                 "null"
               ]
+            },
+            "wait": {
+              "default": false,
+              "description": "Wait on the provider's change event until the current path exists.\nNo default deadline; cancellation releases the interest. Cannot be\ncombined with an immutable version.",
+              "type": "boolean"
             }
           },
           "required": [
@@ -6567,6 +8246,135 @@
         "name": "read",
         "output_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -6780,6 +8588,54 @@
               ],
               "type": "object"
             },
+            "ReadFileResult": {
+              "additionalProperties": false,
+              "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
+              "properties": {
+                "file": {
+                  "$ref": "#/$defs/FileReadSource",
+                  "description": "Original immutable source, used for grant and replay validation."
+                },
+                "media": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadSelection"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Native media selection; the immutable file supplies its bytes."
+                },
+                "outputs": {
+                  "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
+                  "items": {
+                    "$ref": "#/$defs/NotebookOutput"
+                  },
+                  "type": "array"
+                },
+                "page": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ReadPage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "text": {
+                  "description": "Exact selected UTF-8 text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file",
+                "text"
+              ],
+              "type": "object"
+            },
             "ReadPage": {
               "additionalProperties": false,
               "description": "Exact provenance and continuation for a projected read.",
@@ -6789,6 +8645,10 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
                 },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
@@ -6810,12 +8670,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -6823,6 +8690,50 @@
             "ReadSelection": {
               "description": "Requested projection of the authoritative source file. Offsets are zero based;\nomitted counts have no count ceiling. Model views remain byte paged.",
               "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Exact UTF-8 source bytes, without automatic notebook or media projection.",
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Directory child names at one immutable generation. The last returned\nentry's version is its exclusive continuation cursor.",
+                  "properties": {
+                    "after": {
+                      "default": null,
+                      "description": "Opaque cursor from a previous entry in this directory.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "kind": {
+                      "const": "directory",
+                      "type": "string"
+                    },
+                    "limit": {
+                      "description": "Maximum names in this page.",
+                      "format": "uint32",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "after",
+                    "limit"
+                  ],
+                  "type": "object"
+                },
                 {
                   "additionalProperties": false,
                   "description": "Text lines, with an optional byte cursor returned by a previous page.",
@@ -7109,56 +9020,154 @@
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical read result retains its verified source independently of the\ncompact model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileReadSource",
-              "description": "Original immutable source, used for grant and replay validation."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DiagnosticReadResult",
+              "description": "A bounded immutable host file query."
             },
-            "media": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadSelection"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Native media selection; the immutable file supplies its bytes."
+            {
+              "$ref": "#/$defs/ReadFileResult",
+              "description": "File bytes and their original source."
             },
-            "outputs": {
-              "description": "Native MIME outputs from selected notebook cells. Payload intervals\nrefer to this result's original notebook, never the derived file.",
-              "items": {
-                "$ref": "#/$defs/NotebookOutput"
-              },
-              "type": "array"
-            },
-            "page": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/ReadPage"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Provenance of a bounded text/cell view; absent for exact complete reads."
-            },
-            "text": {
-              "description": "Exact selected UTF-8 text.",
-              "type": "string"
+            {
+              "$ref": "#/$defs/DirectoryReadResult",
+              "description": "Namespace entries at one immutable generation."
             }
-          },
-          "required": [
-            "file",
-            "text"
           ],
-          "title": "ReadFileResult",
-          "type": "object"
+          "description": "Canonical results for file and directory selections.",
+          "title": "ReadResult"
         },
         "projection_schema": {
           "$defs": {
+            "Diagnostic": {
+              "additionalProperties": false,
+              "description": "An immutable, complete diagnostic on the failed agent's own stream subtree.\nConsumers read only the requested record interval; no live-agent inspection\nor reconstruction of a later result is involved.",
+              "properties": {
+                "agent": {
+                  "description": "Original failed agent.",
+                  "type": "string"
+                },
+                "bytes": {
+                  "description": "Complete byte length, independent of record and page sizes.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "digest": {
+                  "description": "Digest of the complete original UTF-8 text.",
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "agent",
+                "digest",
+                "bytes"
+              ],
+              "type": "object"
+            },
+            "DiagnosticReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded projection of an immutable diagnostic file query.",
+              "properties": {
+                "diagnostic": {
+                  "$ref": "#/$defs/Diagnostic",
+                  "description": "Original failed agent, complete digest and total byte length."
+                },
+                "page": {
+                  "$ref": "#/$defs/ReadPage",
+                  "description": "Original byte cursor and complete length."
+                },
+                "path": {
+                  "description": "Immutable query path; its digest never retargets after child-name reuse.",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "Exact original UTF-8 text selected for this page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "diagnostic",
+                "text",
+                "page"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntry": {
+              "additionalProperties": false,
+              "description": "One selected name; its version does not confer authority.",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/DirectoryEntryKind",
+                  "description": "Selected namespace kind."
+                },
+                "name": {
+                  "description": "Child name.",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Public tool path.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Opaque namespace version, also the exclusive continuation cursor.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "version"
+              ],
+              "type": "object"
+            },
+            "DirectoryEntryKind": {
+              "description": "A name's kind at the selected immutable generation.",
+              "oneOf": [
+                {
+                  "const": "file",
+                  "description": "Regular file.",
+                  "type": "string"
+                },
+                {
+                  "const": "dir",
+                  "description": "Child directory.",
+                  "type": "string"
+                }
+              ]
+            },
+            "DirectoryReadResult": {
+              "additionalProperties": false,
+              "description": "A bounded directory page, without invented regular-file metadata.",
+              "properties": {
+                "entries": {
+                  "description": "Ordered children.",
+                  "items": {
+                    "$ref": "#/$defs/DirectoryEntry"
+                  },
+                  "type": "array"
+                },
+                "hasMore": {
+                  "description": "Continue from the last returned entry's version.",
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "entries",
+                "hasMore"
+              ],
+              "type": "object"
+            },
             "FileDescriptor": {
               "additionalProperties": false,
               "description": "Immutable byte descriptor checked before a file is admitted.",
@@ -7273,6 +9282,48 @@
                 }
               ]
             },
+            "JsonProjection2": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DirectoryReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection3": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
             "ProviderRef": {
               "additionalProperties": false,
               "description": "Stable identity of a replaceable resource provider.",
@@ -7307,6 +9358,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "eof": {
+                  "description": "This page reaches the end of the source projection.",
+                  "type": "boolean"
+                },
                 "next": {
                   "description": "Next byte offset for `range`, absent at end of source.",
                   "format": "uint64",
@@ -7327,12 +9382,19 @@
                   "format": "uint64",
                   "minimum": 0,
                   "type": "integer"
+                },
+                "total": {
+                  "description": "Total byte length of the original immutable source.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 }
               },
               "required": [
                 "start",
                 "end",
-                "next",
+                "total",
+                "eof",
                 "offset"
               ],
               "type": "object"
@@ -7522,44 +9584,50 @@
             },
             {
               "$ref": "#/$defs/JsonProjection"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection2"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection3"
             }
           ]
         },
-        "revision": "portable-10"
+        "revision": "portable-13"
       },
       "definition_digest": [
-        224,
-        111,
-        103,
-        233,
-        150,
-        139,
-        222,
+        113,
+        100,
+        152,
+        67,
+        153,
+        208,
+        216,
+        92,
+        1,
+        215,
+        188,
+        70,
+        135,
+        80,
+        172,
+        18,
         237,
-        251,
-        81,
-        85,
-        167,
-        8,
-        244,
-        81,
-        19,
-        178,
-        97,
-        126,
-        47,
-        150,
-        33,
-        245,
-        195,
-        43,
-        83,
-        39,
-        48,
-        118,
-        10,
-        235,
-        45
+        44,
+        192,
+        165,
+        13,
+        186,
+        208,
+        46,
+        22,
+        184,
+        129,
+        142,
+        107,
+        171,
+        241,
+        220
       ],
       "variant": "range_read_reference"
     },

@@ -650,7 +650,11 @@ fn send(descriptors: &[RawFd], message: &[u8]) -> io::Result<Arc<Runner>> {
 }
 
 /// Writes `message`, carrying `descriptors` with its first byte.
-fn send_message(control: &UnixStream, descriptors: &[RawFd], message: &[u8]) -> io::Result<()> {
+pub(super) fn send_message(
+    control: &UnixStream,
+    descriptors: &[RawFd],
+    message: &[u8],
+) -> io::Result<()> {
     let mut space = [0_u64; 8];
     let length = u32::try_from(std::mem::size_of_val(descriptors))
         .map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -715,4 +719,42 @@ pub(super) fn retire_runner() {
     if let Some(runner) = runner().take() {
         drop(runner);
     }
+}
+
+/// Start the same sealed image in packet-device-host mode. The listening
+/// socket itself selects the role; no owner address space is forked.
+pub(super) fn start_packet_device_host(
+    listener: OwnedFd,
+    admission: File,
+    events: OwnedFd,
+) -> io::Result<()> {
+    let executable = image()?;
+    let (started, child) = std::sync::mpsc::sync_channel::<std::process::Child>(1);
+    // Admit the reaper before spawning the external effect. A spawn failure
+    // closes this channel and retires the unused reaper immediately.
+    std::thread::Builder::new()
+        .name("acyclic-mount-host-reaper".into())
+        .spawn(move || {
+            if let Ok(mut child) = child.recv() {
+                if let Err(error) = child.wait() {
+                    tracing::error!(%error, "packet device host wait failed");
+                }
+            }
+        })?;
+    let mut child = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()))
+        .env_clear()
+        .stdin(listener)
+        .stdout(admission)
+        .stderr(events)
+        .process_group(0)
+        .spawn()?;
+    if let Err(error) = started.send(child) {
+        child = error.0;
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(io::Error::other(
+            "packet device host reaper exited during admission",
+        ));
+    }
+    Ok(())
 }

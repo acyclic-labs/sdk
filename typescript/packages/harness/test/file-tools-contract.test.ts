@@ -73,9 +73,11 @@ test("native file results and Full/Reference projections pass actual WASM contra
       expect(value.reference).toEqual({
         kind: "json", value: { path: value.input.path, version: value.full.value.version },
       });
-      expect(value.full.value.version.startsWith("authored-file-v1:")).toBe(true);
-      expect(JSON.parse(value.full.value.version.slice("authored-file-v1:".length)))
-        .toEqual(value.canonical.file.authored);
+      // The path-scoped version names the authored selection and claims no length.
+      const { byte_length: _length, ...selection } = value.canonical.file.authored;
+      expect(value.full.value.version.startsWith("authored-path-v2:")).toBe(true);
+      expect(JSON.parse(value.full.value.version.slice("authored-path-v2:".length)))
+        .toEqual(selection);
       const wrongSource = structuredClone(value.canonical);
       delete wrongSource.file.authored.generation;
       expect(() => contracts.validateToolResult(definition("range_read_full"), { value: wrongSource })).toThrow();
