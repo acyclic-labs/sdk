@@ -359,6 +359,14 @@ impl Refused {
         Self::Settings(AdmissionStatus::Invalid, error)
     }
 
+    fn decoded(error: Error) -> Self {
+        if error.is_tool_failure() {
+            Self::evaluated(error)
+        } else {
+            Self::Operation(error)
+        }
+    }
+
     fn selection(error: Error) -> Self {
         match error {
             error @ (Error::Invalid(_) | Error::Unsupported(_) | Error::NotFound(_)) => {
@@ -388,8 +396,6 @@ async fn settle(
     let base = base_model.or(selection.as_deref()).ok_or_else(|| {
         Refused::Operation(Error::Invalid("startup model selection is absent".into()))
     })?;
-    let invalid =
-        |error: String| Refused::Settings(AdmissionStatus::Invalid, Error::Invalid(error));
     let (value, _) = config::compose_result(
         config::AGENT,
         layers,
@@ -398,8 +404,7 @@ async fn settle(
     )
     .await?
     .map_err(Refused::evaluated)?;
-    let settings: AgentConfig = serde_json::from_value(value.into_unbounded()?)
-        .map_err(|error| invalid(format!("{}: {error}", config::AGENT)))?;
+    let settings = value.decode::<AgentConfig>().map_err(Refused::decoded)?;
     let rejected = |reason: &str| {
         Refused::Settings(
             AdmissionStatus::Rejected,
@@ -661,7 +666,17 @@ mod tests {
             bytes: Some(b"import {sampling} from './options.ts'; export default base => ({...base, sampling});"),
         }];
         for prefix in ["", "allowed"] {
-            let mut tree = Tree::new(&volumes, crate::config::AGENT, None).await?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget {
+                    peak_allocation_bytes: 16 * 1024 * 1024,
+                    ..acyclic_fs::WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = crate::executor::PreparationIo::from_native_work(&work)?;
+            let mut tree = Tree::new(&volumes, crate::config::AGENT, Some(&io)).await?;
             tree.read = ContentGrant::verify_directory_read(
                 &harness.verifier,
                 &harness.signed,
