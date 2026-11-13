@@ -33,7 +33,7 @@ impl StockExecution<'_> {
             )
         })?;
         let executor = StockExecution {
-            stock: self.stock,
+            stock: std::borrow::Cow::Borrowed(self.stock.as_ref()),
             context: self.context,
             io: self.io,
             summary: Some(ContextPipeline::summary_source(source, revision, self.io)?),
