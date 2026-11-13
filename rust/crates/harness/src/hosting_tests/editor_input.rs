@@ -2,7 +2,10 @@ use super::*;
 use crate::{
     agent::{TurnInput, expand_attachments, model_input},
     conversation::{ContentAccess, ContentPublisher as _, ContentResidencyVerifier as _, FileRef},
-    filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, agent_authority},
+    filesystem::{
+        FilesystemContentPublisher, FilesystemContentVerifier, agent_authority,
+        agent_journal_authority,
+    },
     model::{FileProjectionPolicy, ModelContentPart},
 };
 use acyclic_harness_client::{
@@ -87,6 +90,22 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
         bound.volumes().clone(),
         &authority.verifier,
         &authority.scope,
+        64 * 1024,
+        None,
+    )?;
+    let (_, journal_authority) = agent_journal_authority(
+        bound.volumes(),
+        bound.issuer(),
+        bound.admission(),
+        root,
+        &state.volumes,
+        &[],
+    )
+    .await?;
+    let journal_reader = FilesystemContentVerifier::new(
+        bound.volumes().clone(),
+        &journal_authority.verifier,
+        &journal_authority.scope,
         64 * 1024,
         None,
     )?;
@@ -177,6 +196,11 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             return Err("prompt did not retain a message".into());
         };
         assert_eq!(message.id, id);
+        let denied = reader
+            .read(&message.body, 64 * 1024, None, None)?
+            .await
+            .expect_err("private reader disclosed a journal input");
+        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         let peer_body = message.body.clone();
         let input = model_input(&TurnInput::Message {
             from: message.from,
@@ -185,7 +209,10 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
             re: message.re,
             attachments: message.attachments,
         })?;
-        assert_eq!(expand_attachments(input, reader.as_ref()).await?, expected);
+        assert_eq!(
+            expand_attachments(input, journal_reader.as_ref()).await?,
+            expected
+        );
         let expanded = expand_attachments(
             model_input(&TurnInput::Message {
                 from: Sender::Agent { path: root.clone() },
@@ -194,7 +221,7 @@ async fn editor_prompts_reach_authenticated_inbox_with_ordered_pinned_content() 
                 re: None,
                 attachments: None,
             })?,
-            reader.as_ref(),
+            journal_reader.as_ref(),
         )
         .await?;
         let (notices, content) = expanded.notice_parts().ok_or("peer attribution was lost")?;

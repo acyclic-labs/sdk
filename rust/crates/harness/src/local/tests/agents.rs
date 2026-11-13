@@ -430,7 +430,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                 return Err(Error::Invalid(format!(
                     "input settled before its expected approval: {:?}; {}; original tool failures: {failures:?}",
                     entry.outcome,
-                    client.turn(&entry).await?.answer
+                    client.output_text(&entry).await?
                 )));
             }
             Some(crate::local::Event::Status(StatusRecord {
@@ -1023,7 +1023,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         "settled producer outcome: {:?}",
         entry.outcome
     );
-    let turn = client.turn(&entry).await?;
+    let turn = client.turn_at(0, &entry).await?;
     assert_eq!(
         (turn.prompt.as_deref(), turn.answer.as_str()),
         (Some("hello"), "done")
@@ -1047,7 +1047,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         return Err(Error::Invalid("the settled input is not a prompt".into()));
     };
     **body = absent(body)?;
-    assert!(client.turn(&output_only).await.is_err());
+    assert!(client.turn_at(0, &output_only).await.is_err());
     assert_eq!(client.output_text(&output_only).await?, "done");
     output_only.output = absent(&entry.output)?;
     assert!(client.output_text(&output_only).await.is_err());
@@ -2826,7 +2826,7 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
     assert!(prompt.len() > 2 * MAX_AGENT_COMMAND_BYTES);
     let inbox = client.send("large", &prompt).await?;
     let entry = observed.settled(inbox).await?;
-    let read = client.turn(&entry).await?.prompt;
+    let read = client.turn_at(0, &entry).await?.prompt;
     assert!(read.as_deref() == Some(prompt.as_str()));
     // A resend is the same delivery.
     assert_eq!(client.send("large", &prompt).await?, inbox);
@@ -3505,7 +3505,15 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
             "the child's first input is not its brief".into(),
         ));
     };
-    let read = Conversation::read(&connection, &child, ReadTarget::File { file: *file }).await?;
+    let read = Conversation::read(
+        &connection,
+        &child,
+        ReadTarget::Conversation {
+            sequence: 0,
+            file: *file,
+        },
+    )
+    .await?;
     assert!(read == brief.as_bytes());
     // Negative control: the child reads no other file of its parent's.
     let client = conversation(&harness).await?;
@@ -3521,7 +3529,8 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         Conversation::read(
             &connection,
             &child,
-            ReadTarget::File {
+            ReadTarget::Conversation {
+                sequence: 0,
                 file: (*body).clone()
             }
         )
@@ -3529,7 +3538,15 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
         .is_err()
     );
     // The parent reads it, so the refusal is the grant's.
-    Conversation::read(&connection, &root, ReadTarget::File { file: *body }).await?;
+    Conversation::read(
+        &connection,
+        &root,
+        ReadTarget::Conversation {
+            sequence: 0,
+            file: *body,
+        },
+    )
+    .await?;
     // A retried spawn names the same child.
     assert!(matches!(
         connection.execute(&spawn).await?,
@@ -3996,9 +4013,8 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     );
     assert!(
         client
-            .turn(&refusal)
+            .output_text(&refusal)
             .await?
-            .answer
             .contains("expected project heads changed")
     );
     assert_eq!(
@@ -4166,9 +4182,8 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
     assert!(
         client
-            .turn(&refusal)
+            .output_text(&refusal)
             .await?
-            .answer
             .contains("cannot replace the current access policy")
     );
     assert_eq!(client.project_heads().await?, expected);
@@ -4346,7 +4361,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let inherited = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let branched = ConversationEntry::decode(&entries[1]).map_err(agent)?;
     assert!(matches!(branched.input, TurnInput::Brief { .. }));
-    assert_eq!(client.turn(&inherited).await?.answer, "answer 0");
+    assert_eq!(client.turn_at(0, &inherited).await?.answer, "answer 0");
     let saved =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &child, 1).await?;
     assert_eq!(saved.context.tail, 2);
