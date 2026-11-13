@@ -548,6 +548,7 @@ pub(crate) fn submit(
         crate::NativeJob::Read { completion, .. }
         | crate::NativeJob::Write { completion, .. }
         | crate::NativeJob::Task { completion, .. } => completion.clone(),
+        crate::NativeJob::Deferred(_) => None,
     };
     let (done, waiting) = oneshot::channel();
     drop(spawn_owned(
