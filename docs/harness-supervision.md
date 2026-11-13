@@ -74,6 +74,21 @@ original policy; endpoint names do not supply prices. Fractional microdollars
 carry across original calls. Same-byte file writes and recovered no-op receipts
 do not count as authored progress.
 
+Native command owners publish their original capture's logical content comparison
+before reporting physical completion. A physical capture compares its accepted generation with the
+actual serial predecessor recorded by that operation; an unchanged generation's
+older parent cannot supply progress. Mounted captures retain both original
+source-backed cuts, including their overlays and identity shadows. An edit,
+regular-file creation or removal can count; metadata, source promotion and
+storage-layout changes alone cannot.
+
+An unavailable original comparison never counts as positive progress. It breaks
+the consecutive absence-of-progress streak because absence was not proved.
+Background starts retain a separate pending measurement for each original call;
+only that call's completion retires it. Pending measurements also prevent a turn
+from claiming a proved absence of native progress. Output activity remains the
+separate evidence used by `stuck`.
+
 ## Owner controls
 
 The private root consumes ordinary filesystem publications:
