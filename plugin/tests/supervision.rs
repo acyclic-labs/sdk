@@ -450,6 +450,8 @@ async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> Output {
         &model.catalog,
         vec![
             "run",
+            "--output-format",
+            "jsonl",
             "--goal",
             goal.to_str().unwrap(),
             "--policy",
