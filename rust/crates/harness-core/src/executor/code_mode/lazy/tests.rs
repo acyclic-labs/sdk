@@ -79,8 +79,8 @@ impl ToolSource for Programs {
         &'a self,
         name: &'a str,
         io: Option<&'a PreparationIo>,
-    ) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
-        Box::pin(async move {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<Tool>>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             let program =
                 crate::plugins::load_program(&PreparedPrograms(self, io), &format!("tools/{name}"))
                     .await?;
@@ -176,6 +176,23 @@ async fn rebuilt_executor_retains_selection_without_source_reads_and_refuses_cha
     let (canonical, pinned) = retained.bind(&rebuilt.tools, None)?;
     assert_eq!(canonical.name, "shell");
     assert_eq!(pinned.as_ref().unwrap().definition.name, canonical.name);
+    let tight = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let tight_io = PreparationIo::from_native_work(&tight)?;
+    let baseline = tight.live_allocation_bytes();
+    let error = match rebuilt.tools.load("echo", Some(&tight_io)).await {
+        Err(error) => error,
+        Ok(_) => panic!("source future must refuse before polling the unavailable source"),
+    };
+    assert!(matches!(error, Error::NativeWork { .. }));
+    drop(error);
+    assert_eq!(tight.live_allocation_bytes(), baseline);
     let mut changed = call();
     changed.arguments = serde_json::json!({"text": "changed"});
     let refusal = StockExecution::ordinary(&rebuilt)

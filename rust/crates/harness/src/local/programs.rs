@@ -36,8 +36,8 @@ impl ToolSource for Programs {
         &'a self,
         name: &'a str,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
-        Box::pin(async move {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<Tool>>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             if !crate::contract::is_valid_component_label(name)
                 || crate::conversation::validate_content_path(name, &mut None).is_err()
                 || name.contains('/')

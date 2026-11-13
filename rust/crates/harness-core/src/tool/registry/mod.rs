@@ -66,15 +66,15 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
     }
     /// Load just one authored alias from its original producer. The caller must
     /// validate its input and retain its canonical invocation before dispatch.
-    /// Source reads and retained program data use the supplied original ledger;
+    /// Future allocation, source reads and retained program data use the supplied original ledger;
     /// a source must not reopen an unmeasured operation. This observation grants
     /// no execution authority.
     fn load<'a>(
         &'a self,
         _name: &'a str,
-        _io: Option<&'a crate::executor::PreparationIo>,
-    ) -> BoxFuture<'a, Result<Option<Arc<Tool>>>> {
-        Box::pin(async { Ok(None) })
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<Tool>>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(None) })
     }
     /// Names previously published by this source and subsequently revoked.
     fn was_removed(&self, _name: &str) -> Result<bool> {
@@ -119,7 +119,7 @@ impl ToolRegistry {
                         .capability()
                         .and_then(|grant| grant.strip_prefix("tool:call:"))
                         .is_some_and(|capability| self.source_allowed(capability)))
-                && let Some(tool) = source.load(name, io).await?
+                && let Some(tool) = source.load(name, io)?.await?
             {
                 if selected.is_some() || self.resolve(name, io)?.is_some() {
                     return Err(Error::Conflict("tool sources overlap".into()));
