@@ -662,6 +662,40 @@ fn home_file(value: &str) -> Result<(String, PathBuf), String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn every_declared_subcommand_routes_without_changing_argv() {
+        use clap::CommandFactory as _;
+        use std::ffi::OsString;
+        let mut grammar = super::Args::command();
+        grammar.build();
+        for command in grammar.get_subcommands() {
+            for name in std::iter::once(command.get_name()).chain(command.get_all_aliases()) {
+                let argv: Vec<OsString> = ["acyclic", name, "--help"]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect();
+                let crate::ingress::Input::Agent(routed) =
+                    crate::ingress::parse(argv.clone()).unwrap()
+                else {
+                    panic!("declared subcommand did not reach its parser: {name}");
+                };
+                assert_eq!(routed, argv);
+            }
+        }
+        assert!(matches!(
+            crate::ingress::parse(["acyclic", "doctor", "host"].map(OsString::from).to_vec()),
+            Ok(crate::ingress::Input::Native(_))
+        ));
+        assert!(matches!(
+            crate::ingress::parse(
+                ["acyclic", "--task", "task", "fs"]
+                    .map(OsString::from)
+                    .to_vec()
+            ),
+            Ok(crate::ingress::Input::Native(_))
+        ));
+    }
+
+    #[test]
     fn peer_send_requires_existing_endpoint_and_explicit_intent() {
         use clap::Parser as _;
         for options in [

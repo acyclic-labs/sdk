@@ -40,6 +40,14 @@ use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, io::IsTerminal as _, sync::Arc};
 
+pub(crate) fn accepts_subcommand(name: &str) -> bool {
+    let mut grammar = Args::command();
+    grammar.build();
+    grammar.get_subcommands().any(|command| {
+        command.get_name() == name || command.get_all_aliases().any(|alias| alias == name)
+    })
+}
+
 // Construct each phase on its own call frame. Boxing an already constructed
 // future in the awaiting frame still retains its construction scratch space
 // throughout nested polls, and devirtualization can inline its poll there too.
