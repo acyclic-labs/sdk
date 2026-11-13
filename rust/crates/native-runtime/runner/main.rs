@@ -22,6 +22,7 @@
 mod device;
 #[path = "../src/execution/linux/entry.rs"]
 mod entry;
+mod packet_device;
 #[path = "../src/process_tree/record.rs"]
 mod record;
 mod request;
@@ -64,6 +65,13 @@ core::arch::global_asm!(
 extern "C" fn start() -> ! {
     let code = match prepare() {
         Ok(()) => {
+            if sys::is_listener(CONTROL).unwrap_or(false) {
+                return sys::exit(if packet_device::serve(CONTROL).is_ok() {
+                    0
+                } else {
+                    1
+                });
+            }
             let mut body = Mapped::EMPTY;
             while let Ok(Some(received)) = receive(&mut body) {
                 launch(received, &mut body);
@@ -211,13 +219,35 @@ fn read_exact(mut bytes: &mut [u8]) -> Result<(), Errno> {
 /// Reads one request into `body`. `None` once the owner has closed the
 /// socket; an error leaves the stream unusable.
 fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
+    let mut length = [0_u8; 8];
+    let Some(mut received) = receive_handles(CONTROL, &mut length)? else {
+        return Ok(None);
+    };
+    let read = read_exact(length.get_mut(received.length..).unwrap_or_default())
+        .and_then(|()| usize::try_from(u64::from_ne_bytes(length)).map_err(|_| Errno(sys::EINVAL)))
+        .and_then(|length| {
+            body.reserve(length)?;
+            read_exact(body.bytes().get_mut(..length).unwrap_or_default())?;
+            Ok(length)
+        });
+    match read {
+        Ok(length) => {
+            received.length = length;
+            Ok(Some(received))
+        }
+        Err(error) => {
+            received.close();
+            Err(error)
+        }
+    }
+}
+fn receive_handles(socket: Fd, bytes: &mut [u8]) -> Result<Option<Received>, Errno> {
     // A control message header, then the descriptors.
     const HEADER: usize = 16;
-    let mut length = [0_u8; 8];
     let mut space = ControlSpace([0; 64]);
     let mut vector = sys::IoVector {
-        base: length.as_mut_ptr(),
-        length: length.len(),
+        base: bytes.as_mut_ptr(),
+        length: bytes.len(),
     };
     let mut header = sys::MessageHeader {
         name: 0,
@@ -229,7 +259,7 @@ fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
         flags: 0,
     };
     let read = loop {
-        match sys::receive(CONTROL, &mut header) {
+        match sys::receive(socket, &mut header) {
             Ok(read) => break read,
             Err(Errno(sys::EINTR)) => {}
             Err(error) => return Err(error),
@@ -273,29 +303,13 @@ fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
         received.close();
         return Ok(None);
     }
-    let read = read_exact(length.get_mut(read..).unwrap_or_default())
-        .and_then(|()| usize::try_from(u64::from_ne_bytes(length)).map_err(|_| Errno(sys::EINVAL)))
-        .and_then(|length| {
-            body.reserve(length)?;
-            read_exact(body.bytes().get_mut(..length).unwrap_or_default())?;
-            Ok(length)
-        });
-    match read {
-        Ok(length) if header.flags & sys::MSG_CTRUNC == 0 => {
-            received.length = length;
-            Ok(Some(received))
-        }
-        Ok(_) => {
-            received.close();
-            Err(Errno(sys::EINVAL))
-        }
-        Err(error) => {
-            received.close();
-            Err(error)
-        }
+    if header.flags & (sys::MSG_CTRUNC | 32) != 0 {
+        received.close();
+        return Err(Errno(sys::EINVAL));
     }
+    received.length = read;
+    Ok(Some(received))
 }
-
 /// Space for control messages, aligned as their headers are.
 #[repr(C, align(8))]
 struct ControlSpace([u8; 64]);

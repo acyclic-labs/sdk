@@ -21,6 +21,7 @@ pub const ENODEV: i32 = 19;
 pub const ENOTDIR: i32 = 20;
 pub const EINVAL: i32 = 22;
 pub const EPIPE: i32 = 32;
+pub const EAGAIN: i32 = 11;
 pub const ETIMEDOUT: i32 = 110;
 pub const ESTALE: i32 = 116;
 
@@ -57,6 +58,13 @@ mod number {
     pub const CLOSE: usize = 3;
     pub const FSTAT: usize = 5;
     pub const MMAP: usize = 9;
+    pub const MUNMAP: usize = 11;
+    pub const FCNTL: usize = 72;
+    pub const GETSOCKOPT: usize = 55;
+    pub const ACCEPT4: usize = 288;
+    pub const EPOLL_CREATE1: usize = 291;
+    pub const EPOLL_CTL: usize = 233;
+    pub const EPOLL_PWAIT: usize = 281;
     pub const RT_SIGACTION: usize = 13;
     pub const RT_SIGPROCMASK: usize = 14;
     pub const MREMAP: usize = 25;
@@ -73,6 +81,7 @@ mod number {
     pub const SETGID: usize = 106;
     pub const SETPGID: usize = 109;
     pub const GETPPID: usize = 110;
+    pub const GETEUID: usize = 107;
     pub const SETGROUPS: usize = 116;
     pub const GETPGID: usize = 121;
     pub const PRCTL: usize = 157;
@@ -120,11 +129,19 @@ mod number {
     pub const SECCOMP: usize = 277;
     pub const GETPID: usize = 172;
     pub const GETPPID: usize = 173;
+    pub const GETEUID: usize = 175;
     pub const RECVMSG: usize = 212;
     pub const MREMAP: usize = 216;
     pub const CLONE: usize = 220;
     pub const EXECVE: usize = 221;
     pub const MMAP: usize = 222;
+    pub const MUNMAP: usize = 215;
+    pub const FCNTL: usize = 25;
+    pub const GETSOCKOPT: usize = 209;
+    pub const ACCEPT4: usize = 242;
+    pub const EPOLL_CREATE1: usize = 20;
+    pub const EPOLL_CTL: usize = 21;
+    pub const EPOLL_PWAIT: usize = 22;
     pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
     pub const UMASK: usize = 166;
@@ -752,4 +769,146 @@ pub fn receive(socket: Fd, header: &mut MessageHeader) -> Result<usize, Errno> {
             ],
         )
     }
+}
+
+/// Releases one whole anonymous mapping after its last reference is gone.
+pub unsafe fn unmap(base: *mut u8, length: usize) {
+    // SAFETY: the caller surrendered its complete mapping.
+    let _ = unsafe { call(number::MUNMAP, [base.addr(), length, 0, 0, 0, 0]) };
+}
+
+pub fn nonblocking(file: Fd) -> Result<(), Errno> {
+    // SAFETY: F_GETFL and F_SETFL have no pointer arguments.
+    let flags = unsafe { call(number::FCNTL, [arg(file), 3, 0, 0, 0, 0]) }?;
+    unsafe { call(number::FCNTL, [arg(file), 4, flags | 0o4000, 0, 0, 0]) }?;
+    Ok(())
+}
+
+pub fn socket_word(file: Fd, option: usize) -> Result<u32, Errno> {
+    let mut value = 0_u32;
+    let mut length = 4_u32;
+    // SAFETY: both initialized output fields remain live through getsockopt.
+    unsafe {
+        call(
+            number::GETSOCKOPT,
+            [
+                arg(file),
+                1,
+                option,
+                (&raw mut value).addr(),
+                (&raw mut length).addr(),
+                0,
+            ],
+        )
+    }?;
+    if length != 4 {
+        return Err(Errno(EINVAL));
+    }
+    Ok(value)
+}
+
+pub fn is_listener(file: Fd) -> Result<bool, Errno> {
+    socket_word(file, 30).map(|accepting| accepting == 1)
+}
+
+pub fn peer_user(file: Fd) -> Result<u32, Errno> {
+    let mut credentials = [0_u32; 3];
+    let mut length = 12_u32;
+    // SAFETY: SO_PEERCRED fills exactly this native ucred structure.
+    unsafe {
+        call(
+            number::GETSOCKOPT,
+            [
+                arg(file),
+                1,
+                17,
+                credentials.as_mut_ptr().addr(),
+                (&raw mut length).addr(),
+                0,
+            ],
+        )
+    }?;
+    if length != 12 {
+        return Err(Errno(EINVAL));
+    }
+    Ok(credentials[1])
+}
+
+pub fn accept(listener: Fd) -> Result<Fd, Errno> {
+    // SAFETY: no peer address is requested. Both flags apply to the fresh fd.
+    unsafe {
+        call(
+            number::ACCEPT4,
+            [arg(listener), 0, 0, O_CLOEXEC as usize | 0o4000, 0, 0],
+        )
+    }
+    .map(fd)
+}
+
+pub const EPOLL_IN: u32 = 1;
+pub const EPOLL_OUT: u32 = 4;
+pub const EPOLL_HUP: u32 = 8 | 16 | 0x2000;
+
+#[cfg_attr(target_arch = "x86_64", repr(C, packed))]
+#[cfg_attr(not(target_arch = "x86_64"), repr(C))]
+#[derive(Clone, Copy)]
+pub struct EpollEvent {
+    pub events: u32,
+    pub token: u64,
+}
+
+pub fn epoll() -> Result<Fd, Errno> {
+    // SAFETY: flags only; transfers a fresh descriptor on success.
+    unsafe { call(number::EPOLL_CREATE1, [O_CLOEXEC as usize, 0, 0, 0, 0, 0]) }.map(fd)
+}
+
+pub fn interest(queue: Fd, file: Fd, add: bool, events: u32, token: u64) -> Result<(), Errno> {
+    let mut event = EpollEvent { events, token };
+    // SAFETY: descriptors remain owned; event has the kernel ABI layout.
+    unsafe {
+        call(
+            number::EPOLL_CTL,
+            [
+                arg(queue),
+                if add { 1 } else { 3 },
+                arg(file),
+                (&raw mut event).addr(),
+                0,
+                0,
+            ],
+        )
+    }?;
+    Ok(())
+}
+
+pub fn unwatch(queue: Fd, file: Fd) {
+    // SAFETY: EPOLL_CTL_DEL ignores its final pointer.
+    let _ = unsafe { call(number::EPOLL_CTL, [arg(queue), 2, arg(file), 0, 0, 0]) };
+}
+
+pub fn events(queue: Fd, events: &mut [EpollEvent]) -> Result<usize, Errno> {
+    loop {
+        // SAFETY: initialized writable events; no signal-mask replacement.
+        match unsafe {
+            call(
+                number::EPOLL_PWAIT,
+                [
+                    arg(queue),
+                    events.as_mut_ptr().addr(),
+                    events.len(),
+                    usize::MAX,
+                    0,
+                    8,
+                ],
+            )
+        } {
+            Err(Errno(EINTR)) => {}
+            result => return result,
+        }
+    }
+}
+
+pub fn effective_user() -> u32 {
+    // SAFETY: geteuid has no arguments or failure case.
+    unsafe { raw(number::GETEUID, [0; 6]) as u32 }
 }

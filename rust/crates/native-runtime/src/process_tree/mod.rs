@@ -86,12 +86,16 @@ mod custody;
 pub use custody::{ProcessCustody, ProcessCustodyLease};
 mod storage;
 pub use storage::{ProcessDrain, ProcessTreeIo, ProcessTreeStorage};
+#[cfg(target_os = "linux")]
+mod packet_device;
 #[cfg(unix)]
 mod record;
 #[cfg(target_os = "linux")]
 mod release;
 #[cfg(target_os = "linux")]
 mod runner;
+#[cfg(target_os = "linux")]
+pub use packet_device::{PacketDevice, PacketDeviceRetirement};
 #[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 mod runner_fuzz;
 #[cfg(target_os = "linux")]
