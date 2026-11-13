@@ -1,15 +1,5 @@
 use super::*;
 
-#[derive(serde::Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-struct ManagerRewrite {
-    version: u32,
-    drop_through: u32,
-    summary: String,
-}
-
-impl PreparationRecord for ManagerRewrite {}
-
 pub(super) enum CompactionSource {
     Projected,
     Base { context: crate::context::Context },
@@ -38,7 +28,7 @@ impl StockExecution<'_> {
         policy: &crate::context::CapacityCompaction,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step, prior) = turn;
-        let (mut projection, accounting) = captured;
+        let (projection, accounting) = captured;
         let (stage_messages, context, pre_stage) = match source {
             CompactionSource::Projected => (0, projection.context, false),
             CompactionSource::Base { context } => {
@@ -69,154 +59,138 @@ impl StockExecution<'_> {
             )
             .await?;
         let files = self.rewrite_files(journal, (input, step)).await?;
-        let (summary, maximum) = self
-            .managed_summary(
-                journal,
-                (input, step),
-                &context,
-                policy,
-                (eligible, message_limit),
-            )
-            .await?;
-        let (compacted, reference) =
-            crate::context::compact_projection(&context, maximum, Some(summary), self.io)?;
-        let (compaction, working) = if pre_stage {
-            let (compaction, working) = self
-                .stage_working_cut(
+        let root_digest = crate::context::prefix_digest(&context, eligible, self.io)?;
+        let mut previous = None;
+        let mut part = 0_u64;
+        loop {
+            let scope = crate::filesystem::PreparationScope::new(self.io)?;
+            let session = self.preparing(scope.io());
+            let (summary, maximum, more) = session
+                .managed_summary(
                     journal,
-                    working_tail::WorkingCompaction {
-                        input,
-                        step,
-                        prior,
-                        source: &context,
-                        retained: &compacted,
-                        proof: &reference,
-                    },
+                    (input, step),
+                    &context,
+                    policy,
+                    (eligible, message_limit),
+                    (part, previous.as_ref(), root_digest),
                 )
                 .await?;
-            (compaction, Some(working))
-        } else {
-            let key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("context:{step}:compaction"), work)
-            })?;
-            let compaction =
-                stage_json(journal, input.operation_id, &key, &reference, self.io).await?;
-            (compaction, projection.working.take())
-        };
-        let (compacted, mut request) = self
-            .prepare_compacted_request(input, step, compacted, pre_stage)
-            .await?;
-        let compacted = ResponseProjection {
-            context: compacted,
-            steering: projection.steering.take(),
-            canonical: None,
-            checkpoint: None,
-            working,
-            accounting: None,
-        };
-        if self
-            .finish_compaction(
-                journal,
-                (input, step),
-                &compacted,
-                compaction,
-                (
-                    accounting.capacity,
-                    files
-                        .as_ref()
-                        .map(|files| context_files::RewritePublication {
-                            files,
+            let (compacted, reference) = crate::context::compact_projection(
+                &context,
+                maximum,
+                Some(crate::context::ContextSummary {
+                    operation_id: summary.operation_id,
+                    step: summary.step,
+                    source_messages: summary.source_messages,
+                    source_digest: summary.source_digest,
+                    output: crate::model::clone_file(&summary.output, session.io)?,
+                }),
+                session.io,
+            )?;
+            let (compaction, working) = if pre_stage {
+                let (compaction, working) = session
+                    .stage_working_cut(
+                        journal,
+                        working_tail::WorkingCompaction {
+                            input,
+                            step,
+                            prior,
+                            source: &context,
+                            retained: &compacted,
                             proof: &reference,
-                        }),
-                ),
-                &mut request,
-            )
-            .await?
-        {
-            return Ok(request);
-        }
-        Err(stock_boundary(
-            self.io,
-            crate::wire::ErrorCode::Invalid,
-            "context rewrite does not fit the selected model window",
-        ))
-    }
-
-    /// The manager chooses the cut. The kernel only validates dependency
-    /// closure and the final request's capacity, never a retention heuristic.
-    async fn managed_summary(
-        &self,
-        journal: &dyn ExecutionJournal,
-        turn: (&TurnInput, u32),
-        context: &crate::context::Context,
-        policy: &crate::context::CapacityCompaction,
-        selection: (usize, Option<usize>),
-    ) -> Result<(crate::context::ContextSummary, usize)> {
-        let (input, step) = turn;
-        let (source_messages, message_limit) = selection;
-        let invalid = |reason| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason);
-        let (source, _) = with_history_io(self.io, |work| {
-            crate::context::clone_context(context, Some(source_messages), work)
-        })?;
-        let instruction = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(
-                format_args!(
-                    "{}\nSource count: {source_messages}.",
-                    crate::seed::CONTEXT_MANAGER
-                ),
-                work,
-            )
-        })?;
-        let mut phase = DispatchPhase::new();
-        let (_, text) = self
-            .summarize(
-                journal,
-                Some(input),
-                input.operation_id,
-                step,
-                (source, ModelContent::Text(instruction)),
-                &mut phase,
-            )
-            .await?;
-        let rewrite: ManagerRewrite = match self.io {
-            Some(io) => {
-                let (value, hold) = io.decode(
-                    std::marker::PhantomData,
-                    text.as_bytes(),
-                    crate::wire::ErrorCode::Invalid,
-                )?;
-                retain_preparation((value, Some(hold)))?
+                        },
+                    )
+                    .await?;
+                (compaction, Some(working))
+            } else {
+                let key = with_history_io(session.io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("context:{step}:compaction"),
+                        work,
+                    )
+                })?;
+                let compaction =
+                    stage_json(journal, input.operation_id, &key, &reference, session.io).await?;
+                (
+                    compaction,
+                    projection
+                        .working
+                        .as_ref()
+                        .map(|file| crate::model::clone_file(file, session.io))
+                        .transpose()?,
+                )
+            };
+            let (compacted, mut request) = session
+                .prepare_compacted_request(input, step, compacted, pre_stage)
+                .await?;
+            let compacted = ResponseProjection {
+                context: compacted,
+                steering: projection.steering.clone(),
+                canonical: None,
+                checkpoint: None,
+                working,
+                accounting: None,
+            };
+            if session
+                .finish_compaction(
+                    journal,
+                    (input, step),
+                    &compacted,
+                    compaction,
+                    (
+                        accounting.capacity,
+                        files
+                            .as_ref()
+                            .map(|files| context_files::RewritePublication {
+                                files,
+                                proof: &reference,
+                            }),
+                    ),
+                    &mut request,
+                )
+                .await?
+            {
+                let retained = scope
+                    .io()
+                    .map(|io| request.preparation_owned_bytes(io))
+                    .transpose()?
+                    .unwrap_or(0);
+                drop(compacted);
+                drop(reference);
+                drop(summary);
+                drop(session);
+                scope.finish(retained)?;
+                return Ok(request);
             }
-            None => crate::contract::json_from_slice(text.as_bytes())
-                .map_err(|_| invalid("context manager returned an invalid rewrite"))?,
-        };
-        let requested = rewrite.drop_through as usize;
-        if rewrite.version != 1 || requested == 0 || requested > source_messages {
-            return Err(invalid("context manager selected an invalid source range"));
+            if !more {
+                return Err(stock_boundary(
+                    session.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "context rewrite does not fit the selected model window",
+                ));
+            }
+            drop(compacted);
+            drop(reference);
+            drop(request);
+            drop(session);
+            scope.finish(summary.output.logical_owned_bytes()?)?;
+            if let Some(old) = previous.take() {
+                let hold = self
+                    .io
+                    .map(|io| io.guard_owned(old.output.logical_owned_bytes()?))
+                    .transpose()?;
+                drop(old);
+                drop(hold);
+            }
+            previous = Some(summary);
+            part = part.checked_add(1).ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "summary part identity exhausted",
+                )
+            })?;
         }
-        let (through, maximum) = crate::context::plan_compaction_budget(
-            policy,
-            context,
-            message_limit,
-            requested,
-            self.io,
-        )?;
-        if through != requested {
-            return Err(invalid("context manager cut splits a dependency group"));
-        }
-        let source_digest = crate::context::prefix_digest(context, through, self.io)?;
-        let key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("manager:{step}:summary"), work)
-        })?;
-        let summary = self
-            .publish_summary(
-                journal,
-                (input.operation_id, step),
-                (rewrite.drop_through, source_digest),
-                (&key, rewrite.summary.as_bytes()),
-            )
-            .await?;
-        Ok((summary, maximum))
     }
 
     async fn prepare_compacted_request(

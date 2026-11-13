@@ -311,9 +311,10 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
+        purpose: ModelPurpose,
     ) -> Result<Option<crate::model::PreparedModelRequest>> {
         let (_, records) = self
-            .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
+            .model_records(journal, input.operation_id, step, purpose)
             .await?;
         if records
             .iter()
@@ -347,11 +348,7 @@ impl StockExecution<'_> {
         };
         let count = with_history_io(self.io, |work| count.validate(&prepared, work))?;
         if count > ceiling {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Invalid,
-                "summary input exceeds selected model capacity",
-            ));
+            return Err(Error::ModelContextOverflow);
         }
         Ok(Some(prepared))
     }

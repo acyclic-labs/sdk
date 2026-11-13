@@ -371,7 +371,7 @@ impl<'a> Row<'a> {
         self.step = Some(step);
         self.purpose = Some(match purpose {
             super::ModelPurpose::Response => "response",
-            super::ModelPurpose::Summary => "summary",
+            super::ModelPurpose::Summary | super::ModelPurpose::SummaryPart(_) => "summary",
             super::ModelPurpose::Count => "count",
         });
         self.request_digest = Some(digest(request_digest));

@@ -5,16 +5,22 @@ pub(crate) fn clone_context(
     through: Option<usize>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Context, u64)> {
-    let source = match through {
-        Some(through) => context
-            .messages
-            .get(..through)
-            .ok_or_else(|| Error::Invalid("summary extent exceeds source projection".into()))?,
-        None => context.messages.as_slice(),
-    };
+    clone_context_range(context, 0..through.unwrap_or(context.messages.len()), work)
+}
+
+pub(crate) fn clone_context_range(
+    context: &Context,
+    range: std::ops::Range<usize>,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<(Context, u64)> {
+    let source = context
+        .messages
+        .get(range.clone())
+        .ok_or_else(|| Error::Invalid("summary extent exceeds source projection".into()))?;
     let current_input_index = context
         .current_input_index
-        .filter(|index| through.is_none_or(|through| (*index as usize) < through));
+        .filter(|index| range.contains(&(*index as usize)))
+        .map(|index| index - range.start as u32);
     if work.is_none() {
         return Ok((
             Context {

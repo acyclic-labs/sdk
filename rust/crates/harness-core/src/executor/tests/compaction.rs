@@ -1272,3 +1272,88 @@ async fn response_reserve_requests_a_tighter_count_before_rewriting() -> Result<
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn oversized_history_uses_bounded_manager_parts_without_worker_steps_or_replay_collisions()
+-> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let (provider, _) = counted_model(
+        32_768,
+        None,
+        [
+            ScriptedTurn::Text(r#"{"version":1,"drop_through":3,"summary":"FIRST_FACT"}"#.into()),
+            ScriptedTurn::Text(
+                r#"{"version":1,"drop_through":4,"summary":"FIRST_FACT SECOND_FACT"}"#.into(),
+            ),
+            ScriptedTurn::Text("answer".into()),
+        ],
+        [],
+    );
+    let source = crate::context::Context {
+        messages: (0..6)
+            .map(|index| ModelMessage {
+                role: if index % 2 == 0 {
+                    ModelRole::User
+                } else {
+                    ModelRole::Assistant
+                },
+                content: ModelContent::Text(format!("FACT_{index} {}", "x".repeat(8_000))),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "bounded-manager".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+            "history",
+            "1",
+            Arc::new(source),
+            crate::context::ContextPlacement::Prepend,
+        )) as Arc<dyn crate::context::ContextStage>]),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("c".repeat(8_000)),
+        selected_context: None,
+        max_steps: None,
+    };
+    let output = executor.execute(input.clone(), journal.as_ref()).await?;
+    assert_eq!(output.text, "answer");
+    assert_eq!(output.steps, 1, "manager parts cannot consume worker steps");
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[..2].iter().all(|request| request.summary));
+    assert!(!requests[2].summary);
+    assert!(requests[0].messages.iter().all(
+        |message| !matches!(&message.content, ModelContent::Text(text) if text.contains("FACT_5"))
+    ));
+    let rolling = requests[1]
+        .messages
+        .iter()
+        .flat_map(|message| message.content.file_parts())
+        .next()
+        .ok_or_else(|| Error::Invalid("missing rolling summary".into()))?
+        .0;
+    assert_eq!(journal.load(rolling, None)?.await?.as_ref(), b"FIRST_FACT");
+    let fresh = StockExecution::ordinary(&executor);
+    for purpose in [ModelPurpose::Summary, ModelPurpose::SummaryPart(1)] {
+        let (_, records) = fresh
+            .model_records(journal.as_ref(), input.operation_id, 0, purpose)
+            .await?;
+        assert_eq!(records.iter().filter(|record| matches!(record.event, ExecutionEvent::ModelStarted { purpose: recorded, .. } if recorded == purpose)).count(), 1);
+        assert!(records.iter().any(|record| matches!(record.event, ExecutionEvent::Model { purpose: recorded, .. } | ExecutionEvent::ModelInline { purpose: recorded, .. } if recorded == purpose)));
+    }
+    assert_eq!(
+        executor.clone().execute(input, journal.as_ref()).await?,
+        output
+    );
+    assert_eq!(
+        provider.request_count(),
+        3,
+        "replay must not dispatch another manager part"
+    );
+    Ok(())
+}

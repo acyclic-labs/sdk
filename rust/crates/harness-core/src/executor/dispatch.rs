@@ -415,7 +415,10 @@ impl StockExecution<'_> {
         let purpose = scope.purpose;
         let mut request = match (retained_request, prepared) {
             (Some(recorded), prepared) => {
-                if purpose == ModelPurpose::Summary {
+                if matches!(
+                    purpose,
+                    ModelPurpose::Summary | ModelPurpose::SummaryPart(_)
+                ) {
                     let selected = match prepared {
                         Some(request) => request,
                         None => self.prepare_request(input, step, prior_messages).await?,
@@ -475,7 +478,7 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-        turn: (u32, ModelStepScope<'_>, &str),
+        turn: (u32, ModelStepScope<'_>, ModelPurposeKey),
         request: &crate::model::PreparedModelRequest,
         phase: &mut DispatchPhase,
     ) -> Result<(phase::ProviderAttempt, OperationId)> {
@@ -726,12 +729,20 @@ impl StockExecution<'_> {
     }
 }
 
-fn model_purpose_key(purpose: ModelPurpose) -> &'static str {
-    match purpose {
-        ModelPurpose::Response => "model",
-        ModelPurpose::Summary => "summary",
-        ModelPurpose::Count => "count",
+#[derive(Clone, Copy)]
+pub(super) struct ModelPurposeKey(ModelPurpose);
+impl std::fmt::Display for ModelPurposeKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            ModelPurpose::Response => f.write_str("model"),
+            ModelPurpose::Summary => f.write_str("summary"),
+            ModelPurpose::SummaryPart(part) => write!(f, "summary-part:{part}"),
+            ModelPurpose::Count => f.write_str("count"),
+        }
     }
+}
+pub(super) fn model_purpose_key(purpose: ModelPurpose) -> ModelPurposeKey {
+    ModelPurposeKey(purpose)
 }
 
 #[cfg(test)]

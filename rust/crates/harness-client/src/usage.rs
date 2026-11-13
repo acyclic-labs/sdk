@@ -287,7 +287,7 @@ impl UsageQuery {
 pub fn purpose_slot(purpose: ModelPurpose) -> Result<usize> {
     match purpose {
         ModelPurpose::Response => Ok(0),
-        ModelPurpose::Summary => Ok(1),
+        ModelPurpose::Summary | ModelPurpose::SummaryPart(_) => Ok(1),
         ModelPurpose::Count => Err(Error::Storage(
             "token admission cannot carry generation usage".into(),
         )),

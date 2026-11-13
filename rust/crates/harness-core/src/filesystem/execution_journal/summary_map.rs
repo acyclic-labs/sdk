@@ -36,8 +36,12 @@ impl SummaryKey for (u32, crate::executor::ModelPurpose) {
         *purpose = match self.1 {
             crate::executor::ModelPurpose::Response => 0,
             crate::executor::ModelPurpose::Summary => 1,
+            crate::executor::ModelPurpose::SummaryPart(_) => 3,
             crate::executor::ModelPurpose::Count => 2,
         };
+        if let crate::executor::ModelPurpose::SummaryPart(part) = self.1 {
+            key[5..13].copy_from_slice(&part.to_be_bytes());
+        }
         Ok(key)
     }
 }

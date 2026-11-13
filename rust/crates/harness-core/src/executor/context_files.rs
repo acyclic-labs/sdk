@@ -94,7 +94,7 @@ impl StockExecution<'_> {
             None => crate::contract::canonical_json_bytes(&files)?.into(),
         };
         let bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        let file = stage_bytes(journal, input.operation_id, &key, &bytes, false, io).await?;
+        let file = stage_bytes(journal, input.operation_id, &key, (&bytes, "application/json"), false, io).await?;
         drop(bytes);
         drop(bytes_hold);
         drop(files);
