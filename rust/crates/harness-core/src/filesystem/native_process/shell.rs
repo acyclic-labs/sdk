@@ -172,16 +172,20 @@ pub fn workspace_environment<T>(
         .find(|(relative, _, mount)| *relative == "volume:///home" && !mount.mode.read_only());
     let temporary = home
         .map(|(_, root, _)| {
-            acyclic_fs::hold_root(root)
+            // The admitted binding may be an owner-maintained alias. Resolve
+            // that root before the no-follow walk of authored descendants.
+            let canonical = std::fs::canonicalize(root).map_err(Error::process_io)?;
+            acyclic_fs::hold_root(&canonical)
                 .and_then(|root| {
-                    // This is a disposable projection. The ordinary volume
-                    // publication owns persistence after the process completes.
+                    // The ordinary volume publication owns persistence after
+                    // the process completes, not this disposable projection.
                     root.create_directories(
                         Path::new("tmp"),
                         acyclic_fs::NativeDurability::Visibility,
                     )
                 })
-                .map_err(|error| Error::Storage(error.to_string()))
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            Ok::<_, Error>(root.join("tmp"))
         })
         .transpose()?;
     let home_root = home.map_or(mounts.root.as_path(), |(_, root, _)| root);
@@ -196,7 +200,7 @@ pub fn workspace_environment<T>(
     }
     let temporary = temporary.as_ref().map_or_else(
         || mounts.scratch_root.as_deref().unwrap_or(home_root),
-        |temporary| temporary.path(),
+        |temporary| temporary.as_path(),
     );
     let temporary = temporary
         .to_str()
