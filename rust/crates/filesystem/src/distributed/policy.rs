@@ -34,26 +34,51 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             request = self.fence_policy(request, *cut, work)?;
         }
         if let Some(current) = crate::PolicyCut::current() {
-            let mut captured = false;
-            for cut in cuts {
-                let visit = WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                };
-                work.admit(visit)?;
-                work.charge(visit)?;
-                if *cut == current {
-                    captured = true;
-                    break;
+            for current in current.as_slice() {
+                let mut captured = false;
+                for cut in cuts {
+                    let visit = WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    work.admit(visit)?;
+                    work.charge(visit)?;
+                    if cut == current {
+                        captured = true;
+                        break;
+                    }
                 }
-            }
-            if !captured {
-                request = self.fence_policy(request, current, work)?;
+                if !captured {
+                    request = self.fence_policy(request, *current, work)?;
+                }
             }
         }
         Ok(request)
     }
 
+    /// Reuses the authenticated immutable generation locator. No current head
+    /// can replace the caller's original read generation.
+    pub(crate) async fn generation_cut(
+        &self,
+        authority: AuthorityId,
+        generation: GenerationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<crate::PolicyCut, AuthorityStoreError> {
+        let mut scope = work.scope()?;
+        let work = &mut *scope;
+        let (path, located) = self
+            .resolve_source_fork_point(authority, generation, work)
+            .await?;
+        let bytes = path.as_str().len() as u64;
+        drop(path);
+        work.release(bytes)?;
+        Ok(crate::PolicyCut::generation(
+            self.operation_claims().owner_identity(),
+            authority,
+            generation,
+            located.lineage,
+        ))
+    }
     /// Every disclosure publication checks its source in the same Streams
     /// transaction. No earlier check, writer-local registry or lease can replace it.
     fn fence_policy(
@@ -67,30 +92,76 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 "policy cut and publication use different Streams owners",
             ));
         }
+        use crate::async_storage::CutEvidence;
+        let required = match cut.evidence {
+            CutEvidence::Authority { .. } => 3,
+            CutEvidence::Generation { .. } => 2,
+        };
         let effect = super::composition::hard_effect(&mut request, work)?;
-        let mut conditions = work.vec(effect.conditions.len() + 3)?;
+        let mut conditions = work.vec(
+            effect
+                .conditions
+                .len()
+                .checked_add(required)
+                .ok_or(crate::WorkError::Overflow)?,
+        )?;
         conditions.append(&mut effect.conditions);
-        merge_condition(
-            &mut conditions,
-            CommitCondition::Tail {
-                path: work.path(&self.placement, cut.authority, "/records", None)?,
-                expected: cut
-                    .head
-                    .sequence
-                    .get()
-                    .checked_add(1)
-                    .ok_or(crate::WorkError::Overflow)?,
-            },
-            work,
-        )?;
-        merge_condition(
-            &mut conditions,
-            CommitCondition::Tail {
-                path: work.path(&self.placement, cut.authority, "/epochs", None)?,
-                expected: cut.epoch_tail,
-            },
-            work,
-        )?;
+        let key = match cut.evidence {
+            CutEvidence::Authority { head, epoch_tail } => {
+                merge_condition(
+                    &mut conditions,
+                    CommitCondition::Tail {
+                        path: work.path(&self.placement, cut.authority, "/records", None)?,
+                        expected: head
+                            .sequence
+                            .get()
+                            .checked_add(1)
+                            .ok_or(crate::WorkError::Overflow)?,
+                    },
+                    work,
+                )?;
+                merge_condition(
+                    &mut conditions,
+                    CommitCondition::Tail {
+                        path: work.path(&self.placement, cut.authority, "/epochs", None)?,
+                        expected: epoch_tail,
+                    },
+                    work,
+                )?;
+                work.key(
+                    self.placement.key_scope(),
+                    b"policy-cut-attempt\0",
+                    &[
+                        &cut.authority.into_bytes(),
+                        head.digest.as_bytes(),
+                        &head.sequence.get().to_le_bytes(),
+                        &epoch_tail.to_le_bytes(),
+                    ],
+                )?
+            }
+            CutEvidence::Generation {
+                generation,
+                lineage,
+            } => {
+                merge_condition(
+                    &mut conditions,
+                    CommitCondition::Tail {
+                        path: work.path(&self.placement, cut.authority, "/lineage", None)?,
+                        expected: lineage,
+                    },
+                    work,
+                )?;
+                work.key(
+                    self.placement.key_scope(),
+                    b"generation-cut-attempt\0",
+                    &[
+                        &cut.authority.into_bytes(),
+                        generation.to_bytes().as_ref(),
+                        &lineage.to_le_bytes(),
+                    ],
+                )?
+            }
+        };
         merge_condition(
             &mut conditions,
             CommitCondition::Absent {
@@ -100,16 +171,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         )?;
         super::composition::hard_effect(&mut request, work)?.conditions = conditions;
         // A rejected stale cut cannot consume a later freshly authorized attempt.
-        let key = work.key(
-            self.placement.key_scope(),
-            b"policy-cut-attempt\0",
-            &[
-                &cut.authority.into_bytes(),
-                cut.head.digest.as_bytes(),
-                &cut.head.sequence.get().to_le_bytes(),
-                &cut.epoch_tail.to_le_bytes(),
-            ],
-        )?;
         request.idempotency_key = work.folded_key(
             b"authority-policy-attempt\0",
             &request.idempotency_key,

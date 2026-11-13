@@ -23,6 +23,7 @@ pub(super) struct Loaded {
     reads: Vec<ModuleRead>,
     modules: std::result::Result<Vec<(String, Module)>, String>,
     digest: [u8; 32],
+    work: Option<acyclic_fs::NativeMaterializationWork>,
 }
 
 /// A deterministic semantic decision and the exact inputs that produced it.
@@ -90,6 +91,10 @@ pub(super) async fn load(
         reads: observations.reads.unwrap_or_default(),
         modules,
         digest: observations.digest.finalize().into(),
+        work: tree
+            .preparation_io()
+            .and_then(|io| io.original_native_work())
+            .cloned(),
     })
 }
 
@@ -156,6 +161,9 @@ impl Loaded {
         surface: Surface,
         cache: &Cache,
     ) -> Result<Evaluation> {
+        if let Some(work) = &self.work {
+            work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
+        }
         let base = crate::contract::canonical_json_bytes(base)?;
         let mut key = blake3::Hasher::new_derive_key(VERSION);
         key.update(&self.digest);
@@ -171,12 +179,28 @@ impl Loaded {
         let outcome = match cached {
             Some(outcome) => outcome,
             None => {
+                let allocator =
+                    crate::javascript_allocator::EngineAllocator::new(self.work.as_ref());
+                let failure = allocator.failure();
                 let outcome = self
                     .modules
                     .as_ref()
                     .map_err(Clone::clone)
-                    .and_then(|modules| run(modules, &base, surface))
-                    .map(Arc::new);
+                    .and_then(|modules| run(modules, &base, surface, allocator));
+                // Accounting refusals retain the original operation's typed
+                // cause. They are not semantic module failures and never enter
+                // the settings cache.
+                let failure = failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                let outcome = match (failure, outcome) {
+                    (Some(Error::NativeJsonAdmission { kind, .. }), _) => Err(Refusal::Json(kind)),
+                    (Some(Error::NativeJson { .. }), _) => Err(Refusal::InvalidJson),
+                    (Some(error), _) => return Err(error),
+                    (None, Ok((value, form))) => Ok(value.share(form, self.work.as_ref())?),
+                    (None, Err(reason)) => Err(Refusal::module(reason, self.work.as_ref())?),
+                };
                 *cache
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) =
@@ -184,16 +208,17 @@ impl Loaded {
                 outcome
             }
         };
-        let result = outcome
-            .map(|outcome| {
-                let (value, form) = outcome.as_ref().clone();
-                Evaluated {
-                    value,
+        let result = match outcome {
+            Ok(outcome) => {
+                let form = outcome.1;
+                Ok(Evaluated {
+                    value: super::super::ConfigValue::shared(outcome, self.work.clone()),
                     form,
                     digest: self.digest,
-                }
-            })
-            .map_err(|reason| Error::Invalid(format!("{path}: {reason}")));
+                })
+            }
+            Err(reason) => Err(reason.error(path, self.work.as_ref())?),
+        };
         Ok(Evaluation {
             identity: key,
             result,

@@ -562,3 +562,37 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         result
     }
 }
+
+impl<P: crate::distributed::AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
+    Generation<crate::StreamAuthorityStore<P>, O>
+{
+    /// Conditions a consuming publication on this original generation still
+    /// being its source's head and the source not being retired. Capturing this
+    /// evidence does not replace a stale pin with a newer generation. The
+    /// consuming commit decides whether its conditions still hold.
+    pub async fn capture_policy_cut<W: crate::facade::FsWork>(
+        &self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<crate::PolicyCut, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            accounting.check()?;
+            if crate::PolicyCut::current().is_some() {
+                return Err(WorkspaceError::AccessDenied);
+            }
+            let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
+            let cut = self
+                .workspace
+                .volume
+                .fs
+                .authority()
+                .generation_cut(self.workspace.authority_id(), self.id, &mut authority)
+                .await;
+            crate::facade::finish_authority_work(authority)?;
+            cut.map_err(|error| WorkspaceError::from(FsError::Authority(error)))
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+}

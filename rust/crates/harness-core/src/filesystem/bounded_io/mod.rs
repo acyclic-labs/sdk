@@ -94,8 +94,14 @@ impl PreparationIo {
         }
     }
 
+    /// Moves all storage retained by a completed scoped preparation to its
+    /// output owner. The scope keeps its custody if cancellation refuses the
+    /// transfer; no storage is charged again or released before the value.
+    pub fn take_all_owned_custody(&self) -> Result<PreparationCustody> {
+        self.take_owned_custody(self.owned_bytes()?)
+    }
     /// Owns one attempt's storage while sharing its original work allowances.
-    pub(in crate::filesystem) fn scoped(&self) -> Result<Self> {
+    pub fn scoped(&self) -> Result<Self> {
         self.check_cancellation()?;
         match self {
             Self::Owned {

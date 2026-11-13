@@ -5,6 +5,13 @@ use crate::runtime::{Target, TargetResolver};
 #[tokio::test]
 async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_recovery()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
+    filesystem_binding_replay(false).await?;
+    filesystem_binding_replay(true).await
+}
+
+async fn filesystem_binding_replay(
+    retained_alias: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use crate::{
         agent::{AgentPath, AgentState, ForkAdopted, WorkspaceEntry},
         conversation::{VolumeClass, VolumeOperation, VolumeOwner},
@@ -221,18 +228,34 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &*journal,
             commit_operation,
             0,
-            commit.clone(),
+            (commit.clone(), None),
             0,
             &mut vec![call_message(&commit)],
             &mut Vec::new(),
         )
         .await?;
     let operation = OperationId::new();
-    let invocation = ToolInvocation {
+    let mut invocation = ToolInvocation {
         operation_id: operation,
         call_id: "status".into(),
         name: "fs".into(),
         arguments: json!({"command":"show HEAD:secret"}),
+    };
+    let pinned = if retained_alias {
+        let capability = base.tool_binding("fs")?.expect("filesystem capability");
+        let mut definition = capability.definition.clone();
+        definition.name = "retained-filesystem".into();
+        assert!(base.tool_binding(&definition.name)?.is_none());
+        let binding = Arc::new(crate::tools::native::alias(
+            definition,
+            capability,
+            invocation.arguments.clone(),
+            None,
+        )?);
+        invocation.name = binding.definition.name.clone();
+        Some(binding)
+    } else {
+        None
     };
     let bound = base
         .clone()
@@ -243,7 +266,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &*journal,
             operation,
             0,
-            invocation.clone(),
+            (invocation.clone(), pinned.clone()),
             0,
             &mut messages,
             &mut Vec::new(),
@@ -276,7 +299,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                invocation.clone(),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
@@ -294,7 +317,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                invocation.clone(),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
@@ -323,7 +346,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                invocation.clone(),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut replay,
                 &mut Vec::new(),
@@ -341,7 +364,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                     &*journal,
                     operation,
                     0,
-                    invocation.clone(),
+                    (invocation.clone(), pinned.clone()),
                     0,
                     &mut replay,
                     &mut Vec::new(),
@@ -403,7 +426,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                invocation.clone(),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
@@ -429,7 +452,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &*journal,
             operation,
             0,
-            invocation.clone(),
+            (invocation.clone(), pinned.clone()),
             0,
             &mut vec![call_message(&invocation)],
             &mut Vec::new(),
@@ -482,7 +505,14 @@ impl TargetResolver for Devices {
 // reply at the device boundary. Changing a roster cannot change that claim.
 #[tokio::test]
 async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<()> {
-    for (name, alias) in [("shell", None), ("shell", Some("user:ana")), ("fs", None)] {
+    for (name, alias, retained_alias) in [
+        ("shell", None, false),
+        ("shell", Some("user:ana"), false),
+        ("fs", None, false),
+        ("shell", None, true),
+        ("shell", Some("user:ana"), true),
+        ("fs", None, true),
+    ] {
         for state in ["online", "offline", "absent"] {
             let absent = state == "absent";
             let scope = RuntimeScope::new(
@@ -574,6 +604,22 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
             if let Some(alias) = alias {
                 invocation.arguments["target"] = alias.into();
             }
+            let pinned = if retained_alias {
+                let capability = executor.tool_binding(name)?.expect("original capability");
+                let mut definition = capability.definition.clone();
+                definition.name = "retained-command".into();
+                assert!(executor.tool_binding(&definition.name)?.is_none());
+                let binding = Arc::new(crate::tools::native::alias(
+                    definition,
+                    capability,
+                    invocation.arguments.clone(),
+                    None,
+                )?);
+                invocation.name = binding.definition.name.clone();
+                Some(binding)
+            } else {
+                None
+            };
             let journal = Journal::default();
             let first = executor
                 .clone()
@@ -584,7 +630,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                     &journal,
                     operation,
                     0,
-                    invocation.clone(),
+                    (invocation.clone(), pinned.clone()),
                     0,
                     &mut messages,
                     &mut Vec::new(),
@@ -629,7 +675,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                     &journal,
                     operation,
                     0,
-                    invocation.clone(),
+                    (invocation.clone(), pinned.clone()),
                     0,
                     &mut messages,
                     &mut Vec::new(),
@@ -647,7 +693,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                         &journal,
                         operation,
                         0,
-                        invocation,
+                        (invocation, pinned),
                         0,
                         &mut messages,
                         &mut Vec::new(),

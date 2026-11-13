@@ -82,6 +82,7 @@ pub(super) async fn local_journal_compaction_preserves_context_settlement_and_re
                     step: 0,
                     projection: context.clone(),
                     steering: None,
+                    configuration: None,
                 },
                 None,
             )?

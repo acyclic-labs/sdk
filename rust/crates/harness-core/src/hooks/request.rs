@@ -8,7 +8,7 @@ use crate::tool::Tool;
 
 /// `subject`'s capability: the tool it executes as, else its own name.
 pub(super) fn capability<'a>(subject: &'a str, tool: Option<&'a Tool>) -> &'a str {
-    tool.map(|tool| tool.executor.capability().unwrap_or(tool))
+    tool.map(|tool| tool.executor.capability().map(Arc::as_ref).unwrap_or(tool))
         .map_or(subject, |tool| tool.definition.name.as_str())
 }
 
@@ -20,7 +20,7 @@ pub(super) fn request(tool: &str, capability: &str, input: &Value) -> Value {
                 "exec",
                 input
                     .get("command")
-                    .and_then(|command| match command {
+                    .and_then(|command| match command.get("argv").unwrap_or(command) {
                         Value::String(command) => Some(command.clone()),
                         // Plain words stay readable to command matchers; JSON quoting
                         // preserves every other literal argument boundary. This
@@ -83,7 +83,13 @@ pub(super) fn normalized(
     registry: &ToolRegistry,
 ) -> Result<Value> {
     let subject = input.subject(event);
-    let tool = registry.get(subject, None, None)?;
+    let tool = match input {
+        HookInput::Tool {
+            binding: Some(tool),
+            ..
+        } => Some(tool),
+        _ => registry.get(subject, None, None)?,
+    };
     let judged = rewritten.or(input.tool_input()).unwrap_or(&Value::Null);
     let canonical = match (tool, input) {
         (Some(tool), HookInput::Tool { invocation, .. }) => match rewritten {
@@ -174,6 +180,7 @@ pub fn check_native_patch_paths(input: &[u8]) {
     };
     let actual = normalized(
         HookInput::Tool {
+            binding: None,
             invocation: &call,
             response: None,
             session_id: None,
@@ -198,11 +205,14 @@ pub fn check_native_patch_paths(input: &[u8]) {
                 actual.get("path").is_none(),
                 "model path competed with patch paths"
             );
-            let guard = Requests::compile(&RequestMatch {
-                action: vec!["edit".into()],
-                path: Some("^private/".into()),
-                command: None,
-            })
+            let guard = Requests::compile(
+                &RequestMatch {
+                    action: vec!["edit".into()],
+                    path: Some("^private/".into()),
+                    command: None,
+                },
+                None,
+            )
             .unwrap();
             assert_eq!(
                 guard.matches(&actual),
@@ -294,6 +304,7 @@ mod tests {
             let patch = format!("{preamble}{operation}*** End Patch\n");
             let call = invocation(&patch);
             let input = HookInput::Tool {
+                binding: None,
                 invocation: &call,
                 response: None,
                 session_id: None,
@@ -323,6 +334,7 @@ mod tests {
         let public = "*** Begin Patch\n*** Update File: public/source\n*** Move to: public/destination\n*** End Patch\n";
         let call = invocation(public);
         let input = HookInput::Tool {
+            binding: None,
             invocation: &call,
             response: None,
             session_id: None,
@@ -437,11 +449,14 @@ mod tests {
         let mut registry = crate::tools::defaults()?;
         crate::tools::native::NativeTools::new(crate::model::NativeToolProfile::Google)?
             .bind(&mut registry)?;
-        let guard = Requests::compile(&RequestMatch {
-            action: vec!["read".into(), "write".into(), "edit".into()],
-            path: Some("^private/".into()),
-            command: None,
-        })?;
+        let guard = Requests::compile(
+            &RequestMatch {
+                action: vec!["read".into(), "write".into(), "edit".into()],
+                path: Some("^private/".into()),
+                command: None,
+            },
+            None,
+        )?;
         for name in ["read_file", "write_file", "replace"] {
             let invocation = crate::tool::ToolInvocation {
                 operation_id: crate::OperationId::from_bytes([7; 16]),
@@ -453,6 +468,7 @@ mod tests {
                 }),
             };
             let input = HookInput::Tool {
+                binding: None,
                 invocation: &invocation,
                 response: None,
                 session_id: None,
@@ -480,9 +496,67 @@ mod tests {
         );
         assert_eq!(request["action"], "exec");
         assert_eq!(request["command"], r#"git push --force "a b" "$(id)""#);
+        let with_input = super::request(
+            "shell",
+            crate::tools::shell::PLATFORM.name,
+            &serde_json::json!({"command": {
+                "argv": ["git", "push", "--force", "a b", "$(id)"],
+                "stdin": "uninterpreted input"
+            }}),
+        );
+        assert_eq!(with_input, request);
         assert_eq!(
             super::request("mcp.docs.search", "mcp.docs.search", &Value::Null)["action"],
             "mcp"
         );
+    }
+
+    #[test]
+    fn pinned_shell_guards_use_the_admitted_implementation_with_native_declarations() -> Result<()>
+    {
+        use crate::model::NativeToolProfile;
+        let guard = Requests::compile(
+            &RequestMatch {
+                action: vec!["exec".into()],
+                command: Some("^git push --force".into()),
+                path: None,
+            },
+            None,
+        )?;
+        for profile in [
+            None,
+            Some(NativeToolProfile::Anthropic),
+            Some(NativeToolProfile::Openai),
+            Some(NativeToolProfile::Google),
+        ] {
+            let mut registry = crate::tools::defaults()?;
+            let original = registry.get("shell", None, None)?.unwrap().clone();
+            if let Some(profile) = profile {
+                crate::tools::native::NativeTools::new(profile)?.bind(&mut registry)?;
+            }
+            let invocation = crate::tool::ToolInvocation {
+                operation_id: crate::OperationId::new(),
+                call_id: "pinned-call".into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": {
+                    "argv": ["git", "push", "--force", "a b"],
+                    "stdin": "input is data"
+                }}),
+            };
+            let normalized = normalized(
+                HookInput::Tool {
+                    binding: Some(&original),
+                    invocation: &invocation,
+                    response: None,
+                    session_id: None,
+                },
+                HookEvent::PreToolUse,
+                None,
+                &registry,
+            )?;
+            assert!(guard.matches(&normalized), "{profile:?}: {normalized}");
+            assert_eq!(normalized["input"], invocation.arguments);
+        }
+        Ok(())
     }
 }

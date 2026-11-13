@@ -68,6 +68,7 @@ pub struct LocalHarnessConfig {
     pub(super) topology: Option<crate::topology::Topology>,
     pub(super) home_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) system_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
+    pub(super) configuration: [Option<crate::layers::PinnedLayer>; 4],
     pub(super) active_directory: String,
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
@@ -126,6 +127,15 @@ impl LocalProject {
 }
 
 impl LocalHarnessConfig {
+    /// Binds original read-only user/org, scope, template and parent sources,
+    /// in that order. The sources must belong to this composition's provider;
+    /// their generation pins survive workspace and child bindings.
+    #[must_use]
+    pub fn configuration_layers(mut self, layers: [Option<crate::layers::PinnedLayer>; 4]) -> Self {
+        self.configuration = layers;
+        self
+    }
+
     /// Initializes a non-secret home file before settings and roles are read.
     /// Files are published atomically through one stable initialization receipt.
     /// Reopening preserves subsequent edits and deletions, regardless of new input bytes.
@@ -263,6 +273,7 @@ impl LocalHarnessConfig {
             topology: None,
             home_files: Default::default(),
             system_files: Default::default(),
+            configuration: Default::default(),
             active_directory: String::new(),
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace),

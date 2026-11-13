@@ -97,6 +97,15 @@ pub enum Error {
         /// Why its persistence could not be confirmed.
         source: StreamError,
     },
+    /// A publication was observed, but its durable cut is unconfirmed.
+    /// Retry the original operation; this envelope is not a refusal.
+    #[error("actor publication durability is unknown: {source}")]
+    PublicationDurabilityUnknown {
+        /// The original accepted publication, including all its joined effects.
+        envelope: Box<acyclic_stream::CommittedEnvelope>,
+        /// Why persistence could not be confirmed.
+        source: StreamError,
+    },
     /// Publication has a terminal outcome, but participant settlement failed.
     #[error("actor participant settlement failed: {source}")]
     Settlement {
@@ -164,7 +173,9 @@ impl Error {
             Self::CompletionFailed(_) => "completion_failed",
             Self::Escrow(_) => "escrow",
             Self::Stream(error) => error.code(),
-            Self::Unknown { .. } | Self::InvocationDurabilityUnknown { .. } => "unknown",
+            Self::Unknown { .. }
+            | Self::InvocationDurabilityUnknown { .. }
+            | Self::PublicationDurabilityUnknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
             Self::Conflict => "conflict",
             Self::PreconditionChanged(_) => "precondition_changed",
@@ -851,7 +862,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             };
             subscriptions.insert(
                 spec.subscription_id().to_owned(),
-                Subscription { path, cursor },
+                Subscription {
+                    path,
+                    cursor,
+                    paused: false,
+                },
             );
         }
         let cut = self.load(&parent).await?;
@@ -895,6 +910,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         && disposition::is_fork_exclusion(&fork.exclude))
             })
         {
+            self.confirm_observed(envelope).await?;
             return Ok(true);
         }
         Err(Error::Invalid("fork recovery has a foreign publication"))
@@ -1120,6 +1136,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             Some((path, sequence)) => Some(self.record(path, *sequence).await?),
             None => None,
         };
+        let envelope = self.confirm_observed(envelope).await?;
         let appends = envelope
             .mutations
             .iter()
@@ -1475,6 +1492,21 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         Ok(prepared)
     }
 
+    /// An observed acceptance certifies no persistence by itself. Retain its
+    /// original outcome when the same durability boundary cannot confirm it.
+    async fn confirm_observed(
+        &self,
+        envelope: acyclic_stream::CommittedEnvelope,
+    ) -> Result<acyclic_stream::CommittedEnvelope, Error> {
+        if let Err(source) = self.confirm_durability().await {
+            return Err(Error::PublicationDurabilityUnknown {
+                envelope: Box::new(envelope),
+                source,
+            });
+        }
+        Ok(envelope)
+    }
+
     /// Writers and observers certify the same provider-owned durable prefix.
     async fn confirm_durability(&self) -> Result<(), StreamError> {
         if self.provider.context().deferred_durability() {
@@ -1802,7 +1834,7 @@ fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {
         .ok_or(Error::Conflict)
 }
 
-/// The pure durable transition: consume exactly the trigger, then apply the
+/// The pure durable transition: consume or suspend exactly the trigger, then apply the
 /// alarm change. Checkpoint, cursor and alarm move together or not at all.
 fn next(
     mut state: State,
@@ -1811,7 +1843,34 @@ fn next(
     trigger: &Trigger,
     transition: &Transition,
 ) -> Result<State, Error> {
-    consume(&mut state, original_alarm, trigger)?;
+    let held = match trigger {
+        Trigger::Record { subscription, .. } | Trigger::KeyedRecord { subscription, .. } => {
+            transition
+                .subscriptions
+                .iter()
+                .rev()
+                .find_map(|change| {
+                    use crate::guest::SubscriptionChange;
+                    match change {
+                        SubscriptionChange::Pause { id } if id == subscription => Some(true),
+                        SubscriptionChange::Resume { id } | SubscriptionChange::Remove { id }
+                            if id == subscription =>
+                        {
+                            Some(false)
+                        }
+                        _ => None,
+                    }
+                })
+                .unwrap_or(false)
+        }
+        Trigger::Alarm { .. } => false,
+    };
+    if held && transition.response.is_some() {
+        return Err(Error::Invalid(
+            "invocation response cannot retain its input",
+        ));
+    }
+    consume(&mut state, original_alarm, trigger, !held)?;
     change_alarm(&mut state.alarm, transition.alarm)?;
     subscribe(&mut state.subscriptions, own, &transition.subscriptions)?;
     state.checkpoint = Some(transition.checkpoint.clone());
@@ -1845,6 +1904,7 @@ fn subscribe(
                             id.clone(),
                             Subscription {
                                 path: path.clone(),
+                                paused: false,
                                 cursor,
                             },
                         );
@@ -1854,12 +1914,23 @@ fn subscribe(
             SubscriptionChange::Remove { id } => {
                 subscriptions.remove(id);
             }
+            SubscriptionChange::Pause { id } | SubscriptionChange::Resume { id } => {
+                let bound = subscriptions
+                    .get_mut(id)
+                    .ok_or(Error::Invalid("undeclared subscription"))?;
+                bound.paused = matches!(change, SubscriptionChange::Pause { .. });
+            }
         }
     }
     Ok(())
 }
 
-fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Result<(), Error> {
+fn consume(
+    state: &mut State,
+    original_alarm: &Alarm,
+    trigger: &Trigger,
+    advance: bool,
+) -> Result<(), Error> {
     if state.paused {
         return Err(Error::Paused);
     }
@@ -1873,11 +1944,14 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
             sequence,
             ..
         } => {
-            let cursor = &mut state
+            let bound = state
                 .subscriptions
                 .get_mut(subscription)
-                .ok_or(Error::Invalid("undeclared subscription"))?
-                .cursor;
+                .ok_or(Error::Invalid("undeclared subscription"))?;
+            if bound.paused {
+                return Err(Error::Paused);
+            }
+            let cursor = &mut bound.cursor;
             let from = match trigger {
                 Trigger::KeyedRecord { from, .. } => *from,
                 _ => *sequence,
@@ -1885,9 +1959,11 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
             if *cursor != from || *sequence < from {
                 return Err(Error::Conflict);
             }
-            *cursor = sequence
-                .checked_add(1)
-                .ok_or(Error::Invalid("subscription cursor overflow"))?;
+            if advance {
+                *cursor = sequence
+                    .checked_add(1)
+                    .ok_or(Error::Invalid("subscription cursor overflow"))?;
+            }
             state.consumed = None;
         }
         Trigger::Alarm {

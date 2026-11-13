@@ -31,7 +31,12 @@ impl ToolRegistry {
             ));
         }
         let data = Arc::make_mut(&mut self.data);
-        self.sources.extend(other.sources);
+        if let Some(other) = other.sources {
+            match &mut self.sources {
+                Some(sources) => Arc::make_mut(sources).extend(Arc::unwrap_or_clone(other)),
+                None => self.sources = Some(other),
+            }
+        }
         let other = Arc::unwrap_or_clone(other.data);
         data.versions.extend(other.versions);
         data.selected.extend(other.selected);

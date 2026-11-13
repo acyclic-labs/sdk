@@ -1,11 +1,99 @@
 use super::*;
 
 impl StockExecutor {
+    /// Retains a selected executable revision from this executor's admitted
+    /// catalog. This observation grants no execution authority; derived file
+    /// programs still use ordinary canonical admission and the original scope.
+    pub fn tool_binding(&self, name: &str) -> Result<Option<Arc<crate::tool::Tool>>> {
+        Ok(self.tools.get_shared(name, None, None)?.map(Arc::clone))
+    }
+    /// Retains only the complete model/tool selection for a later step. This
+    /// cannot replace the running turn's context, authority or journal.
+    /// Shared storage uses the supplied original preparation owner.
+    pub fn into_step_binding(self, io: Option<&PreparationIo>) -> Result<Arc<StepBinding>> {
+        let attempt = io.map(PreparationIo::scoped).transpose()?;
+        self.into_step_binding_scoped(attempt.as_ref(), None)
+    }
+
+    fn into_step_binding_scoped(
+        self,
+        storage: Option<&PreparationIo>,
+        effort: Option<crate::config::Effort>,
+    ) -> Result<Arc<StepBinding>> {
+        let bytes = acyclic_fs::shared_allocation_bytes::<StepBinding>().map_err(|_| {
+            stock_boundary(
+                storage,
+                crate::wire::ErrorCode::Invalid,
+                "step binding storage overflows",
+            )
+        })?;
+        crate::executor::with_history_io(storage, |work| -> Result<()> {
+            if let Some(work) = work.as_deref_mut() {
+                work.retain_owned(bytes)?;
+                work.allocation_attempt(bytes)?;
+            }
+            Ok(())
+        })?;
+        let custody = storage
+            .map(PreparationIo::take_all_owned_custody)
+            .transpose()?;
+        Ok(Arc::new(StepBinding {
+            model: self.model,
+            sampling: self.sampling,
+            effort,
+            resolved_sampling: self.resolved_sampling,
+            provider: self.provider,
+            tools: self.tools,
+            #[cfg(not(target_arch = "wasm32"))]
+            hooks: self.hooks,
+            #[cfg(not(target_arch = "wasm32"))]
+            host_hooks: self.host_hooks,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_set: self.plugin_set,
+            #[cfg(not(target_arch = "wasm32"))]
+            prompt_block: self.prompt_block,
+            _custody: custody,
+        }))
+    }
+
+    /// Captures the canonical configuration once before native presentation.
+    /// Later selections borrow the same revisions and hooks; the running turn
+    /// keeps its original context, authority and journal.
+    pub fn step_template(&self) -> StepBinding {
+        StepBinding {
+            model: self.model.clone(),
+            sampling: self.sampling,
+            effort: None,
+            resolved_sampling: once_cell::sync::OnceCell::new(),
+            provider: Arc::clone(&self.provider),
+            tools: self.tools.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            hooks: self.hooks.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            host_hooks: self.host_hooks.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_set: self.plugin_set.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            prompt_block: self.prompt_block.clone(),
+            _custody: None,
+        }
+    }
+    /// Applies a host-admitted complete configuration before each model step.
+    /// The source pins its original file selection in this execution's journal;
+    /// model and tool dispatch continue through the same stock engine.
+    #[must_use]
+    pub fn with_step_configuration(mut self, source: Arc<dyn StepConfiguration>) -> Self {
+        self.step_configuration = Some(source);
+        self
+    }
+
     /// Install admitted plugin descriptions and pure after-hooks. Descriptions
     /// are a stable prefix; settlement notices append to the journaled turn.
+    /// Turn and step snapshots share the original admitted owner; executable
+    /// hooks and their allocation custody are never copied into a snapshot.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_plugins(mut self, plugins: &crate::plugins::Enabled) -> Result<Self> {
-        self.after_hooks = plugins.after.clone();
+    pub fn with_plugins(mut self, plugins: Arc<crate::plugins::Enabled>) -> Result<Self> {
+        self.plugin_set = Some(Arc::clone(&plugins));
         if plugins.descriptions.is_empty() {
             return Ok(self);
         }
@@ -25,6 +113,13 @@ impl StockExecutor {
         )))
     }
 
+    /// Adds an original host-owned tool source. Context declarations remain
+    /// pinned; lazy file programs load only when code selects their names.
+    #[must_use]
+    pub fn with_tool_source(mut self, source: Arc<dyn crate::tool::ToolSource>) -> Self {
+        self.tools = self.tools.with_source(source);
+        self
+    }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
         self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
@@ -39,9 +134,27 @@ impl StockExecutor {
         context: ContextPipeline,
         tools: ToolRegistry,
     ) -> Self {
+        Self::from_binding(
+            Arc::new(crate::model::ResolvedModel::new((model, provider))),
+            context,
+            tools,
+        )
+    }
+
+    /// Retains a protected catalog's immutable model/provider pair. Model
+    /// metadata is borrowed until request preparation copies it on the
+    /// execution's original allowance.
+    #[must_use]
+    pub fn from_binding(
+        binding: Arc<crate::model::ResolvedModel>,
+        context: ContextPipeline,
+        tools: ToolRegistry,
+    ) -> Self {
+        let provider = Arc::clone(&binding.1);
         Self {
+            step_configuration: None,
             intervention: None,
-            model,
+            model: ExecutorModel(binding),
             sampling: Default::default(),
             resolved_sampling: once_cell::sync::OnceCell::new(),
             provider,
@@ -51,7 +164,9 @@ impl StockExecutor {
             #[cfg(not(target_arch = "wasm32"))]
             hooks: None,
             #[cfg(not(target_arch = "wasm32"))]
-            after_hooks: Vec::new(),
+            host_hooks: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugin_set: None,
             #[cfg(not(target_arch = "wasm32"))]
             prompt_block: None,
             limits: Limits::default(),
@@ -63,6 +178,17 @@ impl StockExecutor {
             compaction: None,
             reconciliation_only: false,
         }
+    }
+
+    pub(crate) fn bind_content(
+        mut self,
+        reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        maximum: Option<u64>,
+    ) -> Self {
+        if let Some(provider) = self.provider.bind_content(reader, maximum) {
+            self.provider = provider;
+        }
+        self
     }
 
     /// Injects one instruction or replaces the first response step. The ordinary
@@ -257,6 +383,8 @@ impl StockExecutor {
     }
 
     /// Carries the original admitted context into one bound stock execution.
+    /// Checks task authority here; model-summary resources are admitted at
+    /// model entry, independently of host-selected tool execution.
     pub fn with_task_context(
         mut self,
         context: &crate::runtime::TaskContext,
@@ -273,7 +401,7 @@ impl StockExecutor {
             self.provider = provider;
         }
         self.task_context = Some((Arc::new(context), execution_operation));
-        StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
+        StockExecution::ordinary(&self).verify_task_authority_binding(execution_operation)?;
         Ok(self)
     }
 }
@@ -335,5 +463,61 @@ mod tests {
             prop_assert_eq!(executor.tools.definitions(None)?, before);
             prop_assert!(stock_tool_definitions(&executor.tools, &executor.tool_scope, None)?.is_empty());
         }
+    }
+}
+
+impl StepBinding {
+    /// Original protected selection retained by this turn's canonical template.
+    pub fn model_binding(&self) -> &Arc<crate::model::ResolvedModel> {
+        &self.model.0
+    }
+
+    /// Binds a complete admitted step through the same canonical composition.
+    /// Imported host rules retain their original order and authority ahead of
+    /// selected plugin rules. Prompt events and prefix remain with the turn.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bind_configuration(
+        &self,
+        (model, sampling, effort): (
+            Arc<crate::model::ResolvedModel>,
+            Option<crate::model::ModelSampling>,
+            Option<crate::config::Effort>,
+        ),
+        plugins: Arc<crate::plugins::Enabled>,
+        reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        maximum_bytes: Option<u64>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Arc<StepBinding>> {
+        let attempt = io.map(PreparationIo::scoped).transpose()?;
+        let temporary = attempt.as_ref();
+        let native = model.native_tools()?;
+        let mut executor =
+            StockExecutor::from_binding(model, ContextPipeline::default(), self.tools.clone())
+                .bind_content(reader, maximum_bytes);
+        if let Some(sampling) = sampling {
+            executor = executor.with_sampling(sampling)?;
+        }
+        {
+            let empty = crate::hooks::Hooks::default();
+            let host = self.host_hooks.as_deref().unwrap_or(&empty);
+            if host.has_execution_hooks() || plugins.rules.has_execution_hooks() {
+                executor = executor.with_hooks(Some(crate::hooks::bind_rules(
+                    host,
+                    &plugins.rules,
+                    temporary,
+                )?));
+            }
+            executor.host_hooks = self.host_hooks.clone();
+            executor.plugin_set = Some(plugins);
+            executor.prompt_block = self
+                .prompt_block
+                .as_ref()
+                .map(|reason| stock_string_copy(reason, temporary))
+                .transpose()?;
+        }
+        if let Some(native) = native {
+            executor = executor.with_native_tools(&native)?;
+        }
+        executor.into_step_binding_scoped(temporary, effort)
     }
 }

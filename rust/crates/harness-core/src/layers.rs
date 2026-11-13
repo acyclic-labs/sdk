@@ -22,9 +22,9 @@ pub const PARENT: &str = "parent";
 pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
 
 mod manifest;
-pub use manifest::Manifest;
 #[cfg(not(target_arch = "wasm32"))]
 pub use manifest::ManifestTree;
+pub use manifest::{HomeApply, Manifest};
 
 /// Tool path of the agent's home volume.
 pub const HOME_PATH: &str = "volume:///home/";
@@ -35,6 +35,23 @@ pub const OUTPUT_PATH: &str = "volume:///output/";
 pub const PRIVATE_PATH: &str = "volume:///private/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = "volume:///seed/";
+/// Read-only configuration supplied by the user or organization.
+pub const USER_ORG_PATH: &str = "volume:///user-org/";
+/// Read-only configuration supplied by the scope.
+pub const SCOPE_PATH: &str = "volume:///scope/";
+/// Read-only configuration supplied by the selected template.
+pub const TEMPLATE_PATH: &str = "volume:///template/";
+/// Read-only configuration supplied by the parent.
+pub const PARENT_PATH: &str = "volume:///parent/";
+/// Concrete paths in effective-file precedence order.
+pub(crate) const PRECEDENCE_PATHS: [&str; 6] = [
+    HOME_PATH,
+    PARENT_PATH,
+    TEMPLATE_PATH,
+    SCOPE_PATH,
+    USER_ORG_PATH,
+    SEED_PATH,
+];
 /// Tool path of host-published system files.
 pub const SYSTEM_PATH: &str = "volume:///system/";
 /// Tool path of the effective view over the complete layer stack, read-only.
@@ -103,6 +120,9 @@ pub fn seed_skill(path: &str) -> Option<&'static [u8]> {
 pub fn read_only(path: &str) -> bool {
     path.starts_with(EFFECTIVE_PATH)
         || path.starts_with(SEED_PATH)
+        || [USER_ORG_PATH, SCOPE_PATH, TEMPLATE_PATH, PARENT_PATH]
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
         || path.starts_with(SYSTEM_PATH)
         || path.starts_with(OUTPUT_PATH)
 }
@@ -110,7 +130,7 @@ pub fn read_only(path: &str) -> bool {
 /// A host-published read-only layer, shared by every agent in a composition.
 /// The generation is part of the binding, so a later host publication cannot
 /// change what an already-open composition reads.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, crate::HeapLayout)]
 pub struct PinnedLayer {
     /// The volume on the composition's original content reader.
     pub volume: crate::conversation::VolumeRef,
@@ -119,7 +139,8 @@ pub struct PinnedLayer {
 }
 
 impl PinnedLayer {
-    pub(crate) fn validate(&self) -> crate::Result<()> {
+    /// Checks the original volume and generation provider binding.
+    pub fn validate(&self) -> crate::Result<()> {
         self.volume.validate(&mut None)?;
         self.generation.validate(&mut None)?;
         if self.volume.provider() != self.generation.as_resource().provider() {

@@ -109,6 +109,8 @@ struct SubscriptionWire {
     path: String,
     #[prost(uint64, tag = "3")]
     cursor: u64,
+    #[prost(bool, tag = "4")]
+    paused: bool,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -208,7 +210,7 @@ struct TransitionWire {
 struct SubscriptionChangeWire {
     #[prost(string, tag = "1")]
     id: String,
-    #[prost(oneof = "ChangeWire", tags = "2, 3")]
+    #[prost(oneof = "ChangeWire", tags = "2, 3, 4, 5")]
     change: Option<ChangeWire>,
 }
 
@@ -218,6 +220,10 @@ enum ChangeWire {
     Add(AddWire),
     #[prost(bool, tag = "3")]
     Remove(bool),
+    #[prost(bool, tag = "4")]
+    Pause(bool),
+    #[prost(bool, tag = "5")]
+    Resume(bool),
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -241,6 +247,14 @@ fn subscription_change_wire(change: &SubscriptionChange) -> SubscriptionChangeWi
             id: id.clone(),
             change: Some(ChangeWire::Remove(true)),
         },
+        SubscriptionChange::Pause { id } => SubscriptionChangeWire {
+            id: id.clone(),
+            change: Some(ChangeWire::Pause(true)),
+        },
+        SubscriptionChange::Resume { id } => SubscriptionChangeWire {
+            id: id.clone(),
+            change: Some(ChangeWire::Resume(true)),
+        },
     }
 }
 
@@ -255,7 +269,10 @@ fn subscription_change(wire: SubscriptionChangeWire) -> Result<SubscriptionChang
             from: add.from,
         }),
         Some(ChangeWire::Remove(true)) => Ok(SubscriptionChange::Remove { id: wire.id }),
-        Some(ChangeWire::Remove(false)) | None => Err(invalid("subscription change")),
+        Some(ChangeWire::Pause(true)) => Ok(SubscriptionChange::Pause { id: wire.id }),
+        Some(ChangeWire::Resume(true)) => Ok(SubscriptionChange::Resume { id: wire.id }),
+        Some(ChangeWire::Remove(false) | ChangeWire::Pause(false) | ChangeWire::Resume(false))
+        | None => Err(invalid("subscription change")),
     }
 }
 
@@ -458,6 +475,7 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
                     id: id.clone(),
                     path: cut.path.as_str().into(),
                     cursor: cut.cursor,
+                    paused: cut.paused,
                 })
                 .collect(),
         },
@@ -483,6 +501,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
                 cut.id,
                 Subscription {
                     path: StreamPath::new(cut.path).map_err(|_| invalid("subscription path"))?,
+                    paused: cut.paused,
                     cursor: cut.cursor,
                 },
             ))
@@ -727,6 +746,8 @@ mod tests {
                     from: Some(4),
                 },
                 SubscriptionChange::Remove { id: "old".into() },
+                SubscriptionChange::Pause { id: "watch".into() },
+                SubscriptionChange::Resume { id: "watch".into() },
             ],
         })
     }
@@ -854,6 +875,7 @@ mod tests {
                         "empty".into(),
                         Subscription {
                             path: StreamPath::new("inputs/empty")?,
+                            paused: true,
                             cursor: 0,
                         },
                     ),
@@ -861,6 +883,7 @@ mod tests {
                         "inbox".into(),
                         Subscription {
                             path: StreamPath::new("inputs/inbox")?,
+                            paused: false,
                             cursor: 42,
                         },
                     ),
@@ -920,6 +943,7 @@ mod tests {
                     "inbox".into(),
                     Subscription {
                         path: StreamPath::new("agents/a/inbox")?,
+                        paused: false,
                         cursor: u64::MAX,
                     },
                 )]
@@ -971,6 +995,7 @@ mod tests {
                         "a".into(),
                         Subscription {
                             path: StreamPath::new("inputs/a")?,
+                            paused: false,
                             cursor: 0,
                         },
                     ),
@@ -978,6 +1003,7 @@ mod tests {
                         "b".into(),
                         Subscription {
                             path: StreamPath::new("inputs/b")?,
+                            paused: false,
                             cursor: 42,
                         },
                     ),

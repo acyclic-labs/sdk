@@ -177,6 +177,7 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
         INBOX.into(),
         Subscription {
             path: path.inbox()?,
+            paused: false,
             cursor: 3,
         },
     )]);

@@ -91,7 +91,7 @@ impl StockExecution<'_> {
                 .tool_hook_output(
                     input.operation_id,
                     crate::hooks::HookSite::BeforeTool,
-                    &invocation,
+                    (&invocation, None),
                     None,
                     true,
                 )
@@ -157,7 +157,7 @@ impl StockExecution<'_> {
                 }
             };
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(tool) = self.stock.tools.get(&invocation.name, None, self.io)?
+            if let Some(tool) = self.selected_tools().get(&invocation.name, None, self.io)?
                 && tool.executor.is_code_mode()
                 && let RecordedCall::Completed { result, .. } = call
             {
@@ -171,7 +171,7 @@ impl StockExecution<'_> {
                 self.tool_hook(
                     input.operation_id,
                     crate::hooks::HookSite::AfterTool,
-                    &invocation,
+                    (&invocation, None),
                     None,
                     true,
                 )

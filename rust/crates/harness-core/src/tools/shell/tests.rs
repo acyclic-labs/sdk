@@ -67,6 +67,14 @@ fn shell_refusals_name_the_field_and_accept_its_correction() -> Result<()> {
         ShellCommand::Argv(Vec::new()),
         ShellCommand::Argv(vec![String::new()]),
         ShellCommand::Argv(vec!["echo".into(), "a\0b".into()]),
+        ShellCommand::Input {
+            argv: Vec::new(),
+            stdin: "data".into(),
+        },
+        ShellCommand::Input {
+            argv: vec!["echo".into(), "a\0b".into()],
+            stdin: "data".into(),
+        },
     ] {
         input.command = command.clone();
         let error = input.validate().unwrap_err().to_string();

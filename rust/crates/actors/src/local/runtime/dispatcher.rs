@@ -56,6 +56,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             name.into(),
                             Subscription {
                                 path: self.store.scheduling_path(shard)?,
+                                paused: false,
                                 cursor: 0,
                             },
                         ))

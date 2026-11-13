@@ -475,7 +475,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             (a, b) => a.or(b),
         };
         let effect = hard_effect(&mut commit.request, work)?;
-        effect.conditions.append(&mut part.effects[0].conditions);
+        for condition in part.effects[0].conditions.drain(..) {
+            super::policy::merge_condition(&mut effect.conditions, condition, work)?;
+        }
         effect.mutations.append(&mut part.effects[0].mutations);
         commit.authorities.push(append.authority_id);
         commit.contributions.push(Contribution {
@@ -589,8 +591,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     /// when it applies: its lineage holds exactly the records up to and
     /// including `generation`. A source that published past `generation`
     /// between the caller's read and the commit makes the whole commit fail,
-    /// with nothing published. Requiring the same head twice adds one
-    /// condition; requiring two different heads of one source is refused.
+    /// with nothing published. Retirement also refuses the consuming commit,
+    /// even when no new generation was published. Repeating a head adds no
+    /// duplicate conditions; requiring two different heads of one source is refused.
     pub(crate) async fn contribute_head(
         &self,
         commit: &mut FilesystemCommit,
@@ -611,7 +614,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let (path, located) = self
             .resolve_source_fork_point(authority, generation, work)
             .await?;
-        let grown = prepare_growth(&hard_effect(&mut commit.request, work)?.conditions, 1, work)?;
+        let retirement = work.path(&self.placement, authority, "/retirement", None)?;
+        let grown = prepare_growth(&hard_effect(&mut commit.request, work)?.conditions, 2, work)?;
         // Install new backing only after its original credit belongs to the
         // retained commit, including a later merge refusal or cancellation.
         commit.retain_request_custody(work)?;
@@ -623,6 +627,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 path,
                 expected: located.lineage,
             },
+            work,
+        )?;
+        super::policy::merge_condition(
+            &mut effect.conditions,
+            CommitCondition::Absent { path: retirement },
             work,
         )?;
         commit.bind_owner(owner);

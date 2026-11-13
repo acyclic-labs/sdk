@@ -29,7 +29,7 @@ where
         operation: OperationId,
         key: &str,
         io: Option<&PreparationIo>,
-    ) -> Result<FileRef> {
+    ) -> Result<Option<FileRef>> {
         let (_identity_hold, key, path) = {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let (key, path) = self.stage_identity_with_io(operation, key, io)?;
@@ -47,7 +47,7 @@ where
                 work,
             )
         })?;
-        let (file, bytes) = self
+        let Some((file, bytes)) = self
             .host
             .content_for_operation_record_io(
                 super::super::PublicationLookup {
@@ -63,19 +63,15 @@ where
                 io,
             )
             .await?
-            .ok_or_else(|| {
-                canonical_boundary(
-                    io,
-                    crate::wire::ErrorCode::NotFound,
-                    "original staged payload was not published",
-                )
-            })?;
+        else {
+            return Ok(None);
+        };
         if let Some(bytes) = bytes {
             let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             drop(bytes);
             drop(hold);
         }
-        Ok(file)
+        Ok(Some(file))
     }
 
     pub(super) fn stage_identity_with_io(

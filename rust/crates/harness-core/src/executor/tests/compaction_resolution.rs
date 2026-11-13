@@ -90,7 +90,7 @@ async fn compaction_policy_matrix_resolves_through_the_task_writer() -> Result<(
                     continue;
                 }
                 let resolved = execution.compaction()?;
-                assert_eq!(resolved.policy, expected, "{case}");
+                assert_eq!(&resolved.policy, expected, "{case}");
                 assert_eq!(
                     resolved
                         .destination

@@ -27,7 +27,7 @@ pub use recorded_invocation::RecordedInvocation;
 pub(crate) use recorded_invocation::validate_model_call_recorded;
 mod executor;
 pub use executor::{
-    Dispatch, PreparationTimeout, ReadPathKind, ToolExecutor, ToolPreparation,
+    CanonicalBinding, Dispatch, PreparationTimeout, ReadPathKind, ToolExecutor, ToolPreparation,
     ToolPreparationFuture,
 };
 mod projection;

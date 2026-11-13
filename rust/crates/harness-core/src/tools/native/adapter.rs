@@ -18,6 +18,7 @@ pub(super) struct Adapter {
     pub(super) capability: Arc<Tool>,
     /// The canonical tool that runs it: the capability's own, or a variant.
     pub(super) original: Arc<Tool>,
+    pub(super) _custody: acyclic_fs::NativeCustody,
 }
 
 impl Adapter {
@@ -78,8 +79,14 @@ impl ToolExecutor for Adapter {
             .record_kind(&adapted.invocation, result, work)
     }
 
-    fn capability(&self) -> Option<&Tool> {
-        Some(&self.capability)
+    fn canonical_binding(&self) -> Option<crate::tool::CanonicalBinding<'_>> {
+        let (arguments, refused) = self.arguments.binding();
+        Some(crate::tool::CanonicalBinding {
+            capability: &self.capability,
+            implementation: &self.original,
+            arguments,
+            refused,
+        })
     }
 
     fn canonical(

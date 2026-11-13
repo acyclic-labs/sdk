@@ -48,6 +48,7 @@ pub(super) async fn run(
     maximum: usize,
     allocator: super::allocator::EngineAllocator,
     interrupt_budget: u64,
+    lazy: bool,
 ) -> Result<super::allocator::EngineResult, String> {
     // Parse JavaScript inside the same original-caller-funded engine as execution.
     let bridge = allocator.clone();
@@ -135,7 +136,7 @@ pub(super) async fn run(
                 std::str::from_utf8(&definitions).map_err(|_| rquickjs::Error::Unknown)?,
             )?;
             let setup: Function = ctx.eval(include_str!("bridge.js"))?;
-            let bridge: rquickjs::Object = setup.call((rpc, definitions))?;
+            let bridge: rquickjs::Object = setup.call((rpc, definitions, lazy))?;
             let drain: Function = bridge.get("drain")?;
             let protect: Function = bridge.get("protect")?;
             Module::declare(ctx.clone(), "acyclic", include_str!("acyclic.mjs"))?;
@@ -412,6 +413,7 @@ mod tests {
                 4096,
                 super::super::allocator::EngineAllocator::new(None),
                 super::INTERRUPT_BUDGET,
+                false,
             )),
             async move {
                 let mut count = 0;
@@ -637,23 +639,53 @@ mod tests {
             ),
             ("42", Ok(serde_json::Value::Null)),
             (
+                "export default (await tools) === tools",
+                Ok(serde_json::json!(true)),
+            ),
+            (
+                "export default (await Promise.resolve(tools)) === tools",
+                Ok(serde_json::json!(true)),
+            ),
+            ("export default tools", Ok(serde_json::json!({}))),
+            (
                 "export default Promise.reject(new Error('failed'))",
                 Err("Error: failed".into()),
             ),
         ] {
-            let (send, _receive) = tokio::sync::mpsc::channel(1);
-            let result = acyclic_native_runtime::blocking_future(super::run(
-                code.into(),
-                acyclic_stream::OwnedBytes::from_static(b"[]"),
-                send,
-                tokio_util::sync::CancellationToken::new(),
-                4096,
-                super::super::allocator::EngineAllocator::new(None),
-                super::INTERRUPT_BUDGET,
-            ))
-            .await
-            .unwrap();
-            assert_eq!(result.map(|result| result.value), expected);
+            for lazy in [false, true] {
+                let (send, mut receive) = tokio::sync::mpsc::channel(1);
+                let dispatch = async {
+                    let mut calls = 0;
+                    while let Some(request) = receive.recv().await {
+                        let super::Request::Tool(call) = request else {
+                            panic!("unexpected log");
+                        };
+                        calls += 1;
+                        let _ = call
+                            .reply
+                            .send(Some(acyclic_stream::OwnedBytes::from_static(
+                                br#"{"ok":true,"value":null}"#,
+                            )));
+                    }
+                    calls
+                };
+                let execution = acyclic_native_runtime::blocking_future(super::run(
+                    code.into(),
+                    acyclic_stream::OwnedBytes::from_static(b"[]"),
+                    send,
+                    tokio_util::sync::CancellationToken::new(),
+                    4096,
+                    super::super::allocator::EngineAllocator::new(None),
+                    super::INTERRUPT_BUDGET,
+                    lazy,
+                ));
+                let (result, calls) = tokio::join!(execution, dispatch);
+                assert_eq!(
+                    calls, 0,
+                    "language protocol probes must not call host tools"
+                );
+                assert_eq!(result.unwrap().map(|result| result.value), expected);
+            }
         }
     }
 
@@ -674,6 +706,7 @@ mod tests {
                 4096,
                 super::super::allocator::EngineAllocator::new(None),
                 super::INTERRUPT_BUDGET,
+                false,
             )
             .now_or_never()
             .expect("no producer remains to wake this program");
@@ -713,6 +746,7 @@ mod tests {
                         4096,
                         super::super::allocator::EngineAllocator::new(None),
                         super::INTERRUPT_BUDGET,
+                        false,
                     )),
                     async move {
                         if let Some(mut receive) = receive {
@@ -744,6 +778,7 @@ mod tests {
             4096,
             super::super::allocator::EngineAllocator::new(None),
             16,
+            false,
         ))
         .await
         .unwrap();

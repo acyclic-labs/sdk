@@ -91,10 +91,12 @@ impl ExecutionEvent {
                 step,
                 projection,
                 steering,
+                configuration,
             } => ContextPrepared {
                 step: *step,
                 projection: file(projection)?,
                 steering: *steering,
+                configuration: *configuration,
             },
             ContextCompacted {
                 step,

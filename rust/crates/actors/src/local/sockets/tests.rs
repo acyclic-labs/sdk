@@ -1038,6 +1038,7 @@ async fn close_fixture<P: StreamProvider + ?Sized + 'static>(
                     "inbox".into(),
                     super::super::Subscription {
                         path: inbox.clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

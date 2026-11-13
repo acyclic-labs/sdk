@@ -58,6 +58,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
                     "inbox".into(),
                     Subscription {
                         path: input,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),
@@ -287,6 +288,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
                     "inbox".into(),
                     Subscription {
                         path: input,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

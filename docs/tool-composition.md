@@ -69,14 +69,122 @@ const files = await tools.read({ path: "README.md" });
 export default files
 ```
 
-Each currently granted model tool is an async function in the frozen `tools`
+Each currently granted catalog tool is an async function in the frozen `tools`
 object, indexed by its exact name. Its `input_schema` is the original JSON schema.
+When the host binds a file-program source, other names resolve lazily as described
+below; they do not carry an eager `input_schema` property.
 Calls use ordinary stock settlement, including schema validation, authority,
 approval, hooks, receipts and reconciliation. Refusals throw
 `Error("tool execution failed: <reason>")`. Approvals suspend the parent turn;
 resumption reruns deterministic JavaScript against the same inner call receipts.
 Programs should derive call order and arguments only from their code and tool
 results. Ambient time and randomness are absent.
+
+### Hook effect ownership and recovery
+
+`plugins::load_program(tree, "hooks/<name>")` selects a versioned hook manifest
+and its entries from the caller's immutable tree. `LoadedProgram::bind_hook`
+returns one owning `BoundHook`: its borrowed `on()` selector and `binding()`
+tool belong to that same selection. The host submits this ordinary tool through
+canonical shell admission, including source-independent execution permissions,
+approval and reconciliation. Loading or binding grants no source-read authority.
+The selector retains its original native allocation credit separately from the
+executable, including if binding fails. Raw scripts and declarations cannot be
+moved out of a loaded program independently of their owner; `definition()`
+borrows the declaration. This binding API does not register a subscription.
+
+`hooks::effects::run_once` requires the task's original execution journal.
+Before observing a durable start or outcome, it acquires child-effect ownership
+through that journal's existing filesystem operation registry. Another live
+attempt at the same effect returns a conflict. A later execution of the same
+agent shares this exclusion; changing the enclosing turn does not create a new
+effect identity. The journal authenticates its original execution independently
+of the hook's event identity, including session-start events shared by turns.
+
+The owner publishes the start marker before running a command, and retains its
+claim until the outcome is published. Reopening a completed effect returns its
+original outcome. Reopening an unfinished start records the hook's interrupted
+outcome and does not run the command again. An arbitrary external process effect
+cannot be atomically committed with a journal outcome: interruption may leave
+its external result unknown. The interrupted outcome preserves that uncertainty
+rather than repeating the effect or claiming successful execution. A missing
+original journal grants no execution ownership.
+
+### File-authored tools
+
+An agent authors a tool in its home volume, at
+`volume:///home/tools/<name>/program.ts`. The directory name must be one valid
+component label. The module's default export is plain data with this versioned
+shape; unknown fields are rejected:
+
+```typescript
+export default {
+  version: 1,
+  name: 'echo',
+  description: 'Return the supplied JSON',
+  inputSchema: {
+    type: 'object',
+    properties: {text: {type: 'string'}},
+    required: ['text'],
+    additionalProperties: false,
+  },
+  entry: {sh: 'main.sh', ps1: 'main.ps1'},
+};
+```
+
+Each entry is a relative, normalized path inside that program directory, ending
+in the corresponding extension. Entries contain UTF-8 source. Supply `sh` for
+POSIX targets and `ps1` for Windows; a missing native form refuses the call.
+The PowerShell executable comes from the shared native shell selector. Static
+manifest imports use the existing pure settings evaluator, with no I/O, clock,
+randomness or tool access during evaluation.
+
+Discover names with the ordinary paged directory query, for example
+`for await (const entry of list('volume:///home/tools'))`. Read a selected
+manifest to discover its schema, then call `await tools.echo({text: 'hello'})`
+inside `code`. Listing names does not evaluate manifests, load descriptions or
+schemas, or scan sibling programs. Fixed catalog tools take precedence over an
+authored tool with the same name. Authored tools add no native model declarations
+and do not rewrite the context epoch's cached prefix.
+JavaScript's implicit `then` and `toJSON` property probes do not resolve lazy
+programs. These properties require an explicit catalog declaration; awaiting or
+serializing the namespace otherwise performs no host call.
+
+One invocation reads the selected manifest, its static imports and every declared
+entry from one immutable home generation. Its revision covers those observations,
+including both native forms. Creating or editing a program therefore affects a
+later fresh call; it cannot replace an already selected call. Children discover
+programs through their own existing home-volume fork, so later parent edits do
+not change a child's inherited cut. No program catalog is copied into a child.
+
+Module reads share the selecting call's original preparation ledger, including
+imports. Evaluator cache entries retain their original allocation ownership;
+receiving callers fund result copies even on a cache hit. An allocation refusal
+keeps its typed operational cause and cannot become a cached semantic failure.
+The selected manifest and native script retain their allocation credit through
+binding and dispatch by the ordinary tool adapter.
+
+The script receives the validated arguments as UTF-8 JSON on stdin. The source
+and executable argv remain separate from this data; quotes, shell syntax and NUL
+characters inside JSON string values do not become executable source. The result
+is the ordinary shell result, including its exit code and captured output. For
+example, `main.sh` may contain `cat`, and `main.ps1` may contain
+`[Console]::Out.Write([Console]::In.ReadToEnd())`.
+
+Writing a program grants no execution authority. Calling it requires the host's
+canonical `shell` capability and any configured tool ceiling, as well as the
+ordinary schema, target, scope and approval checks. The shell retains its
+confinement, output capture, hooks and settlement contracts; the authored name
+does not bypass a shell-policy denial. A malformed selected manifest or invalid
+input refuses that call without evaluating an unrelated sibling.
+
+Before dispatch, the private once-publication retains the canonical invocation
+and its original revision separately. Authorization receives the canonical
+identity `shell`, including when the model uses a native declaration profile.
+Reopening the executor reuses this selection without rereading program files.
+Changing a call's authored name or arguments while reusing its operation identity
+is a conflict. Ordinary shell receipts and reconciliation govern effects; a
+selection record alone is not evidence that the process ran or completed.
 
 Programs are ES modules with top-level `await`. The model receives the awaited
 default export, or `{ error }` for an uncaught

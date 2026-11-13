@@ -938,6 +938,13 @@ fn buffered_escaped_strings_reserve_every_copy() {
     assert_layout_covers_decode(&parts);
     let (_, deep_peak) = assert_layout_covers_decode(&deep);
     let (_, keyed_peak) = assert_layout_covers_decode(&keyed);
+    // Standard externally tagged results reserve the selected payload, including
+    // either a sequence or a tree of escaped strings.
+    type Choice = std::result::Result<Vec<String>, BTreeMap<String, String>>;
+    let success: Choice = Ok(shorts());
+    let refusal: Choice = Err([(short.clone(), long.clone())].into_iter().collect());
+    assert_layout_covers_decode(&success);
+    assert_layout_covers_decode(&refusal);
     // Negative controls: counting at most one buffer per position leaves the
     // nested clones unreserved, and counting none leaves the copies the
     // outer buffer owns unreserved.

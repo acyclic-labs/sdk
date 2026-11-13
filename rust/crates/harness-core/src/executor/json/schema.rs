@@ -51,6 +51,10 @@ schema!(RECURSIVE_RECEIPT => RecursiveReceipt, "", [], ["value" => TASK_OUTCOME 
 schema!(TASK_OUTCOME => TaskOutcome, "", [], ["Succeeded" => ROOT : 0], []);
 schema!(PROJECT_MERGE_RECEIPT => ProjectMergeReceipt, "", [], ["provider_proof" => PROVIDER_PROOF : 0], []);
 schema!(TOOL_TASK_COMMAND => ToolTaskCommand, "", [], ["arguments" => ROOT : 0], []);
+schema!(TOOL_INVOCATION => ToolInvocation, "", [], ["arguments" => ROOT : 0], []);
+schema!(SELECTED_TOOL_CALL, "", [], ["invocation" => TOOL_INVOCATION : 0], []);
+schema!(TOOL_SELECTION_RESULT, "", [], ["Ok" => SELECTED_TOOL_CALL : 0], []);
+schema!(AUTHORED_TOOL_SELECTION => AuthoredToolSelection, "", [], ["call" => TOOL_SELECTION_RESULT : 0], []);
 schema!(TASK_ADMIT_COMMAND => TaskAdmitCommand, "", [], ["input" => ROOT : 0], []);
 schema!(PREPARED_TASK_ADMIT_COMMAND => PreparedTaskAdmitCommand, "", [], ["admission" => TASK_ADMISSION_RECORD : 0], []);
 schema!(CONTEXT_MANIFEST => ContextManifest, "", [], ["discovery" => DISCOVERED_CONTEXT : 0, "tools" => TOOLS : 0], []);

@@ -1,12 +1,40 @@
 use super::after::{self, AfterHook};
+use crate::executor::{stock_retire_text, stock_string_copy, stock_vec_push};
+use crate::filesystem::UploadRecord as _;
 use crate::{
     Error, Result,
     config::{self, Surface, Tree},
-    hooks::{HookEvent, HookFailure, HookRule, HookRun, HookSpec, Hooks},
+    hooks::{HookEvent, HookFailure, HookRun, HookSpec, Hooks},
     layers::Layer,
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
+
+fn text(
+    args: std::fmt::Arguments<'_>,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<String> {
+    crate::executor::with_history_io(io, |work| crate::executor::preparation_format(args, work))
+}
+
+fn settings_text(value: &Value, io: Option<&crate::filesystem::PreparationIo>) -> Result<String> {
+    let bytes = match io {
+        Some(io) => io.encode_vec(value, None, true)?,
+        None => crate::executor::json::canonical_json_bytes_bounded(
+            value,
+            crate::executor::json::JsonBounds {
+                maximum_bytes: None,
+                maximum_items: None,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            None,
+            &mut |_| Ok(()),
+        )?,
+    };
+    String::from_utf8(bytes).map_err(|_| Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid,
+        reason: "encoded plugin settings are not UTF-8",
+    })
+}
 
 /// The one manifest: `volume:///home/plugins.ts`.
 pub const MANIFEST: &str = "plugins.ts";
@@ -26,8 +54,42 @@ impl Event {
 }
 
 /// The enabled plugin set, lowered to hook rules.
+#[derive(Debug)]
+pub struct Enabled(crate::javascript_allocator::EngineResult<EnabledData>);
+
+impl Enabled {
+    /// Shares this admitted set on its original allocation ledger. The shared
+    /// wrapper retains that credit until its final consumer retires the set.
+    pub fn into_shared(self) -> Result<std::sync::Arc<Self>> {
+        let work = self
+            .0
+            .custody
+            .as_ref()
+            .or(self.0.value.custody.as_deref())
+            .map(|custody| custody.work().clone());
+        self.0.share_as(Self, work.as_ref())
+    }
+}
+
+impl std::ops::Deref for Enabled {
+    type Target = EnabledData;
+    fn deref(&self) -> &Self::Target {
+        &self.0.value
+    }
+}
+
+impl Default for Enabled {
+    fn default() -> Self {
+        Self(crate::javascript_allocator::EngineResult {
+            value: EnabledData::default(),
+            custody: None,
+        })
+    }
+}
+
+/// Immutable admitted plugin data; its owner retains the original allocation credit.
 #[derive(Debug, Default)]
-pub struct Enabled {
+pub struct EnabledData {
     /// Enabled plugin names, sorted.
     pub names: Vec<String>,
     /// Before-hook rules, in authority order.
@@ -36,6 +98,7 @@ pub struct Enabled {
     pub descriptions: Vec<String>,
     /// Pure after-hooks bound to the original admitted module cut.
     pub after: Vec<AfterHook>,
+    custody: Option<std::sync::Arc<acyclic_fs::NativeAllocation>>,
 }
 
 /// Loads the plugins `plugins.ts` enables over `layers` (lowest first), as
@@ -57,7 +120,7 @@ pub async fn load_result(
     layers: &[Layer<'_>],
     enabler: &str,
 ) -> Result<Result<Enabled>> {
-    let (value, _) =
+    let value =
         match config::compose_result(MANIFEST, layers, tree, Value::Object(Default::default()))
             .await?
         {
@@ -130,6 +193,18 @@ enum LoadFailure {
     Semantic(Error),
 }
 
+impl LoadFailure {
+    // Only failures produced by the closed record decoder are classified here;
+    // source reads retain their original operational ownership.
+    fn decoding(error: Error) -> Self {
+        match error {
+            error @ (Error::Invalid(_)
+            | Error::NativeJsonAdmission { .. }
+            | Error::NativeJson { .. }) => Self::Semantic(error),
+            error => Self::Operational(error),
+        }
+    }
+}
 impl From<Error> for LoadFailure {
     fn from(error: Error) -> Self {
         Self::Semantic(error)
@@ -150,36 +225,56 @@ fn observe(identity: Option<&mut blake3::Hasher>, path: &str, bytes: Option<&[u8
 async fn read_hook(
     tree: &dyn Tree,
     identity: Option<&mut blake3::Hasher>,
-    hook: String,
-) -> std::result::Result<Option<(String, String)>, LoadFailure> {
+    hook: &str,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> std::result::Result<Option<String>, LoadFailure> {
     let bytes = tree.read(&hook).await.map_err(LoadFailure::Operational)?;
     observe(identity, &hook, bytes.as_deref());
     bytes
         .map(|bytes| {
-            std::str::from_utf8(&bytes)
-                .map(str::to_owned)
-                .map_err(|_| Error::Invalid(format!("{MANIFEST}: {hook} is not UTF-8")))
+            let script = std::str::from_utf8(&bytes).map_err(|_| {
+                LoadFailure::Semantic(Error::Invalid(format!("{MANIFEST}: {hook} is not UTF-8")))
+            })?;
+            stock_string_copy(script, io).map_err(LoadFailure::Operational)
         })
         .transpose()
-        .map(|script| script.map(|script| (hook, script)))
-        .map_err(Into::into)
 }
 
 async fn load_enabled(
     tree: &dyn Tree,
-    value: Value,
+    value: config::ConfigValue,
     enabler: &str,
     mut identity: Option<&mut blake3::Hasher>,
 ) -> std::result::Result<Enabled, LoadFailure> {
     let invalid = |reason: String| Error::Invalid(format!("{MANIFEST}: {reason}"));
-    let Plugins(entries) =
-        serde_json::from_value(value).map_err(|error| invalid(error.to_string()))?;
-    let enabled: BTreeMap<_, _> = entries
-        .into_iter()
-        .filter(|(_, entry)| entry.enabled)
-        .collect();
-    let mut loaded = Enabled::default();
-    for (name, entry) in &enabled {
+    let lowering = value
+        .work()
+        .map(crate::filesystem::PreparationIo::from_native_work)
+        .transpose()
+        .map_err(LoadFailure::Operational)?;
+    let io = lowering.as_ref();
+    let selection = value.record::<Plugins>().map_err(LoadFailure::decoding)?;
+    let entries = &selection.value.0;
+    let mut loaded = crate::javascript_allocator::EngineResult {
+        value: EnabledData::default(),
+        custody: None,
+    };
+    loaded
+        .absorb(
+            value
+                .work()
+                .map(|work| {
+                    work.claim(
+                        std::mem::size_of::<EnabledData>() as u64,
+                        1,
+                        acyclic_fs::WorkCounters::UNCHARGED,
+                    )
+                })
+                .transpose()
+                .map_err(|cause| LoadFailure::Operational(cause.into()))?,
+        )
+        .map_err(LoadFailure::Operational)?;
+    for (name, entry) in entries.iter().filter(|(_, entry)| entry.enabled) {
         if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
             return Err(invalid(format!("{name:?} is not a plugin folder name")).into());
         }
@@ -189,8 +284,8 @@ async fn load_enabled(
             ))
             .into());
         }
-        let root = format!("plugins/{name}/");
-        let path = format!("{root}plugin.ts");
+        let root = text(format_args!("plugins/{name}/"), io).map_err(LoadFailure::Operational)?;
+        let path = text(format_args!("{root}plugin.ts"), io).map_err(LoadFailure::Operational)?;
         let source = tree.read(&path).await.map_err(LoadFailure::Operational)?;
         let Some(source) = source else {
             observe(identity.as_deref_mut(), &path, None);
@@ -204,15 +299,18 @@ async fn load_enabled(
             identity.update(&manifest.identity());
         }
         let manifest = manifest.into_result()?;
-        let manifest: PluginManifest = serde_json::from_value(manifest.value)
-            .map_err(|error| invalid(format!("{path}: {error}")))?;
-        if manifest.name != *name {
-            return Err(invalid(format!("{path} names {:?}", manifest.name)).into());
+        let mut manifest = manifest
+            .value
+            .record::<PluginManifest>()
+            .map_err(LoadFailure::decoding)?;
+        if manifest.value.name != *name {
+            return Err(invalid(format!("{path} names {:?}", manifest.value.name)).into());
         }
         if let Some(missing) = manifest
+            .value
             .requires
             .iter()
-            .find(|required| !enabled.contains_key(*required))
+            .find(|required| !entries.get(*required).is_some_and(|entry| entry.enabled))
         {
             return Err(invalid(format!("{name} requires {missing}, which is not enabled")).into());
         }
@@ -220,43 +318,75 @@ async fn load_enabled(
         let settings = entry
             .config
             .as_ref()
-            .or(manifest.defaults.as_ref())
+            .or(manifest.value.defaults.as_ref())
             .unwrap_or(&empty);
-        for (name, source) in &manifest.after {
+        for (name, source) in &manifest.value.after {
             if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
                 return Err(invalid("after-hooks require one canonical hook name".into()).into());
             }
             if source.path != "live/agents/self/status.json" || source.from != Start::Now {
                 return Err(invalid(format!("{root}hooks/after-{name}: after-hooks require a supported original publication source")).into());
             }
-            let hook = format!("{root}hooks/after-{name}.ts");
-            let (hook, code) = read_hook(tree, identity.as_deref_mut(), hook.clone())
+            let hook = text(format_args!("{root}hooks/after-{name}.ts"), io)
+                .map_err(LoadFailure::Operational)?;
+            let code = read_hook(tree, identity.as_deref_mut(), &hook, io)
                 .await?
                 .ok_or_else(|| invalid(format!("after-hooks module {hook} does not exist")))?;
             let prepared = config::prepare(&hook, code.as_bytes(), tree)
                 .await
                 .map_err(LoadFailure::Operational)?;
-            let evaluation = after::evaluate(&prepared, settings)?;
+            stock_retire_text(code, io).map_err(LoadFailure::Operational)?;
+            stock_retire_text(hook, io).map_err(LoadFailure::Operational)?;
+            let evaluation =
+                after::evaluate(&prepared, settings).map_err(LoadFailure::Operational)?;
             if let Some(identity) = identity.as_deref_mut() {
                 identity.update(&evaluation.identity());
             }
-            loaded.after.push(AfterHook::new(evaluation)?);
+            let hook_identity = evaluation.identity();
+            let evaluated = evaluation.into_result().map_err(LoadFailure::Semantic)?;
+            stock_vec_push(
+                &mut loaded.value.after,
+                AfterHook::new(evaluated, hook_identity).map_err(LoadFailure::decoding)?,
+                io,
+            )
+            .map_err(LoadFailure::Operational)?;
         }
-        loaded.descriptions.push(manifest.description);
-        let settings = String::from_utf8(crate::contract::canonical_json_bytes(settings)?)
-            .map_err(|error| invalid(error.to_string()))?;
+        // Reparent only the payload that leaves the decoded manifest. Its
+        // remaining fields and admission retire with the original record.
+        let description_bytes = manifest.value.description.capacity() as u64;
+        crate::javascript_allocator::transfer(
+            &mut manifest.custody,
+            description_bytes,
+            &mut loaded,
+        )
+        .map_err(LoadFailure::Operational)?;
+        let description = std::mem::take(&mut manifest.value.description);
+        stock_vec_push(&mut loaded.value.descriptions, description, io)
+            .map_err(LoadFailure::Operational)?;
+        let encoded_settings = once_cell::unsync::OnceCell::new();
         for event in Event::ALL {
-            let path = |form: &str| format!("{root}hooks/before-{}.{form}", event.name());
+            let path = |form: &str| {
+                text(
+                    format_args!("{root}hooks/before-{}.{form}", event.name()),
+                    io,
+                )
+                .map_err(LoadFailure::Operational)
+            };
+            let paths = [path("ts")?, path("sh")?, path("ps1")?];
             let (ts, sh, ps1) = (
-                read_hook(tree, identity.as_deref_mut(), path("ts")).await?,
-                read_hook(tree, identity.as_deref_mut(), path("sh")).await?,
-                read_hook(tree, identity.as_deref_mut(), path("ps1")).await?,
+                read_hook(tree, identity.as_deref_mut(), &paths[0], io).await?,
+                read_hook(tree, identity.as_deref_mut(), &paths[1], io).await?,
+                read_hook(tree, identity.as_deref_mut(), &paths[2], io).await?,
             );
-            if let Some((hook, _)) = &ts {
+            if ts.is_some() {
                 return Err(invalid(format!(
-                    "{hook}: TypeScript hooks do not run on this host yet"
+                    "{}: TypeScript hooks do not run on this host yet",
+                    paths[0]
                 ))
                 .into());
+            }
+            for path in paths {
+                stock_retire_text(path, io).map_err(LoadFailure::Operational)?;
             }
             if sh.is_none() && ps1.is_none() {
                 continue;
@@ -269,32 +399,91 @@ async fn load_enabled(
                 ))
                 .into());
             };
+            let settings = encoded_settings
+                .get_or_try_init(|| settings_text(settings, io))
+                .map_err(LoadFailure::Operational)?;
+            let matcher_bytes = manifest
+                .value
+                .matcher
+                .get(&event)
+                .map_or(Ok(0), |matcher| matcher.logical_owned_bytes())
+                .map_err(LoadFailure::Operational)?;
+            crate::javascript_allocator::transfer(
+                &mut manifest.custody,
+                matcher_bytes,
+                &mut loaded,
+            )
+            .map_err(LoadFailure::Operational)?;
+            let matcher = manifest.value.matcher.remove(&event);
             let hook = HookSpec {
                 run: HookRun::Plugin {
-                    instance: format!("{enabler}:{MANIFEST}#{name}:hooks/before-{}", event.name()),
-                    sh: sh.map(|(_, script)| script),
-                    ps1: ps1.map(|(_, script)| script),
-                    config: settings.clone(),
-                    matcher: manifest.matcher.get(&event).cloned(),
+                    instance: text(
+                        format_args!("{enabler}:{MANIFEST}#{name}:hooks/before-{}", event.name()),
+                        io,
+                    )
+                    .map_err(LoadFailure::Operational)?,
+                    sh,
+                    ps1,
+                    config: stock_string_copy(&settings, io).map_err(LoadFailure::Operational)?,
+                    matcher,
                 },
                 // A hook holds only its own request; it has no deadline.
                 timeout_ms: None,
                 failure: HookFailure::Block,
             };
             loaded
+                .value
                 .rules
-                .add_rules([HookRule {
-                    on: site,
-                    matcher: String::new(),
-                    hooks: vec![hook],
-                }])
-                .map_err(|error| {
-                    invalid(format!("{root}hooks/before-{}: {error}", event.name()))
+                .add_rule_with_io(site, String::new(), std::iter::once(hook), io)
+                .map_err(|error| match error {
+                    Error::Invalid(reason) => LoadFailure::Semantic(invalid(format!(
+                        "{root}hooks/before-{}: {reason}",
+                        event.name()
+                    ))),
+                    error => LoadFailure::decoding(error),
                 })?;
         }
-        loaded.names.push(name.clone());
+        if let Some(settings) = encoded_settings.into_inner() {
+            stock_retire_text(settings, io).map_err(LoadFailure::Operational)?;
+        }
+        stock_retire_text(path, io).map_err(LoadFailure::Operational)?;
+        stock_retire_text(root, io).map_err(LoadFailure::Operational)?;
+        let name = stock_string_copy(name, io).map_err(LoadFailure::Operational)?;
+        stock_vec_push(&mut loaded.value.names, name, io).map_err(LoadFailure::Operational)?;
     }
-    Ok(loaded)
+    if let Some(lowering) = lowering {
+        let retained = lowering.owned_bytes().map_err(LoadFailure::Operational)?;
+        loaded
+            .absorb(Some(
+                lowering
+                    .into_native_custody(retained)
+                    .map_err(LoadFailure::Operational)?,
+            ))
+            .map_err(LoadFailure::Operational)?;
+    }
+    if let Some(mut custody) = loaded.custody.take() {
+        let work = custody.work();
+        let bytes = crate::core::owned_sum([
+            acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<
+                acyclic_fs::NativeAllocation,
+            >()
+            .map_err(|cause| LoadFailure::Operational(cause.into()))?,
+            std::mem::size_of::<std::sync::Arc<acyclic_fs::NativeAllocation>>() as u64,
+        ])?;
+        let mut shared = work
+            .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(|cause| LoadFailure::Operational(cause.into()))?;
+        custody
+            .absorb(&mut shared)
+            .map_err(|cause| LoadFailure::Operational(cause.into()))?;
+        let custody = std::sync::Arc::new(custody);
+        loaded
+            .value
+            .rules
+            .retain_native(std::sync::Arc::clone(&custody));
+        loaded.value.custody = Some(custody);
+    }
+    Ok(Enabled(loaded))
 }
 
 #[cfg(test)]

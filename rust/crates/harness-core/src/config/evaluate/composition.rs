@@ -43,7 +43,7 @@ pub struct Composition {
     layers: Vec<LayerInput>,
     modules: Vec<ModuleCut>,
     identity: [u8; 32],
-    result: Result<(Value, Vec<Link>)>,
+    result: Result<(super::super::ConfigValue, Vec<Link>)>,
 }
 
 impl Composition {
@@ -66,12 +66,12 @@ impl Composition {
     }
 
     /// Borrow the result without discarding failed-evaluation evidence.
-    pub fn result(&self) -> std::result::Result<&(Value, Vec<Link>), &Error> {
+    pub fn result(&self) -> std::result::Result<&(super::super::ConfigValue, Vec<Link>), &Error> {
         self.result.as_ref()
     }
 
     /// Consume the original result after retaining any required evidence.
-    pub fn into_result(self) -> Result<(Value, Vec<Link>)> {
+    pub fn into_result(self) -> Result<(super::super::ConfigValue, Vec<Link>)> {
         self.result
     }
 }
@@ -96,7 +96,7 @@ pub(super) async fn compose_inner(
     base: Value,
 ) -> Result<Composition> {
     let mut evidence = Evidence::new(path, layers);
-    let result = fold(path, layers, tree, base, Some(&mut evidence)).await?;
+    let result = fold::<true>(path, layers, tree, base, Some(&mut evidence), cache()).await?;
     // With no effective module there is no evaluation key to bind the base.
     if evidence.modules.is_empty() {
         evidence.identity.update(&[0]);
@@ -118,17 +118,19 @@ pub(super) async fn compose_inner(
 
 /// Fold without retaining input evidence. Operational tree failures remain
 /// outer errors; the inner result is the evaluated content's decision.
-/// This uses the same fold and reads as [`compose`], without evidence buffers.
+/// This uses the same fold and reads as [`compose`], without evidence or link buffers.
 pub async fn compose_result(
     path: &str,
     layers: &[Layer<'_>],
     tree: &dyn Tree,
     base: Value,
-) -> Result<Result<(Value, Vec<Link>)>> {
-    fold(path, layers, tree, base, None).await
+) -> Result<Result<super::super::ConfigValue>> {
+    Ok(fold::<false>(path, layers, tree, base, None, cache())
+        .await?
+        .map(|(value, _)| value))
 }
 
-struct Evidence {
+pub(super) struct Evidence {
     layers: Vec<LayerInput>,
     modules: Vec<ModuleCut>,
     identity: blake3::Hasher,
@@ -171,20 +173,27 @@ impl Evidence {
 
 // One fold owns precedence, evaluation and typed-error ordering. Existing
 // callers do not allocate a composition evidence buffer they will discard.
-async fn fold(
+pub(super) async fn fold<const LINKS: bool>(
     path: &str,
     layers: &[Layer<'_>],
     tree: &dyn Tree,
     base: Value,
     mut evidence: Option<&mut Evidence>,
-) -> Result<Result<(Value, Vec<Link>)>> {
-    let mut value = base;
+    cache: &Cache,
+) -> Result<Result<(super::super::ConfigValue, Vec<Link>)>> {
+    let mut value = super::super::ConfigValue::new(
+        base,
+        None,
+        tree.preparation_io()
+            .and_then(crate::filesystem::PreparationIo::original_native_work)
+            .cloned(),
+    );
     let mut chain = Vec::new();
     // `held` remains the single implementation of precedence and off cuts.
     for (index, layer) in crate::layers::held_indexed(layers) {
         let Some(source) = layer.bytes else { continue };
         let loaded = prepared::load(path, source, tree, evidence.is_some()).await?;
-        let decision = loaded.evaluate_cached(path, &value, Surface::Compose, cache())?;
+        let decision = loaded.evaluate_cached(path, &value, Surface::Compose, cache)?;
         if let Some(evidence) = evidence.as_deref_mut() {
             evidence.identity.update(&decision.identity());
             evidence.modules.push(ModuleCut {
@@ -195,14 +204,16 @@ async fn fold(
         }
         match decision.into_result() {
             Ok(evaluated) => {
-                chain.push(Link {
-                    layer: layer.name.to_owned(),
-                    generation: layer.generation.to_owned(),
-                    module_digest: blake3::Hash::from_bytes(evaluated.digest)
-                        .to_hex()
-                        .to_string(),
-                    form: evaluated.form,
-                });
+                if LINKS {
+                    chain.push(Link {
+                        layer: layer.name.to_owned(),
+                        generation: layer.generation.to_owned(),
+                        module_digest: blake3::Hash::from_bytes(evaluated.digest)
+                            .to_hex()
+                            .to_string(),
+                        form: evaluated.form,
+                    });
+                }
                 value = evaluated.value;
             }
             Err(error) => {

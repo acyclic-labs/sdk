@@ -1,6 +1,35 @@
 //! Sealed projection of an admitted profile, without caller option maps.
 use acyclic_model_render::{Cache, Effort, Reasoning};
 
+/// One concrete effort change retained at its original conversation boundary.
+#[derive(
+    Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, crate::HeapLayout,
+)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationUpdate {
+    /// Frozen model prefix to which this update belongs.
+    pub prefix: [u8; 32],
+    /// Concrete effort selected by the host's admitted settings.
+    #[cfg_attr(
+        feature = "wasm",
+        tsify(type = "'low' | 'medium' | 'high' | 'adaptive'")
+    )]
+    pub effort: Effort,
+}
+
+impl ConfigurationUpdate {
+    pub(crate) fn message(self) -> super::ModelMessage {
+        super::ModelMessage {
+            role: super::ModelRole::User,
+            content: super::ModelContent::Part(super::ModelContentPart::Configuration {
+                prefix: self.prefix,
+                effort: self.effort,
+            }),
+        }
+    }
+}
+
 /// Immutable provider-facing values obtained only from an admitted agent profile.
 /// The original epoch owner persists the identities; this value creates no epoch,
 /// authority, request, credential source or model call.
@@ -65,17 +94,22 @@ impl ModelProfileBinding {
     /// transition and retains it on replay. It is never prepended by a provider
     /// on each request, and does not replace the epoch's reasoning baseline.
     pub fn configuration_update(&self, previous: Option<Effort>) -> Option<super::ModelMessage> {
+        self.configuration_delta(previous)
+            .map(ConfigurationUpdate::message)
+    }
+
+    pub(crate) fn configuration_delta(
+        &self,
+        previous: Option<Effort>,
+    ) -> Option<ConfigurationUpdate> {
         let baseline = self.baseline_effort()?;
         let effort = self.fixed_effort().unwrap_or(baseline);
         if previous.unwrap_or(baseline) == effort {
             return None;
         }
-        Some(super::ModelMessage {
-            role: super::ModelRole::User,
-            content: super::ModelContent::Part(super::ModelContentPart::Configuration {
-                prefix: self.prefix,
-                effort,
-            }),
+        Some(ConfigurationUpdate {
+            prefix: self.prefix,
+            effort,
         })
     }
 

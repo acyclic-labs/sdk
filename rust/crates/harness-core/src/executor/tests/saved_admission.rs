@@ -15,7 +15,7 @@ async fn save_unaccounted_request(
     let mut binding = json!({
         "executor": version,
         "input": input,
-        "model": executor.model,
+        "model": &*executor.model,
         "context": [],
         "tools": [],
         "limits": executor.limits,
@@ -78,6 +78,7 @@ async fn save_unaccounted_request(
             &ExecutionEvent::ContextPrepared {
                 step: 0,
                 projection,
+                configuration: None,
                 steering: None,
             },
             None,

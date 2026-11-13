@@ -10,6 +10,28 @@ pub(super) enum ModelStepHistory<'a> {
     Selected(&'a [ModelMessage]),
 }
 
+impl ModelStepHistory<'_> {
+    pub(super) fn messages(&self) -> &[ModelMessage] {
+        match self {
+            Self::Turn(messages, _) => messages,
+            Self::Selected(messages) => messages,
+        }
+    }
+
+    pub(super) fn append_configuration(
+        &mut self,
+        update: crate::model::ConfigurationUpdate,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if let Self::Turn(messages, retained) = self {
+            let from = messages.len();
+            stock_vec_push(messages, update.message(), io)?;
+            retained.admit(from..messages.len(), io)?;
+        }
+        Ok(())
+    }
+}
+
 /// An optional admission owner moves into the same dispatch path as its history.
 pub(super) struct ModelStepRequest<'a> {
     pub history: ModelStepHistory<'a>,
@@ -69,7 +91,7 @@ impl StockExecution<'_> {
             let span = obs_span!(
                 "acyclic.harness.executor.model_step",
                 step = step,
-                model = self.stock.model.name.as_str(),
+                model = self.selected_model().name.as_str(),
                 phase = crate::obs::Empty,
                 items = crate::obs::Empty,
             );
@@ -101,7 +123,12 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        let base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
+        let mut base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
+        if self.summary.is_some()
+            && let Some(update) = self.configuration_delta(&base.messages)?
+        {
+            stock_vec_push(&mut base.messages, update.message(), self.io)?;
+        }
         self.prepare_transformed_request(&context_input, base)
             .await
             .map(|(_, prepared)| prepared)
@@ -281,7 +308,7 @@ impl StockExecution<'_> {
     pub(super) fn request_tools(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
         // Native adapters bind after the epoch's canonical selection. Their
         // declarations and executors are one pair; never replace just a schema.
-        stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)
+        stock_tool_definitions(self.selected_tools(), &self.stock.tool_scope, self.io)
     }
 
     fn request_from_parts(
@@ -293,7 +320,7 @@ impl StockExecution<'_> {
         Ok(ModelRequest {
             summary: self.summary.is_some(),
             compose_tools,
-            model: crate::model::clone_model(&self.stock.model, self.io)?,
+            model: crate::model::clone_model(self.selected_model(), self.io)?,
             messages,
             tools,
             sampling: self.sampling()?,
@@ -305,11 +332,10 @@ impl StockExecution<'_> {
     pub(super) fn code_composition(&self, tools: &[crate::tool::ToolDefinition]) -> Result<bool> {
         Ok(!cfg!(target_arch = "wasm32")
             && tools.iter().any(|tool| tool.name == "code")
-            && self
-                .stock
-                .tools
-                .get("code", None, self.io)?
-                .is_some_and(|tool| tool.executor.is_code_mode()))
+                & self
+                    .selected_tools()
+                    .get("code", None, self.io)?
+                    .is_some_and(|tool| tool.executor.is_code_mode()))
     }
 
     pub(super) fn validate_response_request(
@@ -333,8 +359,7 @@ impl StockExecution<'_> {
         });
         let definitions_match = request.compose_tools
             || if historical {
-                self.stock
-                    .tools
+                self.selected_tools()
                     .fixed_definitions(self.stock.tool_scope.grants(), io)?
                     .iter()
                     .all(|fixed| {
@@ -347,7 +372,7 @@ impl StockExecution<'_> {
                 request.tools == tools
             };
         if request.summary != self.summary.is_some()
-            || request.model != self.stock.model
+            || request.model != *self.selected_model()
             || (!request.compose_tools && !definitions_match)
             || request.compose_tools != self.code_composition(tools)?
             || request.sampling != self.sampling()?

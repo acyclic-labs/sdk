@@ -20,15 +20,21 @@
 //! layered fold, including absent roots, pinned generations and its refusal.
 
 mod plugin;
+mod program;
+pub use program::{HookEvent, ProgramEntry, ProgramManifest, ProgramTrigger};
 pub mod policy;
 mod types;
+#[cfg(not(target_arch = "wasm32"))]
+mod value;
+#[cfg(not(target_arch = "wasm32"))]
+pub use value::ConfigValue;
 
 pub use plugin::{
     AfterSource, Event, PluginEntry, PluginManifest, PluginSource, Plugins, RequestMatch, Start,
 };
 pub use types::{
     Action, Admission, AdmissionStatus, AgentConfig, Effort, Form, Host, Link, Policy, PolicyRule,
-    Sampling, utc,
+    Sampling, utc, utc_value,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -53,7 +59,7 @@ pub use evaluate::model;
 /// # Errors
 /// [`crate::Error::Invalid`] naming why the module is not a policy.
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn admit_policy(source: &[u8], tree: &dyn Tree) -> crate::Result<Policy> {
+pub async fn admit_policy(source: &[u8], tree: &dyn Tree) -> crate::Result<ConfigValue<Policy>> {
     let evaluated = evaluate(
         POLICY,
         source,
@@ -62,7 +68,7 @@ pub async fn admit_policy(source: &[u8], tree: &dyn Tree) -> crate::Result<Polic
         Surface::Data,
     )
     .await?;
-    policy::decode(evaluated.value)
+    evaluated.value.decode()
 }
 
 /// The agent's settings entry point.
@@ -116,7 +122,7 @@ pub async fn agent_from_home(
         serde_json::json!({"model": model}),
     )
     .await?;
-    serde_json::from_value(value)
+    serde_json::from_value(value.into_unbounded()?)
         .map_err(|error| crate::Error::Invalid(format!("{AGENT}: {error}")))
 }
 /// The agent's own policy: plain data, intersected by the kernel.
@@ -175,6 +181,10 @@ pub fn typescript() -> &'static str {
             PluginEntry,
             PluginSource,
             PluginManifest,
+            ProgramManifest,
+            ProgramEntry,
+            ProgramTrigger,
+            HookEvent,
             AfterSource,
             Start,
             Event,

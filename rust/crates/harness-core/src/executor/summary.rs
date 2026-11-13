@@ -29,6 +29,8 @@ impl StockExecution<'_> {
     ) -> Result<StockExecution<'_>> {
         Ok(StockExecution {
             stock: self.stock,
+            selected: self.selected.clone(),
+            configuration: None,
             context: self.context,
             io: self.io,
             summary: Some(ContextPipeline::summary_source(source, revision, self.io)?),

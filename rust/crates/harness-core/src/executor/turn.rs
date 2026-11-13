@@ -118,7 +118,7 @@ impl CollectedStep {
 
 impl StockExecution<'_> {
     pub(super) async fn execute_progress(
-        &self,
+        &mut self,
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
     ) -> Result<ExecutionProgress<TurnOutput>> {
@@ -133,16 +133,15 @@ impl StockExecution<'_> {
     }
 
     async fn execute_turn(
-        &self,
+        &mut self,
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
         phase: &mut DispatchPhase,
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(reason) = &self.stock.prompt_block {
-            return Err(Error::Invalid(reason.clone()));
-        }
+        self.check_prompt_admission()?;
+
         self.ensure_started(journal, input).await?;
         self.begin_working_history().await;
         self.begin_request_continuation().await;
@@ -183,6 +182,27 @@ impl StockExecution<'_> {
                         "model step identity exhausted",
                     )
                 })?;
+                if let Some(configuration) = self.configuration
+                    && let Some(selected) = configuration
+                        .select(journal, input.operation_id, step, self.io)?
+                        .await?
+                {
+                    let changed = self
+                        .selected
+                        .as_ref()
+                        .is_none_or(|previous| !Arc::ptr_eq(previous, &selected));
+                    self.selected = Some(selected);
+                    if changed {
+                        self.compaction.take();
+                        // A continuation owns the preceding binding's model,
+                        // sampling and tools as well as its message history.
+                        // Rebuild that request from the journal when the
+                        // binding changes; unchanged bindings retain it.
+                        self.begin_request_continuation().await;
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                self.check_prompt_admission()?;
                 let model_events = async {
                     self.run_model_step(
                         journal,
@@ -316,7 +336,7 @@ impl StockExecution<'_> {
                     #[cfg(not(target_arch = "wasm32"))]
                     if after_answer.is_none() {
                         let mut notices = Vec::new();
-                        for hook in &self.stock.after_hooks {
+                        for hook in self.selected_after_hooks() {
                             for text in hook.settlement() {
                                 let text = stock_string_copy(text, self.io)?;
                                 stock_vec_push(&mut notices, text, self.io)?;

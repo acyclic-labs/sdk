@@ -134,6 +134,20 @@ impl PreparationIo {
         maximum: impl Into<Option<u64>>,
         canonical: bool,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        let result = self.encode_vec(value, maximum, canonical)?;
+        crate::executor::with_history_io(Some(self), |work| {
+            crate::store::operations::owned_bytes_from_retained_vec(result, work)
+                .map(|(bytes, _)| bytes)
+        })
+    }
+
+    /// The same admitted encoder for consumers that retain its vector directly.
+    pub(crate) fn encode_vec<T: Serialize>(
+        &self,
+        value: &T,
+        maximum: impl Into<Option<u64>>,
+        canonical: bool,
+    ) -> Result<Vec<u8>> {
         let maximum = maximum.into();
         let remaining = self.remaining()?;
         if maximum != Some(0) {
@@ -175,10 +189,7 @@ impl PreparationIo {
             Some(guard) => finish_encoding(guard, result),
             None => result,
         };
-        crate::executor::with_history_io(Some(self), |work| {
-            crate::store::operations::owned_bytes_from_retained_vec(result?, work)
-                .map(|(bytes, _)| bytes)
-        })
+        result
     }
 
     /// Owns the first diagnostic before admission can parse, then extends
@@ -314,7 +325,9 @@ impl PreparationIo {
         )
     }
 
-    pub(crate) fn value_json<T: Serialize>(
+    /// Builds a JSON graph on this preparation owner before allocating its storage.
+    /// The caller retains this owner until the returned graph is retired.
+    pub fn value_json<T: Serialize>(
         &self,
         value: &T,
         maximum: impl Into<Option<u64>>,

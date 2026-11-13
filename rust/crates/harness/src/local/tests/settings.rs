@@ -90,7 +90,23 @@ pub(in crate::local) async fn write(
     Ok(file.version().to_owned())
 }
 
+async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash> {
+    let volumes = super::super::agent_settings::Volumes {
+        files: &harness.files,
+        verifier: &harness.verifier,
+        signed: &harness.signed,
+        home: &harness.scratch,
+        journal: &harness.journal,
+        seed: (&harness.seed.0, &harness.seed.1),
+        configuration: harness.harness.issuer_configuration(),
+        maximum_bytes: harness.limits.file_bytes,
+    };
+    let tree = super::super::agent_settings::Tree::new(&volumes, path, None).await?;
+    tree.cut()
+}
+
 async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<Admission> {
+    let cut = settings_cut(harness, path).await?.to_hex();
     let grant = ContentGrant::verify_directory_read(
         &harness.verifier,
         &harness.signed,
@@ -104,7 +120,7 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
             &harness.journal,
             &grant,
             &format!(
-                "live/agents/{}/admissions/{path}/{version}.json",
+                "live/agents/{}/admissions/{path}/{cut}/{version}.json",
                 harness.root
             ),
             None,
@@ -130,6 +146,255 @@ async fn run(
         arguments,
     };
     tool.executor.execute(invocation, Some(context)).await
+}
+
+#[tokio::test]
+async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() -> Result<()> {
+    use crate::{
+        conversation::{ContentResidencyVerifier, VolumeClass, VolumeOwner, VolumeRef},
+        layers::PinnedLayer,
+    };
+    use std::sync::Arc;
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let harness = super::open_scripted(volume_config(
+        directory.path(),
+        project.clone(),
+        provider.clone(),
+    )?)
+    .await?;
+    let issuer = harness
+        .root_authority
+        .as_ref()
+        .expect("fixture owns its issuer");
+    let mut sources = Vec::new();
+    let mut grants = Vec::new();
+    for name in ["user-org", "scope", "template", "parent"] {
+        let source = VolumeRef::new(
+            harness.scratch.provider().clone(),
+            format!("settings-{name}"),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(harness.root),
+            &mut None,
+        )?;
+        harness.files.create_volume(&source).await?;
+        grants.extend([
+            source.directory_read_capability("", &mut None)?,
+            source.capability(VolumeOperation::Write, &mut None)?,
+        ]);
+        sources.push(source);
+    }
+    let signed = issuer.bootstrap_scope(
+        "configuration",
+        &crate::Capabilities::new(grants),
+        Some(harness.root),
+        &mut None,
+    )?;
+    let reader = crate::filesystem::FilesystemContentVerifier::new(
+        harness.files.clone(),
+        &harness.verifier,
+        &signed,
+        None,
+        None,
+    )?;
+    let access = ContentAccess::default();
+    let mut pins: [Option<PinnedLayer>; 4] = Default::default();
+    for (index, source) in sources.iter().enumerate() {
+        let grant = ContentGrant::verify(
+            &harness.verifier,
+            &signed,
+            source,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let entry = format!(
+            "import {{increment}} from './increment-{index}.ts'; export default base => ({{...base, model: 'available/selected', sampling: {{temperature: (base.sampling?.temperature ?? 0) + increment}}}});"
+        );
+        for (path, body) in [
+            ("agent.ts".to_owned(), entry),
+            (
+                format!("increment-{index}.ts"),
+                "export const increment = 1;".to_owned(),
+            ),
+            (
+                "plugins.ts".to_owned(),
+                "export default base => base;".to_owned(),
+            ),
+        ] {
+            harness
+                .files
+                .put_content(
+                    source,
+                    &grant,
+                    &path,
+                    body.as_bytes(),
+                    "text/typescript",
+                    &path,
+                    None,
+                    &IdempotencyKey::new(format!("issuer-{index}-{path}"))?,
+                    None,
+                    access,
+                )
+                .await?;
+        }
+        let (generation, _hold) = reader
+            .select_private_generation(source, "", "agent.ts", None, access)?
+            .await?;
+        pins[index] = Some(PinnedLayer {
+            volume: source.clone(),
+            generation,
+        });
+    }
+    let version = write(&harness, "agent.ts", "export default base => ({...base, sampling: {temperature: base.sampling.temperature + 1}});").await?;
+    let parent = &sources[3];
+    let parent_grant = ContentGrant::verify(
+        &harness.verifier,
+        &signed,
+        parent,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    harness
+        .files
+        .put_content(
+            parent,
+            &parent_grant,
+            "increment-3.ts",
+            b"export const increment = 2;",
+            "text/typescript",
+            "increment-3.ts",
+            None,
+            &IdempotencyKey::new("parent-import-change")?,
+            None,
+            access,
+        )
+        .await?;
+    let (latest_parent, _hold) = reader
+        .select_private_generation(parent, "", "agent.ts", None, access)?
+        .await?;
+    let models = Arc::new(crate::model::ModelResolver::new("available/initial", {
+        let provider = provider.clone();
+        move |selection| {
+            let name = selection
+                .strip_prefix("available/")
+                .ok_or_else(|| Error::NotFound(selection.into()))?;
+            Ok((
+                crate::model::Model::new("available".into(), name.into(), "1".into())?,
+                provider.clone(),
+            ))
+        }
+    }));
+    let configure = |pins| -> Result<_> {
+        let mut config = volume_config(directory.path(), project.clone(), provider.clone())?
+            .configuration_layers(pins);
+        config.model = None;
+        config.models = Some((models.clone(), None));
+        Ok(config
+            .feedback_plugin(false)
+            .compaction(crate::context::CompactionPolicy::Disabled))
+    };
+    drop(reader);
+    drop(harness);
+    let prepared = LocalHarness::prepare(configure(pins.clone())?).await?;
+    assert_eq!(prepared.model_selection(None).await?, "available/selected");
+    let harness = Arc::new(prepared.open().await?);
+    assert_eq!(
+        harness.sampling.and_then(|sampling| sampling.temperature),
+        Some(5.0)
+    );
+    let original = admission(&harness, "agent.ts", &version).await?;
+    assert_eq!(original.status, AdmissionStatus::Applied);
+    let original_cut = settings_cut(&harness, "agent.ts").await?;
+    let mut conversation = super::ObservedConversation::open(&harness).await?;
+    conversation.send("configuration", "Finish").await?;
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.name, "selected");
+    assert_eq!(requests[0].sampling.temperature, Some(5.0));
+    // A cached successful fold must still require the original issuer reads.
+    let narrow = harness
+        .root_authority
+        .as_ref()
+        .expect("fixture owns its issuer")
+        .bootstrap_scope(
+            "home-only",
+            &crate::Capabilities::new([harness
+                .scratch
+                .directory_read_capability("", &mut None)?]),
+            Some(harness.root),
+            &mut None,
+        )?;
+    let volumes = super::super::agent_settings::Volumes {
+        files: &harness.files,
+        verifier: &harness.verifier,
+        signed: &narrow,
+        home: &harness.scratch,
+        journal: &harness.journal,
+        seed: (&harness.seed.0, &harness.seed.1),
+        configuration: harness.harness.issuer_configuration(),
+        maximum_bytes: None,
+    };
+    let tree = super::super::agent_settings::Tree::new(&volumes, "agent.ts", None).await?;
+    let denied = super::super::agent_settings::admit(
+        &tree,
+        harness.root,
+        harness
+            .agent
+            .clone()
+            .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
+        None,
+        None,
+        harness.clock.as_ref(),
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized)
+    );
+    drop(tree);
+    drop(conversation);
+    drop(harness);
+    pins[3].as_mut().expect("parent is bound").generation = latest_parent;
+    let harness = super::open_scripted(configure(pins)?).await?;
+    assert_eq!(
+        harness.sampling.and_then(|sampling| sampling.temperature),
+        Some(6.0)
+    );
+    assert_ne!(
+        settings_cut(&harness, "agent.ts").await?,
+        original_cut,
+        "an issuer edit must select a different admission record"
+    );
+    let current = admission(&harness, "agent.ts", &version).await?;
+    assert_eq!(current.status, AdmissionStatus::Applied);
+    // The unchanged home file retains its earlier admitted outcome as well.
+    let grant = ContentGrant::verify_directory_read(
+        &harness.verifier,
+        &harness.signed,
+        &harness.journal,
+        "",
+        &mut None,
+    )?;
+    let (_, bytes, _) = harness
+        .files
+        .read_private_path_indexed(
+            &harness.journal,
+            &grant,
+            &format!(
+                "live/agents/{}/admissions/agent.ts/{}/{version}.json",
+                harness.root,
+                original_cut.to_hex()
+            ),
+            None,
+            None,
+            access,
+        )
+        .await?
+        .ok_or_else(|| Error::NotFound("original configuration admission".into()))?;
+    let retained: Admission =
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(retained, original);
+    Ok(())
 }
 
 #[tokio::test]
@@ -809,13 +1074,19 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             signed: &harness.signed,
             home: &harness.scratch,
             journal: &harness.journal,
+            seed: (&harness.seed.0, &harness.seed.1),
+            configuration: harness.harness.issuer_configuration(),
             maximum_bytes: harness.limits.file_bytes,
         };
-        let tree = super::super::agent_settings::Tree::new(&volumes).await?;
+        let tree =
+            super::super::agent_settings::Tree::new(&volumes, crate::config::AGENT, None).await?;
         let result = super::super::agent_settings::admit(
             &tree,
             harness.root,
-            harness.agent.clone(),
+            harness
+                .agent
+                .clone()
+                .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
             None,
             None,
             harness.clock.as_ref(),
@@ -963,9 +1234,12 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
         signed: &harness.signed,
         home: &harness.scratch,
         journal: &harness.journal,
+        seed: (&harness.seed.0, &harness.seed.1),
+        configuration: harness.harness.issuer_configuration(),
         maximum_bytes: harness.limits.file_bytes,
     };
-    let tree = super::super::agent_settings::Tree::new(&volumes).await?;
+    let tree =
+        super::super::agent_settings::Tree::new(&volumes, crate::plugins::MANIFEST, None).await?;
     let reason = match super::super::agent_settings::plugins(
         false,
         None,

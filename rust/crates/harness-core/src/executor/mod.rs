@@ -28,8 +28,8 @@ use std::sync::Arc;
 mod native_stock;
 use native_stock::*;
 pub(crate) use native_stock::{
-    stage_json, stock_boundary, stock_into_iter, stock_push_model_event, stock_string_copy,
-    stock_string_push, stock_vec_prepare_push, stock_vec_push, stock_vec_reserve,
+    stage_json, stock_boundary, stock_into_iter, stock_push_model_event, stock_retire_text,
+    stock_string_copy, stock_string_push, stock_vec_prepare_push, stock_vec_push, stock_vec_reserve,
 };
 
 pub(crate) mod execution_claim;
@@ -49,6 +49,7 @@ use accounting::*;
 mod binding;
 mod compaction;
 mod composition;
+mod configuration;
 mod content;
 mod context_files;
 mod dispatch;
@@ -115,6 +116,7 @@ pub(crate) mod summary_identity;
 mod tool_cards;
 pub use tool_cards::ToolCard;
 mod tool_execution;
+pub use tool_execution::ToolCallSettlement;
 mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;
 pub(crate) use tool_failure::ToolFailureText;
@@ -367,6 +369,9 @@ pub enum ExecutionEvent {
         projection: FileRef,
         /// Inbox range included in this exact response request, if bound to an agent.
         steering: Option<crate::agent::BoundaryCut>,
+        /// Host-admitted effort delta, restored into the original turn transcript on replay.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        configuration: Option<crate::model::ConfigurationUpdate>,
     },
     /// Pins a verified compacted projection before response admission.
     ContextCompacted {
@@ -708,11 +713,54 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// A host-owned source of complete, admitted per-step configurations.
+/// Selections must be retained under the original `(operation, step)` before
+/// returning, so replay never substitutes current files for an admitted cut.
+/// The selected binding includes its provider, native declarations, sampling,
+/// context capacity and reasoning profile. It cannot replace the running
+/// execution's journal, original task authority, context epoch or inherited
+/// prefix. Instruction changes enter through ordinary appended source records.
+pub trait StepConfiguration: acyclic_stream::ProviderPlatform {
+    /// Selects an immutable configuration, or retains the preceding one.
+    /// Implementations use `io` for preparation and retain any owned result
+    /// storage with its original allocation owner through the returned `Arc`.
+    fn select<'a>(
+        &'a self,
+        journal: &'a dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<StepBinding>>>>;
+}
+
+/// One immutable model-step selection. It carries the provider's complete model
+/// profile, sampling, executable declarations and hooks, while turn context,
+/// task authority and journal ownership remain with the running executor.
+pub struct StepBinding {
+    model: ExecutorModel,
+    sampling: Option<crate::model::ModelSampling>,
+    effort: Option<crate::config::Effort>,
+    resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
+    provider: Arc<dyn ModelProvider>,
+    tools: ToolRegistry,
+    #[cfg(not(target_arch = "wasm32"))]
+    hooks: Option<Arc<crate::hooks::BoundHooks>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    host_hooks: Option<Arc<crate::hooks::Hooks>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    // Retain the admitted data and its original engine/allocation custody together.
+    plugin_set: Option<Arc<crate::plugins::Enabled>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    prompt_block: Option<String>,
+    // All selected values retire before the original owner's shared storage.
+    _custody: Option<crate::filesystem::PreparationCustody>,
+}
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
+    step_configuration: Option<Arc<dyn StepConfiguration>>,
     intervention: Option<Arc<crate::agent::ContinuationOverride>>,
-    model: Model,
+    model: ExecutorModel,
     sampling: Option<crate::model::ModelSampling>,
     resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
     provider: Arc<dyn ModelProvider>,
@@ -722,7 +770,9 @@ pub struct StockExecutor {
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
     #[cfg(not(target_arch = "wasm32"))]
-    after_hooks: Vec<crate::plugins::AfterHook>,
+    host_hooks: Option<Arc<crate::hooks::Hooks>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_set: Option<Arc<crate::plugins::Enabled>>,
     /// A prompt hook's block: the turn fails with it before any model request.
     #[cfg(not(target_arch = "wasm32"))]
     prompt_block: Option<String>,
@@ -740,6 +790,17 @@ pub struct StockExecutor {
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
     reconciliation_only: bool,
+}
+
+#[derive(Clone)]
+struct ExecutorModel(Arc<crate::model::ResolvedModel>);
+
+impl std::ops::Deref for ExecutorModel {
+    type Target = Model;
+
+    fn deref(&self) -> &Model {
+        &self.0.0
+    }
 }
 
 /// Journal payload separating canonical history from the exact transformed request.
@@ -787,6 +848,7 @@ pub(crate) struct RetainedModelStep {
     #[cfg(feature = "research")]
     pub(crate) journal_cut: Option<ExecutionJournalCut>,
     pub(crate) request: Option<crate::model::PreparedModelRequest>,
+    pub(crate) configuration: Option<crate::model::ConfigurationUpdate>,
     pub(crate) admission: ModelEventAdmission,
     pub(crate) events: Vec<ModelEvent>,
 }

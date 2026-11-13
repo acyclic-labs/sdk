@@ -1,34 +1,61 @@
 use super::*;
 
+struct NativeProvider<F>(F);
+
+impl<F> crate::model::ModelProvider for NativeProvider<F>
+where
+    F: Fn() -> Result<Option<Arc<NativeTools>>> + Send + Sync,
+{
+    fn generate<'a>(
+        &'a self,
+        _: &'a crate::model::PreparedModelRequest,
+        _: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        unreachable!("declaration-only provider")
+    }
+
+    fn native_tools(&self, _: &crate::model::Model) -> Result<Option<Arc<NativeTools>>> {
+        (self.0)()
+    }
+}
+
 #[test]
 fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let cache = Cache::default();
     for profile in [
         NativeToolProfile::Anthropic,
         NativeToolProfile::Openai,
         NativeToolProfile::Google,
     ] {
         let model = crate::model::Model::new("test".into(), format!("{profile:?}"), "1".into())?;
-        let calls = AtomicUsize::new(0);
-        let refused = cache.get(&model, || {
-            Err(Error::Unsupported("original profile refusal".into()))
-        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(NativeProvider({
+            let calls = Arc::clone(&calls);
+            move || {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(Error::Unsupported("original profile refusal".into()));
+                }
+                NativeTools::new(profile).map(|tools| Some(Arc::new(tools)))
+            }
+        }));
+        let selection = format!("{}/{}", model.provider, model.name);
+        let catalog = crate::model::ModelResolver::new(selection.clone(), |_| {
+            Err(Error::NotFound("unregistered selection".into()))
+        })
+        .with_binding((model.clone(), provider))?;
+        let binding = catalog.resolve_shared(&selection)?;
+        let refused = binding.native_tools();
         assert!(
             matches!(refused, Err(Error::Unsupported(reason)) if reason == "original profile refusal")
         );
-
         let start = std::sync::Barrier::new(4);
         let bindings = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..4)
                 .map(|_| {
                     scope.spawn(|| {
                         start.wait();
-                        cache.get(&model, || {
-                            calls.fetch_add(1, Ordering::SeqCst);
-                            NativeTools::new(profile).map(|tools| Some(Arc::new(tools)))
-                        })
+                        binding.native_tools()
                     })
                 })
                 .collect();
@@ -39,16 +66,13 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         })?;
         let original = bindings[0].as_ref().expect("native family binding");
         // A cached hit does not even ask the immutable selection for its profile.
-        let retained = cache
-            .get(&model, || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err(Error::Unsupported("cached binding was read again".into()))
-            })?
+        let retained = binding
+            .native_tools()?
             .expect("retained native family binding");
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            1,
-            "native profile was read more than once"
+            2,
+            "native profile was read again after its one successful admission"
         );
         assert!(Arc::ptr_eq(original, &retained));
         for binding in bindings.iter().flatten() {
@@ -73,9 +97,18 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         }
         let mut changed = registry.clone();
         let admitted = Arc::new(NativeTools::from_definitions(admitted)?);
-        let selected = Cache::default()
-            .get(&model, || Ok(Some(Arc::clone(&admitted))))?
+        let replacement = catalog.with_binding((
+            model.clone(),
+            Arc::new(NativeProvider({
+                let admitted = Arc::clone(&admitted);
+                move || Ok(Some(Arc::clone(&admitted)))
+            })),
+        ))?;
+        let selected = replacement
+            .resolve_shared(&selection)?
+            .native_tools()?
             .unwrap();
+        assert!(Arc::ptr_eq(&retained, &binding.native_tools()?.unwrap()));
         assert!(Arc::ptr_eq(&selected, &admitted));
         selected.bind(&mut changed)?;
         let selected = changed.get("shell", None, None)?.unwrap();
@@ -124,6 +157,22 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
                 .expect("the family declares its canonical shell");
             assert_eq!(selected.definition.revision, offered.revision);
             assert_eq!(selected.definition.input_schema, offered.input_schema);
+            // Compare the actual bound surface with the original public
+            // contract, independently of the decoder used by definitions().
+            let public: Vec<Value> = serde_json::from_str(declarations(profile))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let public = public
+                .iter()
+                .find(|entry| entry["name"] == "shell")
+                .expect("the public family contract declares shell");
+            assert_eq!(
+                selected.definition.description,
+                public["description"].as_str().expect("public description")
+            );
+            assert_eq!(
+                selected.definition.input_schema,
+                public["parametersJsonSchema"]
+            );
             let capability = selected
                 .executor
                 .capability()
@@ -135,6 +184,31 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
                 original.projection_schema
             );
         }
+        // An unchanged retained declaration can be selected again. A host edit
+        // under the same public revision must still conflict instead of silently
+        // reusing a different argument mapping, refusal or contract.
+        for change in ["mapping", "refusal", "contract"] {
+            let mut changed = shell_entries(profile)?;
+            for (mapping, definition) in &mut changed {
+                match change {
+                    "mapping" => {
+                        mapping.arguments = Some(serde_json::json!({"command": "changed"}))
+                    }
+                    "refusal" => mapping.refuse.push("command".into()),
+                    "contract" => definition.description.push_str(" Different contract."),
+                    _ => unreachable!(),
+                }
+            }
+            assert!(
+                matches!(
+                    NativeTools::from_definitions(changed)?.bind(&mut registry),
+                    Err(Error::Conflict(_))
+                ),
+                "changed {change} reused an existing native revision"
+            );
+        }
+        retained.bind(&mut registry)?;
+        let selected = registry.get("shell", None, None)?.unwrap();
         let expected = vec![selected.definition.clone()];
         assert_eq!(registry.definitions(None)?, expected);
         assert_eq!(
@@ -151,19 +225,81 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
             assert!(registry.get(retired, None, None)?.is_none());
         }
     }
+    // A running turn can replace a family repeatedly. Each replacement must
+    // adapt directly to the original shell, without applying an older family's
+    // template to the already canonical arguments.
+    let mut registry = crate::tools::registry(&["shell".into()], |_| true, Vec::new())?;
+    let original = Arc::clone(registry.get_shared("shell", None, None)?.unwrap());
+    for profile in [
+        NativeToolProfile::Anthropic,
+        NativeToolProfile::Google,
+        NativeToolProfile::Openai,
+        NativeToolProfile::Anthropic,
+    ] {
+        NativeTools::from_definitions(shell_entries(profile)?)?.bind(&mut registry)?;
+        let selected = registry.get("shell", None, None)?.unwrap();
+        let arguments = match profile {
+            NativeToolProfile::Anthropic => serde_json::json!({
+                "command": "echo example", "timeout": 137, "run_in_background": true
+            }),
+            NativeToolProfile::Google => serde_json::json!({
+                "command": "echo example", "dir_path": "workspace", "is_background": true
+            }),
+            NativeToolProfile::Openai => serde_json::json!({
+                "command": "echo example", "workdir": "workspace", "timeout": 137,
+                "background": true
+            }),
+        };
+        let invocation = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::from_bytes([19; 16]),
+            call_id: "family-switch".into(),
+            name: "shell".into(),
+            arguments,
+        };
+        let canonical = selected.executor.canonical(&invocation, None)?.unwrap();
+        assert_eq!(canonical.invocation.arguments["command"], "echo example");
+        assert_eq!(canonical.invocation.arguments["background"], true);
+        if profile != NativeToolProfile::Anthropic {
+            assert_eq!(canonical.invocation.arguments["cwd"], "workspace");
+        }
+        if profile != NativeToolProfile::Google {
+            assert_eq!(canonical.invocation.arguments["timeout_ms"], 137);
+        }
+        let owner = selected.executor.capability().unwrap();
+        assert!(
+            Arc::ptr_eq(owner, &original),
+            "family change replaced original authority"
+        );
+        assert!(
+            owner
+                .executor
+                .canonical(&canonical.invocation, None)?
+                .is_none(),
+            "canonical arguments would pass through another family adapter"
+        );
+        assert_eq!(
+            selected.definition.output_schema,
+            original.definition.output_schema
+        );
+    }
     let model = crate::model::Model::new("test".into(), "absent".into(), "1".into())?;
-    let absent = Cache::default();
-    assert!(absent.get(&model, || Ok(None))?.is_none());
-    assert!(
-        absent
-            .get(&model, || Err(Error::Unsupported(
-                "absent profile was read again".into()
-            )))?
-            .is_none()
-    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let absent = crate::model::ResolvedModel::new((
+        model,
+        Arc::new(NativeProvider({
+            let calls = Arc::clone(&calls);
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }
+        })),
+    ));
+    assert!(absent.native_tools()?.is_none());
+    assert!(absent.native_tools()?.is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
     // Canonical presentation cannot create a missing selection.
     assert!(matches!(
-        ToolRegistry::default().present_natively("shell", vec!["shell".into()]),
+        ToolRegistry::default().present_natively("shell", &["shell"]),
         Err(Error::NotFound(_)),
     ));
     Ok(())
@@ -197,7 +333,7 @@ fn check_aliases(profile: NativeToolProfile, registry: &ToolRegistry) -> Result<
             let tool = selected.get(&definition.name, None, None)?.unwrap();
             assert_eq!(tool.definition, *definition);
             assert!(
-                std::ptr::eq(tool.executor.capability().unwrap(), original),
+                std::ptr::eq(tool.executor.capability().unwrap().as_ref(), original),
                 "native alias replaced the original capability owner"
             );
         }

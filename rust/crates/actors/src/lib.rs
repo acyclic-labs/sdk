@@ -21,7 +21,7 @@ pub mod workers_authorization {
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{
     ContractError, domain, validate_add_subscription, validate_delete, validate_deployment,
-    validate_fork, validate_remove_subscription, validate_update,
+    validate_fork, validate_remove_subscription, validate_resume_subscription, validate_update,
 };
 
 /// The one invocation protocol: a caller-owned call journal.

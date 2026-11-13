@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(selected_file.volume(), &home);
         put(
             "templates/worker/AGENT.md",
-            b"---\nversion: 1\ncontext: fork\nmay_spawn: []\n---\nA later directive.\n",
+            b"---\nversion: 1\nmodel: example/later\ncontext: fork\nmay_spawn: []\n---\nA later directive.\n",
         )?
         .await?;
         let later = templates

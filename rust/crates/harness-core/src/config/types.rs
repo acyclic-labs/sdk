@@ -8,7 +8,7 @@ use ts_rs::TS;
 /// `volume:///home/agent.ts`: the agent's model and how it is called. You may
 /// change your own; `model` must be one your permissions allow (sys/models/),
 /// otherwise its `Admission` is "rejected" with the reason.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentConfig {
     /// "<provider>/<model>", one of the models in sys/models/.
@@ -32,7 +32,7 @@ pub struct AgentConfig {
 }
 
 /// Reasoning effort.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
     /// Least reasoning.
@@ -44,7 +44,7 @@ pub enum Effort {
 }
 
 /// Per-call sampling.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Sampling {
     /// Nonnegative temperature in the provider's units.
@@ -71,7 +71,7 @@ impl Sampling {
 }
 
 /// The loop an agent runs in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "kebab-case")]
 pub enum Host {
     /// The harness's own loop.
@@ -89,7 +89,7 @@ pub enum Host {
 /// issuer wrote (through spawn or fork `files`) binds you and is read-only
 /// to you. Every policy over you is met: everything is allowed unless a
 /// rule here, or one set above you, denies it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     /// Denied actions.
@@ -104,7 +104,7 @@ pub struct Policy {
 
 /// One policy rule. `path` is in the subject's own tree; for "spawn" it
 /// matches child names, for "call" actions or tool paths.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[ts(rename = "Rule")]
 pub struct PolicyRule {
@@ -115,7 +115,7 @@ pub struct PolicyRule {
 }
 
 /// An action a policy rule covers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     /// Reading a file.
@@ -130,8 +130,8 @@ pub enum Action {
     Call,
 }
 
-/// `live/agents/self/admissions/<version>.json`: what happened to one write
-/// of a settings file, where <version> is the version the write produced.
+/// `live/agents/<agent>/admissions/<path>/<cut>/<version>.json`: the selected
+/// file version's outcome under one complete original configuration cut.
 /// "invalid" and "rejected" cannot relax enforcement: retain previously
 /// admitted settings, or refuse the session when no retained generation exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -192,22 +192,45 @@ pub enum Form {
 /// `millis` since the Unix epoch as UTC RFC 3339 with milliseconds.
 #[must_use]
 pub fn utc(millis: u64) -> String {
-    let (days, rest) = (millis / 86_400_000, millis % 86_400_000);
-    // Civil date from days since 1970-01-01 (Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + u64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rest / 3_600_000,
-        rest / 60_000 % 60,
-        rest / 1000 % 60,
-        rest % 1000
-    )
+    utc_value(millis).to_string()
+}
+
+/// Formats or serializes UTC directly into the caller's writer without owning
+/// a temporary timestamp string. Uses the same representation as [`utc`].
+#[must_use]
+pub fn utc_value(millis: u64) -> impl std::fmt::Display + Serialize {
+    Utc(millis)
+}
+
+struct Utc(u64);
+
+impl Serialize for Utc {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl std::fmt::Display for Utc {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let millis = self.0;
+        let (days, rest) = (millis / 86_400_000, millis % 86_400_000);
+        // Civil date from days since 1970-01-01 (Hinnant's algorithm).
+        let z = days + 719_468;
+        let era = z / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + u64::from(month <= 2);
+        write!(
+            formatter,
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+            rest / 3_600_000,
+            rest / 60_000 % 60,
+            rest / 1000 % 60,
+            rest % 1000
+        )
+    }
 }

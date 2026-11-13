@@ -250,6 +250,20 @@ impl LocalUser {
 struct LocalContext(Weak<LocalHarness>);
 
 impl TurnContext for LocalContext {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn configure_steps(
+        &self,
+        executor: StockExecutor,
+        agent: &AgentState,
+        authority: &TurnAuthority,
+    ) -> Result<StockExecutor> {
+        let local = self
+            .0
+            .upgrade()
+            .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+        let source = super::agent_settings::Steps::new(&local, &executor, agent, authority)?;
+        Ok(executor.with_step_configuration(Arc::new(source)))
+    }
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -316,6 +330,19 @@ impl TurnContext for LocalContext {
                     authority.content.reader.clone(),
                 )
                 .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let executor = match executor.tool_binding(crate::tools::shell::PLATFORM.name)? {
+                Some(shell) => executor.with_tool_source(Arc::new(super::programs::Programs {
+                    local: Arc::downgrade(&local),
+                    home: bindings.context.scratch.clone(),
+                    journal: bindings.context.journal.clone(),
+                    verifier: bindings.context.verifier.clone(),
+                    scope: bindings.context.scope.copy(&mut None)?,
+                    shell,
+                    catalog: crate::tool::ToolRegistry::default(),
+                })),
+                None => executor,
+            };
             // Before the turn's first request: the step-0 boundary appends
             // what changed since the epoch froze.
             let through = local
@@ -358,6 +385,7 @@ impl TurnContext for LocalContext {
                     hooks
                         .as_ref()
                         .map(|file| (file, journal_content.reader.as_ref())),
+                    &local.plugin_set,
                 )
                 .await?;
             #[cfg(not(any(test, not(target_arch = "wasm32"))))]

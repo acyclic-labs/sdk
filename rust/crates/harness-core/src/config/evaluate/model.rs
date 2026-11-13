@@ -24,7 +24,11 @@ pub(super) fn root_retained() {
 }
 
 pub(super) fn entered() {
-    VM_ENTRIES.set(VM_ENTRIES.get().wrapping_add(1));
+    VM_ENTRIES.set(entries().wrapping_add(1));
+}
+
+pub(super) fn entries() -> usize {
+    VM_ENTRIES.get()
 }
 
 pub(super) fn dependency_checked() {
@@ -211,7 +215,7 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
             )
             .await
             .ok()
-            .map(|result| result.value)
+            .and_then(|result| result.value.into_unbounded().ok())
         }
         _ => None,
     };
@@ -516,7 +520,12 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
                 let (composed, chain) = compose("agent.ts", &layers, &tree, base.clone())
                     .await
                     .map_err(|error| format!("layer composition admission: {error}"))?;
-                if composed != json!({"below": below, "named": value})
+                let admitted = compose_result("agent.ts", &layers, &tree, base.clone())
+                    .await
+                    .map_err(|error| format!("layer source admission: {error}"))?
+                    .map_err(|error| format!("layer value admission: {error}"))?;
+                if admitted != composed
+                    || composed != json!({"below": below, "named": value})
                     || composed != upper_result.value
                 {
                     return Err("layer composition lost its original lower value".into());

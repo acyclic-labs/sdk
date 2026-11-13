@@ -233,7 +233,7 @@ impl StockExecution<'_> {
         let capacity = self.model_capacity()?;
         let ceiling = self.input_ceiling(capacity)?;
         let count = match stock_count_tokens(
-            self.stock.provider.as_ref(),
+            self.selected_provider().as_ref(),
             prepared,
             ceiling,
             self.io,
@@ -269,8 +269,11 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn model_capacity(&self) -> Result<crate::context::ModelContextCapacity> {
-        let capacity =
-            stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
+        let capacity = stock_context_capacity(
+            self.selected_provider().as_ref(),
+            self.selected_model(),
+            self.io,
+        )?;
         capacity.validate()?;
         Ok(capacity)
     }
@@ -291,12 +294,13 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn sampling(&self) -> Result<crate::model::ModelSampling> {
-        self.stock
-            .resolved_sampling
+        self.selected_sampling_cache()
             .get_or_try_init(|| {
-                let profile = self.stock.provider.model_profile(&self.stock.model)?;
+                let profile = self
+                    .selected_provider()
+                    .model_profile(self.selected_model())?;
                 crate::model::ModelSampling::admit(
-                    self.stock.sampling,
+                    self.selected_sampling(),
                     profile.map(|profile| profile.sampling()),
                 )
             })
@@ -322,15 +326,18 @@ impl StockExecution<'_> {
         {
             return Ok(None);
         }
-        let capacity =
-            stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
+        let capacity = stock_context_capacity(
+            self.selected_provider().as_ref(),
+            self.selected_model(),
+            self.io,
+        )?;
         capacity.validate()?;
         let mut prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &mut prepared)
             .await?;
         let ceiling = crate::context::CapacityCompaction::default().input_ceiling(capacity)?;
         let count = match stock_count_tokens(
-            self.stock.provider.as_ref(),
+            self.selected_provider().as_ref(),
             &prepared,
             ceiling,
             self.io,

@@ -139,6 +139,14 @@ fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
         );
     }
     let snapshot = registry.clone();
+    let revision = registry
+        .get("first", None, None)?
+        .unwrap()
+        .definition
+        .revision
+        .clone();
+    registry.select_model_version("first", &revision)?;
+    registry.present_natively("first", &["first"])?;
     assert!(matches!(
         registry.register(make_tool("shared")?, &mut custody, Some(&work)),
         Err(Error::NativeBoundary {

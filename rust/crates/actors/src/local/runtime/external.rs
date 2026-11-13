@@ -80,7 +80,13 @@ impl Registry {
         }
         let selections = ids
             .iter()
-            .filter_map(|id| state.subscriptions().get(id).map(|cut| (id, cut)))
+            .filter_map(|id| {
+                state
+                    .subscriptions()
+                    .get(id)
+                    .filter(|cut| !cut.paused)
+                    .map(|cut| (id, cut))
+            })
             .map(|(id, cut)| {
                 Ok((
                     id,
@@ -100,7 +106,9 @@ impl Registry {
         }
         let mut entries = registrations.actors.remove(actor).unwrap_or_default();
         entries.retain(|id, entry| {
-            ids.contains(id) && state.subscriptions().contains_key(id) && !entry.is_closed()
+            ids.contains(id)
+                && state.subscriptions().get(id).is_some_and(|cut| !cut.paused)
+                && !entry.is_closed()
         });
         for (id, selection) in selections {
             match entries.get(id) {

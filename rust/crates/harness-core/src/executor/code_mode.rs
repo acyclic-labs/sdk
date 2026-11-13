@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 mod allocator;
 mod interpreter;
+mod lazy;
 #[cfg(feature = "test-support")]
 pub(super) mod model;
 pub(crate) use interpreter::MEMORY_BYTES;
@@ -268,7 +269,7 @@ impl StockExecution<'_> {
                     )
                 })?;
             let definitions =
-                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?;
+                stock_tool_definitions(self.selected_tools(), &self.stock.tool_scope, self.io)?;
             let funded = self
                 .io
                 .map(|io| io.encode(&definitions, u64::MAX, false))
@@ -308,6 +309,7 @@ impl StockExecution<'_> {
                 maximum,
                 allocator,
                 interpreter::INTERRUPT_BUDGET,
+                self.selected_tools().has_lazy_tools(),
             )));
             let mut ordinal = 0_u64;
             let mut log_ordinal = 0_u64;
@@ -520,18 +522,28 @@ impl StockExecution<'_> {
             .module
             .then(|| call.name.value.strip_prefix("acyclic."))
             .flatten();
-        let name = match canonical {
-            Some(name) => match self.stock.tools.capability(name, self.io)? {
-                Some(tool) => with_history_io(self.io, |work| {
-                    preparation_format(
-                        format_args!("{}@{}", tool.definition.name, tool.definition.revision),
-                        work,
-                    )
-                })?,
-                None => stock_string_copy(name, self.io)?,
+        let pinned = match canonical {
+            Some(name) => match self.selected_tools().capability(name, self.io)? {
+                Some(tool) => self
+                    .selected_tools()
+                    .get_shared(
+                        &tool.definition.name,
+                        Some(&tool.definition.revision),
+                        self.io,
+                    )?
+                    .cloned(),
+                None => None,
             },
-            None => stock_string_copy(&call.name.value, self.io)?,
+            None => None,
         };
+        let name = stock_string_copy(
+            pinned
+                .as_ref()
+                .map(|tool| tool.definition.name.as_str())
+                .or(canonical)
+                .unwrap_or(&call.name.value),
+            self.io,
+        )?;
 
         let decoded = self
             .io
@@ -564,6 +576,28 @@ impl StockExecution<'_> {
             arguments,
             self.native_work(),
         )?;
+        let (invocation, pinned) = if !call.module
+            & self.selected_tools().has_lazy_tools()
+            & self
+                .selected_tools()
+                .resolve(&invocation.name, self.io)?
+                .is_none()
+        {
+            match self
+                .lazy_call(
+                    invocation,
+                    (operation, step),
+                    (&call.name.value, &call.arguments.value),
+                )
+                .await?
+            {
+                Ok(selected) => selected.bind(self.selected_tools(), self.io)?,
+                Err(cause) => return Ok(ExecutionProgress::Ready(Err(cause))),
+            }
+        } else {
+            (invocation, pinned)
+        };
+        let name = stock_string_copy(&invocation.name, self.io)?;
         // Local call/result messages supply the identical stock metadata contract;
         // they never become model history. The journal retains the ordinary records.
         let mut messages = vec![ModelMessage {
@@ -577,7 +611,7 @@ impl StockExecution<'_> {
             journal,
             operation,
             step,
-            invocation,
+            (invocation, pinned),
             0,
             &mut messages,
             hook_context,
@@ -639,8 +673,7 @@ impl StockExecution<'_> {
             )
         })?;
         let value = if self
-            .stock
-            .tools
+            .selected_tools()
             .get(&name, None, self.io)?
             .is_some_and(|tool| tool.executor.is_code_mode())
         {

@@ -61,6 +61,7 @@ pub use windows_test_filesystems::junction as test_directory_junction;
 
 pub mod access;
 mod arc_layout;
+pub use arc_layout::shared_allocation_bytes;
 mod operation_claim;
 mod sync;
 #[cfg(not(target_arch = "wasm32"))]
@@ -216,8 +217,8 @@ pub use async_storage::{
     AppendGroupOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError,
     AuthorityGroupCost, AuthorityGuard, AuthorityWork, DynObjectStore, GenerationFork,
     GenerationForkSource, OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask, PolicyCut,
-    PolicyOwner, PublicationScope, SharedObjectStore, WorkspaceForkCommit, WorkspaceForkOutcome,
-    shared_objects,
+    PolicyGroup, PolicyOwner, PublicationScope, SharedObjectStore, WorkspaceForkCommit,
+    WorkspaceForkOutcome, shared_objects,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};

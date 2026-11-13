@@ -1,6 +1,6 @@
 use super::*;
 
-async fn external_composition_policy_fence(seal: bool) -> TestResult {
+async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = StreamAuthorityStore::new(provider.clone());
     let token = CancellationToken::new();
@@ -9,7 +9,26 @@ async fn external_composition_policy_fence(seal: bool) -> TestResult {
     store
         .create_authority(authority, Epoch::GENESIS, &mut work, None::<&mut ()>)
         .await?;
-    let cut = store.policy_cut(authority, &mut work).await?;
+    let other = AuthorityId::from_bytes([103; 16]);
+    store
+        .create_authority(other, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await?;
+    let cuts = [
+        store.policy_cut(authority, &mut work).await?,
+        store.policy_cut(other, &mut work).await?,
+    ];
+    let authority = [authority, other][changed];
+    let original = crate::NativeMaterializationWork::new(
+        WorkBudget {
+            peak_allocation_bytes: 65_536,
+            ..WorkBudget::UNBOUNDED
+        },
+        &token,
+    )
+    .map_err(|(cause, _)| cause)?;
+    let before = original.live_allocation_bytes();
+    let group = crate::PolicyGroup::new(&[&cuts], &original, &token)?;
+    assert!(original.live_allocation_bytes() > before);
     let effect = StreamPath::new("harness/approval-answer")?;
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
         deadline_unix_millis: None,
@@ -25,9 +44,13 @@ async fn external_composition_policy_fence(seal: bool) -> TestResult {
         idempotency_key: IdempotencyKey::new(b"approval-composition".to_vec())?,
     });
     if seal {
-        cut.scope(async { store.seal(&mut commit, &mut work) })
+        group
+            .scope(async { store.seal(&mut commit, &mut work) })
             .await?;
         assert!(commit.request_mut().is_none());
+    }
+    if seal {
+        assert_eq!(original.live_allocation_bytes(), before);
     }
     // A different policy head wins after the caller's original admission.
     let head = store.head(authority, &mut work).await?;
@@ -90,17 +113,28 @@ async fn external_composition_policy_fence(seal: bool) -> TestResult {
         ));
         assert!(commit.request_mut().is_some());
     }
+    let occupied = original.claim(
+        original.remaining()?.peak_allocation_bytes,
+        1,
+        WorkCounters::UNCHARGED,
+    )?;
+    assert!(crate::PolicyGroup::new(&[&cuts], &original, &token).is_err());
+    drop(occupied);
+    token.cancel();
+    assert!(crate::PolicyGroup::new(&[&cuts], &original, &token).is_err());
     Ok(())
 }
 
 #[tokio::test]
 async fn external_composition_seal_fences_revocation_and_preserves_retry_identity() -> TestResult {
-    external_composition_policy_fence(true).await
+    external_composition_policy_fence(true, 0).await?;
+    external_composition_policy_fence(true, 1).await
 }
 
 #[tokio::test]
 async fn external_composition_without_seal_is_a_stale_publication_control() -> TestResult {
-    external_composition_policy_fence(false).await
+    external_composition_policy_fence(false, 0).await?;
+    external_composition_policy_fence(false, 1).await
 }
 
 fn filesystem() -> crate::Fs<StreamAuthorityStore<ReleaseSpy>, crate::MemoryObjectBackend> {
@@ -369,12 +403,12 @@ async fn append_revocation(omit_fence: bool) -> TestResult {
         None::<&mut ()>,
     );
     let outcome = if omit_fence {
-        append.await?
+        append.await
     } else {
-        cut.scope(append).await?
+        cut.scope(append).await
     };
     assert!(
-        matches!(outcome, FsAppendOutcome::Conflict { .. }),
+        outcome.is_err(),
         "merge append ignored source policy revocation"
     );
     assert_eq!(store.head(target, &mut work).await?, target_head);

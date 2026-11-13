@@ -254,6 +254,24 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         self.acquire_execution(operation, io)?.into_owner(io)
     }
 
+    /// Acquires a child effect under this journal's original execution. The
+    /// parent must be the execution this journal authenticates; an effect ID
+    /// alone cannot select another execution's authority. This shares the
+    /// execution ownership registry and excludes live attempts before reading
+    /// durable start/outcome records. Dropping an owner does not undo effects.
+    fn acquire_effect<'a>(
+        &'a self,
+        _parent: OperationId,
+        _effect: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<ExecutionAttempt<'a>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal has no child-effect custody",
+        ))
+    }
+
     /// Follows an authorized cancellation while awaiting a model, approval or
     /// tool invocation whose executor guarantees cancellation on future drop.
     /// The default journal has no filesystem cancellation binding.
@@ -415,20 +433,22 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
-    /// Observes an already staged immutable payload by its original operation and retry key.
+    /// Observes an immutable payload by its original operation and retry key,
+    /// before consulting live sources during recovery. `None` means that this
+    /// exact identity has no publication; authorization and storage failures
+    /// remain errors, never permission to select replacement content.
     fn staged_ref<'a>(
         &'a self,
         _operation_id: OperationId,
         _idempotency_key: &'a str,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<FileRef>>> {
         Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Unsupported,
             "original staged-payload observation is unavailable",
         ))
     }
-
     /// Reads an exact version under the journal owner's grant and verifies its descriptor.
     fn load<'a>(
         &'a self,

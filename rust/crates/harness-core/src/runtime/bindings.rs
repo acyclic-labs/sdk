@@ -8,6 +8,7 @@ pub struct AgentHarness {
     pub(super) content: Option<ContentBindings>,
     pub(super) artifacts: Option<ContentBindings>,
     pub(super) seed: Option<crate::layers::PinnedLayer>,
+    pub(super) configuration: [Option<crate::layers::PinnedLayer>; 4],
     pub(super) system: Option<crate::layers::PinnedLayer>,
 }
 
@@ -61,8 +62,12 @@ pub struct Bindings {
     pub artifacts: Option<ContentBindings>,
     /// The read-only seed layer under every agent's home (see
     /// [`crate::seed`]), read through the content reader under the scope's
-    /// read grants. Without it the effective view is the home alone.
+    /// read grants. Without it the effective view has no built-in fallback.
     pub seed: Option<crate::layers::PinnedLayer>,
+    /// Original read-only user/org, scope, template and parent sources, in
+    /// that order. Reads retain each supplied generation and ordinary source
+    /// grants; an absent source contributes no files or authority.
+    pub configuration: [Option<crate::layers::PinnedLayer>; 4],
     /// Host-owned read-only system files, shared and pinned for this run.
     pub system: Option<crate::layers::PinnedLayer>,
 }
@@ -83,8 +88,28 @@ impl Bindings {
         if let Some(artifacts) = &self.artifacts {
             artifacts.validate()?;
         }
-        for layer in self.seed.iter().chain(self.system.iter()) {
+        for layer in self
+            .seed
+            .iter()
+            .chain(self.configuration.iter().flatten())
+            .chain(self.system.iter())
+        {
             layer.validate()?;
+        }
+        let layers = self
+            .seed
+            .iter()
+            .chain(self.configuration.iter().flatten())
+            .chain(self.system.iter());
+        for (index, layer) in layers.clone().enumerate() {
+            if layers.clone().take(index).any(|earlier| {
+                earlier.volume == layer.volume && earlier.generation != layer.generation
+            }) {
+                return Err(Error::Invalid(
+                    "read-only sources cannot select different generations of the same volume"
+                        .into(),
+                ));
+            }
         }
         Ok(Arc::new(AgentHarness {
             targets: self.targets,
@@ -93,12 +118,45 @@ impl Bindings {
             content: self.content,
             artifacts: self.artifacts,
             seed: self.seed,
+            configuration: self.configuration,
             system: self.system,
         }))
     }
 }
 
 impl AgentHarness {
+    /// Original user/org, scope, template and parent pins, in that order.
+    pub fn issuer_configuration(&self) -> &[Option<crate::layers::PinnedLayer>; 4] {
+        &self.configuration
+    }
+
+    /// Original immutable issuer sources, in increasing authority order.
+    pub fn configuration_layers(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&'static str, &crate::layers::PinnedLayer)> {
+        use crate::layers::{PARENT_PATH, SCOPE_PATH, SEED_PATH, TEMPLATE_PATH, USER_ORG_PATH};
+        self.seed
+            .as_ref()
+            .map(|layer| (SEED_PATH, layer))
+            .into_iter()
+            .chain(
+                [USER_ORG_PATH, SCOPE_PATH, TEMPLATE_PATH, PARENT_PATH]
+                    .into_iter()
+                    .zip(self.configuration.iter())
+                    .filter_map(|(path, layer)| layer.as_ref().map(|layer| (path, layer))),
+            )
+    }
+
+    pub(super) fn read_only_layers(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (&'static str, &crate::layers::PinnedLayer)> {
+        self.configuration_layers().chain(
+            self.system
+                .as_ref()
+                .map(|layer| (crate::layers::SYSTEM_PATH, layer)),
+        )
+    }
+
     /// Selects an agent's execution targets, project and retained home together.
     /// Providers must already be bound to the selected agent's authority.
     pub fn with_workspace(
@@ -116,6 +174,7 @@ impl AgentHarness {
             scope: self.scope.clone(),
             artifacts: Some(home),
             seed: self.seed.clone(),
+            configuration: self.configuration.clone(),
             system: self.system.clone(),
         }))
     }
@@ -148,6 +207,14 @@ impl AgentHarness {
         private: ContentBindings,
     ) -> Result<TaskContext> {
         private.validate()?;
+        if self
+            .read_only_layers()
+            .any(|(_, layer)| layer.volume == private.volume)
+        {
+            return Err(Error::Invalid(
+                "writable home cannot also be an issuer configuration source".into(),
+            ));
+        }
         if private.writer.is_none() {
             return Err(Error::Invalid("agent private content has no writer".into()));
         }

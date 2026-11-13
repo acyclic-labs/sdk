@@ -357,10 +357,10 @@ impl Composer for Participants {
     }
 }
 
-async fn placed(
-    provider: Arc<Faulty>,
+async fn placed<P: StreamProvider + 'static>(
+    provider: Arc<Faulty<P>>,
     counts: Arc<Counts>,
-) -> Result<(Store<Faulty>, ActorReference), Failure> {
+) -> Result<(Store<Faulty<P>>, ActorReference), Failure> {
     let store = Store::new(provider, path("participant/actors")?)
         .with_composer(Arc::new(Participants(counts)));
     let actor = ActorReference::new(b"account", b"agents", b"participant")?;
@@ -374,6 +374,7 @@ async fn placed(
                     "inbox".to_owned(),
                     Subscription {
                         path: path("mail/inbox")?,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),
@@ -390,6 +391,102 @@ async fn placed(
         .claim(&store.load(&actor).await?, 1, key("place-participant")?)
         .await?;
     Ok((store, actor))
+}
+
+pub(super) async fn recovered_custody_requires_durability(
+    policy: acyclic_stream::LocalDurability,
+) -> Result<(), Failure> {
+    let directory = tempfile::tempdir()?;
+    let provider = Arc::new(Faulty {
+        inner: acyclic_stream::LocalStream::open(
+            directory.path(),
+            acyclic_stream::LocalStreamLimits {
+                durability: policy,
+                ..Default::default()
+            },
+        )
+        .await?,
+        plan: vec![
+            Fault::None,
+            Fault::None,
+            Fault::HoldDurability(StreamError::AccessDenied),
+        ],
+        calls: AtomicUsize::new(0),
+    });
+    let counts = Arc::new(Counts::default());
+    acyclic_stream::deferring_durability(async {
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let input = path("mail/inbox")?;
+        provider
+            .inner
+            .append(acyclic_stream::AppendRequest {
+                path: input.clone(),
+                records: vec![Bytes::from_static(b"original input").into()],
+                if_tail: None,
+                idempotency_key: key("durability-input")?,
+            })
+            .await?;
+        let delivered = store.record(&input, 0).await?;
+        let result = store
+            .publish(
+                &store.load(&actor).await?,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                Some(&delivered),
+                transition(false)?,
+                key("durability-custody")?,
+            )
+            .await;
+        let Err(Error::Unknown {
+            publication,
+            source: StreamError::AccessDenied,
+        }) = result
+        else {
+            return Err("unconfirmed participant publication was acknowledged".into());
+        };
+        drop(publication);
+        let accepted = store.load(&actor).await?;
+        let state_path = store.path(&actor)?;
+        assert!(provider.inner.watermarks(state_path.clone()).await?.durable < accepted.tail);
+        assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            store.claim(&accepted, 2, key("durability-reclaim")?).await,
+            Err(Error::PublicationDurabilityUnknown {
+                source: StreamError::AccessDenied,
+                ..
+            })
+        ));
+        assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+        let restored = Store::new(
+            Arc::new(provider.inner.clone()),
+            path("participant/actors")?,
+        )
+        .with_composer(Arc::new(Participants(counts.clone())));
+        let claimed = restored
+            .claim(&accepted, 2, key("durability-reclaim")?)
+            .await?;
+        assert_eq!(
+            claimed.state().and_then(|state| state.cursor("inbox")),
+            Some(1)
+        );
+        assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+        assert!(provider.inner.watermarks(state_path).await?.durable >= claimed.tail);
+        assert_eq!(provider.inner.tail(path("participant/child")?).await?, 1);
+        assert!(
+            provider
+                .inner
+                .watermarks(path("participant/child")?)
+                .await?
+                .durable
+                >= 1
+        );
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]

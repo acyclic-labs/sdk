@@ -97,6 +97,12 @@ impl NativeMaterializationWork {
             }
         }
     }
+    /// Exact shared-owner allocation layout, including header and alignment.
+    pub fn shared_allocation_bytes<T>() -> Result<u64, NativeTreeMaterializationError> {
+        crate::shared_allocation_bytes::<T>()
+            .map_err(|_| NativeTreeMaterializationError::InvalidLayout)
+    }
+
     /// Prepares process-global services, then admits the original ledger before
     /// sharing it. Global framework bootstrap is not invocation payload.
     pub fn new(

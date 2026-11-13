@@ -98,6 +98,17 @@ mod tests {
             prop_assert_eq!(bounded.is_ok(), snapshot.len() as u64 <= maximum && maximum > 0 && maximum != u64::MAX);
             if let Ok(encoded) = bounded { prop_assert_eq!(encoded, snapshot.clone()); }
             let decoded: Hooks = serde_json::from_slice(&snapshot)?;
+            let mut plugin_rules: Vec<HookRule> = serde_json::from_slice(&snapshot)?;
+            for rule in &mut plugin_rules {
+                for hook in &mut rule.hooks {
+                    if let HookRun::Executable { executable, .. } = &mut hook.run {
+                        *executable = format!("plugin:{executable}");
+                    }
+                }
+            }
+            let mut plugins = Hooks::default();
+            plugins.add_rules(plugin_rules)?;
+            let combined = bind_rules(&original, &plugins, None)?;
             prop_assert_eq!(serde_json::to_vec(&decoded)?, snapshot);
             prop_assert_eq!(original.is_empty(), decoded.is_empty());
             let registry = ToolRegistry::default();
@@ -105,6 +116,9 @@ mod tests {
             for event in HookEvent::ALL {
                 let selected = |hooks: &Hooks| -> Result<Vec<HookSpec>> { Ok(hooks.commands(event, &input, &registry)?.map(|hook| hook.as_ref().clone()).collect()) };
                 prop_assert_eq!(selected(&original)?, selected(&decoded)?);
+                let mut expected = selected(&original)?;
+                expected.extend(selected(&plugins)?);
+                prop_assert_eq!(selected(&combined.rules)?, expected);
             }
         }
     }

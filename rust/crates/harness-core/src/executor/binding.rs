@@ -8,6 +8,12 @@ fn slice_is_empty<T>(slice: &&[T]) -> bool {
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         self.verify_summary_destination()?;
+        self.verify_task_authority_binding(operation)
+    }
+
+    // Tool calls retain their issued authority without admitting a model or
+    // acquiring a summary destination. Model entry checks both guarantees.
+    pub(super) fn verify_task_authority_binding(&self, operation: OperationId) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.native_work().is_some()
             && let Some((context, expected_operation)) = self.context
@@ -60,6 +66,22 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
+        // A step may select another complete binding, but the parent journal
+        // and its working cuts still belong to the configuration that issued
+        // the turn. Summaries have their own frozen request configuration.
+        if self.summary.is_none() && self.selected.is_some() {
+            return Self {
+                io: self.io,
+                context: self.context,
+                single_request: self.single_request,
+                ..Self::ordinary(self.stock)
+            }
+            .configuration_request_digest(input);
+        }
+        self.configuration_request_digest(input)
+    }
+
+    fn configuration_request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         #[derive(Serialize)]
         struct IssuedContext<'a> {
             admission_operation: OperationId,
@@ -114,8 +136,7 @@ impl StockExecution<'_> {
         // bindings are pinned by each retained model request, not this fixed
         // executor configuration digest.
         let tools = self
-            .stock
-            .tools
+            .selected_tools()
             .fixed_definitions(self.stock.tool_scope.grants(), io)?;
         let task_context = self.context.map(|(context, operation)| IssuedContext {
             admission_operation: operation,
@@ -132,7 +153,7 @@ impl StockExecution<'_> {
             &Request {
                 executor: "acyclic.stock.v11",
                 input,
-                model: &self.stock.model,
+                model: self.selected_model(),
                 sampling: self.sampling()?,
                 context: &contracts,
                 tools: &tools,
@@ -144,13 +165,12 @@ impl StockExecution<'_> {
                 policy: self.stock.policy_identity.as_ref(),
                 #[cfg(not(target_arch = "wasm32"))]
                 tool_hooks: self
-                    .stock
-                    .hooks
+                    .selected_hooks()
                     .as_ref()
                     .map(|hooks| ("1", &hooks.manifest)),
                 inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
                 #[cfg(not(target_arch = "wasm32"))]
-                after_hooks: &self.stock.after_hooks,
+                after_hooks: self.selected_after_hooks(),
                 compaction: self.compaction_policy()?,
                 model_capacity: if self.unchecked()? {
                     None

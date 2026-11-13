@@ -142,7 +142,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     ) -> Result<super::PreparedPublish, Error> {
         let original = super::owned(previous, epoch)?;
         let mut state = original.clone();
-        super::consume(&mut state, &original.alarm, trigger)?;
+        super::consume(&mut state, &original.alarm, trigger, true)?;
         let mut publication = self.prepare(previous, state, Vec::new(), key, false)?;
         publication.require(vec![acyclic_stream::CommitCondition::Present {
             path: call.settled().clone(),

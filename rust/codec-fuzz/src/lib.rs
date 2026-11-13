@@ -493,6 +493,7 @@ pub fn actor_seeds()
                         "inbox".into(),
                         Subscription {
                             path: input.clone(),
+                            paused: false,
                             cursor: 0,
                         },
                     )]),
@@ -1122,6 +1123,7 @@ async fn actor_alarm_seeds()
                     "inbox".into(),
                     Subscription {
                         path: input.clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

@@ -92,7 +92,7 @@ impl StockExecution<'_> {
             )?;
             let ceiling = self.input_ceiling(capacity)?;
             let count = stock_count_tokens(
-                self.stock.provider.as_ref(),
+                self.selected_provider().as_ref(),
                 &prepared,
                 ceiling,
                 self.io,
@@ -158,6 +158,7 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
+                    configuration: None,
                     steering: boundary
                         .map(|boundary| boundary.selection(input.operation_id, step))
                         .transpose()?,

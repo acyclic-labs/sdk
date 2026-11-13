@@ -25,3 +25,8 @@ pub use native::*;
 mod after;
 #[cfg(not(target_arch = "wasm32"))]
 pub use after::{AfterHook, seed};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod program;
+#[cfg(not(target_arch = "wasm32"))]
+pub use program::{BoundHook, LoadedProgram, load_program};

@@ -211,7 +211,7 @@ impl StockExecution<'_> {
             journal,
             operation_id,
             step,
-            invocation,
+            (invocation, None),
             invocation_index,
             prior_messages,
             hook_context,

@@ -2064,6 +2064,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .flat_map(|last| subscriptions.range::<str, _>((Unbounded, Included(last))));
         let ordered = self.handler.ordered_subscriptions();
         for (id, subscription) in later.chain(earlier) {
+            if subscription.paused {
+                continue;
+            }
             if !ordered.contains(id) {
                 if let Some((trigger, record)) =
                     self.next_subscription(state, id, subscription).await?
@@ -2078,7 +2081,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 other < id
                     && subscriptions
                         .get(other)
-                        .is_some_and(|other| other.path == subscription.path)
+                        .is_some_and(|other| !other.paused && other.path == subscription.path)
             }) {
                 continue;
             }
@@ -2086,7 +2089,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             for member in ordered {
                 let Some(bound) = subscriptions
                     .get(member)
-                    .filter(|bound| bound.path == subscription.path)
+                    .filter(|bound| !bound.paused && bound.path == subscription.path)
                 else {
                     continue;
                 };
@@ -2112,6 +2115,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         id: &str,
         subscription: &crate::guest::Subscription,
     ) -> Result<Option<(Trigger, Record)>, Error> {
+        if subscription.paused {
+            return Ok(None);
+        }
         let key = self.handler.subscription_key(id, state.checkpoint())?;
         let records = self
             .store

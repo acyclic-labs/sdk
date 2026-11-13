@@ -1,7 +1,10 @@
 use super::*;
 
 pub(in crate::executor) struct StockExecution<'a> {
+    /// The immutable prefix composition, independent of per-step bindings.
     pub(in crate::executor) stock: &'a StockExecutor,
+    pub(in crate::executor) selected: Option<Arc<StepBinding>>,
+    pub(in crate::executor) configuration: Option<&'a Arc<dyn StepConfiguration>>,
     pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) io: Option<&'a PreparationIo>,
     pub(in crate::executor) summary: Option<ContextPipeline>,
@@ -52,14 +55,70 @@ impl JournalWrites<'_> {
 /// The turn's compaction policy, resolved once from the original IO, with the
 /// private summary authority that resolution validated.
 pub(in crate::executor) struct ResolvedCompaction<'a> {
-    pub(in crate::executor) policy: &'a crate::context::CompactionPolicy,
+    pub(in crate::executor) policy: crate::context::CompactionPolicy,
     pub(in crate::executor) destination: Option<crate::runtime::SummaryDestination<'a>>,
 }
 
 impl<'a> StockExecution<'a> {
+    pub(in crate::executor) fn selected_model(&self) -> &Model {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.model, |selected| &selected.model)
+    }
+    pub(in crate::executor) fn selected_provider(&self) -> &Arc<dyn ModelProvider> {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.provider, |selected| &selected.provider)
+    }
+    pub(in crate::executor) fn selected_tools(&self) -> &ToolRegistry {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.tools, |selected| &selected.tools)
+    }
+    pub(in crate::executor) fn selected_sampling(&self) -> Option<crate::model::ModelSampling> {
+        self.selected
+            .as_ref()
+            .map_or(self.stock.sampling, |selected| selected.sampling)
+    }
+    pub(in crate::executor) fn selected_sampling_cache(
+        &self,
+    ) -> &once_cell::sync::OnceCell<crate::model::ModelSampling> {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.resolved_sampling, |selected| {
+                &selected.resolved_sampling
+            })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::executor) fn selected_hooks(&self) -> &Option<Arc<crate::hooks::BoundHooks>> {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.hooks, |selected| &selected.hooks)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::executor) fn selected_after_hooks(&self) -> &[crate::plugins::AfterHook] {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.plugin_set, |selected| &selected.plugin_set)
+            .as_ref()
+            .map_or(&[], |plugins| plugins.after.as_slice())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::executor) fn check_prompt_admission(&self) -> Result<()> {
+        let block = self
+            .selected
+            .as_ref()
+            .map_or(&self.stock.prompt_block, |selected| &selected.prompt_block);
+        match block {
+            Some(reason) => Err(Error::Invalid(stock_string_copy(reason, self.io)?)),
+            None => Ok(()),
+        }
+    }
     pub(in crate::executor) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self {
             stock,
+            selected: None,
+            configuration: stock.step_configuration.as_ref(),
             context: stock
                 .task_context
                 .as_ref()
@@ -108,7 +167,7 @@ impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn compaction_policy(
         &self,
     ) -> Result<&crate::context::CompactionPolicy> {
-        Ok(self.compaction()?.policy)
+        Ok(&self.compaction()?.policy)
     }
     pub(in crate::executor) fn compaction(&self) -> Result<&ResolvedCompaction<'a>> {
         self.compaction
@@ -116,45 +175,44 @@ impl<'a> StockExecution<'a> {
     }
     fn resolve_compaction(&self) -> Result<ResolvedCompaction<'a>> {
         use crate::context::CompactionPolicy;
-        static CAPACITY: std::sync::LazyLock<CompactionPolicy> =
-            std::sync::LazyLock::new(CompactionPolicy::default);
-        let stock: &'a StockExecutor = self.stock;
         let disabled = || ResolvedCompaction {
-            policy: &CompactionPolicy::Disabled,
+            policy: CompactionPolicy::Disabled,
             destination: None,
         };
-        Ok(match (&self.summary, &stock.compaction, self.context) {
-            (Some(_), _, _) => disabled(),
-            (None, Some(policy @ CompactionPolicy::Capacity(_)), _) => {
-                let destination = self
-                    .context
-                    .map(|(context, _)| context.summary_destination(self.io))
-                    .transpose()?;
-                if let Some(destination) = destination {
-                    destination.require(self.io)?;
+        Ok(
+            match (&self.summary, &self.stock.compaction, self.context) {
+                (Some(_), _, _) => disabled(),
+                (None, Some(policy @ CompactionPolicy::Capacity(_)), _) => {
+                    let destination = self
+                        .context
+                        .map(|(context, _)| context.summary_destination(self.io))
+                        .transpose()?;
+                    if let Some(destination) = destination {
+                        destination.require(self.io)?;
+                    }
+                    ResolvedCompaction {
+                        policy: policy.clone(),
+                        destination,
+                    }
                 }
-                ResolvedCompaction {
-                    policy,
-                    destination,
+                (None, Some(CompactionPolicy::Disabled), _) => disabled(),
+                (None, None, Some((context, _))) => {
+                    let destination = context.summary_destination(self.io)?;
+                    ResolvedCompaction {
+                        policy: if destination.writer().is_some() {
+                            CompactionPolicy::default()
+                        } else {
+                            CompactionPolicy::Disabled
+                        },
+                        destination: Some(destination),
+                    }
                 }
-            }
-            (None, Some(CompactionPolicy::Disabled), _) => disabled(),
-            (None, None, Some((context, _))) => {
-                let destination = context.summary_destination(self.io)?;
-                ResolvedCompaction {
-                    policy: if destination.writer().is_some() {
-                        &CAPACITY
-                    } else {
-                        &CompactionPolicy::Disabled
-                    },
-                    destination: Some(destination),
-                }
-            }
-            (None, None, None) => ResolvedCompaction {
-                policy: &CAPACITY,
-                destination: None,
+                (None, None, None) => ResolvedCompaction {
+                    policy: CompactionPolicy::default(),
+                    destination: None,
+                },
             },
-        })
+        )
     }
 
     pub(in crate::executor) fn inherited_prefix(

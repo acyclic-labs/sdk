@@ -215,6 +215,7 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                                 Subscription {
                                     path: source.clone(),
                                     cursor: 0,
+                                    paused: false,
                                 },
                             )
                         })
@@ -256,6 +257,27 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                 trigger.record_position(),
                 Some((if earliest { "z" } else { "inbox" }, record.sequence))
             );
+        }
+        for paused in ["inbox", "z"] {
+            let mut state = snapshot.state().ok_or("missing ordered state")?.clone();
+            state.subscriptions.get_mut(paused).unwrap().paused = true;
+            for after in [None, Some("inbox"), Some("z")] {
+                let (trigger, record, _) = runtime
+                    .next_record(&state, after)
+                    .await?
+                    .ok_or("paused member starved an active source member")?;
+                let (active, sequence) = if paused == "inbox" {
+                    ("z", 0)
+                } else {
+                    ("inbox", 1)
+                };
+                assert_eq!(record.sequence, sequence);
+                assert_eq!(trigger.record_position(), Some((active, sequence)));
+            }
+            for bound in state.subscriptions.values_mut() {
+                bound.paused = true;
+            }
+            assert!(runtime.next_record(&state, None).await?.is_none());
         }
     }
     Ok(())
@@ -315,6 +337,7 @@ async fn ordered_source_backlog_yields_to_an_unrelated_ready_input() -> TestResu
                                         source.clone()
                                     },
                                     cursor: 0,
+                                    paused: false,
                                 },
                             )
                         })
@@ -433,6 +456,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
                     Subscription {
                         path: source.clone(),
                         cursor: 0,
+                        paused: false,
                     },
                 )]),
                 checkpoint: Some(ledger("out/external")?),
@@ -560,7 +584,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
         let reopened = Runtime::new(
             crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
-            handler,
+            handler.clone(),
             Arc::new(SystemClock),
         );
         let mut serving =
@@ -603,6 +627,43 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
                 "unrelated output published a checkpoint"
             );
         }
+        // A source-level hold must release the same real follow as an actor
+        // pause, without holding admission closed for unrelated inputs.
+        let registry = super::super::external::Registry::default();
+        let _running = registry.running();
+        let mut state = store.load(&address).await?.state().unwrap().clone();
+        let wake = futures::task::noop_waker();
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        let std::task::Poll::Ready(watch) =
+            registry.poll_registered(&mut std::task::Context::from_waker(&wake))
+        else {
+            panic!("active external source was not registered")
+        };
+        let mut watching = watch.next(&provider);
+        assert!(futures::poll!(watching.as_mut()).is_pending());
+        state.subscriptions.get_mut("inbox").unwrap().paused = true;
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        let std::task::Poll::Ready(stopped) = futures::poll!(watching.as_mut()) else {
+            panic!("suspended source did not release its follow")
+        };
+        assert!(stopped.result.is_ok());
+        assert!(
+            stopped.watch.is_none(),
+            "suspended source retained its follow"
+        );
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        assert!(
+            registry
+                .poll_registered(&mut std::task::Context::from_waker(&wake))
+                .is_pending()
+        );
+        state.subscriptions.get_mut("inbox").unwrap().paused = false;
+        registry.refresh(&address, &state, handler.as_ref(), &wake)?;
+        assert!(
+            registry
+                .poll_registered(&mut std::task::Context::from_waker(&wake))
+                .is_ready()
+        );
     }
     Ok(())
 }

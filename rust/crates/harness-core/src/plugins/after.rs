@@ -13,17 +13,17 @@ use std::sync::Arc;
 #[serde(transparent)]
 pub struct AfterHook {
     #[serde(skip)]
-    notices: Arc<[String]>,
+    notices: Arc<(crate::javascript_allocator::EngineResult<Vec<Effect>>, ())>,
     identity: [u8; 32],
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct Effect {
     notice: Notice,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct Notice {
     text: String,
@@ -42,35 +42,30 @@ pub(super) fn evaluate(module: &config::Prepared, settings: &Value) -> Result<co
 }
 
 impl AfterHook {
-    pub(super) fn new(evaluation: config::Evaluation) -> Result<Self> {
+    pub(super) fn new(evaluated: config::Evaluated, identity: [u8; 32]) -> Result<Self> {
         // This source has one event vocabulary and no changing payload. Resolve
         // the pure callback once at admission, before any model request. Delivery
         // then borrows the admitted delta without an engine, clock or allocation.
-        let identity = evaluation.identity();
-        let evaluated = evaluation.into_result()?;
-        let effects: Vec<Effect> = serde_json::from_value(evaluated.value)
-            .map_err(|error| Error::Invalid(format!("after-hook result: {error}")))?;
-        let notices = effects
-            .into_iter()
-            .map(|effect| {
-                if !effect.notice.wake {
-                    return Err(Error::Invalid(
-                        "settlement after-hooks require waking notices".into(),
-                    ));
-                }
-                Ok(effect.notice.text)
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let effects = evaluated.value.record::<Vec<Effect>>()?;
+        if effects.value.iter().any(|effect| !effect.notice.wake) {
+            return Err(Error::Invalid(
+                "settlement after-hooks require waking notices".into(),
+            ));
+        }
         Ok(Self {
-            notices: notices.into(),
+            notices: effects.share((), evaluated.value.work())?,
             identity,
         })
     }
 
     /// Borrow the admitted delta. The executor's journaled stop continuation
     /// suppresses delivery while answering these notices.
-    pub fn settlement(&self) -> &[String] {
-        &self.notices
+    pub fn settlement(&self) -> impl Iterator<Item = &String> {
+        self.notices
+            .0
+            .value
+            .iter()
+            .map(|effect| &effect.notice.text)
     }
 }
 
@@ -92,19 +87,20 @@ pub async fn seed() -> Result<Arc<Enabled>> {
                     })
                 }
             }
-            Ok::<_, Error>(Arc::new(
-                load(
-                    &Seed,
-                    &[Layer {
-                        name: "seed",
-                        generation: "",
-                        bytes: crate::seed::file(MANIFEST),
-                    }],
-                    "seed",
-                )
-                .await?,
-            ))
+            load(
+                &Seed,
+                &[Layer {
+                    name: "seed",
+                    generation: "",
+                    bytes: crate::seed::file(MANIFEST),
+                }],
+                "seed",
+            )
+            .await?
+            .into_shared()
         })
         .await?,
     ))
 }
+
+impl crate::filesystem::PreparationRecord for Vec<Effect> {}

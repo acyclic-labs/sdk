@@ -1,7 +1,7 @@
 //! Immutable provider-neutral model values and streaming contract.
 
 pub(crate) mod selection;
-pub use selection::{ModelBinding, ModelResolver};
+pub use selection::{ModelBinding, ModelResolver, ResolvedModel};
 mod call_id;
 mod content;
 mod instruction_identity;
@@ -69,7 +69,7 @@ pub(crate) use preparation::{
     charge_items, clone_content, clone_file, clone_messages, clone_model, clone_resource,
     clone_tool_definition, clone_value, hash_bytes, vec_with_capacity,
 };
-pub use profile::ModelProfileBinding;
+pub use profile::{ConfigurationUpdate, ModelProfileBinding};
 #[cfg(not(target_arch = "wasm32"))]
 pub use provider::NativeModelStream;
 pub use provider::{

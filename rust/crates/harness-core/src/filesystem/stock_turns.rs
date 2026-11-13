@@ -48,6 +48,19 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>>;
 
+    /// Installs a per-step source after canonical turn composition and before
+    /// the initial model's native presentation.
+    /// The source captures canonical tools before native presentation, so a
+    /// later family can build its declarations from the same admitted revisions.
+    /// The running turn retains its original context and authority.
+    fn configure_steps(
+        &self,
+        executor: StockExecutor,
+        _agent: &AgentState,
+        _authority: &TurnAuthority,
+    ) -> Result<StockExecutor> {
+        Ok(executor)
+    }
     /// Workspace exposures and newly discovered instructions for this context.
     fn workspaces<'a>(
         &'a self,
@@ -174,11 +187,8 @@ impl TurnContext for Grants {
 /// the tools with the turn's agent tools bound to its effects, the limits and
 /// compaction, then the host's [`TurnContext`].
 pub struct StockExecutors {
-    model: Model,
-    provider: Arc<dyn ModelProvider>,
+    binding: Arc<crate::model::ResolvedModel>,
     tools: ToolRegistry,
-    /// The model family's native declarations, decoded on the first turn.
-    native: crate::tools::native::Cache,
     models: Option<Arc<crate::model::ModelResolver>>,
     limits: Limits,
     compaction: Option<CompactionPolicy>,
@@ -208,20 +218,20 @@ impl StockExecutors {
         self
     }
 
-    fn selected(&self, agent: &AgentState) -> Result<crate::model::ModelBinding> {
+    fn selected(&self, agent: &AgentState) -> Result<Arc<crate::model::ResolvedModel>> {
         match agent
             .profile
             .as_ref()
             .and_then(|profile| profile.model.as_deref())
         {
-            None => Ok((self.model.clone(), self.provider.clone())),
+            None => Ok(Arc::clone(&self.binding)),
             Some(selection)
                 if selection
-                    .strip_prefix(self.model.provider.as_str())
+                    .strip_prefix(self.binding.0.provider.as_str())
                     .and_then(|suffix| suffix.strip_prefix('/'))
-                    == Some(self.model.name.as_str()) =>
+                    == Some(self.binding.0.name.as_str()) =>
             {
-                Ok((self.model.clone(), self.provider.clone()))
+                Ok(Arc::clone(&self.binding))
             }
             Some(selection) => self
                 .models
@@ -229,7 +239,7 @@ impl StockExecutors {
                 .ok_or_else(|| {
                     Error::Unsupported("model selection requires a host resolver".into())
                 })?
-                .resolve(selection),
+                .resolve_shared(selection),
         }
     }
 
@@ -244,10 +254,8 @@ impl StockExecutors {
         context: Arc<dyn TurnContext>,
     ) -> Self {
         Self {
-            model,
-            provider,
+            binding: Arc::new(crate::model::ResolvedModel::new((model, provider))),
             tools,
-            native: Default::default(),
             models: None,
             limits,
             compaction: compaction.into(),
@@ -317,7 +325,7 @@ impl TurnExecutors for StockExecutors {
     }
     fn model_selection(&self) -> Result<Option<String>> {
         crate::templates::root_model(
-            &format!("{}/{}", self.model.provider, self.model.name),
+            &format!("{}/{}", self.binding.0.provider, self.binding.0.name),
             self.models.as_deref(),
         )
         .map(Some)
@@ -361,11 +369,8 @@ impl TurnExecutors for StockExecutors {
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
         Box::pin(async move {
-            let (model, provider) = self.selected(agent)?;
-            let native = self.native.get(&model, || provider.native_tools(&model))?;
-            let provider = provider
-                .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
-                .unwrap_or(provider);
+            let binding = self.selected(agent)?;
+            let native = binding.native_tools()?;
             let directive = match (self.templates, &agent.profile) {
                 (true, Some(creation)) => Some(
                     crate::templates::directive(creation, authority.content.reader.as_ref())
@@ -416,7 +421,8 @@ impl TurnExecutors for StockExecutors {
                     (&agent_tools, authority.templates.clone()),
                 )?;
             }
-            let executor = StockExecutor::new(model, provider, ContextPipeline::default(), tools)
+            let executor = StockExecutor::from_binding(binding, ContextPipeline::default(), tools)
+                .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
                 .with_limits(self.limits);
             let executor = match &self.compaction {
                 Some(policy) => executor.with_compaction_policy(policy.clone()),
@@ -436,16 +442,12 @@ impl TurnExecutors for StockExecutors {
                     Some(plugins) => Arc::clone(plugins),
                     None => crate::plugins::seed().await?,
                 };
-                executor.with_plugins(&plugins)?
+                executor.with_plugins(plugins)?
             };
             // Context preparation may set the final output bound or an explicit
             // policy. Derive automatic budgets only after both are known.
             let executor = executor.with_automatic_compaction()?;
-            // Native declarations run the revisions the prepared manifest pins.
-            let executor = match &native {
-                Some(native) => executor.with_native_tools(native)?,
-                None => executor,
-            };
+
             let executor = if question_allowed {
                 executor
             } else {
@@ -489,6 +491,12 @@ impl TurnExecutors for StockExecutors {
                         None => executor,
                     }
                 }
+                None => executor,
+            };
+            let executor = self.context.configure_steps(executor, agent, authority)?;
+            // Native declarations run the final canonical revisions and ceiling.
+            let executor = match &native {
+                Some(native) => executor.with_native_tools(native)?,
                 None => executor,
             };
             Ok(Arc::new(executor) as Arc<dyn Executor>)

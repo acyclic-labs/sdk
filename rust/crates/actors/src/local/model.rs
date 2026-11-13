@@ -31,6 +31,8 @@ enum Fault {
     Refuse(StreamError),
     /// The device confirms persistence, then that confirmation reply is lost.
     LoseDurabilityAck(StreamError),
+    /// Acceptance stays visible while the device persistence boundary refuses.
+    HoldDurability(StreamError),
 }
 
 struct Faulty<P = MemoryStream> {
@@ -47,6 +49,9 @@ macro_rules! delegate {
                 self.inner.context()
             }
             async fn durability_barrier(&self) -> Result<(), StreamError> {
+                if let Some(Fault::HoldDurability(error)) = self.calls.load(Ordering::SeqCst).checked_sub(1).and_then(|call| self.plan.get(call)) {
+                    return Err(error.clone());
+                }
                 self.inner.durability_barrier().await?;
                 match self.calls.load(Ordering::SeqCst).checked_sub(1).and_then(|call| self.plan.get(call)) {
                     Some(Fault::LoseDurabilityAck(error)) => Err(error.clone()),
@@ -67,7 +72,7 @@ macro_rules! delegate {
                 Box::pin(async move {
                     let call = self.calls.fetch_add(1, Ordering::SeqCst);
                     match self.plan.get(call).cloned().unwrap_or(Fault::None) {
-                        Fault::None | Fault::LoseDurabilityAck(_) => self.inner.write(request).await,
+                        Fault::None | Fault::LoseDurabilityAck(_) | Fault::HoldDurability(_) => self.inner.write(request).await,
                         Fault::Drop => Err(StreamError::Unavailable),
                         Fault::Refuse(error) => Err(error),
                         Fault::LoseAck => {
@@ -297,6 +302,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                     "inbox".to_owned(),
                     Subscription {
                         path: path("model/inbox")?,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

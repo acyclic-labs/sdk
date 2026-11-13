@@ -926,7 +926,7 @@ impl ToolContext {
         changes: &crate::conversation::ContentChanges,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        if let Some(journal) = &self.task.journal {
+        if let Some((journal, _)) = &self.task.journal {
             journal
                 .published_progress(
                     self.turn_id(),
@@ -945,7 +945,7 @@ impl ToolContext {
         file: &FileRef,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        if let Some(journal) = &self.task.journal {
+        if let Some((journal, _)) = &self.task.journal {
             journal
                 .published_progress(
                     self.turn_id(),
@@ -1164,21 +1164,14 @@ impl ToolContext {
         if let Some((binding, relative)) = self.task().private_content_path(path, io)? {
             return Ok((&binding.volume, std::borrow::Cow::Borrowed(relative)));
         }
-        if let (Some(relative), Some(seed)) = (
-            path.strip_prefix(SEED_PATH).or_else(|| {
+        for (prefix, layer) in self.task().harness.read_only_layers() {
+            if let Some(relative) = path.strip_prefix(prefix).or_else(|| {
                 (kind == crate::tool::ReadPathKind::Directory
-                    && path == SEED_PATH.trim_end_matches('/'))
+                    && path == prefix.trim_end_matches('/'))
                 .then_some("")
-            }),
-            self.task().harness.seed.as_ref(),
-        ) {
-            return Ok((&seed.volume, std::borrow::Cow::Borrowed(relative)));
-        }
-        if let (Some(relative), Some(system)) = (
-            path.strip_prefix(SYSTEM_PATH),
-            self.task().harness.system.as_ref(),
-        ) {
-            return Ok((&system.volume, std::borrow::Cow::Borrowed(relative)));
+            }) {
+                return Ok((&layer.volume, std::borrow::Cow::Borrowed(relative)));
+            }
         }
         // Resolve output before workspace routing: the journal and the home
         // are different volumes. The ordinary read path still checks this
@@ -1263,12 +1256,18 @@ impl ToolContext {
         {
             &[SYSTEM_PATH][..]
         } else if crate::layers::layered(relative) {
-            &[HOME_PATH, SEED_PATH][..]
+            &crate::layers::PRECEDENCE_PATHS[..]
         } else {
             &[SEED_PATH][..]
         };
         for prefix in prefixes {
-            if *prefix == SEED_PATH && self.task().harness.seed.is_none() {
+            if *prefix != HOME_PATH
+                && !self
+                    .task()
+                    .harness
+                    .read_only_layers()
+                    .any(|(path, _)| path == *prefix)
+            {
                 continue;
             }
             let layer = crate::executor::with_history_io(io, |history| {
@@ -1339,99 +1338,109 @@ impl ToolContext {
             }
             return Ok((selected.into(), None));
         }
-        let home = format!("{HOME_PATH}{relative}");
-        if let Some(original) = original {
-            if self.tool_path_selection(&home, io)?.0 == original {
-                return Ok((home.into(), None));
-            }
-            if self
-                .task()
-                .harness
-                .seed
-                .as_ref()
-                .is_some_and(|seed| &seed.volume == original)
+        for prefix in crate::layers::PRECEDENCE_PATHS {
+            if prefix != HOME_PATH
+                && !self
+                    .task()
+                    .harness
+                    .configuration_layers()
+                    .any(|(path, _)| path == prefix)
             {
-                return Ok((seed()?.into(), None));
+                continue;
             }
-            return Err(
-                Error::Conflict("effective version belongs to another layer".into()).tool_input(),
-            );
-        }
-        // Every request, including continuations, stays within this probe's
-        // size, so any reader allowance that admits the probe admits them.
-        let probe = acyclic_fs::ByteRange {
-            offset: 0,
-            length: 32,
-        };
-        let (selected, bytes, retained) =
-            match self.read_tool_path_range(&home, None, probe, io).await {
-                Ok(read) => read,
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
-                    return if seeded {
-                        Ok((seed()?.into(), None))
-                    } else {
-                        Err(missing())
-                    };
+            let concrete = crate::executor::with_history_io(io, |history| {
+                crate::executor::preparation_format(format_args!("{prefix}{relative}"), history)
+            })?;
+            if let Some(original) = original {
+                if self.tool_path_selection(&concrete, io)?.0 == original {
+                    return Ok((concrete.into(), None));
                 }
-                Err(error) => return Err(error),
+                crate::executor::stock_retire_text(concrete, io)?;
+                continue;
+            }
+            if prefix == SEED_PATH {
+                return Ok((concrete.into(), None));
+            }
+            // Every probe and continuation uses the same bounded interval.
+            let probe = acyclic_fs::ByteRange {
+                offset: 0,
+                length: 32,
             };
-        #[cfg(not(target_arch = "wasm32"))]
-        let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-        #[cfg(target_arch = "wasm32")]
-        let custody = {
-            let _ = retained;
-            None
-        };
-        let continuation = |range: acyclic_fs::ByteRange| {
-            let home = &home;
-            let selected = &selected;
-            async move {
-                let (_, bytes, retained) = self
-                    .read_tool_path_range(home, Some(&selected.generation), range, io)
-                    .await?;
-                #[cfg(not(target_arch = "wasm32"))]
-                let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
-                #[cfg(target_arch = "wasm32")]
-                let custody = {
-                    let _ = retained;
-                    None::<()>
+            let (selected, bytes, retained) =
+                match self.read_tool_path_range(&concrete, None, probe, io).await {
+                    Ok(read) => read,
+                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {
+                        crate::executor::stock_retire_text(concrete, io)?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 };
-                Ok(crate::layers::MarkerChunk {
-                    bytes,
-                    _hold: custody,
-                })
+            #[cfg(not(target_arch = "wasm32"))]
+            let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let custody = {
+                let _ = retained;
+                None::<()>
+            };
+            let continuation = |range: acyclic_fs::ByteRange| {
+                let concrete = &concrete;
+                let selected = &selected;
+                async move {
+                    let (_, bytes, retained) = self
+                        .read_tool_path_range(concrete, Some(&selected.generation), range, io)
+                        .await?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let custody = io.map(|io| io.guard_owned(retained)).transpose()?;
+                    #[cfg(target_arch = "wasm32")]
+                    let custody = {
+                        let _ = retained;
+                        None::<()>
+                    };
+                    Ok(crate::layers::MarkerChunk {
+                        bytes,
+                        _hold: custody,
+                    })
+                }
+            };
+            if off_from_prefix(&bytes, selected.byte_length, io, &continuation).await? {
+                drop(bytes);
+                drop(selected);
+                drop(custody);
+                return Err(missing());
             }
-        };
-        if off_from_prefix(&bytes, selected.byte_length, io, &continuation).await? {
-            drop(selected);
-            drop(custody);
-            return Err(missing());
+            // Redundant authored seed skills do not shadow issuer configuration.
+            let inherits_seed = match crate::layers::seed_skill(relative)
+                .filter(|_| seeded && prefix == HOME_PATH)
+            {
+                Some(seed) => {
+                    equals_from_prefix(seed, &bytes, selected.byte_length, &continuation).await?
+                }
+                None => false,
+            };
+            if inherits_seed {
+                drop(bytes);
+                drop(selected);
+                drop(custody);
+                crate::executor::stock_retire_text(concrete, io)?;
+                continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let custody = {
+                if let Some(custody) = custody {
+                    custody.into_retained()?;
+                }
+                io.filter(|io| io.original_native_work().is_some())
+                    .map(|io| io.take_native_custody(retained))
+                    .transpose()?
+            };
+            return Ok((concrete.into(), Some((selected, custody))));
         }
-        // A home copy identical to the built-in skill inherits the seed, as
-        // in discovery; the comparison continues at the selected generation.
-        let inherits_seed = match crate::layers::seed_skill(relative).filter(|_| seeded) {
-            Some(seed) => {
-                equals_from_prefix(seed, &bytes, selected.byte_length, &continuation).await?
-            }
-            None => false,
-        };
-        if inherits_seed {
-            drop(selected);
-            drop(custody);
-            return Ok((seed()?.into(), None));
+        if original.is_some() {
+            Err(Error::Conflict("effective version belongs to another layer".into()).tool_input())
+        } else {
+            Err(missing())
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let custody = {
-            if let Some(custody) = custody {
-                custody.into_retained()?;
-            }
-            io.filter(|io| io.original_native_work().is_some())
-                .map(|io| io.take_native_custody(retained))
-                .transpose()?
-        };
-        Ok((home.into(), Some((selected, custody))))
     }
-
     /// Checks original directory authority for the selected mounted path.
     pub(crate) fn authorize_tool_path_read<'a>(
         &'a self,
@@ -1607,6 +1616,26 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        if let Some(generation) = self.layer_generation(volume, None)? {
+            // An immutable cut cannot gain a missing file. Readiness uses the
+            // same original cut and authority as the subsequent content read.
+            let (_, _, retained) = self
+                .read_tool_path_range(
+                    path,
+                    Some(generation),
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: 0,
+                    },
+                    io,
+                )
+                .await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let _hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+            #[cfg(target_arch = "wasm32")]
+            let _ = retained;
+            return Ok(());
+        }
         self.task()
             .content_binding(Some(volume))
             .ok_or_else(|| Error::tool_rejected("selected content reader is not bound"))?
@@ -1713,13 +1742,7 @@ impl ToolContext {
         volume: &VolumeRef,
         expected: Option<&'a crate::resources::GenerationRef>,
     ) -> Result<Option<&'a crate::resources::GenerationRef>> {
-        for layer in self
-            .task()
-            .harness
-            .seed
-            .iter()
-            .chain(self.task().harness.system.iter())
-        {
+        for (_, layer) in self.task().harness.read_only_layers() {
             if &layer.volume == volume {
                 if expected.is_some_and(|expected| expected != &layer.generation) {
                     return Err(Error::Conflict(

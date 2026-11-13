@@ -1,5 +1,5 @@
 //! The lab-trained tool layers. Selection belongs to the model catalog.
-use super::{File, ModelLayer, ToolRevision};
+use super::{ModelLayer, ToolRevision};
 use crate::Result;
 pub use crate::model::NativeToolProfile;
 
@@ -16,9 +16,8 @@ impl NativeToolProfile {
 
     /// Resolves the pinned declarations through the original family decoder.
     pub fn tools(self) -> Result<Vec<ToolRevision>> {
-        Ok(File::<ModelLayer>::parse(self.family_layer())?
-            .metadata
-            .tools
-            .unwrap_or_default())
+        let metadata: ModelLayer =
+            crate::context::parse_frontmatter(self.family_layer().as_bytes())?;
+        Ok(metadata.tools.unwrap_or_default())
     }
 }

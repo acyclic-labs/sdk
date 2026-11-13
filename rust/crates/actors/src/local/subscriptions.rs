@@ -62,6 +62,31 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         Ok(actor)
     }
 
+    /// Resumes a held input without advancing its cursor or changing its
+    /// checkpoint. The same commit activates delivery, and an exact replay
+    /// recovers its original acceptance before inspecting the current binding.
+    pub async fn resume_subscription(
+        &self,
+        account: &[u8],
+        request: &crate::wire::ResumeSubscriptionRequest,
+    ) -> Result<ActorReference, Error> {
+        let admitted = crate::domain::ResumeSubscriptionRequest::try_from(request.clone())
+            .map_err(|_| Error::Invalid("invalid resume subscription request"))?;
+        let actor = admitted
+            .reference(account)
+            .map_err(|_| Error::Invalid("invalid actor reference"))?;
+        self.edit_subscription(
+            &actor,
+            b"resume",
+            admitted.idempotency_key(),
+            &request.encode_to_vec(),
+            SubscriptionChange::Resume {
+                id: admitted.subscription_id().to_owned(),
+            },
+        )
+        .await?;
+        Ok(actor)
+    }
     async fn edit_subscription(
         &self,
         actor: &ActorReference,
@@ -173,6 +198,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 .iter()
                 .any(|attribute| attribute.name == INTENT && attribute.value.as_ref() == intent)
         {
+            self.confirm_observed(envelope).await?;
             return Ok(true);
         }
         Err(StreamError::IdempotencyMismatch.into())

@@ -252,6 +252,7 @@ async fn guarded_store() -> Result<(Store<MemoryStream>, ActorReference), Box<dy
             name.to_owned(),
             Subscription {
                 path: inbox.clone(),
+                paused: false,
                 cursor: 0,
             },
         );
@@ -497,6 +498,7 @@ async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResu
             name.to_owned(),
             Subscription {
                 path: path.clone(),
+                paused: false,
                 cursor: 0,
             },
         );

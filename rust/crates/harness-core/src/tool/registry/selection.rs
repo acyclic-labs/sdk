@@ -18,7 +18,7 @@ impl ToolRegistry {
             },
             _ => self.get(name, None, io)?,
         };
-        Ok(selected.map(|tool| tool.executor.capability().unwrap_or(tool)))
+        Ok(selected.map(|tool| tool.executor.capability().map(Arc::as_ref).unwrap_or(tool)))
     }
 
     pub(crate) fn pin_model_definitions(
@@ -116,12 +116,12 @@ impl ToolRegistry {
 
     /// Selects one revision for future model requests.
     pub fn select_model_version(&mut self, name: &str, revision: &str) -> Result<()> {
-        if !self
-            .data
-            .versions
-            .contains_key(&(name.to_owned(), revision.to_owned()))
-        {
+        if self.get_shared(name, Some(revision), None)?.is_none() {
             return Err(Error::NotFound(format!("tool {name}@{revision}")));
+        }
+        if matches!(self.data.selected.get(name), Some(ModelSelection::Revision(selected)) if selected == revision)
+        {
+            return Ok(());
         }
         Arc::make_mut(&mut self.data).selected.insert(
             name.to_owned(),
@@ -152,15 +152,25 @@ impl ToolRegistry {
     /// already registered and selected under their own names. Calls under the
     /// capability's own name are no longer offered, unless included among the
     /// declarations; its selected revision then stays callable.
-    pub(crate) fn present_natively(&mut self, name: &str, natives: Vec<String>) -> Result<()> {
+    /// Names are copied only when the presentation actually changes.
+    pub(crate) fn present_natively(&mut self, name: &str, natives: &[&str]) -> Result<()> {
+        let selection = self
+            .data
+            .selected
+            .get(name)
+            .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
+        if (natives.len() == 1 && natives[0] == name)
+            || matches!(selection, ModelSelection::Native { names, .. } if names.iter().map(String::as_str).eq(natives.iter().copied()))
+        {
+            return Ok(());
+        }
+        let includes_self = natives.contains(&name);
+        let natives: Vec<String> = natives.iter().map(|native| (*native).to_owned()).collect();
         let selection = Arc::make_mut(&mut self.data)
             .selected
             .get_mut(name)
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))?;
-        if natives.len() == 1 && natives[0] == name {
-            return Ok(());
-        }
-        let revision = if natives.iter().any(|native| native == name) {
+        let revision = if includes_self {
             match std::mem::replace(selection, ModelSelection::Hidden) {
                 ModelSelection::Revision(revision) => Some(revision),
                 previous => {
@@ -292,7 +302,7 @@ impl ToolRegistry {
             false,
             io,
         )?;
-        for source in &self.sources {
+        for source in self.sources() {
             for definition in source.snapshot()?.definitions_in_namespace(prefix, io)? {
                 if self.source_allowed(&definition.name) {
                     crate::executor::stock_vec_push(&mut definitions, definition, io)?;
@@ -323,7 +333,7 @@ impl ToolRegistry {
             true,
             io,
         )?;
-        for source in &self.sources {
+        for source in self.sources() {
             let snapshot = source.snapshot()?;
             if source
                 .capability()

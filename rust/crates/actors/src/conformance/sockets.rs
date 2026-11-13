@@ -254,6 +254,7 @@ impl<'a, T: SocketBackend + ?Sized> Case<'a, T> {
                         "inbox".into(),
                         Subscription {
                             path: inbox.clone(),
+                            paused: false,
                             cursor: 0,
                         },
                     )]),

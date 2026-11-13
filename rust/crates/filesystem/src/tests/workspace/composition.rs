@@ -473,10 +473,67 @@ async fn a_head_conditioned_fork_of_an_unchanged_source_commits() -> Result<(), 
     Ok(())
 }
 
+/// Retirement withdraws a required source without publishing a new generation.
+#[tokio::test]
+async fn a_retired_required_source_refuses_the_consuming_commit() -> Result<(), Box<dyn Error>> {
+    for retired in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let fs = placed(&stream)?;
+        let source = parent(&fs, &stream).await?;
+        let destination = StreamPath::new("observations/accepted")?;
+        let mut commit = FilesystemCommit::new(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                vec![],
+                vec![CommitMutation::Append {
+                    path: destination.clone(),
+                    records: vec![record(b"accepted")],
+                }],
+            )],
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"consume-source".to_vec())?,
+        });
+        unbounded!(fs, require_head(&source, &mut commit))?;
+        let tails: Vec<_> = commit
+            .request()
+            .conditions()
+            .filter_map(|condition| match condition {
+                CommitCondition::Tail { path, expected } => Some((path.clone(), *expected)),
+                _ => None,
+            })
+            .collect();
+        assert!(!tails.is_empty());
+        if retired {
+            assert_eq!(
+                fs.delete_workspace("root-project", crate::IdempotencyKey::new())
+                    .await?,
+                crate::WorkspaceDelete::Deleted
+            );
+            for (path, expected) in tails {
+                assert_eq!(
+                    stream.tail(path).await?,
+                    expected,
+                    "retirement did not publish another generation"
+                );
+            }
+        }
+        let outcome = unbounded!(fs, submit_commit(commit))?;
+        if retired {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Rejected(_)));
+            assert_eq!(
+                stream.tail(destination).await,
+                Err(acyclic_stream::StreamError::NotFound)
+            );
+        } else {
+            assert!(matches!(outcome, FilesystemCommitOutcome::Committed(_)));
+            assert_eq!(stream.tail(destination).await?, 1);
+        }
+    }
+    Ok(())
+}
 /// Two children forking one source require its head once, and commit; one
 /// commit requiring two different heads of a source is refused.
 #[tokio::test]
-async fn one_source_required_twice_adds_one_condition() -> Result<(), Box<dyn Error>> {
+async fn repeated_source_requirements_do_not_duplicate_conditions() -> Result<(), Box<dyn Error>> {
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
@@ -908,5 +965,208 @@ async fn a_dropped_preparation_rolls_the_commit_back() -> Result<(), Box<dyn Err
     let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
         return Err("the disarmed batch did not commit".into());
     };
+    Ok(())
+}
+
+/// Ordinary transactions retain every external source across the publication
+/// combiner; an edit or retirement of either source refuses the whole write.
+#[derive(Clone, Copy)]
+enum PolicyPublication {
+    Standalone,
+    #[cfg(not(target_arch = "wasm32"))]
+    Native,
+}
+
+async fn transaction_policy_sources(
+    pinned: bool,
+    publication: PolicyPublication,
+) -> Result<(), Box<dyn Error>> {
+    for changed in [
+        None,
+        Some((0_usize, false)),
+        Some((1, false)),
+        Some((0, true)),
+        Some((1, true)),
+    ] {
+        let stream = Arc::new(MemoryStream::default());
+        let fs = placed(&stream)?;
+        let token = CancellationToken::new();
+        let names = ["first-source", "second-source"];
+        let sources = [
+            unbounded!(fs, create_workspace(names[0]))?,
+            unbounded!(fs, create_workspace(names[1]))?,
+        ];
+        let target = unbounded!(fs, create_workspace("target"))?;
+        let before = unbounded!(target, head())?.id();
+        let original = if pinned {
+            Some([
+                unbounded!(sources[0], head())?,
+                unbounded!(sources[1], head())?,
+            ])
+        } else {
+            None
+        };
+        let captured = if pinned {
+            None
+        } else {
+            Some([
+                unbounded!(sources[0], capture_policy_cut())?,
+                unbounded!(sources[1], capture_policy_cut())?,
+            ])
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_original = match publication {
+            PolicyPublication::Standalone => None,
+            PolicyPublication::Native => Some(
+                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+                    .map_err(|(error, _)| error)?,
+            ),
+        };
+        let mut transaction = match publication {
+            PolicyPublication::Standalone => {
+                let mut transaction = unbounded!(target, begin_transaction(IdempotencyKey::new()))?;
+                unbounded!(
+                    transaction,
+                    write("/answer", OwnedBytes::from_static(b"accepted"))
+                )?;
+                transaction
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PolicyPublication::Native => {
+                let original = native_original.as_ref().unwrap();
+                let mut transaction = target
+                    .begin_transaction(IdempotencyKey::new(), original, &token)
+                    .await?;
+                transaction
+                    .write(
+                        "/answer",
+                        OwnedBytes::from_static(b"accepted"),
+                        original,
+                        &token,
+                    )
+                    .await?;
+                transaction
+            }
+        };
+        if let Some((position, retired)) = changed {
+            if retired {
+                assert_eq!(
+                    fs.delete_workspace(names[position], IdempotencyKey::new())
+                        .await?,
+                    crate::WorkspaceDelete::Deleted
+                );
+            } else {
+                sources[position].write_text("/settings", "changed").await?;
+            }
+        }
+        // Capture from the original pins AFTER an edit or retirement. Opening
+        // current source heads here would silently replace the admitted input.
+        let cuts = match original {
+            Some(original) => [
+                unbounded!(original[0], capture_policy_cut())?,
+                unbounded!(original[1], capture_policy_cut())?,
+            ],
+            None => captured.unwrap(),
+        };
+        let committed = match publication {
+            PolicyPublication::Standalone => {
+                let policy = crate::PolicyGroup::new(&[&cuts], WorkBudget::UNBOUNDED, &token)
+                    .map_err(|failure| failure.error)?
+                    .value;
+                policy
+                    .scope(transaction.commit::<WorkspaceError, _, _>(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &token,
+                        allow::<WorkspaceError>,
+                    ))
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PolicyPublication::Native => {
+                let original = native_original.as_ref().unwrap();
+                let policy = crate::PolicyGroup::new(&[&cuts], original, &token)?;
+                let mut ready = |_: &crate::NativeMaterializationWork| {
+                    std::future::ready(Ok::<(), FsError>(()))
+                };
+                let committed = policy
+                    .clone()
+                    .scope(transaction.commit_with_native_work::<FsError, _, _>(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        original,
+                        &token,
+                        &mut ready,
+                    ))
+                    .await
+                    .map_err(WorkspaceError::from);
+                if changed.is_none() {
+                    assert!(matches!(
+                        committed,
+                        Ok(crate::TransactionCommit::Committed(_))
+                    ));
+                    // Revocation cannot erase the receipt of the operation
+                    // that already committed under this original native owner.
+                    for source in &sources {
+                        source
+                            .write_text("/settings", "revoked after commit")
+                            .await?;
+                    }
+                    let retry = policy
+                        .scope(transaction.commit_with_native_work::<FsError, _, _>(
+                            None,
+                            crate::PublicationPermit::Unrestricted,
+                            original,
+                            &token,
+                            &mut ready,
+                        ))
+                        .await?;
+                    assert!(matches!(
+                        retry,
+                        crate::TransactionCommit::AlreadyCommitted(_)
+                    ));
+                }
+                committed
+            }
+        };
+        if changed.is_some() {
+            assert!(
+                committed.is_err(),
+                "an unchanged target must refuse stale sources without requesting rebase"
+            );
+        }
+        let accepted = matches!(
+            committed,
+            Ok(crate::TransactionCommit::Committed(_)
+                | crate::TransactionCommit::AlreadyCommitted(_))
+        );
+        assert_eq!(accepted, changed.is_none());
+        let after = unbounded!(target, head())?.id();
+        if changed.is_some() {
+            assert_eq!(after, before, "a stale source published the candidate");
+        } else {
+            assert_ne!(after, before);
+            assert_eq!(
+                unbounded!(target, read("/answer", 8))?.as_ref(),
+                b"accepted"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn transaction_publication_retains_all_external_policy_sources() -> Result<(), Box<dyn Error>>
+{
+    transaction_policy_sources(false, PolicyPublication::Standalone).await?;
+    transaction_policy_sources(true, PolicyPublication::Standalone).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        transaction_policy_sources(false, PolicyPublication::Native).await?;
+        transaction_policy_sources(true, PolicyPublication::Native).await?;
+    }
     Ok(())
 }

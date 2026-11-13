@@ -113,7 +113,7 @@ impl ToolContext {
         self.task
             .journal
             .as_ref()
-            .and_then(|journal| journal.run_admission())
+            .and_then(|(journal, _)| journal.run_admission())
             .is_some_and(|source| source.value.no_progress_turns.is_some())
     }
 
@@ -165,7 +165,7 @@ impl ToolContext {
     }
 
     async fn publish_native_progress(&self, file: &FileRef) -> Result<()> {
-        if let Some(journal) = &self.task.journal {
+        if let Some((journal, _)) = &self.task.journal {
             journal
                 .published_progress(
                     self.turn_id(),
