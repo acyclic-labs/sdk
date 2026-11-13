@@ -49,6 +49,7 @@ async fn acknowledged_cuts(
                     "inbox".into(),
                     Subscription {
                         path: path("durability/inbox")?,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

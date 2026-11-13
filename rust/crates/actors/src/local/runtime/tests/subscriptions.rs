@@ -597,7 +597,12 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
         AtomicUsize::new(0),
         external_resume,
     ));
-    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     runtime.drain_actor(&address).await?;
     let paused = runtime.store().load(&address).await?;
@@ -635,6 +640,7 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
     assert_eq!(handler.1.load(Ordering::SeqCst), 1);
     drop(runtime);
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(SystemClock),
