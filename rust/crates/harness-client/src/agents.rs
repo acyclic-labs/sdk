@@ -333,7 +333,7 @@ impl AgentClient {
         &self.agent
     }
 
-    /// Borrow the exact shared display window, including its eviction edge.
+    /// Borrow the exact shared records of the selected conversation.
     pub fn conversation(&self) -> &StreamView {
         self.session
             .view(&self.conversation)
