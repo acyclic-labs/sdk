@@ -590,6 +590,26 @@ where
 /// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
 /// context manifest) through the authority's private writer.
 pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
+    /// Review an exact action with this agent's original model binding in a
+    /// fresh, tool-free context. `policy` is trusted host-selected policy text,
+    /// never child request data. The caller retains its immutable source and
+    /// authenticates and publishes any resulting decision; a verdict grants
+    /// nothing by itself. Hosts without an independent reviewer refuse.
+    fn review<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        execution: (
+            &'a dyn crate::executor::ExecutionJournal,
+            Option<&'a crate::executor::PreparationIo>,
+        ),
+        request: &'a crate::approvals::ApprovalRequest<'a>,
+        principal: &'a str,
+        policy: &'a str,
+    ) -> BoxFuture<'a, Result<(crate::approvals::RuleVerdict, Option<String>)>> {
+        let _ = (agent, execution, request, principal, policy);
+        Box::pin(async { Err(Error::Unsupported("independent review is not bound".into())) })
+    }
+
     /// Default question plugin choice for a newly created root session.
     fn question_plugin(&self) -> bool {
         false

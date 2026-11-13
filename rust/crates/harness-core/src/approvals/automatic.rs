@@ -9,6 +9,7 @@ use crate::{
 use std::{collections::BTreeMap, sync::Arc};
 
 mod llm;
+pub(crate) use llm::review_model;
 
 /// Evaluates one automatic stage using the composition's explicit model bindings.
 /// Escalation is durable before another stage starts. A decisive review must be
@@ -63,6 +64,7 @@ pub async fn automatic_review(
                 request,
                 &expected.principal,
                 (model, provider),
+                None,
                 limits,
             )
             .await?

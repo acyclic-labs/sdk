@@ -259,6 +259,114 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
 }
 
 #[tokio::test]
+async fn independent_review_uses_selected_model_without_opening_worker_context() -> TestResult {
+    use crate::{
+        approvals::{ApprovalRequest, RuleVerdict},
+        conversation::Limits,
+        filesystem::{StockExecutors, TurnContext},
+        model::{Model, ModelContent, ModelProvider, ModelResolver},
+        test_support::{ScriptedModelProvider, ScriptedTurn},
+        tool::ToolRegistry,
+    };
+    struct NoWorkerContext;
+    impl TurnContext for NoWorkerContext {
+        fn prepare<'a>(
+            &'a self,
+            _: (crate::executor::StockExecutor, Limits),
+            _: &'a crate::agent::AgentState,
+            _: OperationId,
+            _: &'a ModelContent,
+            _: &'a TurnAuthority,
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<crate::executor::StockExecutor>>
+        {
+            Box::pin(async {
+                Err(crate::Error::Invalid(
+                    "worker context must stay unopened".into(),
+                ))
+            })
+        }
+    }
+    let (bound, root) = binding().await?;
+    let mut agent = bound.agents().state(&root).await?;
+    agent.profile = Some(crate::agent::CreationConfig {
+        question_plugin: false,
+        topology: None,
+        continuation: None,
+        context: crate::agent::SpawnContext::TopLevel,
+        template: None,
+        peers: Default::default(),
+        model: Some("test/parent-review".into()),
+    });
+    let reviewer = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+        r#"{"verdict":"ask","reason":"needs parent action"}"#.into(),
+    )]));
+    let selected = (
+        Model::new("test".into(), "parent-review".into(), "1".into())?,
+        {
+            let provider: Arc<dyn ModelProvider> = reviewer.clone();
+            provider
+        },
+    );
+    let expected_model = selected.0.clone();
+    let resolver = ModelResolver::new("test/worker", move |selection| {
+        if selection != "test/parent-review" {
+            return Err(crate::Error::Invalid(
+                "unexpected review model selection".into(),
+            ));
+        }
+        Ok(selected.clone())
+    });
+    let worker = Arc::new(ScriptedModelProvider::new([]));
+    let executors = StockExecutors::new(
+        (
+            Model::new("test".into(), "worker".into(), "1".into())?,
+            worker.clone(),
+        ),
+        ToolRegistry::default(),
+        (Limits::default(), None::<crate::context::CompactionPolicy>),
+        Arc::new(NoWorkerContext),
+    )
+    .with_models(Arc::new(resolver));
+    let storage = crate::filesystem::MemoryHarnessStorage::new(
+        crate::AgentId::from_bytes(agent.path.id_bytes()),
+        1_000_000,
+    )
+    .await?;
+    let journal = storage.journal();
+    let request =
+        ApprovalRequest::new("child-request", br#"{"action":"exact child action"}"#, 4096)?;
+    for _ in 0..2 {
+        assert_eq!(
+            executors
+                .review(
+                    &agent,
+                    (journal.as_ref(), None),
+                    &request,
+                    "parent:fixture",
+                    "TRUSTED_PARENT_POLICY"
+                )
+                .await?,
+            (RuleVerdict::Ask, Some("needs parent action".into()))
+        );
+    }
+    assert_eq!(worker.request_count(), 0);
+    let requests = reviewer.requests();
+    assert_eq!(requests.len(), 1, "replay dispatched another review");
+    assert_eq!(requests[0].model, expected_model);
+    assert!(requests[0].tools.is_empty());
+    assert!(requests[0].messages.iter().any(|message| {
+        message.role == crate::model::ModelRole::System
+            && message.content == ModelContent::Text("TRUSTED_PARENT_POLICY".into())
+    }));
+    assert!(requests[0].messages.iter().any(|message| {
+        message.role == crate::model::ModelRole::User
+            && message.content == ModelContent::Text(r#"{"action":"exact child action"}"#.into())
+    }));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
     use crate::{agent::TurnHost, executor::ExecutionJournal};
     let (bound, root) = binding().await?;
