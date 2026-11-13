@@ -79,7 +79,7 @@ async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestR
                     Err(format!("turn settled {:?}", entry.outcome).into())
                 };
             }
-            Ok(Event::Turn { .. } | Event::Delta) => {}
+            Ok(Event::Turn { .. } | Event::Delta | Event::Input { .. }) => {}
             // The in-process Session holds the hosting Runtime's lifetime:
             // failed delivery or producer loss closes this event source.
             Err(acyclic_harness::Error::Storage(_)) if !settles => return Ok(()),

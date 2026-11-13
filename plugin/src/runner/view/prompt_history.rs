@@ -35,6 +35,7 @@ pub(super) struct History {
     pending: VecDeque<Navigation>,
     ended: bool,
     failure: Option<String>,
+    stale: bool,
 }
 
 impl History {
@@ -51,7 +52,24 @@ impl History {
             pending: VecDeque::new(),
             ended: false,
             failure: None,
+            stale: false,
         }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.stale = true;
+        if self.cursor.is_none() {
+            self.refresh();
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.source = None;
+        self.loading = None;
+        self.messages.clear();
+        self.ended = false;
+        self.failure = None;
+        self.stale = false;
     }
 
     pub fn request(
@@ -60,8 +78,15 @@ impl History {
         expected: String,
         previous: bool,
         search: Option<String>,
+        restart: bool,
     ) {
-        if self.search != search
+        // Keep an active navigation pinned to its cut. Once it returns to the
+        // draft, or a new search starts, open the event-invalidated fresh cut.
+        if restart || (self.stale && self.cursor.is_none()) {
+            self.refresh();
+        }
+        if restart
+            || self.search != search
             || (self.shown.as_deref() != Some(expected.as_str()) && self.draft != expected)
         {
             self.cursor = None;
@@ -101,6 +126,7 @@ impl History {
                     }
                     None if !next.previous => {
                         self.cursor = None;
+                        self.refresh();
                         Some(self.draft.clone())
                     }
                     None => None,

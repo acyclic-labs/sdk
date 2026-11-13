@@ -89,9 +89,24 @@ where
                     match message {
                         Some(message) => {
                             let reader = bound.input_reader(&state, &message.body).await?;
+                            // Reuse the validated original envelope decoder. Attached
+                            // files stay references; recall projects only human text.
+                            let text = if message.body.descriptor().media_type() == crate::agent::USER_INPUT_MEDIA_TYPE {
+                                let content = crate::agent::read_user_input(&message.body, &*reader).await.map_err(turn)?;
+                                Some(match content {
+                                    crate::model::ModelContent::Text(text) => text,
+                                    content => content.parts().iter().filter_map(|part| match part {
+                                        crate::model::ModelContentPart::Text { text } => Some(text.as_str()),
+                                        _ => None,
+                                    }).collect::<String>(),
+                                })
+                            } else { None };
                             let mut offset = 0;
                             loop {
-                                let preview = input_prefix(&*reader, &message.body, offset, maximum).await?;
+                                let preview = match &text {
+                                    Some(text) => text_prefix(text, offset, maximum)?,
+                                    None => input_prefix(&*reader, &message.body, offset, maximum).await?,
+                                };
                                 if selection == InputSelection::Latest {
                                     yield InputPreviewStep::Selected(Some(preview));
                                     return;
@@ -180,7 +195,10 @@ where
         file: &FileRef,
     ) -> Result<Arc<super::super::FilesystemContentVerifier<StreamAuthorityStore<P>, O>>, Error>
     {
-        if file.descriptor().media_type() != "text/plain" {
+        if !matches!(
+            file.descriptor().media_type(),
+            "text/plain" | crate::agent::USER_INPUT_MEDIA_TYPE
+        ) {
             return Err(Error::Record("structured input has no plain-text preview"));
         }
         // The host selected this exact reference from an accepted inbox record
@@ -205,6 +223,21 @@ where
     }
 }
 
+fn text_prefix(text: &str, offset: u64, maximum: u64) -> Result<InputPreview, Error> {
+    let length = text.len() as u64;
+    let remaining = length
+        .checked_sub(offset)
+        .ok_or(Error::Record("input offset is past its end"))?;
+    let start = offset as usize;
+    let mut end = (offset + remaining.min(maximum)) as usize;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Ok(InputPreview {
+        text: text[start..end].to_owned(),
+        bytes: length,
+    })
+}
 async fn input_prefix(
     reader: &dyn crate::conversation::ContentResidencyVerifier,
     file: &FileRef,

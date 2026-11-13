@@ -1140,35 +1140,51 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
 #[tokio::test]
 async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> TestResult {
     use crate::agent::{InputPreviewStep, InputSelection, Message};
+    use crate::model::{ModelContent, ModelContentPart};
     use futures::StreamExt as _;
     let (bound, root) = binding().await?;
-    for (name, from, text) in [
+    for (name, from, content) in [
         (
             "first",
             Sender::User {
                 principal: "owner".into(),
             },
-            "same🙂",
+            ModelContent::Text("same🙂".into()),
         ),
         (
             "host",
             Sender::Host {
                 host: "host".into(),
             },
-            "host-only",
+            ModelContent::Text("host-only".into()),
+        ),
+        (
+            "structured",
+            Sender::User {
+                principal: "owner".into(),
+            },
+            ModelContent::Parts(vec![
+                ModelContentPart::text("structured🙂".into()),
+                ModelContentPart::text("content".into()),
+            ]),
         ),
         (
             "second",
             Sender::User {
                 principal: "owner".into(),
             },
-            "same🙂",
+            ModelContent::Text("same🙂".into()),
         ),
     ] {
         let intent = IntentId::try_from(name)?;
-        let body = bound
-            .stage_text(&root, "message", &from, &intent, ("prompt", text))
-            .await?;
+        let body = match &content {
+            ModelContent::Text(text) => {
+                bound
+                    .stage_text(&root, "message", &from, &intent, ("prompt", text))
+                    .await?
+            }
+            _ => bound.stage_prompt(&root, &from, &intent, &content).await?,
+        };
         bound
             .agents()
             .send(
@@ -1209,9 +1225,10 @@ async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> T
             InputPreviewStep::Selected(Some(_)) => panic!("history became a latest-input prefix"),
         }
     }
-    assert_eq!(messages.len(), 2);
+    assert_eq!(messages.len(), 3);
     assert!(messages[0].0 > messages[1].0);
     assert_eq!(messages[0].1, "same🙂");
-    assert_eq!(messages[1].1, "same🙂");
+    assert_eq!(messages[1].1, "structured🙂content");
+    assert_eq!(messages[2].1, "same🙂");
     Ok(())
 }

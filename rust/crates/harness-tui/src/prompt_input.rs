@@ -29,6 +29,8 @@ pub enum InputEffect {
         previous: bool,
         /// Reverse-search literal, absent for ordinary recall.
         search: Option<String>,
+        /// Start a fresh navigation/search at its newest match.
+        restart: bool,
     },
     /// Copy text through the host clipboard adapter.
     Copy(String),
@@ -86,6 +88,7 @@ pub struct PromptInput {
     /// Message edits and search previews never own or replace these entries.
     history: PromptHistory,
     history_query: bool,
+    history_active: bool,
     history_epoch: u64,
     /// Whether a submission is queued behind active host work.
     pub busy: bool,
@@ -149,6 +152,7 @@ impl PromptInput {
     /// Delegate navigation to the host query instead of retaining submitted text.
     pub fn use_history_query(&mut self) {
         self.history_query = true;
+        self.history_active = false;
         self.history = PromptHistory::default();
         self.history_epoch = self.history_epoch.wrapping_add(1);
     }
@@ -170,6 +174,7 @@ impl PromptInput {
         }
         if let Some(text) = text {
             self.editor.set_text(text, now_ms);
+            self.history_active = true;
             if previous {
                 self.editor.set_cursor(0, false);
             }
@@ -266,6 +271,7 @@ impl PromptInput {
 
     /// Accept one whole committed text event. No timing heuristic is applied.
     pub fn committed_text(&mut self, text: &str, now_ms: u64) -> Vec<InputEffect> {
+        self.history_active = false;
         let mut effects = self.flush_chord();
         self.history_epoch = self.history_epoch.wrapping_add(1);
         self.last_interrupt = None;
@@ -282,6 +288,7 @@ impl PromptInput {
 
     /// Accept bracketed paste or explicitly identified clipboard text.
     pub fn paste(&mut self, text: &str, now_ms: u64) -> Vec<InputEffect> {
+        self.history_active = false;
         self.history_epoch = self.history_epoch.wrapping_add(1);
         let effects = self.flush_chord();
         self.last_interrupt = None;
@@ -470,6 +477,27 @@ impl PromptInput {
         width: usize,
         effects: &mut Vec<InputEffect>,
     ) {
+        if matches!(
+            action,
+            Action::Delete(_)
+                | Action::DeleteWord(_)
+                | Action::Kill(_)
+                | Action::Undo
+                | Action::Redo
+                | Action::Yank
+                | Action::RotateYank
+                | Action::Submit
+                | Action::Newline
+                | Action::LiteralTab
+                | Action::Tab
+                | Action::CutPrefix
+                | Action::Paste
+                | Action::ExternalEditor
+                | Action::DeleteOrQuit
+        ) || (action == Action::CopyOrInterrupt && self.editor.selection().is_empty())
+        {
+            self.history_active = false;
+        }
         match action {
             Action::Select(motion) => self.editor.move_cursor(motion, true, width),
             Action::Move(motion) => self.move_or_recall(motion, select, now_ms, width, effects),
@@ -579,7 +607,9 @@ impl PromptInput {
                 request: self.history_epoch,
                 previous,
                 search: None,
+                restart: !self.history_active,
             });
+            self.history_active = true;
             return;
         }
         let history = !select
@@ -649,6 +679,9 @@ impl PromptInput {
             matched: false,
         });
         self.search_previous(effects);
+        if let Some(InputEffect::History { restart, .. }) = effects.last_mut() {
+            *restart = true;
+        }
     }
 
     fn search_previous(&mut self, effects: &mut Vec<InputEffect>) {
@@ -659,6 +692,7 @@ impl PromptInput {
                     request: self.history_epoch,
                     previous: true,
                     search: Some(search.query.clone()),
+                    restart: false,
                 });
             }
             return;
@@ -676,6 +710,7 @@ impl PromptInput {
     }
 
     fn finish_search(&mut self, now_ms: u64, accept: bool) {
+        self.history_active = false;
         if self.search.is_some() {
             self.history_epoch = self.history_epoch.wrapping_add(1);
         }

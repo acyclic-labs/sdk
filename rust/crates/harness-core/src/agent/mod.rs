@@ -105,6 +105,7 @@ pub use commit::{
     Spawn, Submitted, archive, create_root, create_root_with_peer, inbox_tail, intent_key, send,
     set_peer_membership, spawn, submit,
 };
+pub(crate) use driver::read_user_input;
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,
     OpenTurn, TurnHost, TurnIdentity, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE,

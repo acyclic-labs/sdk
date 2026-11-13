@@ -535,7 +535,7 @@ impl View {
                 self.ring = true;
                 self.stop(seen);
             }
-            Event::Delta => return Ok(()),
+            Event::Delta | Event::Input { .. } => return Ok(()),
             Event::Status(status) => {
                 if let Some(input) = status.cancelled_input {
                     self.stopped = Some((input, status.conversation));
@@ -1019,6 +1019,7 @@ async fn run_current(
     };
     let from = resume.then_some(replayed_through.saturating_sub(1));
     let (mut events, phase) = conversation.observe_with_phase(from).await?;
+    events.watch_inputs()?;
     let mut view = View {
         title: session::title(&title),
         top: events.seen(),
@@ -1441,6 +1442,9 @@ async fn run_current(
             }
             event = events.next() => {
                 let event = event?;
+                if matches!(&event, Event::Input { .. }) {
+                    prompt_history.invalidate();
+                }
                 let settled = matches!(&event, Event::Turn { .. });
                 if matches!(event, Event::Delta) {
                     events.absorb().await?;
@@ -1556,6 +1560,7 @@ async fn run_current(
                             };
                             sidebar.attached(&agent, history);
                             events = selected_events;
+                            events.watch_inputs()?;
                             conversation = selected;
                             view = selected_view;
                             title_future.set(session::follow_title(Arc::clone(&conversation), title.generation));
@@ -1593,9 +1598,9 @@ async fn run_current(
                         .collect::<Vec<_>>();
                     for effect in effects.into_iter().map(|effect| paged(effect, page)) {
                         match effect {
-                            InputEffect::History { request, previous, search } => {
+                            InputEffect::History { request, previous, search, restart } => {
                                 if view.prompt.is_none() {
-                                    prompt_history.request(request, input.editor.text().to_owned(), previous, search);
+                                    prompt_history.request(request, input.editor.text().to_owned(), previous, search, restart);
                                 }
                             }
                             InputEffect::Submit { text, .. } => {

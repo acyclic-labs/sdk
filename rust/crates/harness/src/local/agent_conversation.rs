@@ -960,7 +960,7 @@ impl Conversation {
                 match events.next().await? {
                     super::Event::Status(next) => break Some(next),
                     super::Event::Turn { .. } => break None,
-                    super::Event::Delta => {}
+                    super::Event::Delta | super::Event::Input { .. } => {}
                 }
             };
         }
