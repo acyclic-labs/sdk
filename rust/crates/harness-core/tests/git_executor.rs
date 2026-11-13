@@ -823,6 +823,74 @@ async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
 }
 
 #[tokio::test]
+async fn child_ignore_rules_do_not_erase_inherited_fork_base() -> Result<()> {
+    use acyclic_fs::{GitFilesystemResult, GitPathStatus};
+
+    let (_temp, root, fs, store, main) = fixture_native(true).await?;
+    std::fs::create_dir(root.join("nested"))?;
+    std::fs::write(root.join("nested/native.txt"), b"nested origin\n")?;
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(
+            main.workspace(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    let repository = main.workspace().id();
+    let (_, child) = run(
+        &fs,
+        &store,
+        &main,
+        repository,
+        &["checkout", "-b", "agents/ignored"],
+    )
+    .await?;
+    let child = child.ok_or("missing child")?;
+    run(&fs, &store, &child, repository, &["checkout", "main"]).await?;
+    // Neither inherited native file was authored or committed before the fork.
+    // The child hides both, while each side also has real visible and ignored work.
+    write_text(&child, "/.gitignore", b"native.txt\nchild-only.txt\n").await?;
+    write_text(&child, "/child-only.txt", b"ignored child\n").await?;
+    write_text(&child, "/visible-child.txt", b"child finding\n").await?;
+    write_text(&main, "/.gitignore", b"parent-only.txt\n").await?;
+    write_text(&main, "/parent-only.txt", b"ignored parent\n").await?;
+    write_text(&main, "/visible-parent.txt", b"parent finding\n").await?;
+
+    for stat in [false, true] {
+        let args = if stat {
+            vec!["diff", "agents/ignored", "--stat"]
+        } else {
+            vec!["diff", "agents/ignored"]
+        };
+        let (output, _) = run(&fs, &store, &main, repository, &args).await?;
+        let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = output else {
+            return Err("expected child diff data".into());
+        };
+        assert_eq!(value["fileChanges"], 2);
+        assert_eq!(value["bindingChanges"], 2);
+        if !stat {
+            assert_eq!(
+                value["paths"],
+                serde_json::json!([
+                    {"path":".gitignore", "status":GitPathStatus::Added, "side":"both"},
+                    {"path":"visible-child.txt", "status":GitPathStatus::Added, "side":"child"},
+                ])
+            );
+            assert_eq!(
+                value["parentPaths"],
+                serde_json::json!([
+                    {"path":".gitignore", "status":GitPathStatus::Added, "side":"both"},
+                    {"path":"visible-parent.txt", "status":GitPathStatus::Added, "side":"parent"},
+                ]),
+                "inherited files ignored only by the child are not parent additions"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn exactification_preserves_deletions_and_admits_new_inherited_source_entries() -> Result<()>
 {
     use acyclic_fs::GitFilesystemResult;

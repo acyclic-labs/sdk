@@ -65,19 +65,12 @@ where
                 let OwnedView::Checkout(owner) = owner else {
                     return Err(Error::Conflict("fork base has no source binding".into()));
                 };
-                let candidates = git_compatible_diff(
-                    &base,
-                    &child,
-                    &self.repository,
-                    &tracked_paths,
-                    None,
-                    &cancellation,
-                )
-                .await?;
+                // Ignore rules select each side's reported changes, not the
+                // inherited source facts shared by both sides of the fork.
+                let candidates = git_restore_paths(&base, &child, None, &cancellation).await?;
                 let paths = candidates
-                    .paths
                     .into_iter()
-                    .map(|change| format!("/{}", change.path))
+                    .map(|path| format!("/{path}"))
                     .collect::<Vec<_>>();
                 base = owner
                     .exactify_observed_base(origin.snapshot, &paths, witness, &mut accounting)
