@@ -166,9 +166,12 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStor
     Manifest<'_, StreamAuthorityStore<P>, O>
 {
     /// Checks an admitted candidate's actual changed paths against the
-    /// original permissions, then contributes its publication to the caller's
-    /// commit. Evaluate `with_home(candidate)` before calling this method;
-    /// decoded candidate policy never supplies its own issuer authority.
+    /// original permissions, admits that exact candidate against the retained
+    /// sources, then contributes its publication to the caller's commit.
+    /// Decoded candidate policy never supplies its own issuer authority.
+    /// `admit` receives the candidate view of the same six sources and the
+    /// original preparation IO. Its refusal contributes no publication or
+    /// source conditions to the caller's commit.
     ///
     /// No head or caller record is published during preparation. All six
     /// original source heads fence the same commit as the home publication.
@@ -179,15 +182,23 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStor
     /// # Errors
     /// Foreign candidates, denied changes and original filesystem failures
     /// retain their typed cause. Work uses only the supplied preparation IO.
-    pub async fn prepare_apply(
-        &self,
+    pub async fn prepare_apply<'m, F, Admission>(
+        &'m self,
         filesystem: &Fs<StreamAuthorityStore<P>, O>,
-        apply: HomeApply<'_, StreamAuthorityStore<P>, O>,
+        apply: HomeApply<'m, StreamAuthorityStore<P>, O>,
         commit: &mut FilesystemCommit,
-        io: &crate::filesystem::PreparationIo,
-    ) -> crate::Result<()> {
+        io: &'m crate::filesystem::PreparationIo,
+        admit: F,
+    ) -> crate::Result<()>
+    where
+        F: FnOnce(
+            Manifest<'m, StreamAuthorityStore<P>, O>,
+            &'m crate::filesystem::PreparationIo,
+        ) -> Admission,
+        Admission: std::future::Future<Output = crate::Result<()>>,
+    {
         let expected = self.generations[5];
-        self.with_home(apply.candidate)?;
+        let candidate = self.with_home(apply.candidate)?;
         let mut spent = acyclic_fs::WorkCounters::UNCHARGED;
         let mut changes = io.cursor_receipt(
             expected
@@ -205,6 +216,7 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStor
             }
         }
         drop(changes);
+        admit(candidate, io).await?;
         io.sdk(
             self.condition(filesystem, commit, io, io.cancellation())
                 .await,
@@ -253,7 +265,7 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStor
 /// A staged subject-home apply under the host's original policy and filesystem
 /// publication authority. The caller retains the candidate through submission.
 pub struct HomeApply<'a, A: 'static, O: 'static> {
-    /// Immutable, unpublished candidate already admitted by the settings fold.
+    /// Immutable, unpublished candidate admitted by the supplied settings fold.
     pub candidate: &'a Generation<A, O>,
     /// Original issuer/advisory meet and signed caller ceiling.
     pub permissions: &'a crate::config::policy::Permissions,
