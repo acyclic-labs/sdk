@@ -527,6 +527,7 @@ where
             file_views: vec![
                 Arc::new(crate::supervision::files::SignalFiles),
                 Arc::new(directory_file),
+                Arc::new(crate::client_files::trace::TraceFiles),
             ],
         })
     }

@@ -885,5 +885,47 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             .text,
         "after"
     );
+
+    // Default trace windows use this same authenticated file wait and original
+    // source follow, including when the trace stream does not exist yet.
+    let trace_path = "live/agents/self/trace/0/1.json".to_owned();
+    let paths = vec![trace_path.clone()];
+    let before = bound.files(&agent, root, &paths, None).await?;
+    assert!(before.files[&trace_path].is_none());
+    let waiting = bound.files(&agent, root, &paths, Some(&before.cut));
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let source = crate::client_files::trace::source(&agent)?;
+    let stream = acyclic_stream::Stream::new(bound.agents.provider().clone(), source.as_str())?;
+    let event = acyclic_stream::trace::TraceRecord::V1(acyclic_stream::trace::SpanEvent::Started {
+        id: acyclic_stream::trace::SpanId {
+            process: [3; 16],
+            sequence: 0,
+        },
+        parent: None,
+        name: "wait".into(),
+        mechanism: acyclic_stream::trace::Mechanism::Wait,
+        at_ns: 0,
+        guarantee: None,
+    });
+    stream
+        .append(
+            serde_json::to_vec(&event)?,
+            acyclic_stream::IdempotencyKey::unique(),
+        )
+        .await?;
+    let changed = waiting.await?;
+    assert_eq!(changed.cut.queries[&source], 1);
+    let file = changed.files[&trace_path]
+        .as_ref()
+        .ok_or("trace file missing")?;
+    assert!(
+        matches!(&file.source, crate::client_files::FileSource::Query { input, .. }
+        if input.stream == source && input.sequence == 0)
+    );
+    let value: serde_json::Value = serde_json::from_str(&file.text)?;
+    assert_eq!(value["activeWaits"], 1);
+    assert_eq!(value["missingGuarantees"], 1);
+    assert_eq!(value["coveredThrough"], 1);
     Ok(())
 }

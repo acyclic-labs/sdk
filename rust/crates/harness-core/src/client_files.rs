@@ -7,6 +7,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod trace;
+
 /// Versioned live source selected by `status/session-directory.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

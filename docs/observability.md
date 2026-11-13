@@ -1,5 +1,31 @@
 # Observability
 
+## Trace window files
+
+`live/agents/self/trace/<from>/<count>.json` projects a caller-selected window
+of the selected agent's typed trace stream through the ordinary authenticated
+private-file query. `from` is an inclusive record cursor; `count` is a positive
+32-bit page size. The file host reads only that window, clipped to its captured
+source cut. Its existing file subscription follows the original trace stream,
+including creation of a previously absent stream. No background collector or
+additional publication is created by installing this view. Authored overrides
+use the ordinary file rules.
+
+The shared projection reports the covered cursor interval, observed tail,
+per-mechanism inclusive time and bytes, unfinished waits, unsettled outcomes,
+and missing guarantees. Outlier classification remains unknown without an
+explicit mechanism policy. A finish whose start is outside the selected window
+is unpaired; it contributes no invented duration. Catching the captured tail
+does not prove settlement. Missing streams and empty windows yield no file.
+Malformed records fail with their original publication and decoder cause.
+Children start with their own trace subtree rather than inheriting their
+parent's trace history. The incremental Reader adapter applies the same query
+to bounded pages and live deliveries while retaining active joins across pages.
+
+This file binding does not create span producers. Complete request-path
+instrumentation, content correlation and deterministic crash replay remain
+separate requirements.
+
 ## Original model recovery observations
 
 Generation recovery emits `ModelEvent::Wait` through the original model stream.

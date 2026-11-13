@@ -6,8 +6,7 @@ use acyclic_stream::{
 };
 use std::{collections::BTreeMap, num::NonZeroU32};
 
-/// Self-scoped public file view; its backing is the admitted trace stream.
-pub const PATH: &str = "live/agents/self/trace.json";
+pub use acyclic_harness_core::client_files::trace::PREFIX;
 
 /// A read-only projection over one explicitly selected original source.
 pub struct File {
