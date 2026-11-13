@@ -34,7 +34,7 @@ pub use plugin::{
 };
 pub use types::{
     Action, Admission, AdmissionStatus, AgentConfig, Effort, Form, Host, Link, Policy, PolicyRule,
-    Sampling, utc,
+    Sampling, utc, utc_value,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

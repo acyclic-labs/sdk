@@ -192,22 +192,45 @@ pub enum Form {
 /// `millis` since the Unix epoch as UTC RFC 3339 with milliseconds.
 #[must_use]
 pub fn utc(millis: u64) -> String {
-    let (days, rest) = (millis / 86_400_000, millis % 86_400_000);
-    // Civil date from days since 1970-01-01 (Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + u64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rest / 3_600_000,
-        rest / 60_000 % 60,
-        rest / 1000 % 60,
-        rest % 1000
-    )
+    utc_value(millis).to_string()
+}
+
+/// Formats or serializes UTC directly into the caller's writer without owning
+/// a temporary timestamp string. Uses the same representation as [`utc`].
+#[must_use]
+pub fn utc_value(millis: u64) -> impl std::fmt::Display + Serialize {
+    Utc(millis)
+}
+
+struct Utc(u64);
+
+impl Serialize for Utc {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl std::fmt::Display for Utc {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let millis = self.0;
+        let (days, rest) = (millis / 86_400_000, millis % 86_400_000);
+        // Civil date from days since 1970-01-01 (Hinnant's algorithm).
+        let z = days + 719_468;
+        let era = z / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + u64::from(month <= 2);
+        write!(
+            formatter,
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+            rest / 3_600_000,
+            rest / 60_000 % 60,
+            rest / 1000 % 60,
+            rest % 1000
+        )
+    }
 }

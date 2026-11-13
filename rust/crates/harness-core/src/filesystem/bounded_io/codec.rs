@@ -21,6 +21,50 @@ pub(in crate::filesystem) fn decode_record<T: PreparationRecord>(
 }
 
 impl PreparationIo {
+    /// Joins borrowed text under the original operation's allocation and copy
+    /// allowance. Keep the returned ownership beside the string until it drops.
+    #[doc(hidden)]
+    pub fn joined_text<'a>(
+        parts: &[&str],
+        io: Option<&'a Self>,
+    ) -> Result<(String, Option<crate::conversation::ContentHold<'a>>)> {
+        if let Some(io) = io {
+            io.charged(WorkCounters {
+                items_examined: (parts.len() as u64)
+                    .checked_mul(2)
+                    .ok_or_else(|| io.invalid("text fragment count overflows"))?,
+                ..WorkCounters::default()
+            })?;
+        }
+        let bytes = parts.iter().try_fold(0usize, |bytes, part| {
+            bytes.checked_add(part.len()).ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "joined text size overflows",
+                )
+            })
+        })?;
+        let mut text = String::new();
+        crate::executor::with_history_io(io, |work| -> Result<()> {
+            if let Some(work) = work.as_deref_mut() {
+                work.admit_copy(bytes as u64)?;
+                work.reserve_text(&mut text, bytes)?;
+                work.copy_bytes(bytes as u64)?;
+            } else {
+                text.try_reserve_exact(bytes)
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+            }
+            Ok(())
+        })?;
+        let hold = io
+            .map(|io| io.guard_owned(text.capacity() as u64))
+            .transpose()?;
+        for part in parts {
+            text.push_str(part);
+        }
+        Ok((text, hold))
+    }
     pub(crate) fn canonical_sequence_digests<T: Serialize>(
         &self,
         values: &[T],
