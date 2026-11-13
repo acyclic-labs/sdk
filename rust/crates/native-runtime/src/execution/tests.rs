@@ -22,6 +22,10 @@ fn sandbox_policy() {
     .unwrap();
     std::fs::write(volume.join("readable"), b"volume data").unwrap();
     std::fs::write(&outside, b"private").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&outside, workspace.join("escape")).unwrap();
     #[cfg(target_os = "linux")]
     outside_attributes(&outside, false, true);
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -124,6 +128,7 @@ fn sandbox_policy() {
                 assert_eq!(std::fs::read(&outside).unwrap(), b"private");
             } else {
                 listener.accept().unwrap();
+                listener.accept().unwrap();
                 std::fs::write(&outside, b"private").unwrap();
             }
         }
@@ -158,6 +163,36 @@ fn sandbox_policy_probe() {
     #[cfg(target_os = "linux")]
     outside_attributes(Path::new(&outside), confined, false);
     allowed(std::fs::write(&outside, b"escaped"), !confined);
+    // The same grant must survive pathname traversal and an ordinary child
+    // launch: a command cannot shed the kernel boundary by spawning itself.
+    let traversed = Path::new("..").join("outside");
+    allowed(std::fs::read(&traversed).map(|_| ()), !confined);
+    allowed(std::fs::write(&traversed, b"escaped"), !confined);
+    allowed(std::fs::read("escape").map(|_| ()), !confined);
+    allowed(std::fs::write("escape", b"escaped"), !confined);
+    if std::env::var_os("ACYCLIC_POLICY_DESCENDANT").is_none() {
+        let descendant = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "execution::tests::sandbox_policy_probe",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_POLICY_DESCENDANT", "yes")
+            .output()
+            .unwrap();
+        assert!(
+            descendant.status.success(),
+            "descendant escaped or could not execute: {descendant:?}"
+        );
+    }
+    for ancestor in std::env::current_dir().unwrap().ancestors() {
+        std::fs::metadata(ancestor).unwrap();
+    }
+    let mut listed = false;
+    for entry in std::fs::read_dir(".cargo").unwrap() {
+        listed |= entry.unwrap().file_name() == "config.toml";
+    }
+    assert!(listed, "workspace directory listing omitted config.toml");
     assert_eq!(std::fs::read("readable").unwrap(), b"workspace data");
     assert_eq!(
         std::fs::read(
@@ -185,7 +220,6 @@ fn sandbox_policy_probe() {
     assert_eq!(output.stdout, b"runtime");
     #[cfg(target_os = "linux")]
     {
-        std::fs::metadata("..").unwrap();
         let listing = shell("ls -la && rg --files");
         assert!(
             listing.status.success(),
@@ -1446,7 +1480,7 @@ fn kernel_network_grants_attenuate_without_a_network_service() {
     eprintln!("network boundary cases: admitted={admitted}, unsupported={unsupported}");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     use crate::{ProcessCommand, ProcessStdio, ProcessTree};
@@ -1455,70 +1489,13 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
     std::fs::create_dir(&workspace).unwrap();
     let sentinel = root.path().join("outside");
     std::fs::write(&sentinel, "original").unwrap();
-    let read = system_read_roots();
-    let grant = ExecutionGrant::new(
-        &workspace,
-        ExecutionAccess::WorkspaceWrite,
-        read,
-        ExecutionNetwork::Off,
-    )
-    .unwrap();
-    let command = || {
-        let mut command = ProcessCommand::new("/bin/sh");
-        command
-            .args(["-c", "printf escaped"])
-            .current_dir(&workspace)
-            .env_clear()
-            .stdin(ProcessStdio::null())
-            .stderr(ProcessStdio::null())
-            .stdout(
-                std::fs::OpenOptions::new()
-                    .append(true)
-                    .open(&sentinel)
-                    .unwrap(),
-            );
-        command
-    };
+    let grant =
+        ExecutionGrant::workspace_default(&workspace, ExecutionAccess::WorkspaceWrite, [], [])
+            .unwrap();
     let custody = crate::ProcessCustody::open(&root.path().join("custody")).unwrap();
-    for custody in [None, Some(&custody)] {
-        let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-        let mut retained = None;
-        let error = ProcessTree::spawn_granted_controlled(
-            command(),
-            &grant,
-            custody,
-            Some(&original),
-            &mut retained,
-        )
-        .expect_err("an outside writable stdio descriptor entered the guest");
-        // Unsupported preparation is definitive. A native launch rejection
-        // can retain a warden or custody record and must stay a process error.
-        assert_eq!(
-            error
-                .get_ref()
-                .is_some_and(|cause| cause.is::<ExecutionRefusal>()),
-            error.kind() == io::ErrorKind::Unsupported
-        );
-        assert!(matches!(
-            error.kind(),
-            io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
-        ));
-        if let Some(tree) = retained.as_mut() {
-            // A failed guest admission can retain the original warden/record.
-            // Cleanup is a separate admitted operation, never a hidden retry
-            // against the failed invocation or an unmetered convenience path.
-            let recovery = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-            tree.terminate(Some(&recovery)).unwrap();
-            assert!(tree.is_reaped());
-        }
-        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
-    }
-    // Real negative control: the identical trusted command writes through
-    // this descriptor without the boundary, even though it names no path.
-    let mut tree = ProcessTree::spawn(&mut command()).unwrap();
-    let output = tree
-        .wait_with_output(
-            std::time::Duration::from_secs(5),
+    let capture = |mut tree: ProcessTree| {
+        tree.wait_with_output(
+            crate::CaptureSchedule::Unbounded,
             65536,
             None,
             || Ok(()),
@@ -1527,12 +1504,103 @@ fn inherited_file_stdio_cannot_bypass_the_workspace_boundary() {
             None,
             None,
         )
-        .unwrap();
-    assert!(output.status.success());
-    assert_eq!(
-        std::fs::read_to_string(&sentinel).unwrap(),
-        "originalescaped"
-    );
+        .unwrap()
+    };
+    for input in [true, false] {
+        let command = |file_stdio: bool| {
+            let mut command = ProcessCommand::new(crate::platform_shell().unwrap());
+            command
+                .args(acyclic_host_platform::shell::PLATFORM.arguments)
+                .arg(match (cfg!(windows), input) {
+                    (true, true) => "[Console]::Write([Console]::In.ReadToEnd())",
+                    (true, false) => "[Console]::Write('escaped')",
+                    (false, true) => "/bin/cat",
+                    (false, false) => "printf escaped",
+                })
+                .current_dir(&workspace)
+                .env_clear()
+                .stdin(if input && file_stdio {
+                    ProcessStdio::from(std::fs::File::open(&sentinel).unwrap())
+                } else {
+                    ProcessStdio::null()
+                })
+                .stderr(ProcessStdio::null())
+                .stdout(if input || !file_stdio {
+                    ProcessStdio::piped()
+                } else {
+                    ProcessStdio::from(
+                        std::fs::OpenOptions::new()
+                            .append(true)
+                            .open(&sentinel)
+                            .unwrap(),
+                    )
+                });
+            #[cfg(windows)]
+            command.env("SystemRoot", std::env::var_os("SystemRoot").unwrap());
+            command
+        };
+        for custody in [None, Some(&custody)] {
+            let control =
+                capture(ProcessTree::spawn_granted(command(false), &grant, custody).unwrap());
+            assert!(
+                control.status.success(),
+                "native stdio control failed: {control:?}"
+            );
+            assert_eq!(
+                control.stdout,
+                if input {
+                    b"".as_slice()
+                } else {
+                    b"escaped".as_slice()
+                }
+            );
+            let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+            let mut retained = None;
+            let error = ProcessTree::spawn_granted_controlled(
+                command(true),
+                &grant,
+                custody,
+                Some(&original),
+                &mut retained,
+            )
+            .expect_err("an outside file stdio handle entered the guest");
+            // Adapters preserve PermissionDenied or Unsupported, including
+            // typed preparation refusals. A launch refusal can retain custody;
+            // cleanup below is independent of this original error class.
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::Unsupported
+            ));
+            if error.kind() == io::ErrorKind::Unsupported {
+                assert!(
+                    error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+                );
+            }
+            if let Some(tree) = retained.as_mut() {
+                // A failed guest admission can retain the original warden/record.
+                // Cleanup is a separate admitted operation, never a hidden retry
+                // against the failed invocation or an unmetered convenience path.
+                let recovery = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+                tree.terminate(Some(&recovery)).unwrap();
+                assert!(tree.is_reaped());
+            }
+            assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "original");
+        }
+        // Real negative control: the identical trusted command writes through
+        // this descriptor without the boundary, even though it names no path.
+        let output = capture(ProcessTree::spawn(&mut command(true)).unwrap());
+        assert!(output.status.success());
+        if input {
+            assert_eq!(output.stdout, b"original");
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(&sentinel).unwrap(),
+                "originalescaped"
+            );
+        }
+    }
 }
 
 // The same compiled test executable is the real native child, so the probe
