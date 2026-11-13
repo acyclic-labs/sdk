@@ -267,7 +267,7 @@ impl OwnedAccounting {
                 caller_ledger.resume(allocations)?;
                 *caller_work = work;
                 caller_work.verify(budget)?;
-                Ok(())
+                Ok::<(), crate::FsError>(())
             }
             #[cfg(not(target_arch = "wasm32"))]
             OwnedAccountingState::Native(work) => {
