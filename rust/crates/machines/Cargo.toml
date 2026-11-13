@@ -48,7 +48,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "macros"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
+tonic = { workspace = true, features = ["codegen"] }
 tonic-prost = { workspace = true }
 uuid.workspace = true
 
@@ -64,7 +64,7 @@ tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 hyper-util = { workspace = true }
 rustix = { workspace = true, features = ["fs"] }
 tower = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tokio = { version = "1.48.0", default-features = false, features = ["net", "time", "rt-multi-thread", "macros"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 tracing.workspace = true

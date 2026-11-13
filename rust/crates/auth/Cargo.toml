@@ -45,7 +45,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 napi = { workspace = true, optional = true }
 napi-derive = { workspace = true, optional = true }
-tonic = { workspace = true, optional = true }
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"], optional = true }
 rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }
 arc-swap = "=1.9.2"
