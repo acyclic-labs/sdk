@@ -904,10 +904,11 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                     .iter()
                     .find(|append| append.path == inbox)
                     .ok_or(Error::Record("commit receipt omits the inbox append"))?;
-                // Persistent activation serves hosted dispatchers. A locally
-                // driven runtime has no idle follow, so signal its ready slot
-                // on this same confirmed-commit path as well.
-                self.runtime.wake(&actor);
+                // The local wake and the dispatcher's follow name the same
+                // committed activation, not two independent delivery attempts.
+                self.runtime
+                    .wake_committed(&actor, &receipt)
+                    .map_err(actor_error)?;
                 Ok(Delivered::Committed {
                     inbox: append.start,
                 })
