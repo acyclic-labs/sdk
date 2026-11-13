@@ -353,7 +353,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             request.parent,
             request.guarantee,
         )?;
-        let start = self.publish_submitted(event, None, None)?;
+        let start = self.publish_submitted(event, None, None, None)?;
         Ok(Recording {
             recorder: self.clone(),
             id,
@@ -367,6 +367,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         event: SpanEvent,
         before: Option<crate::AppendPending>,
         credit: Option<tokio::sync::OwnedSemaphorePermit>,
+        comparison: Option<Comparison>,
     ) -> Result<crate::AppendPending, StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         let _executor = self.executor.get().map(tokio::runtime::Handle::enter);
@@ -387,10 +388,25 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             }
             _ => None,
         };
+        let comparison = if let SpanEvent::Finished { id, .. } = &event {
+            comparison
+                .map(|comparison| {
+                    Self::encode(SpanEvent::Compared {
+                        id: *id,
+                        comparison,
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let (bytes, idempotency_key) = Self::encode(event)?;
         let mut records = vec![bytes.into()];
         if let Some(coverage) = coverage {
             records.push(coverage.into());
+        }
+        if let Some((comparison, _)) = comparison {
+            records.push(comparison.into());
         }
         let request = crate::AppendRequest {
             path: self.stream.path().clone(),
@@ -498,6 +514,16 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         bytes: Option<u64>,
         result: Outcome,
     ) -> Result<crate::AppendPending, StreamError> {
+        self.finish_compared(bytes, result, None)
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    pub(super) fn finish_compared(
+        self,
+        bytes: Option<u64>,
+        result: Outcome,
+        comparison: Option<Comparison>,
+    ) -> Result<crate::AppendPending, StreamError> {
         let event = SpanEvent::Finished {
             id: self.id,
             at_ns: self.recorder.now()?,
@@ -508,6 +534,7 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
             Admission::Retained(_) => (None, self.recorder.reserve_publication()?),
             Admission::Submitted(pending, credit) => (Some(pending), credit),
         };
-        self.recorder.publish_submitted(event, before, Some(credit))
+        self.recorder
+            .publish_submitted(event, before, Some(credit), comparison)
     }
 }

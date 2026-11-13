@@ -55,6 +55,15 @@ async fn scoped<F: Future>(active: Option<Active>, future: F) -> F::Output {
     .await
 }
 
+pub(super) fn within_sync<T>(
+    id: SpanId,
+    producer: Arc<dyn Producer>,
+    work: impl FnOnce() -> T,
+) -> T {
+    let _restore = Restore(CURRENT.replace(Some(Active { id, producer })));
+    work()
+}
+
 pub(super) async fn within<F: Future>(
     id: SpanId,
     producer: Arc<dyn Producer>,
@@ -177,4 +186,34 @@ pub(crate) fn is_source(path: &crate::StreamPath) -> bool {
             .as_ref()
             .is_some_and(|active| active.producer.is_source(path))
     })
+}
+
+/// Observe original synchronous work with optional original comparison evidence.
+/// The classifier runs only after admission. Terminal and comparison share one
+/// bounded append; neither waits for diagnostic IO before returning the value.
+pub fn observe_sync<T>(
+    request: Request,
+    work: impl FnOnce() -> T,
+    _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome, Option<super::Comparison>)>,
+) -> T {
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    {
+        use futures::FutureExt as _;
+        let recording = child(request)
+            .and_then(|admission| admission.now_or_never())
+            .and_then(Result::ok);
+        let Some(recording) = recording else {
+            return work();
+        };
+        let result = recording.within_sync(work);
+        if let Some((bytes, outcome, comparison)) = _outcome(&result) {
+            let _completion = recording.finish_compared(bytes, outcome, comparison);
+        }
+        result
+    }
+    #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
+    {
+        let _ = request;
+        work()
+    }
 }

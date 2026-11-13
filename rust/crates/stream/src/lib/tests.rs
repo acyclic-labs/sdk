@@ -992,6 +992,125 @@ mod replay_tests {
     }
 
     #[cfg(all(feature = "serde", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn original_append_retry_publishes_comparison_in_its_terminal_batch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{ComparisonKind, Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        let provider = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("data")?;
+        let request = AppendRequest {
+            path: path.clone(),
+            records: vec![OwnedBytes::from_static(b"original").into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let original = provider.append(request.clone()).await?;
+        let AppendOutcome::Committed(receipt) = &original else {
+            return Err("original append refused".into());
+        };
+        let trace = Stream::new(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("owner/trace")?,
+        );
+        let recorder = Arc::new(Recorder::new(trace.clone(), [35; 16]));
+        let root = recorder
+            .start(
+                "retry_owner",
+                Mechanism::ActorDelivery,
+                None,
+                Some("original_request_observed"),
+            )
+            .await?;
+        let parent = root.id();
+        let root = root.into_owned();
+        assert_eq!(
+            root.within(provider.append(request.clone())).await?,
+            original
+        );
+        root.finish_submitted(None, Outcome::Succeeded)?
+            .result()
+            .await?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut terminal = None;
+        let mut compared = false;
+        while completed != 2 || !compared {
+            match query.next().await? {
+                Some(Observation::Completed {
+                    id,
+                    start,
+                    result,
+                    finish,
+                    bytes,
+                    ..
+                }) => {
+                    assert_eq!(result, Outcome::Succeeded);
+                    if id != parent {
+                        assert_eq!(start.name, "stream.append_replay");
+                        assert_eq!(start.parent, Some(parent));
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("same_request_reuses_original_append_receipt")
+                        );
+                        assert_eq!(bytes, Some(0));
+                        terminal = Some((id, finish));
+                    }
+                    completed += 1;
+                }
+                Some(Observation::Compared {
+                    id,
+                    evidence,
+                    comparison,
+                    identical,
+                }) => {
+                    let (span, finish) = terminal
+                        .as_ref()
+                        .ok_or("comparison preceded its own terminal")?;
+                    assert_eq!(id, *span);
+                    assert_eq!(evidence.commit_id, finish.commit_id);
+                    assert_eq!(evidence.sequence, finish.sequence + 1);
+                    assert_eq!(comparison.kind, ComparisonKind::Request);
+                    assert!(identical);
+                    assert_eq!(comparison.previous.commit_id, receipt.commit_id);
+                    assert_eq!(comparison.previous.path, path);
+                    assert_eq!(comparison.previous.sequence, receipt.start);
+                    compared = true;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(query.snapshot(0, 5, Some(5), 0).repeated_calls, 1);
+        assert_eq!(trace.tail().await?, 5);
+        assert_eq!(provider.append(request).await?, original);
+        assert_eq!(
+            trace.tail().await?,
+            5,
+            "unobserved retry emitted diagnostics"
+        );
+        let mut rows = provider
+            .read(ReadRequest {
+                path,
+                from: receipt.start,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        let row = rows
+            .try_next()
+            .await?
+            .ok_or("original comparison evidence disappeared")?;
+        assert_eq!(row.commit_id, receipt.commit_id);
+        assert_eq!(row.value.as_ref(), b"original");
+        Ok(())
+    }
+
+    #[cfg(all(feature = "serde", not(target_arch = "wasm32")))]
     #[test]
     fn dropped_owned_span_uses_original_executor_outside_runtime_scope()
     -> Result<(), Box<dyn std::error::Error>> {

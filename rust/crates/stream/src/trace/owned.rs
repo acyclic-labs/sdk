@@ -1,6 +1,6 @@
 //! Object-safe custody of the original provider-bound recording.
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-use super::Outcome;
+use super::{Comparison, Outcome};
 use super::{Recording, SpanId};
 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
 use crate::StreamError;
@@ -14,6 +14,7 @@ trait Terminal: ProviderPlatform {
         self: Box<Self>,
         bytes: Option<u64>,
         result: Outcome,
+        comparison: Option<Comparison>,
     ) -> Result<crate::AppendPending, StreamError>;
 }
 
@@ -28,8 +29,9 @@ impl<P: StreamProvider + ?Sized> Terminal for Recording<P> {
         self: Box<Self>,
         bytes: Option<u64>,
         result: Outcome,
+        comparison: Option<Comparison>,
     ) -> Result<crate::AppendPending, StreamError> {
-        (*self).finish_submitted(bytes, result)
+        (*self).finish_compared(bytes, result, comparison)
     }
 }
 
@@ -45,12 +47,13 @@ impl TerminalGuard {
         mut self,
         bytes: Option<u64>,
         result: Outcome,
+        comparison: Option<Comparison>,
     ) -> Result<crate::AppendPending, StreamError> {
         // Only this consuming method or Drop can take the private terminal.
         self.0
             .take()
             .ok_or_else(|| StreamError::InvalidResponse.with_source(TerminalTransferred))?
-            .submit(bytes, result)
+            .submit(bytes, result, comparison)
     }
 }
 
@@ -62,7 +65,7 @@ impl Drop for TerminalGuard {
         if let Some(terminal) = self.0.take()
             && terminal.available()
         {
-            let _completion = terminal.submit(None, Outcome::Unsettled);
+            let _completion = terminal.submit(None, Outcome::Unsettled, None);
         }
     }
 }
@@ -114,6 +117,11 @@ impl OwnedRecording {
         super::context::within(self.id, self.producer.clone(), work).await
     }
 
+    /// Run synchronous work under this owner, restoring its caller on return or unwind.
+    pub fn within_sync<T>(&self, work: impl FnOnce() -> T) -> T {
+        super::context::within_sync(self.id, self.producer.clone(), work)
+    }
+
     /// Transfer the original terminal append without suspending the caller.
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     pub fn finish_submitted(
@@ -121,7 +129,17 @@ impl OwnedRecording {
         bytes: Option<u64>,
         result: Outcome,
     ) -> Result<crate::AppendPending, StreamError> {
-        self._terminal.submit(bytes, result)
+        self.finish_compared(bytes, result, None)
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    pub(super) fn finish_compared(
+        self,
+        bytes: Option<u64>,
+        result: Outcome,
+        comparison: Option<Comparison>,
+    ) -> Result<crate::AppendPending, StreamError> {
+        self._terminal.submit(bytes, result, comparison)
     }
 }
 

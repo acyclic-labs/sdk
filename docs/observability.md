@@ -693,3 +693,17 @@ source through the caller error chain against the original operation journal,
 and requires both flush and cut-wait observations to remain unsettled without
 advancing the certified device-flushed cut. This is simulation coverage of the
 original mechanism, not proof that the test has run or universal crash capture.
+
+Successful nonempty append retries automatically emit `stream.append_replay`
+with guarantee `same_request_reuses_original_append_receipt`. The shared
+mutation core already verified the canonical request digest against its retained
+idempotency entry; the observation reuses that digest and the original append's
+commit/path/start record. It does not hash or serialize the request again. Empty
+appends and outcomes without an original record emit no comparison reference.
+This covers accepted same-key append retries, not all equal calls across unrelated
+keys, repeated outputs or model prefix reuse.
+The synchronous SDK observer uses the same owned recording, per-poll causal
+context, publication credit and terminal custody as asynchronous observations.
+One optional comparison joins its original terminal in the same append batch,
+so it adds no task, publication round trip or completed-call index. The original
+receipt is returned immediately; an unfollowed replay constructs no evidence.
