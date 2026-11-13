@@ -110,6 +110,24 @@ mod tests {
             assert_eq!(restored.text.as_deref(), Some("draft"));
             history.resolve(&restored, true);
         }
+        // Search can be the first navigation from an unrecorded editor draft.
+        for accepted in [false, true] {
+            let mut fresh = History::new(Arc::clone(&history.conversation));
+            fresh.request(20, "unsent draft".into(), true, Some(String::new()), true);
+            let selected = futures::future::poll_fn(|cx| fresh.poll(cx)).await?;
+            assert_eq!(selected.text.as_deref(), Some(original));
+            fresh.resolve(&selected, true);
+            fresh.finish_search(accepted);
+            let expected = if accepted {
+                editor.text()
+            } else {
+                "unsent draft"
+            };
+            fresh.request(21, expected.into(), false, None, false);
+            let restored = futures::future::poll_fn(|cx| fresh.poll(cx)).await?;
+            assert_eq!(restored.text.as_deref(), Some("unsent draft"));
+            fresh.resolve(&restored, true);
+        }
         Ok(())
     }
 }
