@@ -198,8 +198,7 @@ impl MountDestinationGuard {
         Self::acquire_files(
             cleanup,
             None,
-            name,
-            None,
+            (name, None),
             FenceAcquisition::ExistingRecovery,
             guard,
             native,
@@ -358,8 +357,7 @@ impl MountDestinationGuard {
         Self::acquire_files(
             cleanup,
             Some(parent_directory),
-            name,
-            record,
+            (name, record),
             if recovery {
                 FenceAcquisition::Recovery
             } else {
@@ -562,8 +560,8 @@ impl MountDestinationGuard {
             Option<crate::NativeWorkReservation>,
         ),
         parent_directory: Option<cap_std::fs::Dir>,
-        name: [u8; NATIVE_FENCE_NAME_BYTES],
-        record: Option<Vec<u8>>,
+        // The fence's name and, for a mount fence, the record it carries.
+        (name, record): ([u8; NATIVE_FENCE_NAME_BYTES], Option<Vec<u8>>),
         acquisition: FenceAcquisition,
         guard: &mut Option<Self>,
         native: &NativeMaterializationWork,

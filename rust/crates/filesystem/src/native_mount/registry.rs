@@ -376,10 +376,9 @@ fn process_base() -> Option<PathBuf> {
         let owner = nix::unistd::geteuid().as_raw();
         #[cfg(target_os = "linux")]
         identity.update(&owner.to_le_bytes());
-        let base = std::env::temp_dir().join(format!(
-            "acyclic-native-mount-{}",
-            &identity.finalize().to_hex()[..32]
-        ));
+        let identity = identity.finalize().to_hex();
+        let base =
+            std::env::temp_dir().join(format!("acyclic-native-mount-{}", identity.get(..32)?));
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
