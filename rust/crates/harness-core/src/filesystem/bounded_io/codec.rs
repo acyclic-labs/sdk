@@ -325,7 +325,9 @@ impl PreparationIo {
         )
     }
 
-    pub(crate) fn value_json<T: Serialize>(
+    /// Builds a JSON graph on this preparation owner before allocating its storage.
+    /// The caller retains this owner until the returned graph is retired.
+    pub fn value_json<T: Serialize>(
         &self,
         value: &T,
         maximum: impl Into<Option<u64>>,
