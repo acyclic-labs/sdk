@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::executor) struct StockExecution<'a> {
-    pub(in crate::executor) stock: &'a StockExecutor,
+    pub(in crate::executor) stock: std::borrow::Cow<'a, StockExecutor>,
     pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) io: Option<&'a PreparationIo>,
     pub(in crate::executor) summary: Option<ContextPipeline>,
@@ -52,14 +52,14 @@ impl JournalWrites<'_> {
 /// The turn's compaction policy, resolved once from the original IO, with the
 /// private summary authority that resolution validated.
 pub(in crate::executor) struct ResolvedCompaction<'a> {
-    pub(in crate::executor) policy: &'a crate::context::CompactionPolicy,
+    pub(in crate::executor) policy: crate::context::CompactionPolicy,
     pub(in crate::executor) destination: Option<crate::runtime::SummaryDestination<'a>>,
 }
 
 impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self {
-            stock,
+            stock: std::borrow::Cow::Borrowed(stock),
             context: stock
                 .task_context
                 .as_ref()
@@ -89,7 +89,7 @@ impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn compaction_policy(
         &self,
     ) -> Result<&crate::context::CompactionPolicy> {
-        Ok(self.compaction()?.policy)
+        Ok(&self.compaction()?.policy)
     }
     pub(in crate::executor) fn compaction(&self) -> Result<&ResolvedCompaction<'a>> {
         self.compaction
@@ -97,45 +97,44 @@ impl<'a> StockExecution<'a> {
     }
     fn resolve_compaction(&self) -> Result<ResolvedCompaction<'a>> {
         use crate::context::CompactionPolicy;
-        static CAPACITY: std::sync::LazyLock<CompactionPolicy> =
-            std::sync::LazyLock::new(CompactionPolicy::default);
-        let stock: &'a StockExecutor = self.stock;
         let disabled = || ResolvedCompaction {
-            policy: &CompactionPolicy::Disabled,
+            policy: CompactionPolicy::Disabled,
             destination: None,
         };
-        Ok(match (&self.summary, &stock.compaction, self.context) {
-            (Some(_), _, _) => disabled(),
-            (None, Some(policy @ CompactionPolicy::Capacity(_)), _) => {
-                let destination = self
-                    .context
-                    .map(|(context, _)| context.summary_destination(self.io))
-                    .transpose()?;
-                if let Some(destination) = destination {
-                    destination.require(self.io)?;
+        Ok(
+            match (&self.summary, &self.stock.compaction, self.context) {
+                (Some(_), _, _) => disabled(),
+                (None, Some(policy @ CompactionPolicy::Capacity(_)), _) => {
+                    let destination = self
+                        .context
+                        .map(|(context, _)| context.summary_destination(self.io))
+                        .transpose()?;
+                    if let Some(destination) = destination {
+                        destination.require(self.io)?;
+                    }
+                    ResolvedCompaction {
+                        policy: policy.clone(),
+                        destination,
+                    }
                 }
-                ResolvedCompaction {
-                    policy,
-                    destination,
+                (None, Some(CompactionPolicy::Disabled), _) => disabled(),
+                (None, None, Some((context, _))) => {
+                    let destination = context.summary_destination(self.io)?;
+                    ResolvedCompaction {
+                        policy: if destination.writer().is_some() {
+                            CompactionPolicy::default()
+                        } else {
+                            CompactionPolicy::Disabled
+                        },
+                        destination: Some(destination),
+                    }
                 }
-            }
-            (None, Some(CompactionPolicy::Disabled), _) => disabled(),
-            (None, None, Some((context, _))) => {
-                let destination = context.summary_destination(self.io)?;
-                ResolvedCompaction {
-                    policy: if destination.writer().is_some() {
-                        &CAPACITY
-                    } else {
-                        &CompactionPolicy::Disabled
-                    },
-                    destination: Some(destination),
-                }
-            }
-            (None, None, None) => ResolvedCompaction {
-                policy: &CAPACITY,
-                destination: None,
+                (None, None, None) => ResolvedCompaction {
+                    policy: CompactionPolicy::default(),
+                    destination: None,
+                },
             },
-        })
+        )
     }
 
     pub(in crate::executor) fn inherited_prefix(
