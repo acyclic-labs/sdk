@@ -1030,6 +1030,10 @@
           "additionalProperties": false,
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
+            "include_body": {
+              "description": "Explicitly pull the body of this agent's own human-facing projection.\nOmission returns a marked pointer rather than re-ingesting its context.",
+              "type": "boolean"
+            },
             "path": {
               "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
@@ -1456,6 +1460,10 @@
                     }
                   ],
                   "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "self-projection": {
+                  "description": "The source is a human-facing projection of this task's own context.",
+                  "type": "boolean"
                 },
                 "text": {
                   "description": "Exact selected UTF-8 text.",
@@ -2077,6 +2085,9 @@
                 "path": {
                   "type": "string"
                 },
+                "self-projection": {
+                  "type": "boolean"
+                },
                 "text": {
                   "type": [
                     "string",
@@ -2125,6 +2136,27 @@
                     },
                     "value": {
                       "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection3": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/SelfProjectionView"
                     }
                   },
                   "required": [
@@ -2287,6 +2319,26 @@
                 }
               ]
             },
+            "SelfProjectionView": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "self-projection": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "self-projection",
+                "text"
+              ],
+              "type": "object"
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -2401,44 +2453,47 @@
             },
             {
               "$ref": "#/$defs/JsonProjection2"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection3"
             }
           ]
         },
-        "revision": "portable-13"
+        "revision": "portable-14"
       },
       "definition_digest": [
-        254,
-        227,
-        245,
-        196,
+        112,
+        163,
+        171,
+        249,
+        18,
+        117,
+        169,
+        249,
+        165,
         215,
-        122,
-        170,
-        113,
-        35,
-        226,
-        208,
-        12,
-        224,
-        162,
-        11,
-        177,
-        254,
-        60,
-        145,
-        203,
-        68,
-        182,
-        149,
-        45,
-        200,
-        239,
-        217,
-        218,
-        26,
-        152,
-        122,
-        119
+        56,
+        24,
+        147,
+        1,
+        1,
+        194,
+        91,
+        7,
+        135,
+        108,
+        247,
+        234,
+        228,
+        220,
+        43,
+        57,
+        214,
+        21,
+        230,
+        125,
+        52,
+        134
       ],
       "variant": "exact_read_full"
     },
@@ -2640,6 +2695,10 @@
           "additionalProperties": false,
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
+            "include_body": {
+              "description": "Explicitly pull the body of this agent's own human-facing projection.\nOmission returns a marked pointer rather than re-ingesting its context.",
+              "type": "boolean"
+            },
             "path": {
               "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
@@ -3066,6 +3125,10 @@
                     }
                   ],
                   "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "self-projection": {
+                  "description": "The source is a human-facing projection of this task's own context.",
+                  "type": "boolean"
                 },
                 "text": {
                   "description": "Exact selected UTF-8 text.",
@@ -3687,6 +3750,9 @@
                 "path": {
                   "type": "string"
                 },
+                "self-projection": {
+                  "type": "boolean"
+                },
                 "text": {
                   "type": [
                     "string",
@@ -3756,6 +3822,27 @@
                     },
                     "value": {
                       "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection4": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/SelfProjectionView"
                     }
                   },
                   "required": [
@@ -3915,6 +4002,26 @@
                 }
               ]
             },
+            "SelfProjectionView": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "self-projection": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "self-projection",
+                "text"
+              ],
+              "type": "object"
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -4032,44 +4139,47 @@
             },
             {
               "$ref": "#/$defs/JsonProjection3"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection4"
             }
           ]
         },
-        "revision": "portable-13"
+        "revision": "portable-14"
       },
       "definition_digest": [
-        113,
-        100,
-        152,
-        67,
-        153,
-        208,
-        216,
-        92,
-        1,
-        215,
+        53,
+        246,
+        122,
         188,
-        70,
-        135,
-        80,
-        172,
-        18,
-        237,
-        44,
-        192,
-        165,
-        13,
+        234,
+        144,
+        130,
+        52,
+        93,
         186,
-        208,
-        46,
-        22,
-        184,
-        129,
+        225,
+        36,
+        215,
         142,
-        107,
-        171,
-        241,
-        220
+        181,
+        86,
+        131,
+        4,
+        170,
+        56,
+        202,
+        112,
+        151,
+        157,
+        153,
+        119,
+        224,
+        82,
+        125,
+        182,
+        199,
+        242
       ],
       "variant": "exact_read_reference"
     },
@@ -4460,6 +4570,9 @@
                 "path": {
                   "type": "string"
                 },
+                "self-projection": {
+                  "type": "boolean"
+                },
                 "text": {
                   "type": [
                     "string",
@@ -4553,38 +4666,38 @@
         "revision": "portable-8"
       },
       "definition_digest": [
-        194,
-        112,
-        46,
-        200,
-        168,
-        145,
-        173,
-        81,
-        79,
-        189,
-        224,
-        99,
-        28,
-        61,
-        228,
-        85,
-        171,
-        77,
-        62,
-        149,
-        69,
-        33,
+        24,
+        63,
+        124,
+        198,
+        185,
+        96,
+        24,
+        45,
+        158,
         102,
-        87,
-        1,
-        180,
-        240,
-        147,
+        252,
+        50,
+        70,
+        101,
+        242,
+        82,
+        201,
+        50,
         167,
-        147,
-        232,
-        89
+        136,
+        26,
+        26,
+        225,
+        83,
+        19,
+        31,
+        253,
+        129,
+        128,
+        104,
+        152,
+        192
       ],
       "variant": "write_full"
     },
@@ -5688,6 +5801,9 @@
                 "path": {
                   "type": "string"
                 },
+                "self-projection": {
+                  "type": "boolean"
+                },
                 "text": {
                   "type": [
                     "string",
@@ -5781,38 +5897,38 @@
         "revision": "portable-9"
       },
       "definition_digest": [
-        41,
-        196,
-        37,
-        179,
+        18,
+        51,
+        248,
         6,
-        47,
-        242,
-        228,
-        140,
-        183,
-        221,
-        40,
-        177,
-        215,
+        234,
         239,
-        177,
+        60,
+        30,
+        239,
+        55,
+        15,
         244,
-        118,
-        77,
-        77,
-        64,
-        162,
-        249,
-        75,
-        216,
-        196,
-        216,
-        143,
-        25,
-        139,
-        81,
-        200
+        229,
+        49,
+        4,
+        38,
+        189,
+        13,
+        121,
+        239,
+        193,
+        198,
+        181,
+        128,
+        185,
+        197,
+        35,
+        20,
+        241,
+        71,
+        175,
+        255
       ],
       "variant": "exact_edit_full"
     },
@@ -6262,6 +6378,9 @@
                 "path": {
                   "type": "string"
                 },
+                "self-projection": {
+                  "type": "boolean"
+                },
                 "text": {
                   "type": [
                     "string",
@@ -6355,38 +6474,38 @@
         "revision": "portable-patch-4"
       },
       "definition_digest": [
-        138,
+        16,
+        216,
+        126,
+        3,
+        24,
+        244,
+        189,
+        35,
+        208,
+        80,
+        130,
+        217,
+        64,
+        171,
+        159,
+        169,
+        110,
+        58,
+        148,
         125,
-        236,
-        28,
-        210,
-        185,
-        145,
-        218,
-        78,
-        108,
-        49,
-        122,
-        165,
-        63,
-        180,
-        9,
-        42,
-        195,
-        142,
-        226,
-        61,
-        113,
-        160,
-        205,
-        31,
-        190,
-        206,
-        102,
-        220,
-        115,
-        205,
-        228
+        151,
+        18,
+        170,
+        212,
+        229,
+        30,
+        65,
+        97,
+        148,
+        168,
+        38,
+        213
       ],
       "variant": "patch_edit_full"
     },
@@ -6588,6 +6707,10 @@
           "additionalProperties": false,
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
+            "include_body": {
+              "description": "Explicitly pull the body of this agent's own human-facing projection.\nOmission returns a marked pointer rather than re-ingesting its context.",
+              "type": "boolean"
+            },
             "path": {
               "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
@@ -7014,6 +7137,10 @@
                     }
                   ],
                   "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "self-projection": {
+                  "description": "The source is a human-facing projection of this task's own context.",
+                  "type": "boolean"
                 },
                 "text": {
                   "description": "Exact selected UTF-8 text.",
@@ -7635,6 +7762,9 @@
                 "path": {
                   "type": "string"
                 },
+                "self-projection": {
+                  "type": "boolean"
+                },
                 "text": {
                   "type": [
                     "string",
@@ -7683,6 +7813,27 @@
                     },
                     "value": {
                       "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection3": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/SelfProjectionView"
                     }
                   },
                   "required": [
@@ -7845,6 +7996,26 @@
                 }
               ]
             },
+            "SelfProjectionView": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "self-projection": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "self-projection",
+                "text"
+              ],
+              "type": "object"
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -7959,44 +8130,47 @@
             },
             {
               "$ref": "#/$defs/JsonProjection2"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection3"
             }
           ]
         },
-        "revision": "portable-13"
+        "revision": "portable-14"
       },
       "definition_digest": [
-        254,
-        227,
-        245,
-        196,
+        112,
+        163,
+        171,
+        249,
+        18,
+        117,
+        169,
+        249,
+        165,
         215,
-        122,
-        170,
-        113,
-        35,
-        226,
-        208,
-        12,
-        224,
-        162,
-        11,
-        177,
-        254,
-        60,
-        145,
-        203,
-        68,
-        182,
-        149,
-        45,
-        200,
-        239,
-        217,
-        218,
-        26,
-        152,
-        122,
-        119
+        56,
+        24,
+        147,
+        1,
+        1,
+        194,
+        91,
+        7,
+        135,
+        108,
+        247,
+        234,
+        228,
+        220,
+        43,
+        57,
+        214,
+        21,
+        230,
+        125,
+        52,
+        134
       ],
       "variant": "range_read_full"
     },
@@ -8198,6 +8372,10 @@
           "additionalProperties": false,
           "description": "Version-pinned file/media read arguments shared by native tool profiles.",
           "properties": {
+            "include_body": {
+              "description": "Explicitly pull the body of this agent's own human-facing projection.\nOmission returns a marked pointer rather than re-ingesting its context.",
+              "type": "boolean"
+            },
             "path": {
               "description": "Public path relative to the agent's project volume, or an immutable\n`diagnostic_file` query from a child.finished notice. Diagnostic queries\nreturn text byte pages; pass page.next as range.start to continue.",
               "type": "string"
@@ -8624,6 +8802,10 @@
                     }
                   ],
                   "description": "Provenance and EOF for every text/cell view; absent for native media."
+                },
+                "self-projection": {
+                  "description": "The source is a human-facing projection of this task's own context.",
+                  "type": "boolean"
                 },
                 "text": {
                   "description": "Exact selected UTF-8 text.",
@@ -9245,6 +9427,9 @@
                 "path": {
                   "type": "string"
                 },
+                "self-projection": {
+                  "type": "boolean"
+                },
                 "text": {
                   "type": [
                     "string",
@@ -9314,6 +9499,27 @@
                     },
                     "value": {
                       "$ref": "#/$defs/DiagnosticReadResult"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "value"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "JsonProjection4": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "json",
+                      "type": "string"
+                    },
+                    "value": {
+                      "$ref": "#/$defs/SelfProjectionView"
                     }
                   },
                   "required": [
@@ -9473,6 +9679,26 @@
                 }
               ]
             },
+            "SelfProjectionView": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "self-projection": {
+                  "type": "boolean"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "self-projection",
+                "text"
+              ],
+              "type": "object"
+            },
             "VolumeClass": {
               "description": "The three independently governed file namespaces.",
               "oneOf": [
@@ -9590,44 +9816,47 @@
             },
             {
               "$ref": "#/$defs/JsonProjection3"
+            },
+            {
+              "$ref": "#/$defs/JsonProjection4"
             }
           ]
         },
-        "revision": "portable-13"
+        "revision": "portable-14"
       },
       "definition_digest": [
-        113,
-        100,
-        152,
-        67,
-        153,
-        208,
-        216,
-        92,
-        1,
-        215,
+        53,
+        246,
+        122,
         188,
-        70,
-        135,
-        80,
-        172,
-        18,
-        237,
-        44,
-        192,
-        165,
-        13,
+        234,
+        144,
+        130,
+        52,
+        93,
         186,
-        208,
-        46,
-        22,
-        184,
-        129,
+        225,
+        36,
+        215,
         142,
-        107,
-        171,
-        241,
-        220
+        181,
+        86,
+        131,
+        4,
+        170,
+        56,
+        202,
+        112,
+        151,
+        157,
+        153,
+        119,
+        224,
+        82,
+        125,
+        182,
+        199,
+        242
       ],
       "variant": "range_read_reference"
     },
