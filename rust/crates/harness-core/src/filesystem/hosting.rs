@@ -909,19 +909,11 @@ where
             return Err(Error::Record("status names no approval request"));
         };
         let state = self.agents.state(agent).await?;
-        let authority = agent_authority(
-            &self.issuer,
-            &self.admission,
-            &state.path,
-            &state.volumes,
-            &[],
-        )
-        .await
-        .map_err(turn)?;
+        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
         let grant = super::ContentGrant::verify(
             &authority.verifier,
             &authority.scope,
-            authority.private.volume()?,
+            &journal,
             crate::conversation::VolumeOperation::Read,
             &mut None,
         )
@@ -934,7 +926,7 @@ where
         let (file, bytes) = self
             .volumes
             .read_internal_range(
-                authority.private.volume()?,
+                &journal,
                 &grant,
                 &path,
                 super::InternalContentClass::Interaction,
