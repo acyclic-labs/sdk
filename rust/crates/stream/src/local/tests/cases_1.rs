@@ -63,7 +63,7 @@ async fn local_append_retains_original_flush_guarantee() -> Result<(), Box<dyn s
         let trace = crate::Stream::new(
             Arc::new(MemoryStream::default()),
             StreamPath::new("owner/trace")?,
-        );
+        )?;
         let recorder = Arc::new(Recorder::new(trace.clone(), [31; 16]));
         let root = recorder
             .start(

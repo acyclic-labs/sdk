@@ -35,7 +35,7 @@ async fn lost_flush_producer_terminates_original_waiters() -> Result<(), Box<dyn
     let trace = crate::Stream::new(
         Arc::new(MemoryStream::default()),
         StreamPath::new("owner/trace")?,
-    );
+    )?;
     #[cfg(feature = "serde")]
     let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [32; 16]));
     #[cfg(feature = "serde")]
@@ -505,7 +505,7 @@ async fn failed_group_flush_retains_original_source_and_never_certifies_its_cut(
         let trace = crate::Stream::new(
             Arc::new(MemoryStream::default()),
             StreamPath::new("owner/trace")?,
-        );
+        )?;
         #[cfg(feature = "serde")]
         let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [34; 16]));
         #[cfg(feature = "serde")]

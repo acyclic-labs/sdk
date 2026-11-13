@@ -139,7 +139,7 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
         let trace = crate::Stream::new(
             Arc::new(MemoryStream::default()),
             StreamPath::new("owner/trace")?,
-        );
+        )?;
         #[cfg(feature = "serde")]
         let recorder = Arc::new(crate::trace::Recorder::new(trace.clone(), [33; 16]));
         #[cfg(feature = "serde")]

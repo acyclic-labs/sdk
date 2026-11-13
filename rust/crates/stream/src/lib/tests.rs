@@ -1011,7 +1011,7 @@ mod replay_tests {
         let trace = Stream::new(
             Arc::new(MemoryStream::default()),
             StreamPath::new("owner/trace")?,
-        );
+        )?;
         let recorder = Arc::new(Recorder::new(trace.clone(), [35; 16]));
         let root = recorder
             .start(
