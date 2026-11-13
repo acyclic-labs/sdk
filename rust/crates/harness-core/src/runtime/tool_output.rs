@@ -43,21 +43,11 @@ impl ToolOutputLog {
     /// Publish one immutable chunk. Quiet supervision adds a conditional cursor
     /// update to that same commit. No state advances before its receipt, so an
     /// unknown acknowledgement can replay the exact original batch and identity.
-    pub async fn publish_chunk(
-        &mut self,
-        name: &str,
-        bytes: &[u8],
-        operation: OperationId,
-    ) -> Result<FileRef> {
-        let path = format!(
-            "tools/{}/{}/{name}",
-            self.context.turn_id(),
-            self.context.operation_id()
-        );
+    pub async fn publish_chunk(&mut self, name: &str, bytes: &[u8]) -> Result<FileRef> {
+        let (context, operation, path) = self.context.output_context(name)?;
         let display = name.split('/').next().unwrap_or(name);
         if !self.context.output_activity {
-            return self
-                .context
+            return context
                 .stage_file_once(
                     operation,
                     &path,
@@ -82,8 +72,7 @@ impl ToolOutputLog {
         let encoded =
             serde_json::to_vec(&cursor).map_err(|error| Error::Invalid(error.to_string()))?;
         let activity_path = tool_output_activity_path(cursor.turn, cursor.call);
-        let volume = &self
-            .context
+        let volume = &context
             .task()
             .content_binding(None)
             .ok_or_else(|| Error::Unsupported("tool output writer is not bound".into()))?
@@ -108,8 +97,7 @@ impl ToolOutputLog {
                 },
             },
         ];
-        let (published, _) = self
-            .context
+        let (published, _) = context
             .stage_tool_changes(operation, volume, &changes, None)
             .await?;
         let mut members = published.members.into_iter();

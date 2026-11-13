@@ -644,14 +644,12 @@ async fn cancelling_during_open_publishes_its_input_and_preserves_queued_work() 
         fn open<'a>(
             &'a self,
             _: &'a AgentState,
-            _: OperationId,
-            inbox: u64,
-            _: u64,
+            identity: acyclic_harness_core::agent::TurnIdentity,
             _: &'a ModelContent,
             stop: CancellationToken,
         ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
             Box::pin(async move {
-                self.0.send(inbox).expect("opening observer");
+                self.0.send(identity.inbox).expect("opening observer");
                 stop.cancelled().await;
                 Err(acyclic_harness_core::Error::InteractionRejected(
                     acyclic_harness_core::InteractionRejection::Cancelled,
