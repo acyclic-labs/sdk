@@ -1,13 +1,15 @@
 use super::*;
 
-/// A leased subtree is written and observed like any other while held, is
-/// never listed, inherited or named by a durable write, and is gone once its
-/// lease is released. A provider that cannot hold one reports `Unsupported`.
+/// A leased subtree, and every path a commit into it creates and so adopts,
+/// is written and observed like any other while held, is never listed,
+/// inherited or named by a durable write, and is gone once its lease is
+/// released. A provider that cannot hold one reports `Unsupported`.
 pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Failure> {
     let parent = path("ephemeral")?;
     let source = path("ephemeral/source")?;
     let root = path("ephemeral/lease")?;
     let forked = path("ephemeral/lease/fork")?;
+    let adopted = path("ephemeral/changes")?;
     match provider.lease_ephemeral(root.clone()).await {
         Err(StreamError::Unsupported) => return Ok(()),
         // A lease never creates its durable ancestors.
@@ -33,28 +35,33 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     {
         return Err(violated!());
     }
-    let mut follow = publish(provider, &source, &forked).await?;
-    refusals(provider, &source, &forked).await?;
+    let mut follows = publish(provider, &source, &forked, &adopted).await?;
+    refusals(provider, &source, &forked, &adopted).await?;
     isolation(provider, &parent, &source).await?;
-    // Release removes the whole subtree; its follower observes the loss.
+    // Release removes the subtree and every adopted path; followers of both
+    // observe the loss.
     lease.settle().await?;
-    if !matches!(follow.next().await, Some(Err(StreamError::NotFound)))
-        || provider.tail(forked).await != Err(StreamError::NotFound)
-    {
-        return Err(violated!());
+    for (follow, gone) in follows.iter_mut().zip([&forked, &adopted]) {
+        if !matches!(follow.next().await, Some(Err(StreamError::NotFound)))
+            || provider.tail(gone.clone()).await != Err(StreamError::NotFound)
+        {
+            return Err(violated!());
+        }
     }
     provider.lease_ephemeral(root).await?.settle().await?;
     Ok(())
 }
 
 /// The consumer's shape: one conditioned, idempotent commit forks a durable
-/// source into the lease, and later appends land beneath it. A follower sees
-/// the inherited and new records in order; the returned one is still live.
+/// source into the lease and creates `adopted` outside it, and later appends
+/// land in both. Followers see the inherited and new records in order; the
+/// returned ones, of `forked` then `adopted`, are still live.
 async fn publish<P: StreamProvider + ?Sized>(
     provider: &P,
     source: &StreamPath,
     forked: &StreamPath,
-) -> Result<crate::RecordStream, Failure> {
+    adopted: &StreamPath,
+) -> Result<[crate::RecordStream; 2], Failure> {
     let fork = CommitRequest {
         deadline_unix_millis: None,
         effects: vec![CommitEffect::hard(
@@ -67,13 +74,19 @@ async fn publish<P: StreamProvider + ?Sized>(
                     path: forked.clone(),
                 },
             ],
-            vec![CommitMutation::Fork {
-                exclude: Vec::new(),
-                source: source.clone(),
-                destination: forked.clone(),
-                at_tail: 1,
-                records: vec![Bytes::from_static(b"forked").into()],
-            }],
+            vec![
+                CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: source.clone(),
+                    destination: forked.clone(),
+                    at_tail: 1,
+                    records: vec![Bytes::from_static(b"forked").into()],
+                },
+                CommitMutation::Append {
+                    path: adopted.clone(),
+                    records: vec![Bytes::from_static(b"adopted").into()],
+                },
+            ],
         )],
         idempotency_key: key(b"ephemeral/fork")?,
     };
@@ -86,42 +99,62 @@ async fn publish<P: StreamProvider + ?Sized>(
     if retried.commit_id != first.commit_id {
         return Err(violated!());
     }
-    let mut follow = crate::records_only(
-        provider
-            .follow(crate::FollowRequest::new(forked.clone(), 0))
-            .await?,
-    );
-    let AppendOutcome::Committed(appended) = provider
-        .append(AppendRequest {
-            path: forked.clone(),
-            records: vec![Bytes::from_static(b"appended").into()],
-            if_tail: Some(2),
-            idempotency_key: key(b"ephemeral/append")?,
-        })
-        .await?
-    else {
-        return Err(violated!());
-    };
-    if appended.tail != 3 {
-        return Err(violated!());
-    }
-    for expected in [b"seed".as_slice(), b"forked", b"appended"] {
-        let Some(Ok(record)) = follow.next().await else {
+    let mut follows = [
+        crate::records_only(
+            provider
+                .follow(crate::FollowRequest::new(forked.clone(), 0))
+                .await?,
+        ),
+        crate::records_only(
+            provider
+                .follow(crate::FollowRequest::new(adopted.clone(), 0))
+                .await?,
+        ),
+    ];
+    for (target, tail, retry) in [
+        (forked, 2, b"ephemeral/append".as_slice()),
+        (adopted, 1, b"ephemeral/append-adopted".as_slice()),
+    ] {
+        let AppendOutcome::Committed(appended) = provider
+            .append(AppendRequest {
+                path: target.clone(),
+                records: vec![Bytes::from_static(b"appended").into()],
+                if_tail: Some(tail),
+                idempotency_key: key(retry)?,
+            })
+            .await?
+        else {
             return Err(violated!());
         };
-        if record.value.as_ref() != expected {
+        if appended.tail != tail + 1 {
             return Err(violated!());
         }
     }
-    Ok(follow)
+    for (follow, records) in follows.iter_mut().zip([
+        [b"seed".as_slice(), b"forked", b"appended"].as_slice(),
+        [b"adopted".as_slice(), b"appended"].as_slice(),
+    ]) {
+        for expected in records {
+            let Some(Ok(record)) = follow.next().await else {
+                return Err(violated!());
+            };
+            if record.value.as_ref() != *expected {
+                return Err(violated!());
+            }
+        }
+    }
+    Ok(follows)
 }
 
-/// A durable write naming the subtree anywhere, or mixing scopes, is refused.
+/// A durable write naming an owned path anywhere, or one mixing scopes or
+/// leases, is refused; a fresh path needs a parent.
 async fn refusals<P: StreamProvider + ?Sized>(
     provider: &P,
     source: &StreamPath,
     forked: &StreamPath,
+    adopted: &StreamPath,
 ) -> Result<(), Failure> {
+    let other = provider.lease_ephemeral(path("ephemeral/other")?).await?;
     let append = |target: &StreamPath| CommitMutation::Append {
         path: target.clone(),
         records: vec![Bytes::from_static(b"refused").into()],
@@ -140,6 +173,16 @@ async fn refusals<P: StreamProvider + ?Sized>(
             Vec::new(),
             vec![append(source), append(forked)],
             b"ephemeral/mixed".as_slice(),
+        ),
+        (
+            Vec::new(),
+            vec![append(source), append(adopted)],
+            b"ephemeral/adopted-durable".as_slice(),
+        ),
+        (
+            Vec::new(),
+            vec![append(&path("ephemeral/other/x")?), append(adopted)],
+            b"ephemeral/two-leases".as_slice(),
         ),
     ] {
         let refused = provider
@@ -165,6 +208,20 @@ async fn refusals<P: StreamProvider + ?Sized>(
     if escaped.err() != Some(StreamError::InvalidArgument) {
         return Err(violated!());
     }
+    let orphan = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![CommitEffect::hard(
+                Vec::new(),
+                vec![append(forked), append(&path("ephemeral/orphan/x")?)],
+            )],
+            idempotency_key: key(b"ephemeral/orphan")?,
+        })
+        .await;
+    if orphan.err() != Some(StreamError::NotFound) {
+        return Err(violated!());
+    }
+    other.settle().await?;
     Ok(())
 }
 
@@ -196,6 +253,7 @@ async fn isolation<P: StreamProvider + ?Sized>(
         })
         .await?;
     if provider.tail(path("ephemeral-copy/lease/fork")?).await != Err(StreamError::NotFound)
+        || provider.tail(path("ephemeral-copy/changes")?).await != Err(StreamError::NotFound)
         || provider.tail(path("ephemeral-copy/source")?).await != Ok(1)
     {
         return Err(violated!());

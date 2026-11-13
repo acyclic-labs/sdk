@@ -286,8 +286,8 @@ fn namespace_page(
             || edge.name.text.to_string(),
             |parent| format!("{}/{}", parent.as_str(), edge.name.text),
         ))?;
-        // A lease root is never listed, so neither is anything beneath it.
-        if !hidden.roots.contains_key(&path) {
+        // An owned subtree is never listed, so neither is anything beneath it.
+        if !hidden.owned.contains_key(&path) {
             out.push(path);
         }
     }

@@ -505,7 +505,7 @@ impl MemoryStream {
         >,
         StreamError,
     > {
-        let scope = state.ephemeral.commit_scope(request)?;
+        let scope = state.ephemeral.commit_scope(&state.paths, request)?;
         if let Some((replayed, result, index)) =
             self.replay_in(state, &scope, request.idempotency_key.as_bytes())?
         {
@@ -922,6 +922,7 @@ fn install_namespace(
     // created. Range over subscribers, never over the inherited subtree.
     for fact in &envelope.mutations {
         let path = crate::request::fact_path(fact);
+        state.ephemeral.adopt(scope, &previous, path);
         if previous.get(path).is_some() {
             continue;
         }

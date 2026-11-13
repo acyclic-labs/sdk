@@ -40,7 +40,7 @@ impl MemoryStream {
             .map(AppendRecord::payload_bytes)
             .sum::<usize>();
         let digest = self.append_request_digest(request)?;
-        let scope = state.ephemeral.append_scope(request)?;
+        let scope = state.ephemeral.append_scope(&state.paths, request)?;
         if let Some(result) = self.replay_append(state, &scope, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned((result, Default::default())));
         }
