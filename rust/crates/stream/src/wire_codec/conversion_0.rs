@@ -342,7 +342,7 @@ pub fn children_page_from_wire(
                     .as_ref()
                     .try_into()
                     .map_err(|_| StreamError::InvalidArgument)?;
-                Ok(crate::CommitId::from_bytes(array))
+                Ok::<_, StreamError>(crate::CommitId::from_bytes(array))
             })
             .transpose()?,
         limit: value.limit,

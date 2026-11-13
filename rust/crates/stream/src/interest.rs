@@ -80,7 +80,10 @@ impl<K: Ord + Clone, V: Clone> Interests<K, V> {
         };
         Ok(interest)
     }
-    pub(crate) fn get(&self, key: &K) -> Result<Option<V>, StreamError> {
+    pub(crate) fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Result<Option<V>, StreamError>
+    where
+        K: std::borrow::Borrow<Q>,
+    {
         Ok(self
             .entries
             .lock()

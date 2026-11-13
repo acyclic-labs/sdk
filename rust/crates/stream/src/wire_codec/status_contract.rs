@@ -90,28 +90,44 @@ fn check_decoded(wire: &Status, actual: &StreamError) -> Result<(), &'static str
         return Err("status mutation uncertainty");
     }
     if *expected == StreamError::Unavailable {
-        let encoded = Status::from(actual);
-        if encoded.code() != wire.code()
-            || encoded.message() != wire.message()
-            || encoded.details() != wire.details()
-            || !encoded
-                .metadata()
-                .as_ref()
-                .iter()
-                .filter(|(name, _)| name.as_str().starts_with("acyclic-"))
-                .eq(wire
+        let wrapped = actual
+            .clone()
+            .with_source(std::io::Error::other("original local context"));
+        for error in [actual, &wrapped] {
+            let encoded = Status::from(error);
+            if encoded.code() != wire.code()
+                || encoded.message() != wire.message()
+                || encoded.details() != wire.details()
+                || !encoded
                     .metadata()
                     .as_ref()
                     .iter()
-                    .filter(|(name, _)| name.as_str().starts_with("acyclic-")))
-        {
-            return Err("original refusal diagnostics");
+                    .filter(|(name, _)| name.as_str().starts_with("acyclic-"))
+                    .eq(wire
+                        .metadata()
+                        .as_ref()
+                        .iter()
+                        .filter(|(name, _)| name.as_str().starts_with("acyclic-")))
+            {
+                return Err("original refusal diagnostics");
+            }
         }
     }
     Ok(())
 }
 
 fn check_with(input: &[u8], decode: impl Fn(&Status) -> StreamError) -> Result<(), &'static str> {
+    let authority = u64::from_be_bytes(std::array::from_fn(|index| {
+        input.get(index).copied().unwrap_or(0)
+    }));
+    let deferred = StreamError::not_before(authority)
+        .with_source(std::io::Error::other("first local context"))
+        .with_source(std::io::Error::other("second local context"));
+    if deferred.not_before_authority() != Some(authority)
+        || decode(&Status::from(&deferred)).not_before_authority() != Some(authority)
+    {
+        return Err("wrapped original authority-time refusal");
+    }
     for (code, message, error) in CONTRACT {
         let wire = Status::new(*code, *message);
         check_decoded(&wire, &decode(&wire))?;

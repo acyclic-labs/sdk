@@ -1,7 +1,9 @@
 //! Owned custody of one exact keyed commit, independent of its waiters.
 use crate::StreamProviderExt as _;
 use crate::completion::{Completion, Producer};
-use crate::{CommitOutcome, CommitRequest, StreamError, StreamProvider};
+use crate::{
+    AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, StreamError, StreamProvider,
+};
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -14,7 +16,8 @@ pub use native::NativePending;
 /// One exact commit and its retained terminal result.
 ///
 /// Clones observe the same producer; no clone retries. Producer loss is an
-/// explicit unavailable outcome, never a wait for a successor or transport EOF.
+/// explicit unavailable outcome with its original typed producer-loss source,
+/// never a wait for a successor or transport EOF.
 #[must_use = "retain the handle or its request identity to recover an ambiguous outcome"]
 pub struct Pending<R = Result<CommitOutcome, StreamError>, H = (), I = CommitRequest> {
     completion: Completion<R, H, I>,
@@ -55,7 +58,41 @@ impl<R, H, I> Pending<R, H, I> {
         self.completion
             .result()
             .await
-            .map_err(|_| StreamError::Unavailable)
+            .map_err(|source| StreamError::Unavailable.with_source(source))
+    }
+}
+
+/// Original append-family custody, using the same completion as commits.
+pub type AppendPending = Pending<Result<AppendOutcome, StreamError>, (), AppendRequest>;
+
+impl AppendPending {
+    /// Transfer the original append to its executor; dropping its observers
+    /// cannot withdraw publication or change its retry family and identity.
+    pub fn submit_append<P: StreamProvider + ?Sized>(
+        provider: Arc<P>,
+        request: AppendRequest,
+        executor: &dyn crate::runtime::Executor,
+    ) -> Self {
+        let command = request.clone();
+        Self::submit_task(
+            request,
+            async move { provider.append(command).await },
+            executor,
+        )
+    }
+
+    pub(crate) fn submit_task(
+        request: AppendRequest,
+        work: impl std::future::Future<Output = Result<AppendOutcome, StreamError>>
+        + crate::ProviderTask
+        + 'static,
+        executor: &dyn crate::runtime::Executor,
+    ) -> Self {
+        let (pending, producer) = Self::prepare(request, ());
+        executor.spawn(Box::pin(async move {
+            producer.publish(work.await);
+        }));
+        pending
     }
 }
 impl Pending {
