@@ -147,9 +147,9 @@ fn owner_check(
     control: ProcessControl,
 ) -> impl Fn() -> std::io::Result<()> + Send + Sync + 'static {
     move || {
-        if acyclic_fs::capture_root_identity(&workspace.path).map_err(std::io::Error::other)?
-            != workspace.identity
-        {
+        // A served root's witness comes from its original mount owner. Asking
+        // its kernel projection here can wait on callbacks owned by this check.
+        if workspace.root_identity().map_err(std::io::Error::other)? != workspace.identity {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "hook workspace root was replaced",
@@ -190,4 +190,50 @@ where
     let state = StateArc::try_unwrap(held)
         .map_err(|_| Error::Conflict("hook cleanup still owns its selected view".into()))?;
     Ok((result, state))
+}
+
+#[cfg(all(test, unix, not(loom)))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn owner_checks_reject_stopped_commands_and_replaced_physical_roots() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let root = directory.path().join("project");
+        std::fs::create_dir(&root).map_err(storage)?;
+        let harness = LocalHarness::open(
+            crate::LocalHarnessConfig::native_host(&root)
+                .workspace_mounting(WorkspaceMounting::Physical)
+                .state_directory(directory.path().join("runtime"))
+                .without_user_settings(),
+        )
+        .await?;
+        let workspace = harness
+            .workspace()
+            .ok_or_else(|| Error::NotFound("physical workspace".into()))?;
+        let control = ProcessControl::unbounded().map_err(storage)?;
+        let check = owner_check(Arc::clone(workspace), control.clone());
+        check().map_err(storage)?;
+        control.stop();
+        assert_eq!(
+            check()
+                .expect_err("stopped command retained authority")
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+
+        let check = owner_check(
+            Arc::clone(workspace),
+            ProcessControl::unbounded().map_err(storage)?,
+        );
+        std::fs::rename(&root, directory.path().join("retired")).map_err(storage)?;
+        std::fs::create_dir(&root).map_err(storage)?;
+        assert_eq!(
+            check()
+                .expect_err("replacement root retained authority")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        Ok(())
+    }
 }
