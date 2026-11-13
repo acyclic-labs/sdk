@@ -219,6 +219,88 @@ fn agent_records(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<Vec<Vec<
     })
 }
 
+fn capture_directory_fixture<'a>(
+    fs: &'a acyclic_fs::Fs<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
+    volume: &'a VolumeRef,
+    directory: &'a Path,
+) -> EntryFuture<'a, Result<()>> {
+    entry(async move {
+        use acyclic_fs::{CancellationToken, WorkBudget, model::GenerationSelector};
+        let source = directory.join("source");
+        std::fs::create_dir(&source).map_err(storage)?;
+        std::fs::create_dir(source.join("metadata")).map_err(storage)?;
+        let cancellation = CancellationToken::new();
+        let workspace = fs
+            .open_workspace(
+                volume.storage_name(&mut None)?,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?
+            .value;
+        let mut checkout = workspace
+            .checkout(
+                GenerationSelector::Head,
+                acyclic_fs::model::CheckoutMode {
+                    access: acyclic_fs::model::AccessMode::ReadWrite,
+                    consistency: acyclic_fs::model::ConsistencyMode::Pinned,
+                    mutations: acyclic_fs::model::MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?
+            .value;
+        let captured = acyclic_fs::capture_baseline(
+            &mut checkout,
+            &acyclic_fs::CaptureOptions {
+                expected_root_identity: acyclic_fs::capture_root_identity(&source)
+                    .map_err(storage)?,
+                source_root: source,
+                source_namespace: None,
+                materialized_view: None,
+                maximum_paths: None,
+                maximum_extent_spans: None,
+            },
+            &acyclic_fs::CapturePolicy::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| storage(failure.error))?;
+        assert!(
+            captured.value.changed_paths > 0,
+            "no directory was captured"
+        );
+        assert_eq!(captured.value.staged_file_bytes, 0);
+        let published = checkout
+            .commit::<acyclic_fs::WorkspaceError, _, _>(
+                acyclic_fs::OperationId::new(),
+                None,
+                None,
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+                |_| {
+                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    }))
+                },
+            )
+            .await
+            .map_err(|failure| storage(failure.error))?;
+        assert!(matches!(
+            published.value,
+            acyclic_fs::LivePublicationObservation::Committed { .. }
+        ));
+        Ok(())
+    })
+}
+
 fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
     entry(async move {
         // The independently initialized stores and settings never discover HOME.
@@ -234,9 +316,12 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
         let fs = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.join("filesystem")))
             .await
             .map_err(storage)?;
-        FilesystemHost::new(fs, &reference, None)?
+        FilesystemHost::new(fs.clone(), &reference, None)?
             .create_volume(&volume)
             .await?;
+        // A logical empty volume has no native metadata input. Capture a real
+        // directory before the turn so timestamp replay exercises durable ingestion.
+        capture_directory_fixture(&fs, &volume, directory).await?;
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
         let provider = Arc::new(ScriptedModelProvider::new([
             ScriptedTurn::Text("done".into()),
