@@ -354,6 +354,7 @@ async fn observe(
     use acyclic_harness_client::ReadTarget;
     let bound = server.bound();
     let state = bound.agents().state(agent).await?;
+    eprintln!("{agent}: original output producer phase {:?}", state.phase);
     let (journal_volume, authority) = agent_journal_authority(
         bound.volumes(),
         bound.issuer(),
@@ -397,10 +398,14 @@ async fn observe(
             ..Default::default()
         })
         .await?;
-    let mut request = acyclic_stream::FollowRequest::new(agent.conversation()?, 0);
-    request.when_absent = acyclic_stream::WhenAbsent::Wait;
-    let mut conversation =
-        acyclic_stream::records_only(bound.agents().provider().follow(request).await?);
+    let followed = bound.agents().follow_conversation(agent, 0).await;
+    if followed.is_err() {
+        eprintln!(
+            "{agent}: original output producer phase {:?}",
+            bound.agents().state(agent).await.map(|state| state.phase)
+        );
+    }
+    let mut conversation = followed?;
     let record = conversation
         .next()
         .await
