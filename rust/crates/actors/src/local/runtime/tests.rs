@@ -16,7 +16,6 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod clock;
 mod completion;
 mod drain;
-mod handler_failure;
 mod invocation_failure;
 mod pause;
 mod progress;
@@ -24,6 +23,7 @@ mod retry;
 mod subscriptions;
 
 mod conditional;
+mod handler_failure;
 mod scheduling;
 
 fn root() -> Result<StreamPath, StreamError> {

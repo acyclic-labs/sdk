@@ -750,10 +750,7 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_)
-            | Self::MergeConflict { .. }
-            | Self::Refused(_)
-            | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::ModelTokenCountUnavailable
@@ -762,6 +759,7 @@ impl Error {
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } | Self::Boundary { code, .. } => *code,
+            Self::MergeConflict { .. } => ErrorCode::Conflict,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
