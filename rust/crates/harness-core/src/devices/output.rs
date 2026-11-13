@@ -183,6 +183,172 @@ mod tests {
     };
     use std::sync::Arc;
 
+    async fn read_output(
+        task: Arc<crate::runtime::TaskContext>,
+        arguments: serde_json::Value,
+    ) -> Result<ToolResult> {
+        let invocation = crate::tool::ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "read-output".into(),
+            name: "read".into(),
+            arguments,
+        };
+        let context = ToolContext::new(task, invocation.operation_id, &invocation.call_id)?;
+        crate::tool::files::read()?
+            .executor
+            .execute(invocation, Some(context))
+            .await
+    }
+
+    #[tokio::test]
+    async fn omitted_device_bytes_are_seekable_with_the_original_read_tool() -> Result<()> {
+        use crate::{conversation::VolumeOperation, tool::files::DirectoryReadResult};
+        use serde_json::json;
+
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        let mut grants = vec!["tool:call:read".into()];
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            grants.push(storage.volume().capability(operation, &mut None)?);
+        }
+        let limits = Limits {
+            file_bytes: Some(4096),
+            render_bytes: Some(16384),
+            ..Limits::default()
+        };
+        let task = Arc::new(
+            Bindings {
+                scope: RuntimeScope::new(Capabilities::new(grants), limits.clone())?,
+                content: Some(storage.content_bindings()),
+                ..Bindings::local()
+            }
+            .build()?
+            .agent_context(&Capabilities::default(), storage.content_bindings())?,
+        );
+        let operation = OperationId::new();
+        let context = ToolContext::new(Arc::clone(&task), operation, "device-command")?;
+        let records = (0..32)
+            .map(|index| vec![b'a' + index % 26; 897 + usize::from(index % 7)])
+            .collect::<Vec<_>>();
+        let original = records.concat();
+        let mut output = Output::new(&context);
+        for (index, record) in records.iter().enumerate() {
+            output
+                .append(&context, index as u64, index % 2 == 1, record)
+                .await?;
+        }
+        let terminal = ToolResult {
+            value: json!({"exit_code": 0}),
+        };
+        let result = output.finish(terminal.clone())?;
+        let start = result.value["omitted_range"]["start"].as_u64().unwrap();
+        let end = result.value["omitted_range"]["end"].as_u64().unwrap();
+        assert!(start > records[0].len() as u64 && end > start);
+        let query = result.value["output_page_query"].clone();
+        let invocation = crate::tool::ToolInvocation {
+            operation_id: operation,
+            call_id: "device-command".into(),
+            name: "shell".into(),
+            arguments: json!({"command": "capture"}),
+        };
+        use crate::tool::ToolProjection as _;
+        let (projected, _) =
+            crate::tools::shell::ShellProjection.project(&invocation, &result, None)?;
+        assert!(
+            serde_json::to_string(&projected)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .len() as u64
+                <= limits.render_bytes.unwrap()
+        );
+        let page: DirectoryReadResult =
+            serde_json::from_value(read_output(Arc::clone(&task), query.clone()).await?.value)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(page.entries.len(), 1);
+        let first = &page.entries[0];
+
+        // The former unpositioned directory starts at source byte zero. The
+        // advertised cursor must instead select the page containing `start`.
+        let mut unpositioned = query.clone();
+        unpositioned["selection"]["after"] = serde_json::Value::Null;
+        let first_page = read_output(Arc::clone(&task), unpositioned).await?;
+        assert_ne!(first_page.value["entries"][0]["name"], first.name);
+
+        storage
+            .stage(
+                OperationId::new(),
+                &first.path,
+                b"replacement is not captured output",
+                "text/plain",
+                "later",
+            )
+            .await?;
+        assert_eq!(
+            read_output(Arc::clone(&task), query.clone()).await?.value,
+            serde_json::to_value(&page).map_err(|error| Error::Invalid(error.to_string()))?,
+            "directory continuation retains its original publication cut",
+        );
+
+        let mut next_query = query.clone();
+        let mut position = start;
+        let mut recovered = Vec::new();
+        // This consumes bounded pages, not readiness checks or earlier files.
+        while position < end {
+            let selected: DirectoryReadResult = serde_json::from_value(
+                read_output(Arc::clone(&task), next_query.clone())
+                    .await?
+                    .value,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(selected.entries.len(), 1);
+            let entry = &selected.entries[0];
+            let mut coordinates = entry.name.split('-');
+            let file_end = coordinates.next().unwrap().parse::<u64>().unwrap();
+            let file_start = coordinates.next().unwrap().parse::<u64>().unwrap();
+            assert!(file_start <= position && position < file_end);
+            let until = end.min(file_end);
+            let read = read_output(
+                Arc::clone(&task),
+                json!({
+                    "path": entry.path,
+                    "version": entry.version,
+                    "range": {"start": position - file_start, "end": until - file_start}
+                }),
+            )
+            .await?;
+            let bytes = read.value["text"].as_str().unwrap().as_bytes();
+            assert_eq!(bytes, &original[position as usize..until as usize]);
+            recovered.extend_from_slice(bytes);
+            next_query["selection"]["after"] = entry.version.clone().into();
+            position = until;
+        }
+        assert_eq!(recovered, original[start as usize..end as usize]);
+
+        let mut replay = Output::new(&context);
+        for (index, record) in records.iter().enumerate() {
+            replay
+                .append(&context, index as u64, index % 2 == 1, record)
+                .await?;
+        }
+        assert_eq!(replay.finish(terminal)?, result);
+
+        let denied = Arc::new(task.scoped(Capabilities::new(["tool:call:read"]), limits)?);
+        assert_eq!(
+            read_output(denied, query.clone()).await.unwrap_err().code(),
+            crate::wire::ErrorCode::Unauthorized,
+            "an immutable cursor does not grant volume access",
+        );
+        let mut different_directory = query;
+        different_directory["path"] = format!("tools/{}", OperationId::new()).into();
+        assert_eq!(
+            read_output(task, different_directory)
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Invalid,
+            "a continuation cannot be moved to another directory",
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn output_replay_retains_original_files_after_visible_edits() -> Result<()> {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
