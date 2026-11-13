@@ -69,3 +69,16 @@ current read grants on every directory page and range, including read-only mount
 The first observation pins the original generation. Matches return the existing
 `FilePathSelection` and first matching byte offset; no whole-file hash or copy is
 needed. A cursor is bound to volume, mount root, path kind, path and literal.
+
+Native mounted searches use `FileCursor::new_with_native_work` and
+`page_with_native_work` with the original `NativeMaterializationWork`. The same
+reader and traversal perform portable and native searches. Native cursor and
+page outputs use the shared `Retained` carrier; their allocation credit stays
+live until their owned data is destroyed. Cancellation or exhausted original
+credit refuses the operation without falling back to portable execution.
+
+Saved tool-result replay rechecks the original query selection and each source
+before exposing the stored result or its projection. Stream addresses require
+current stream access; linked and mounted files require current reader access
+at their original immutable version. A saved result or continuation grants no
+authority, and a result outside the selected subtree or mount root is refused.
