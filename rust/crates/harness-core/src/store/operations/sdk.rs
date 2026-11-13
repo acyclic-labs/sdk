@@ -70,7 +70,7 @@ impl std::ops::Deref for ObservedHeads {
 
 pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
-    request: acyclic_stream::HeadsRequest,
+    request: &acyclic_stream::HeadsRequest,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<ObservedHeads> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -86,7 +86,7 @@ pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
             _allocation: Some(allocation),
         };
         output
-            .validate_for(&request)
+            .validate_for(request)
             .map_err(|source| stream_error_with_work(source, work))?;
         return Ok(output);
     }
@@ -98,7 +98,7 @@ pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
         .await
         .map_err(|source| stream_error_with_work(source, work))?;
     heads
-        .validate_for(&request)
+        .validate_for(request)
         .map_err(|source| stream_error_with_work(source, work))?;
     if let Some(observer) = work.as_deref_mut() {
         for record in heads
