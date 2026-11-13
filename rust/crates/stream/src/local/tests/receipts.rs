@@ -385,3 +385,47 @@ async fn phase_barriers_upgrade_ordered_prefixes_to_device_flushed_proofs() -> R
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn atomic_membership_survives_journal_and_snapshot_recovery() -> Result {
+    for compact in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let limits = LocalStreamLimits {
+            compaction_operations: if compact { 1 } else { u64::MAX },
+            ..LocalStreamLimits::default()
+        };
+        let provider = LocalStream::open(directory.path(), limits).await?;
+        crate::conformance::atomic::verify(&provider).await?;
+        let request = crate::conformance::atomic::request()?;
+        let observed = provider
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .ok_or("original receipt missing")?;
+        let original = provider.commit(request.clone()).await?;
+        drop(provider);
+        let reopened = LocalStream::open(directory.path(), limits).await?;
+        let recovered = reopened
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .ok_or("recovered receipt missing")?;
+        // A new open rebinds authority revisions; immutable membership and retry
+        // identity remain the original facts.
+        assert_eq!(recovered.request_digest, observed.request_digest);
+        assert_eq!(recovered.outcome, observed.outcome);
+        let retry = reopened.commit(request).await?;
+        let (crate::CommitOutcome::Committed(original), crate::CommitOutcome::Committed(retry)) =
+            (original, retry)
+        else {
+            return Err("atomic retry conflicted".into());
+        };
+        assert_eq!(retry.commit_id, original.commit_id);
+        assert_eq!(retry.appends, original.appends);
+        assert_eq!(
+            reopened
+                .tail(StreamPath::new("conformance/atomic/member-0000")?)
+                .await?,
+            1_026
+        );
+    }
+    Ok(())
+}

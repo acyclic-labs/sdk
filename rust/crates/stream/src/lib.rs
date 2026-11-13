@@ -147,7 +147,7 @@ pub use memory::{CommitAdmission, MemoryLimits, MemoryStream, admit_commit};
 
 /// Maximum opaque record body.
 pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;
-/// Maximum records, participants, mutations, or path segments in one request.
+/// Maximum returned items per page and frames per transport window.
 pub const MAX_ITEMS: usize = wire::StreamLimit::MaxItems as usize;
 const REPLAY_PAGE: u32 = 1_024;
 const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);

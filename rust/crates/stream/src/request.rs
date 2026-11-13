@@ -2,11 +2,11 @@
 use crate::AppendRecord;
 use crate::{
     AppendRequest, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ForkRequest,
-    MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,
+    MAX_COMMAND_BYTES, MAX_RECORD_BYTES, StreamError, StreamPath,
 };
 use sha2::{Digest, Sha256};
 pub(crate) fn validate_records(records: &[AppendRecord]) -> Result<(), StreamError> {
-    if records.is_empty() || records.len() > MAX_ITEMS {
+    if records.is_empty() {
         return Err(StreamError::LimitExceeded);
     }
     for record in records {
@@ -46,9 +46,6 @@ pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
 pub(crate) fn canonical_exclusions(
     paths: &[crate::RelativePath],
 ) -> Result<Vec<crate::RelativePath>, StreamError> {
-    if paths.len() > MAX_ITEMS {
-        return Err(StreamError::LimitExceeded);
-    }
     let mut canonical = Vec::new();
     canonical
         .try_reserve_exact(paths.len())
@@ -58,9 +55,6 @@ pub(crate) fn canonical_exclusions(
     Ok(canonical)
 }
 fn normalize_exclusions(paths: &mut Vec<crate::RelativePath>) -> Result<(), StreamError> {
-    if paths.len() > MAX_ITEMS {
-        return Err(StreamError::LimitExceeded);
-    }
     paths.sort_unstable();
     paths.dedup();
     let mut kept = 0;
@@ -593,10 +587,7 @@ pub(crate) fn normalize_commit_with<A>(
     request: &mut CommitRequest,
     allocate: impl FnOnce(usize) -> Result<(Vec<MutationIndex>, A), StreamError>,
 ) -> Result<(), StreamError> {
-    if !crate::preparation::shaped(request)
-        || request.conditions().count() > MAX_ITEMS
-        || request.mutations().count() > MAX_ITEMS
-    {
+    if !crate::preparation::shaped(request) {
         return Err(StreamError::LimitExceeded);
     }
     for mutation in request.mutations() {

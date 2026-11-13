@@ -189,8 +189,8 @@ export class Stream<Value = Uint8Array> {
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
   append(value: Value, options: AppendOptions): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options: AppendOptions): Promise<AppendResult> {
-    if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
-      return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
+    if (values.length < 1) {
+      return Promise.reject(new StreamError("limit_exceeded", "append requires at least one record"));
     }
     if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
     const authored = structuredClone(options);

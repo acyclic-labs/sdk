@@ -8,7 +8,7 @@ macro_rules! violated {
 }
 
 mod absence;
-mod atomic;
+pub(crate) mod atomic;
 mod backend;
 pub(crate) mod key_seek;
 pub(crate) mod selected;
@@ -1068,7 +1068,7 @@ mod tests {
             super::key_seek::SOURCE,
             "wave1/append_retry",
             "wave1/record_origin",
-            "conformance/atomic-first",
+            "conformance/atomic/member-0000",
         ] {
             provider
                 .append(crate::AppendRequest {
