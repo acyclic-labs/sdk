@@ -157,6 +157,22 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
                 .expect("the family declares its canonical shell");
             assert_eq!(selected.definition.revision, offered.revision);
             assert_eq!(selected.definition.input_schema, offered.input_schema);
+            // Compare the actual bound surface with the original public
+            // contract, independently of the decoder used by definitions().
+            let public: Vec<Value> = serde_json::from_str(declarations(profile))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let public = public
+                .iter()
+                .find(|entry| entry["name"] == "shell")
+                .expect("the public family contract declares shell");
+            assert_eq!(
+                selected.definition.description,
+                public["description"].as_str().expect("public description")
+            );
+            assert_eq!(
+                selected.definition.input_schema,
+                public["parametersJsonSchema"]
+            );
             let capability = selected
                 .executor
                 .capability()
