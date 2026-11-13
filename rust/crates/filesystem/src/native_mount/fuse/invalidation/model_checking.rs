@@ -14,7 +14,8 @@ loom::thread_local! {
 
 pub(in crate::native_mount::fuse) fn after_guard_drop() {
     AFTER_GUARD_DROP.with(|hook| {
-        if let Some(hook) = hook.borrow_mut().take() {
+        let hook = hook.borrow_mut().take();
+        if let Some(hook) = hook {
             hook();
         }
     });
@@ -23,7 +24,7 @@ pub(in crate::native_mount::fuse) fn after_guard_drop() {
 #[test]
 fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
     crate::initialize_test_native_io();
-    let exercise = |inline| {
+    let exercise = |inline, attributes| {
         loom::model(move || {
             let (core, work) = super::super::tests::model_checking::fixture();
             let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
@@ -35,8 +36,8 @@ fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
                 delivered: Arc<crate::sync::atomic::AtomicBool>,
                 core: Arc<ProjectionCore>,
             }
-            impl KernelCacheNotifier for KernelLock {
-                fn inval_attributes(&self, _: u64) -> std::io::Result<()> {
+            impl KernelLock {
+                fn invalidate(&self) -> std::io::Result<()> {
                     // The kernel releases its inode lock only after the
                     // original userspace request has published its reply.
                     self.reply.lock().unwrap().recv().unwrap();
@@ -44,11 +45,19 @@ fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
                     self.core.stop();
                     Ok(())
                 }
-                fn inval_inode(&self, _: u64) -> std::io::Result<()> {
-                    unreachable!("this request only supersedes attributes")
+            }
+            impl KernelCacheNotifier for KernelLock {
+                fn inval_attributes(&self, inode: u64) -> std::io::Result<()> {
+                    assert_eq!(inode, 10);
+                    self.invalidate()
                 }
-                fn inval_entry(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
-                    unreachable!("this request only supersedes attributes")
+                fn inval_inode(&self, _: u64) -> std::io::Result<()> {
+                    unreachable!("this request never invalidates inode data")
+                }
+                fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()> {
+                    assert_eq!(parent, ROOT_INODE);
+                    assert_eq!(name, b"child");
+                    self.invalidate()
                 }
             }
             let notifier = loom::thread::spawn({
@@ -67,7 +76,15 @@ fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
                 }
             });
             let mut state = core.state().unwrap();
-            state.invalidate_attributes(10, &work).unwrap();
+            if attributes {
+                state.invalidate_attributes(10, &work).unwrap();
+            } else {
+                state.reserve_invalidations(1, &work).unwrap();
+                state.invalidation.deferred.push(KernelCacheItem::Entry {
+                    parent: ROOT_INODE,
+                    name: fuse_copy_bytes(b"child", &work).unwrap(),
+                });
+            }
             if inline {
                 // Negative control restores the former synchronous device
                 // wait at the actual production request-guard drop boundary.
@@ -84,13 +101,15 @@ fn a_request_replies_while_reverse_invalidation_waits_for_its_kernel_lock() {
             drop(ManuallyDrop::into_inner(keeper));
         });
     };
-    exercise(false);
-    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
-        .expect_err("inline invalidation must deadlock behind the request's kernel lock");
-    let message = error
-        .downcast_ref::<String>()
-        .expect("Loom deadlock message");
-    assert!(message.contains("deadlock"), "{message}");
+    for attributes in [false, true] {
+        exercise(false, attributes);
+        let error = catch_unwind(AssertUnwindSafe(|| exercise(true, attributes)))
+            .expect_err("inline invalidation must deadlock behind the request's kernel lock");
+        let message = error
+            .downcast_ref::<String>()
+            .expect("Loom deadlock message");
+        assert!(message.contains("deadlock"), "{message}");
+    }
 }
 
 pub(in crate::native_mount::fuse) fn omit_guard_notification() -> bool {
