@@ -124,7 +124,7 @@ async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
         .project
         .capability(VolumeOperation::Write, &mut None)?;
     let agent_id = crate::AgentId::from_bytes([3; 16]);
-    let agent = AgentPath::root(&agent_id);
+    let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16]));
     let signer = harness
         .root_authority
         .as_ref()
@@ -224,6 +224,177 @@ async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
         .await,
         Err(Error::Unauthorized(_))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> Result<()> {
+    use crate::agent::{WorkspaceRole, WorkspaceTable};
+    use crate::conversation::VolumeOwner;
+
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::write(checkout.path().join("source.txt"), b"parent cut").map_err(storage)?;
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::native_host(checkout.path())
+            .workspace_mounting(WorkspaceMounting::Physical)
+            .state_directory(state.path().join("runtime")),
+    )
+    .await?;
+    let workspace = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("fixture workspace".into()))?;
+    let parent = HostWorkspace::attach(
+        Arc::clone(workspace),
+        root(),
+        &harness.signed,
+        &harness.verifier,
+        workspace.held_task_mount_root()?,
+    )
+    .await?;
+    let signer = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("fixture signing custody".into()))?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    for (index, role) in [(1_u8, WorkspaceRole::User), (2, WorkspaceRole::Home)] {
+        let owner = crate::AgentId::from_bytes([index; 16]);
+        let path_id = crate::agent::AgentId::from_bytes([index; 16]);
+        let child = parent.agent().child(&path_id).map_err(storage)?;
+        // The filesystem fork mechanism is independent of the logical class.
+        let volume = VolumeRef::new(
+            harness.project.provider().clone(),
+            format!("selected-child-{index}"),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(owner),
+            &mut None,
+        )?;
+        workspace
+            .view()
+            .fork(
+                &volume.storage_name(&mut None)?,
+                acyclic_fs::IdempotencyKey::from_bytes([index; 16]),
+                acyclic_fs::PublicationPermit::Unrestricted,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: &work,
+                    cancellation: &cancellation,
+                },
+            )
+            .await
+            .map_err(storage)?;
+        let mut entries = vec![WorkspaceEntry::initial_volume(
+            role,
+            "selected desk".into(),
+            volume.clone(),
+        )];
+        if role == WorkspaceRole::User {
+            // A Home named project must not replace the selected User slot.
+            entries.insert(
+                0,
+                WorkspaceEntry::initial_volume(
+                    WorkspaceRole::Home,
+                    "project".into(),
+                    harness.scratch.clone(),
+                ),
+            );
+        }
+        let read = volume.capability(VolumeOperation::Read, &mut None)?;
+        let write = volume.capability(VolumeOperation::Write, &mut None)?;
+        let signed = signer.bootstrap_scope(
+            "selected-child",
+            &crate::Capabilities::new(
+                harness
+                    .signed
+                    .capabilities()
+                    .iter()
+                    .chain([read.as_str(), write.as_str()]),
+            ),
+            Some(owner),
+            &mut None,
+        )?;
+        let reference = format!("selected-{index}");
+        let opened = parent
+            .open_child(&child, &entries, signed.copy(&mut None)?, &reference)
+            .await?;
+        assert_eq!(
+            WorkspaceTable::primary_in(&entries).unwrap().volume()?,
+            &volume
+        );
+        assert_eq!(opened.workspace.mounts.named(None)?.1.view.volume, volume);
+        assert_eq!(
+            std::fs::read(opened.host_cwd().join("source.txt")).map_err(storage)?,
+            b"parent cut"
+        );
+        native_write(&opened.host_cwd().join("child-note"), b"selected write")?;
+        opened.capture(OperationId::new()).await?;
+        let head = opened
+            .workspace
+            .view()
+            .workspace()
+            .head(&work, &cancellation)
+            .await
+            .map_err(storage)?;
+        assert_eq!(
+            head.read("/child-note", None, &work, &cancellation)
+                .await
+                .map_err(storage)?
+                .as_ref(),
+            b"selected write"
+        );
+        assert!(!parent.host_cwd().join("child-note").exists());
+        let reopened = parent
+            .open_child(&child, &entries, signed.copy(&mut None)?, &reference)
+            .await?;
+        assert_eq!(reopened.path(), opened.path());
+        // Attaching a root uses that same composed source, regardless of class.
+        let attached = HostWorkspace::attach(
+            Arc::clone(&opened.workspace),
+            AgentPath::root(&path_id),
+            &signed,
+            &harness.verifier,
+            opened.workspace.held_task_mount_root()?,
+        )
+        .await?;
+        assert_eq!(attached.path(), opened.path());
+        let denied = signer.bootstrap_scope(
+            "missing-selected-read",
+            &crate::Capabilities::new(
+                signed
+                    .capabilities()
+                    .iter()
+                    .filter(|cap| *cap != read.as_str()),
+            ),
+            Some(owner),
+            &mut None,
+        )?;
+        assert!(matches!(
+            HostWorkspace::attach(
+                Arc::clone(&opened.workspace),
+                AgentPath::root(&path_id),
+                &denied,
+                &harness.verifier,
+                opened.workspace.held_task_mount_root()?,
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let nonprimary = [WorkspaceEntry::initial_volume(
+            WorkspaceRole::Private,
+            "project".into(),
+            volume,
+        )];
+        assert!(matches!(
+            parent
+                .open_child(&child, &nonprimary, signed, &reference)
+                .await,
+            Err(Error::Invalid(_))
+        ));
+    }
     Ok(())
 }
 

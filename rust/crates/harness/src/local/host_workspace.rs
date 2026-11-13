@@ -60,10 +60,6 @@ impl HostWorkspace {
         if agent.depth() != 0 {
             return Err(Error::Unauthorized("host root agent has a parent".into()));
         }
-        let project = workspace.mounts.named(None)?.1.view.volume.clone();
-        if project.class() != VolumeClass::Project {
-            return Err(Error::Invalid("host project volume class differs".into()));
-        }
         let canonical_root = std::fs::canonicalize(&workspace.path).map_err(storage)?;
         let mounts = std::fs::canonicalize(admitted_mount_root.path()).map_err(storage)?;
         if mounts != std::fs::canonicalize(&workspace.mount_directory).map_err(storage)?
@@ -228,7 +224,7 @@ impl HostWorkspace {
         Ok(result)
     }
 
-    /// Mounts spawned child `child`'s project view, idempotently, and names it
+    /// Mounts spawned child `child`'s selected primary, idempotently, and names it
     /// `agents/<reference>` in this view's git facade. The child's volumes
     /// already exist, forked in the spawn's own commit, so this binds the
     /// lazy fork its spawn retained and mounts them; a reopened
@@ -246,21 +242,9 @@ impl HostWorkspace {
                 "host child belongs to another parent".into(),
             ));
         }
-        let bound = |name: &str| {
-            volumes
-                .iter()
-                .find(|binding| binding.name == name)
-                .and_then(|binding| binding.as_volume())
-                .cloned()
-                .ok_or_else(|| Error::Invalid(format!("host child has no {name} volume")))
-        };
-        let project = bound("project")?;
-        bound(crate::filesystem::HOME_VOLUME)?;
-        if project.class() != VolumeClass::Project {
-            return Err(Error::Invalid(
-                "host child project volume class differs".into(),
-            ));
-        }
+        let primary = crate::agent::WorkspaceTable::primary_in(volumes)
+            .ok_or_else(|| Error::Invalid("host child has no primary workspace".into()))?;
+        let project = primary.volume()?;
         // Opening a native fork is the first operation that needs a projection.
         // Roots and physical task views use the admitted checkout directories.
         if self.workspace.mounting == WorkspaceMounting::Native {
@@ -282,7 +266,7 @@ impl HostWorkspace {
             &|| owner.verify(),
         )
         .await?;
-        let view = self.workspace.spawned_project_view(&project).await?;
+        let view = self.workspace.spawned_project_view(project).await?;
         child_reference(reference)?;
         acyclic_fs::GitCompatRepository::new(
             selected.workspace().id(),
@@ -301,7 +285,7 @@ impl HostWorkspace {
             .for_scope(&signed)?;
         let workspace = self
             .workspace
-            .bound_task_view(view, &project, volumes, &*child_owner, &authority)
+            .bound_task_view(view, project, volumes, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {
