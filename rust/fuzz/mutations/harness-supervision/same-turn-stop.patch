@@ -1,6 +1,6 @@
 --- a/rust/crates/harness-core/src/agent/machine.rs
 +++ b/rust/crates/harness-core/src/agent/machine.rs
-@@ -1663,7 +1663,6 @@
+@@ -1668,7 +1668,6 @@ async fn run<T: TurnDriver + ?Sized>(
          // The same step can admit children before observing a stop. Include
          // those spawns in the ordinary open-child set before freezing its
          // archive cascade, just as a wait includes same-step children.
@@ -8,3 +8,13 @@
          // An executor-driven stop has the same closure, resource release and
          // descendant cascade as an externally admitted archive. A terminal
          // label alone must never leave a running child tree behind.
+@@ -1904,8 +1903,7 @@ async fn apply_spawns(
+         };
+         let opened = match state.spawned(intent) {
+             Ok(child)
+-                if !state.closed
+-                    && (state.spawned_children.contains(&child).await?
++                if (state.spawned_children.contains(&child).await?
+                         || state
+                             .profile
+                             .as_ref()
