@@ -168,6 +168,16 @@ pub trait FileView<P: acyclic_stream::StreamProvider + ?Sized>:
     /// Stable implementation identity, including its format version.
     fn identity(&self) -> &'static str;
 
+    /// Retain demand admission only while the original file query waits on
+    /// this source. Default views own no additional producer interest.
+    fn interest(
+        &self,
+        _agent: &crate::agent::AgentPath,
+        _source: &acyclic_stream::StreamPath,
+    ) -> crate::Result<Option<Box<dyn acyclic_stream::ProviderPlatform>>> {
+        Ok(None)
+    }
+
     /// Select an original source for a requested file, without IO. `None`
     /// leaves the path entirely in the authored namespace.
     fn source(

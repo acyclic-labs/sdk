@@ -13,10 +13,10 @@ async fn bounded_trace_files_preserve_captured_cuts_and_follow_original_sources(
     let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([39; 16]));
     let path = source(&agent)?;
     let stream = acyclic_stream::Stream::new(provider.clone(), path.as_str())?;
-    let files = TraceFiles;
+    let files = TraceFiles::new(acyclic_stream::trace::Registry::new(provider.clone()));
     let requested = "live/agents/self/trace/0/2.json";
     assert_eq!(
-        <TraceFiles as FileView<MemoryStream>>::source(
+        <TraceFiles<MemoryStream> as FileView<MemoryStream>>::source(
             &files,
             &agent,
             FileRoot::Private {},
@@ -25,7 +25,7 @@ async fn bounded_trace_files_preserve_captured_cuts_and_follow_original_sources(
         Some(path.clone())
     );
     assert_eq!(
-        <TraceFiles as FileView<MemoryStream>>::source(
+        <TraceFiles<MemoryStream> as FileView<MemoryStream>>::source(
             &files,
             &agent,
             FileRoot::Home {},

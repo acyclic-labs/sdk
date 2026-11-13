@@ -892,30 +892,46 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     let paths = vec![trace_path.clone()];
     let before = bound.files(&agent, root, &paths, None).await?;
     assert!(before.files[&trace_path].is_none());
+    assert!(
+        bound.trace_recorder(&agent)?.is_none(),
+        "snapshot read admitted a follower"
+    );
     let waiting = bound.files(&agent, root, &paths, Some(&before.cut));
     futures::pin_mut!(waiting);
     assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let recorder = bound
+        .trace_recorder(&agent)?
+        .ok_or("live wait did not admit trace interest")?;
+    let mut other = Box::pin(bound.files(&agent, root, &paths, Some(&before.cut)));
+    assert!(futures::poll!(other.as_mut()).is_pending());
+    assert!(Arc::ptr_eq(
+        &recorder,
+        &bound
+            .trace_recorder(&agent)?
+            .ok_or("shared recorder missing")?
+    ));
     let source = crate::client_files::trace::source(&agent)?;
-    let stream = acyclic_stream::Stream::new(bound.agents.provider().clone(), source.as_str())?;
-    let event = acyclic_stream::trace::TraceRecord::V1(acyclic_stream::trace::SpanEvent::Started {
-        id: acyclic_stream::trace::SpanId {
-            process: [3; 16],
-            sequence: 0,
-        },
-        parent: None,
-        name: "wait".into(),
-        mechanism: acyclic_stream::trace::Mechanism::Wait,
-        at_ns: 0,
-        guarantee: None,
-    });
-    stream
-        .append(
-            serde_json::to_vec(&event)?,
-            acyclic_stream::IdempotencyKey::unique(),
-        )
-        .await?;
+    let data =
+        acyclic_stream::Stream::new(bound.agents.provider().clone(), "trace-demand-fixture")?;
+    data.append(
+        b"original".to_vec(),
+        acyclic_stream::IdempotencyKey::unique(),
+    )
+    .await?;
+    let mut replay = data.replay(0);
+    let observed = replay.next_page_observed(Some(&recorder), None).await;
+    assert_eq!(
+        observed.result?.ok_or("replay page missing")?[0]
+            .value
+            .as_ref(),
+        b"original"
+    );
+    assert!(matches!(
+        observed.observation?,
+        acyclic_stream::trace::Settlement::Finished(_)
+    ));
     let changed = waiting.await?;
-    assert_eq!(changed.cut.queries[&source], 1);
+    assert_eq!(changed.cut.queries[&source], 2);
     let file = changed.files[&trace_path]
         .as_ref()
         .ok_or("trace file missing")?;
@@ -924,8 +940,17 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         if input.stream == source && input.sequence == 0)
     );
     let value: serde_json::Value = serde_json::from_str(&file.text)?;
-    assert_eq!(value["activeWaits"], 1);
-    assert_eq!(value["missingGuarantees"], 1);
+    assert_eq!(value["activeSpans"], 1);
+    assert_eq!(value["missingGuarantees"], 0);
     assert_eq!(value["coveredThrough"], 1);
+    assert!(
+        bound.trace_recorder(&agent)?.is_some(),
+        "second wait lost its lease"
+    );
+    drop(other);
+    assert!(
+        bound.trace_recorder(&agent)?.is_none(),
+        "last wait retained producer admission"
+    );
     Ok(())
 }

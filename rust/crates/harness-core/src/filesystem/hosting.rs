@@ -263,6 +263,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     controls: Arc<dyn crate::agent::Companions>,
     composer: Arc<crate::agent::AgentComposer<P>>,
     file_views: Vec<Arc<dyn crate::client_files::FileView<P>>>,
+    traces: acyclic_stream::trace::Registry<P>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -281,6 +282,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             controls: self.controls.clone(),
             composer: self.composer.clone(),
             file_views: self.file_views.clone(),
+            traces: self.traces.clone(),
         }
     }
 }
@@ -445,6 +447,7 @@ where
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
+        let traces = acyclic_stream::trace::Registry::new(stream.clone());
         let maximum_bytes = turns.limits.maximum_bytes;
         let model = turns.executors.model_selection();
         // The preset's policy binds before any agent runs under it.
@@ -527,8 +530,9 @@ where
             file_views: vec![
                 Arc::new(crate::supervision::files::SignalFiles),
                 Arc::new(directory_file),
-                Arc::new(crate::client_files::trace::TraceFiles),
+                Arc::new(crate::client_files::trace::TraceFiles::new(traces.clone())),
             ],
+            traces,
         })
     }
 

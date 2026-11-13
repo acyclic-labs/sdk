@@ -10,6 +10,17 @@ use crate::{
 use std::collections::BTreeMap;
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bound<P, O> {
+    /// Original host trace interest for one admitted agent. Selecting it
+    /// creates no recorder and grants no authority to the returned stream.
+    pub fn trace_recorder(
+        &self,
+        agent: &AgentPath,
+    ) -> Result<Option<Arc<acyclic_stream::trace::Recorder<P>>>, Error> {
+        self.admit_path(agent)?;
+        self.traces
+            .recorder(agent.as_str())
+            .map_err(|error| turn(crate::Error::from(error)))
+    }
     pub(super) async fn file_volume(
         &self,
         agent: &AgentPath,
@@ -103,6 +114,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 .await?;
             if after.is_none_or(|cut| !cut.same_inputs(&snapshot.cut)) {
                 return Ok(snapshot);
+            }
+            let mut interests = Vec::new();
+            for source in snapshot.cut.queries.keys() {
+                for view in &self.file_views {
+                    if let Some(interest) = view.interest(agent, source).map_err(turn)? {
+                        interests.push(interest);
+                    }
+                }
             }
             let provider = self.agents.provider();
             let wait_minimum = snapshot.cut.revision.clone();

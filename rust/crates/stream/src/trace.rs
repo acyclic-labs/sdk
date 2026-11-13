@@ -7,7 +7,11 @@
 use crate::RetainedRecord;
 
 #[cfg(feature = "serde")]
+mod interest;
+#[cfg(feature = "serde")]
 mod recorder;
+#[cfg(feature = "serde")]
+pub use interest::{Lease, Registry};
 #[cfg(feature = "serde")]
 pub use recorder::{Observed, Recorder, Recording, Request, Settlement};
 

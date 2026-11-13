@@ -13,7 +13,16 @@ pub fn source(agent: &AgentPath) -> Result<StreamPath> {
 }
 
 /// Pure window projection installed on the existing local and remote file host.
-pub struct TraceFiles;
+pub struct TraceFiles<P: ?Sized> {
+    registry: acyclic_stream::trace::Registry<P>,
+}
+
+impl<P: StreamProvider + ?Sized> TraceFiles<P> {
+    /// Bind the host's shared admitted-interest registry without IO.
+    pub fn new(registry: acyclic_stream::trace::Registry<P>) -> Self {
+        Self { registry }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("trace window {from}..{end} ended at {received_through}")]
@@ -40,9 +49,24 @@ fn window(path: &str) -> Option<(u64, u32)> {
     Some((start, length))
 }
 
-impl<P: StreamProvider + ?Sized> FileView<P> for TraceFiles {
+impl<P: StreamProvider + ?Sized> FileView<P> for TraceFiles<P> {
     fn identity(&self) -> &'static str {
         "trace-window/v1"
+    }
+
+    fn interest(
+        &self,
+        agent: &AgentPath,
+        stream: &StreamPath,
+    ) -> Result<Option<Box<dyn acyclic_stream::ProviderPlatform>>> {
+        if *stream == source(agent)? {
+            Ok(Some(Box::new(self.registry.subscribe(
+                StreamPath::new(agent.as_str())?,
+                stream.clone(),
+            )?)))
+        } else {
+            Ok(None)
+        }
     }
 
     fn source(&self, agent: &AgentPath, root: FileRoot, path: &str) -> Result<Option<StreamPath>> {

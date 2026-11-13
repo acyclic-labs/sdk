@@ -44,7 +44,7 @@ pub enum Settlement<P: ?Sized> {
 /// Hosts retain this only for an admitted trace subscription. Constructing or
 /// cloning an ordinary Stream never creates a recorder or reads a clock.
 pub struct Recorder<P: ?Sized> {
-    stream: Stream<P>,
+    pub(super) stream: Stream<P>,
     process: [u8; 16],
     origin: Instant,
     next: AtomicU64,

@@ -22,6 +22,16 @@ Children start with their own trace subtree rather than inheriting their
 parent's trace history. The incremental Reader adapter applies the same query
 to bounded pages and live deliveries while retaining active joins across pages.
 
+An outstanding authenticated file wait admits trace interest for its selected
+agent. Overlapping waits share one producer clock and identity sequence. The
+last wait's completion or cancellation retires admission; already-admitted
+spans may still publish their own terminal. Snapshot reads do not admit a
+follower. The host selects a recorder through the primitive's existing interest
+registry using a borrowed agent identity. No per-agent entry exists without a
+follower; with no trace followers, selection is one atomic check with no clock,
+allocation, registry lock or IO. Interest is ephemeral subscription custody,
+not stored trace history or authorization.
+
 This file binding does not create span producers. Complete request-path
 instrumentation, content correlation and deterministic crash replay remain
 separate requirements.
