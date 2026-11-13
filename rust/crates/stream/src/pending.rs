@@ -16,7 +16,8 @@ pub use native::NativePending;
 /// One exact commit and its retained terminal result.
 ///
 /// Clones observe the same producer; no clone retries. Producer loss is an
-/// explicit unavailable outcome, never a wait for a successor or transport EOF.
+/// explicit unavailable outcome with its original typed producer-loss source,
+/// never a wait for a successor or transport EOF.
 #[must_use = "retain the handle or its request identity to recover an ambiguous outcome"]
 pub struct Pending<R = Result<CommitOutcome, StreamError>, H = (), I = CommitRequest> {
     completion: Completion<R, H, I>,
@@ -54,10 +55,7 @@ impl<R, H, I> Pending<R, H, I> {
     /// Completion wakes every registered observer independently, with constant
     /// work per observer and no dependency on another observer being polled.
     pub async fn result(&self) -> Result<&R, StreamError> {
-        self.completion
-            .result()
-            .await
-            .map_err(|_| StreamError::Unavailable)
+        self.completion.result().await.map_err(StreamError::from)
     }
 }
 

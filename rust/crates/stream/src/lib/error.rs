@@ -51,6 +51,10 @@ pub enum StreamError {
     /// Original typed local failure, retained independently of recovery classification.
     #[error("{0}")]
     Caused(#[source] acyclic_auth::failure::Failure<Self>),
+    /// The original completion producer disappeared without a terminal result.
+    /// The unavailable classification does not claim that its effects did not run.
+    #[error("{0}")]
+    ProducerDropped(#[source] crate::completion::ProducerDropped),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
@@ -125,7 +129,7 @@ impl StreamError {
         Self::Refused(acyclic_auth::refusal::Refusal::caused(cause))
     }
 
-    /// Every failure, in canonical code order.
+    /// Every canonical failure category, in canonical code order.
     pub const ALL: [Self; 16] = [
         Self::InvalidResponse,
         Self::InvalidPath,
@@ -200,6 +204,7 @@ impl StreamError {
     pub fn category(&self) -> Self {
         match self {
             Self::Caused(failure) => failure.classification().category(),
+            Self::ProducerDropped(_) => Self::Unavailable,
             Self::Refused(refusal) => refusal.original().map_or(Self::Unavailable, |parts| {
                 Self::from_grpc_status(parts.code, &parts.message)
             }),
@@ -244,7 +249,7 @@ impl StreamError {
             Self::IdempotencyMismatch => "idempotency_mismatch",
             Self::Capacity => "capacity",
             Self::AccessDenied => "access_denied",
-            Self::Unavailable => "unavailable",
+            Self::Unavailable | Self::ProducerDropped(_) => "unavailable",
             Self::Refused(_) => self.category().code(),
             Self::Caused(failure) => failure.classification().code(),
             Self::HierarchyChanged => "hierarchy_changed",
@@ -274,5 +279,11 @@ impl StreamError {
             "unimplemented" => Self::Unsupported,
             _ => Self::Unavailable,
         })
+    }
+}
+
+impl From<crate::completion::ProducerDropped> for StreamError {
+    fn from(cause: crate::completion::ProducerDropped) -> Self {
+        Self::ProducerDropped(cause)
     }
 }
