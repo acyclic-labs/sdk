@@ -343,6 +343,19 @@ async fn refresh_bounds(now: u64) -> Result {
     let mut verifier = oidc::Verifier::new(config()?);
     verifier.refresh(&source, now).await?;
     let valid = token(7, "one", &claims(now))?;
+    let reads = source.reads.load(Ordering::SeqCst);
+    let stopped = acyclic_auth::operation::Context::from_stopped(
+        u64::MAX,
+        futures::future::ready(acyclic_auth::operation::Stopped::Cancelled),
+    );
+    if !matches!(
+        stopped.run(verifier.refresh(&source, now + 1)).await,
+        Err(acyclic_auth::operation::Stopped::Cancelled)
+    ) || source.reads.load(Ordering::SeqCst) != reads
+    {
+        return Err("cancelled JWKS refresh reached its source".into());
+    }
+    verifier.verify(&valid, now + 1)?;
     let mut duplicate = Source::keys(&[(7, "one"), (8, "one")]);
     let mut confused: Value = serde_json::from_slice(&source.bytes)?;
     confused["keys"][0]["alg"] = json!("HS256");
@@ -369,4 +382,10 @@ async fn refresh_bounds(now: u64) -> Result {
         return Err("clock rollback accepted cached keys".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn refresh_preserves_keys_and_honors_caller_cancellation() -> Result {
+    refresh_bounds(1_000).await
 }
