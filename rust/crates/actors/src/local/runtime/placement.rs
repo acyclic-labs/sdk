@@ -16,6 +16,7 @@ use acyclic_stream::{CommitCondition, CommitEffect, CommitMutation};
 /// it must not block; the owner answers with [`Runtime::place`]. It may be
 /// told of one actor more than once before that placement lands.
 pub trait PlacementRequests: acyclic_stream::ProviderPlatform + 'static {
+    /// `actor` has due work and is not resident here.
     fn unplaced(&self, actor: &ActorReference);
 }
 
