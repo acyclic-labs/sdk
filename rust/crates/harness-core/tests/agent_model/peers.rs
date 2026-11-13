@@ -207,6 +207,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
         answer: bool,
         goal: Option<acyclic_harness_core::OperationId>,
         steering: bool,
+        parked: bool,
         output: acyclic_harness_core::conversation::FileRef,
     }
     impl TurnDriver for Recipient {
@@ -219,6 +220,14 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
         ) -> TurnFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
+                if self.parked {
+                    return Ok(TurnStep {
+                        checkpoint: Some(Vec::new()),
+                        outs: Vec::new(),
+                        wait: Wait::User("input".into()),
+                        drops: None,
+                    });
+                }
                 let outs = match input {
                     Some(input) if self.answer => {
                         let completed_goal = self.goal.filter(|_| matches!(&input.input,
@@ -267,12 +276,18 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             })
         }
     }
-    for (delivery, answer, continuing) in [MessageDelivery::Steer, MessageDelivery::FollowUp]
-        .into_iter()
-        .flat_map(|delivery| {
-            [(false, false), (true, false), (true, true)]
-                .map(|(answer, continuing)| (delivery, answer, continuing))
-        })
+    for (delivery, answer, continuing, parked) in
+        [MessageDelivery::Steer, MessageDelivery::FollowUp]
+            .into_iter()
+            .flat_map(|delivery| {
+                [
+                    (false, false, false),
+                    (true, false, false),
+                    (true, true, false),
+                    (false, false, true),
+                ]
+                .map(|(answer, continuing, parked)| (delivery, answer, continuing, parked))
+            })
     {
         for opt_out_before_delivery in [false, true] {
             let steering = answer && !continuing && !opt_out_before_delivery;
@@ -295,6 +310,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                     goal: continuing
                         .then(|| acyclic_harness_core::OperationId::from_bytes([4; 16])),
                     steering,
+                    parked,
                     output: super::driver::file("answer.md")?,
                 },
                 ActorLimits::default(),
@@ -534,6 +550,70 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                     usize::from(!opt_out_before_delivery)
                 }
             );
+            if parked && !opt_out_before_delivery {
+                assert!(matches!(
+                    host.reply(&recipient, &intent("request"), 1).await?,
+                    Reply::Pending
+                ));
+                assert!(matches!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await,
+                    Err(StreamError::NotFound)
+                ));
+                host.archive(&recipient, &user(), &intent("archive-parked"))
+                    .await?;
+                host.drain(&recipient).await?;
+                assert!(matches!(
+                    host.reply(&recipient, &intent("request"), 1).await?,
+                    Reply::Dropped
+                ));
+                assert_eq!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await?,
+                    1
+                );
+                let result = destination
+                    .record_at(receiving.paths.outbox(&receiving.node)?, 0)
+                    .await?
+                    .ok_or("archived input result missing")?;
+                assert_eq!(
+                    route::Publication::decode(&result.value)?.delivery()?,
+                    peer.result(receiving.node.clone(), &receipt, SentReplyStatus::Dropped)?
+                );
+                let mut facts = destination
+                    .read(ReadRequest {
+                        path: StreamPath::new(format!("{recipient}/context/input-events"))?,
+                        from: 0,
+                        limit: 1,
+                        key: Some(acyclic_stream::ReadKeySeek::exact(
+                            1_u64.to_be_bytes().to_vec(),
+                            u64::MAX,
+                        )),
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                assert_eq!(
+                    facts
+                        .try_next()
+                        .await?
+                        .ok_or("archive terminal fact missing")?
+                        .commit_id,
+                    result.commit_id,
+                    "archive result must join its original actor publication"
+                );
+                host.archive(&recipient, &user(), &intent("archive-parked"))
+                    .await?;
+                host.drain(&recipient).await?;
+                assert_eq!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await?,
+                    1
+                );
+                continue;
+            }
             if continuing && !opt_out_before_delivery {
                 assert!(matches!(
                     host.reply(&recipient, &intent("request"), 1).await?,

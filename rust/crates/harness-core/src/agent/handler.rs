@@ -807,6 +807,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         }
         let was_open = saved.as_ref().is_none_or(|state| !state.closed);
         let previously_steered = saved.as_ref().map_or(0, |state| state.steered_through);
+        let previously_dropped = saved.as_ref().map_or(0, |state| state.dropped_before);
         let previous_phase = saved
             .as_ref()
             .map(|state| super::SessionPhase::from(&state.phase));
@@ -992,7 +993,36 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             self.agents.store.provider().as_ref(),
             &path,
             &step.outs,
-            retired,
+            super::cancellation::Retirement {
+                steered: retired,
+                dropped: if path.depth() == 0
+                    && self.agents.routing.is_some()
+                    && (step.state.dropped_before > previously_dropped
+                        || (was_open && step.state.closed)
+                        || (previous_phase != Some(super::SessionPhase::Done)
+                            && matches!(step.state.phase, super::Phase::Done { .. })))
+                {
+                    match checkpoint {
+                        Some(checkpoint) => {
+                            let terminal = step.state.closed
+                                || matches!(step.state.phase, super::Phase::Done { .. });
+                            Some(super::cancellation::Dropped {
+                                previous: super::checkpoint_head(checkpoint)?.state,
+                                cursor: cut.cursor,
+                                through: step.state.dropped_before.max(if terminal {
+                                    cursor
+                                } else {
+                                    0
+                                }),
+                                terminal,
+                            })
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                },
+            },
             step.state.conversation_tail,
             self.agents
                 .routing

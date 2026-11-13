@@ -23,6 +23,20 @@ enum InputFact {
 
 impl super::AgentRecord for InputFact {}
 
+#[derive(Default)]
+pub(super) struct Retirement {
+    pub steered: Option<super::BoundaryCut>,
+    pub dropped: Option<Dropped>,
+}
+
+/// The original folded input window, before a control clears it.
+pub(super) struct Dropped {
+    pub previous: super::AgentState,
+    pub cursor: u64,
+    pub through: u64,
+    pub terminal: bool,
+}
+
 /// Validate the immutable accepted input before publishing a cancellation fact.
 pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
@@ -83,12 +97,12 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     agent: &super::AgentPath,
     outs: &[super::Out],
-    retired: Option<super::BoundaryCut>,
+    retirement: Retirement,
     conversation: u64,
     routing: Option<(&super::Routing, &acyclic_actors::addressing::ActorReference)>,
     request: &mut acyclic_stream::CommitRequest,
 ) -> Result<bool, Error> {
-    let mut completed = std::collections::BTreeSet::new();
+    let mut completed = std::collections::BTreeMap::new();
     let mut records = Vec::new();
     let mut ranges = Vec::new();
     let mut fence = None;
@@ -106,7 +120,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     let prior_conversation = sequence;
     let mut committed_frontier = None;
     let mut preceding_frontier = None;
-    if let Some(retired) = retired {
+    if let Some(retired) = retirement.steered {
         ranges.push((retired, None));
     }
     for out in outs {
@@ -191,7 +205,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 }
             }
         }
-        completed.insert(entry.inbox);
+        completed.insert(entry.inbox, true);
         let Some(cut) = entry.steering else { continue };
         // Settlement carries its complete admitted interval. A parked turn's
         // frontier is supplied separately, so neither path depends on a later
@@ -228,7 +242,10 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                     .ok_or(Error::Record("settled steering input is unavailable"))?;
                 let source = super::InboxRecord::decode(&record.value)?;
                 if matches!(source, super::InboxRecord::Message(_)) {
-                    completed.insert(from);
+                    completed
+                        .entry(from)
+                        .and_modify(|settled| *settled |= settled_at.is_some())
+                        .or_insert(settled_at.is_some());
                     if let Some((settled_at, observed_before, goal)) = settled_at
                         && let Some((routing, within)) = routing
                         && let std::collections::btree_map::Entry::Vacant(result) =
@@ -305,6 +322,79 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             }
         }
     }
+    if let Some((routing, within)) = routing
+        && let Some(dropped) = retirement.dropped
+    {
+        if dropped.terminal {
+            for run in deferred.keys() {
+                goals.entry(*run).or_insert(super::SentReplyStatus::Dropped);
+            }
+        }
+        let mut cancelled = std::collections::BTreeSet::new();
+        let previous = dropped.previous;
+        let mut from = previous
+            .settled_before(dropped.cursor)
+            .max(previous.dropped_before);
+        while from < dropped.through {
+            let limit = (dropped.through - from).min(super::MAX_QUEUED as u64) as u32;
+            let end = from + u64::from(limit);
+            let mut sources = provider
+                .read(ReadRequest {
+                    path: agent.inbox()?,
+                    from,
+                    limit,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await
+                .map_err(Error::Stream)?;
+            while from < end {
+                let record = sources
+                    .try_next()
+                    .await
+                    .map_err(Error::Stream)?
+                    .filter(|record| record.sequence == from)
+                    .ok_or(Error::Record("retired input is unavailable"))?;
+                let source = super::InboxRecord::decode(&record.value)?;
+                let active = previous.turn.as_ref().is_some_and(|turn| {
+                    turn.inbox == from
+                        || (previous.dropped_before <= from
+                            && turn.inbox < from
+                            && from < previous.steered_through)
+                });
+                if completed.get(&from) != Some(&true)
+                    && previous.input_pending(dropped.cursor, from)
+                    && (!previous.already_steered(from, &source) || active)
+                {
+                    if let Some(peer) =
+                        super::routing::notices::PeerInput::parse(agent, &source, &record)?
+                        && let std::collections::btree_map::Entry::Vacant(result) =
+                            results.entry(from)
+                    {
+                        result.insert(peer.terminal(
+                            routing,
+                            within,
+                            super::SentReplyStatus::Dropped,
+                        )?);
+                        cancelled.insert(from);
+                    }
+                    if let Some(input) = super::input::input(from, source)
+                        && let Some(run) = super::goal::continuing(agent, &input.input)
+                    {
+                        records.push(goal_cancellation(run, conversation)?);
+                        goals.entry(run).or_insert(super::SentReplyStatus::Dropped);
+                        cancelled.insert(from);
+                    }
+                }
+                from += 1;
+            }
+        }
+        records.extend(completion_records(
+            &InputFact::Cancelled { conversation },
+            cancelled,
+            None,
+        )?);
+    }
     if let Some((routing, within)) = routing {
         for (run, status) in goals {
             let mut inputs = continuing::inputs(provider, agent, run).await?;
@@ -335,7 +425,11 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         )?);
     }
     if !completed.is_empty() {
-        records.extend(completion_records(&InputFact::Completed, completed, None)?);
+        records.extend(completion_records(
+            &InputFact::Completed,
+            completed.into_keys(),
+            None,
+        )?);
     }
     if !records.is_empty() || !results.is_empty() {
         let index = request
@@ -388,7 +482,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
 /// completion records instead of introducing a second pending-message log.
 fn completion_records(
     fact: &InputFact,
-    inputs: std::collections::BTreeSet<u64>,
+    inputs: impl IntoIterator<Item = u64>,
     index: Option<Vec<u8>>,
 ) -> Result<Vec<acyclic_stream::AppendRecord>, Error> {
     let value = fact.encode()?;
