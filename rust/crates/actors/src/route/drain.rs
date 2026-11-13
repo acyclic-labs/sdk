@@ -42,7 +42,14 @@ pub async fn receipt<P: StreamProvider + ?Sized>(
         .await
     {
         Ok(records) => records,
-        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error)
+            if matches!(
+                error.category(),
+                StreamError::NotFound | StreamError::OutOfRange
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(error) => return Err(error.into()),
     };
     let Some(record) = records.try_next().await? else {

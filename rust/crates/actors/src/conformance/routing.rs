@@ -383,6 +383,19 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             }),
         "source acknowledgement lost its original relay receipt",
     )?;
+    require(
+        crate::route::receipt(
+            provider,
+            &paths,
+            &source,
+            2,
+            &envelope.request.idempotency_key,
+        )
+        .await
+        .map_err(violation)?
+        .is_none(),
+        "receipt beyond the acknowledged prefix was not pending",
+    )?;
     let foreign_source = envelope.clone();
     let foreign_node = placement.node.clone();
     let source_path = paths.outbox(&foreign_node).map_err(Error::from)?;
