@@ -2150,6 +2150,7 @@ mod tests {
                     ),
                 )?
                 .without_user_settings()
+                .feedback_plugin(false)
                 .state_directory(directory.path().join("state"))
                 .workspace_mounting(WorkspaceMounting::Physical)
                 .compaction(CompactionPolicy::Disabled),
@@ -2259,6 +2260,11 @@ mod tests {
                 );
             }
         }
+        assert_eq!(
+            provider.request_count(),
+            3,
+            "task and fork initialization must consume only the three scripted turns"
+        );
         drop(events);
         let (mut events, phase) = conversation.observe_current().await?;
         let mut view = View {
