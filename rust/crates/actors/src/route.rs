@@ -4,7 +4,7 @@
 use crate::addressing::{ActorReference, IdentityError, ResourceId};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
-    ReadRequest, StreamError, StreamPath, StreamProvider,
+    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -231,9 +231,9 @@ impl Envelope {
         for part in [
             paths.0.as_str().as_bytes(),
             self.to.account().as_bytes(),
-            self.to.namespace().as_bytes(),
+            self.to.namespace().as_str().as_bytes(),
             self.to.id().as_bytes(),
-            self.sender.namespace().as_bytes(),
+            self.sender.namespace().as_str().as_bytes(),
             self.sender.id().as_bytes(),
             self.request.idempotency_key.as_bytes(),
         ] {
