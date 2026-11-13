@@ -152,10 +152,7 @@ where
             )
         })?;
         let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("journal-{}", digest.to_hex()),
-                work,
-            )
+            crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
         })?)?;
         Ok((key, path))
     }
