@@ -1114,6 +1114,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         };
         Ok(agent)
     };
+    eprintln!("client file journey: spawning observed children");
     let sibling = spawn(&remote_connection, "observed-sibling").await?;
     let child = spawn(&remote_connection, "observed-child").await?;
     let child_connection = remote_connection.select(child.clone()).await?;
@@ -1128,6 +1129,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         "local selection opened a new session instead of enrolling its view"
     );
     assert_eq!(local_child.select(sibling.clone()).await?.root(), &sibling);
+    eprintln!("client file journey: opening local child supervision");
     let mut local_child_feed = local_child.supervision_own().await?;
     assert_eq!(
         child_connection.select(sibling.clone()).await?.root(),
@@ -1148,6 +1150,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
             .await
             .is_err()
     );
+    eprintln!("client file journey: opening remote child supervision");
     let mut child_feed = child_connection.supervision_own().await?;
     let child_conversation = Conversation::open(child_connection.clone());
     // Complete the real mock-model child turn before publishing its pause.
@@ -1158,15 +1161,19 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     }
     // A non-root observer uses each discovering parent's narrow read grant
     // at every depth, while selections retain the original caller identity.
+    eprintln!("client file journey: opening subtree supervision");
     let mut subtree = child_connection.supervision().await?;
+    eprintln!("client file journey: spawning grandchild");
     let grandchild = spawn(&child_connection, "observed-grandchild").await?;
     let grandchild_connection = child_connection.select(grandchild).await?;
+    eprintln!("client file journey: spawning great-grandchild");
     let descendant = spawn(&grandchild_connection, "observed-great-grandchild").await?;
     assert_eq!(
         child_connection.select(descendant.clone()).await?.root(),
         &descendant
     );
     let descendant_connection = grandchild_connection.select(descendant.clone()).await?;
+    eprintln!("client file journey: opening descendant supervision");
     let mut descendant_feed = descendant_connection.supervision_own().await?;
     loop {
         if matches!(
@@ -1188,12 +1195,14 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
             }],
         )
         .await?;
+    eprintln!("client file journey: awaiting descendant pause");
     let descendant_pause = loop {
         let event = descendant_feed.next().await?;
         if matches!(event.event, Lifecycle::Paused { signal: None }) {
             break event;
         }
     };
+    eprintln!("client file journey: awaiting subtree pause");
     let subtree_pause = loop {
         let event = subtree.next().await?;
         if event.agent == descendant && matches!(event.event, Lifecycle::Paused { signal: None }) {
@@ -1217,12 +1226,14 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
             }],
         )
         .await?;
+    eprintln!("client file journey: awaiting child pause");
     let child_pause = loop {
         let event = child_feed.next().await?;
         if matches!(event.event, Lifecycle::Paused { signal: None }) {
             break event;
         }
     };
+    eprintln!("client file journey: awaiting local child pause");
     let local_child_pause = loop {
         let event = local_child_feed.next().await?;
         if matches!(event.event, Lifecycle::Paused { signal: None }) {
@@ -1230,6 +1241,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         }
     };
     assert_eq!(local_child_pause, child_pause);
+    eprintln!("client file journey: awaiting root tree pause");
     let tree_pause = loop {
         let event = remote_feed.next().await?;
         if event.agent == child && matches!(event.event, Lifecycle::Paused { signal: None }) {
@@ -1241,6 +1253,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     // Default status files use the very same remote file path and original
     // streams. A healthy run has no synthetic all-clear files. Follow each
     // committed input cut; no readiness probe or timer is involved.
+    eprintln!("client file journey: reading signal files");
     let signal_path = "status/supervision/spend.json".to_owned();
     let initial = remote
         .files(FileRoot::Private {}, vec![signal_path.clone()], None)
@@ -1249,6 +1262,7 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
     let mut policy = crate::supervision::Policy::default();
     policy.reservation.tokens = Some(1);
     provider.extend([measured_reply()]);
+    eprintln!("client file journey: running reserved signal producer");
     let (projected, outcome) = {
         let observing = async {
             let mut cut = initial.cut;
