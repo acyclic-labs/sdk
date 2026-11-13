@@ -71,38 +71,55 @@ impl CheckoutTools {
             // A dropped turn stops its hooks; their workers still reap them.
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
-            let check = owner_check(Arc::clone(&workspace), control);
+            let check: crate::hooks::HookCheck =
+                Arc::new(owner_check(Arc::clone(&workspace), control));
             let mounts = Arc::clone(&workspace.mounts);
             let (result, mut state) = workspace::volumes::native_scope(&mounts, async |claims| {
                 // Pin the active projections, after native_scope has mounted
                 // them. Binding the dormant backing directory would fence a
                 // different object and refuse every projected-volume hook.
                 let mut environment = self.environment.clone();
-                let grant = match &self.execution_grant {
-                    Some(grant) => {
-                        crate::filesystem::native_process::shell::workspace_environment(
-                            &mounts,
-                            &mut environment,
-                        )?;
-                        Some(grant.clone())
-                    }
-                    None => crate::filesystem::native_process::shell::workspace_grant(
-                        &mounts,
-                        &mut environment,
-                    )?,
-                };
-                let execution =
-                    grant.map(|grant| Arc::new(crate::hooks::HookExecution { grant, environment }));
-                let (result, (state, claims)) = with_workers((state, claims), check, |check| {
-                    hooks.run_checked(
-                        event,
-                        (&workspace.path, &workspace.path),
-                        input,
-                        registry,
-                        context.effective_scope().limits().file_bytes,
-                        (check, Some(wake), execution),
+                let grant = self.execution_grant.clone();
+                let preparation_mounts = Arc::clone(&mounts);
+                let preparation_check = Arc::clone(&check);
+                let (execution, (state, claims)) =
+                    crate::filesystem::native_process::prepare_with_custody(
+                        (state, claims),
+                        move || {
+                            preparation_check().map_err(Error::process_io)?;
+                            let grant = match grant {
+                                Some(grant) => {
+                                    crate::filesystem::native_process::shell::workspace_environment(
+                                        &preparation_mounts,
+                                        &mut environment,
+                                    )?;
+                                    Some(grant)
+                                }
+                                None => crate::filesystem::native_process::shell::workspace_grant(
+                                    &preparation_mounts,
+                                    &mut environment,
+                                )?,
+                            };
+                            Ok(grant.map(|grant| {
+                                Arc::new(crate::hooks::HookExecution { grant, environment })
+                            }))
+                        },
                     )
-                })
+                    .await?;
+                let (result, (state, claims)) = with_workers(
+                    (state, claims),
+                    move || check(),
+                    |check| {
+                        hooks.run_checked(
+                            event,
+                            (&workspace.path, &workspace.path),
+                            input,
+                            registry,
+                            context.effective_scope().limits().file_bytes,
+                            (check, Some(wake), execution),
+                        )
+                    },
+                )
                 .await?;
                 Ok(((result, state), claims))
             })
