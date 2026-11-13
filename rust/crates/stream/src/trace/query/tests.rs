@@ -190,6 +190,26 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
     };
     assert_eq!(evidence.sequence, 5);
     assert!(source.is_syntax());
+    // Use original records in adversarial delivery order: rejecting a later
+    // malformed publication cannot reopen an earlier consumed cursor.
+    let mut originals = stream.read(0, 6).await?.try_collect::<Vec<_>>().await?;
+    let malformed = originals.pop().ok_or("missing malformed publication")?;
+    let earlier = originals.remove(1);
+    let start = originals.remove(0);
+    let mut reordered = TraceQuery::new(
+        futures::stream::iter([Ok(start), Ok(malformed), Ok(earlier)]),
+        Default::default(),
+    );
+    reordered.next().await?;
+    assert!(matches!(
+        reordered.next().await,
+        Err(QueryError::Decode { .. })
+    ));
+    assert!(matches!(reordered.next().await, Err(QueryError::Invalid {
+        evidence, source: QueryViolation::ReorderedRecord,
+    }) if evidence.sequence == 1));
+    assert_eq!(reordered.active_waits(), 1);
+    assert!(reordered.totals().is_empty());
 
     let next = SpanId {
         process: [1; 16],

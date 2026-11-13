@@ -26,7 +26,7 @@ fn original_reader_pages_and_follow_drive_one_source_bound_projection() {
         });
         stream
             .append(
-                serde_json::to_vec(&start).unwrap().into(),
+                serde_json::to_vec(&start).unwrap(),
                 acyclic_stream::IdempotencyKey::unique(),
             )
             .await
@@ -72,7 +72,7 @@ fn original_reader_pages_and_follow_drive_one_source_bound_projection() {
         });
         stream
             .append(
-                serde_json::to_vec(&finish).unwrap().into(),
+                serde_json::to_vec(&finish).unwrap(),
                 acyclic_stream::IdempotencyKey::unique(),
             )
             .await
@@ -102,7 +102,7 @@ fn original_reader_pages_and_follow_drive_one_source_bound_projection() {
 
         stream
             .append(
-                b"not JSON".to_vec().into(),
+                b"not JSON".to_vec(),
                 acyclic_stream::IdempotencyKey::unique(),
             )
             .await
