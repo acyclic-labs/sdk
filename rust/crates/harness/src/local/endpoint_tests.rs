@@ -105,7 +105,6 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .children_page(
                     ChildrenPageRequest {
                         parent: Some(parent.children().map_err(exchange)?),
-                        offset: 0,
                         after: None,
                         hierarchy_version: None,
                         limit: 1,
@@ -261,7 +260,6 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .children_page(
                     ChildrenPageRequest {
                         parent: Some(foreign.children().map_err(exchange)?),
-                        offset: 0,
                         after: None,
                         hierarchy_version: None,
                         limit: 1,

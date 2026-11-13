@@ -577,6 +577,24 @@ impl<T> Retained<Vec<T>> {
         Self::from_owned(owned, accounting)
     }
 
+    /// Grows on the original ledger before inserting an independently owned
+    /// value. Memory credit is the only bound on the vector's length.
+    pub fn push(
+        &mut self,
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        self.ensure_for_push(usize::MAX, accounting)?;
+        accounting.perform(
+            crate::WorkCounters {
+                items_examined: 1,
+                bytes_copied: std::mem::size_of::<T>() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            },
+            || self.value.push(value),
+        )
+    }
+
     pub(crate) fn ensure_for_push(
         &mut self,
         maximum: usize,

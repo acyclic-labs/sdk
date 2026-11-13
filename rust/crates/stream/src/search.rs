@@ -369,7 +369,6 @@ impl Cursor {
                     tail_stream: None,
                     parent: Some(frame.path.clone()),
                     after: frame.after.clone(),
-                    offset: 0,
                     hierarchy_version: None,
                     limit: 1,
                 }),
