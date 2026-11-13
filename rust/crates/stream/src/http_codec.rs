@@ -342,6 +342,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retained_cut_and_child_offset_preserve_full_uint64_positions()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let request = crate::HeadsRequest {
+            at: Some(crate::Revision {
+                scope: crate::RevisionScope::new(crate::OwnedBytes::from_static(b"http-cut")),
+                incarnation: 1,
+                index: u64::MAX,
+            }),
+            retained: Default::default(),
+            durable_through: None,
+            projection: crate::HeadProjection::Tail,
+            paths: [crate::StreamPath::new("events")?].into_iter().collect(),
+            children: None,
+            limit: 1,
+            at_least: Default::default(),
+        };
+        let wire = wire_codec::heads_request_to_wire(request);
+        let projected: Value = serde_json::from_str(&encode("heads", &wire.encode_to_vec())?)?;
+        assert_eq!(
+            projected.pointer("/at/index").and_then(Value::as_str),
+            Some("18446744073709551615")
+        );
+        for offset in [0, u64::MAX] {
+            let request = crate::ChildrenPageRequest {
+                parent: Some(crate::StreamPath::new("events")?),
+                offset,
+                after: None,
+                hierarchy_version: None,
+                limit: 1,
+                tail_stream: None,
+            };
+            let wire = wire_codec::children_page_request_to_wire(request);
+            let projected: Value =
+                serde_json::from_str(&encode("children/page", &wire.encode_to_vec())?)?;
+            assert_eq!(
+                projected.get("offset").and_then(Value::as_str),
+                (offset != 0).then_some("18446744073709551615")
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn commit_projection_preserves_deadline_without_losing_uint64_precision()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let request = crate::CommitRequest {
