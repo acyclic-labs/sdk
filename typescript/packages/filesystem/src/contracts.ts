@@ -2,7 +2,7 @@ import type { CredentialProvider } from "@acyclic-labs/auth/credential";
 import type * as NativeBinding from "../generated/native/binding.js";
 import { type OperationWindowLease } from "./compat.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
-import { type AcyclicObserver } from "@acyclic-labs/auth/observe";
+import { type AcyclicObserver } from "@acyclic-labs/core/observe";
 import { DEFAULT_OBJECT_CACHE_OPTIONS as GENERATED_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS } from "../generated/defaults.js";
 
 type ReadonlyDeep<T> = T extends (...args: never[]) => unknown

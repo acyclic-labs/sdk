@@ -53,7 +53,7 @@ import {
 import { HTTP_ROUTES } from "./routes.js";
 import { contextRevision, type ContextRevision } from "./handles.js";
 import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
-import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/auth/observe";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/core/observe";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
 export { InferenceProtocolError, type InferenceProtocolErrorCode } from "./contract.js";
@@ -565,4 +565,4 @@ export class InferenceTransportError extends Error {
 }
 
 export * from "./handles.js";
-export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/auth/observe";
+export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/core/observe";

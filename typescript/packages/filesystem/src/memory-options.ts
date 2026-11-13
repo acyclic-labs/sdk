@@ -1,4 +1,4 @@
-import { resolveObserver } from "@acyclic-labs/auth/observe";
+import { resolveObserver } from "@acyclic-labs/core/observe";
 import type { FsVolumeEngine, MemoryFsOptions } from "./contracts.js";
 import type { WasmRawFs } from "./binding-types.js";
 import { DEFAULT_OBJECT_CACHE_OPTIONS } from "./contracts.js";

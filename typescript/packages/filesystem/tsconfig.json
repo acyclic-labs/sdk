@@ -10,5 +10,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"],
-  "references": [{ "path": "../auth" }]
+  "references": [{ "path": "../core" }, { "path": "../auth" }]
 }

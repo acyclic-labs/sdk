@@ -3,10 +3,6 @@
 Shared capability contracts, credentials, resource identities, guest admission,
 and the protected-secrets client for the Acyclic SDK.
 
-Product transports share operation observation through `@acyclic-labs/auth/observe`
-and caller-owned deadlines through `@acyclic-labs/auth/deadline`. These modules
-have no dependency on a product client.
-
 The package exports `CredentialProvider`, `CredentialSnapshot`, and
 `CredentialCache` for source-owned credential resolution and validity. Credential
 watchers report source changes through an `AbortSignal`; credential material

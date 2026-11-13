@@ -10,7 +10,7 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
-import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/auth/observe";
+import { observed, observedIterable, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/core/observe";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions extends CredentialOptions {

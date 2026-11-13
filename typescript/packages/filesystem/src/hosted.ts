@@ -7,14 +7,14 @@ import { type Interceptor, createClient } from "@connectrpc/connect";
 import { toBinary } from "@bufbuild/protobuf";
 import { FilesystemService, FilesystemProfile } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
-import { observeInterceptors, resolveObserver } from "@acyclic-labs/auth/observe";
+import { observeInterceptors, resolveObserver } from "@acyclic-labs/core/observe";
 import { FILESYSTEM_DESCRIPTOR_DIGEST } from "../generated/descriptor-digest.js";
 import { profileFromWire } from "./hosted-values.js";
 import { workspace } from "./hosted-workspace.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
-export { performanceObserver } from "@acyclic-labs/auth/observe";
+export { performanceObserver } from "@acyclic-labs/core/observe";
 export { HostedFsError, type HostedFsErrorCode } from "./hosted-rpc.js";
 
 

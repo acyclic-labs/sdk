@@ -22,7 +22,7 @@ import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
-import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/auth/observe";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/core/observe";
 
 export interface StreamGrpcOptions extends CredentialOptions {
   readonly endpoint: string;
