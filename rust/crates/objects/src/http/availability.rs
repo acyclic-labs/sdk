@@ -1,5 +1,6 @@
 use super::*;
 use crate::availability::client::{Credential, observe, open};
+use crate::availability::framing;
 use acyclic_stream::wire_codec::session::FrameDecoder;
 use futures::stream;
 
@@ -66,16 +67,7 @@ impl HttpObjects {
             }
             let source = Source {
                 response,
-                decoder: FrameDecoder::with_decoder(
-                    self.maximum
-                        .map_or(acyclic_stream::MAX_COMMAND_BYTES, |maximum| {
-                            maximum.min(acyclic_stream::MAX_COMMAND_BYTES)
-                        }),
-                    |bytes| {
-                        wire::AvailabilityCursor::decode(bytes)
-                            .map_err(|_| acyclic_stream::StreamError::InvalidResponse)
-                    },
-                ),
+                decoder: framing::decoder(self.maximum),
                 chunk: bytes::Bytes::new(),
                 consumed: 0,
             };
@@ -83,7 +75,7 @@ impl HttpObjects {
                 loop {
                     let mut input = &source.chunk[source.consumed..];
                     let before = input.len();
-                    let frame = source.decoder.read(&mut input).map_err(|_| unavailable())?;
+                    let frame = source.decoder.read(&mut input).map_err(framing::failure)?;
                     source.consumed += before - input.len();
                     if let Some(frame) = frame {
                         return Ok(Some((frame, source)));

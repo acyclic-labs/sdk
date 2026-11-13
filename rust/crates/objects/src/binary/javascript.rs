@@ -139,6 +139,23 @@ struct Request {
 }
 
 impl Request {
+    fn maximum_frame_bytes(&self) -> Result<Option<usize>, Error> {
+        let maximum =
+            Reflect::get(&self.owner, &"maximumFrameBytes".into()).map_err(original_error)?;
+        if maximum.is_undefined() {
+            return Ok(None);
+        }
+        let maximum = maximum
+            .as_f64()
+            .filter(|value| {
+                *value >= 1.0 && *value <= 9_007_199_254_740_991.0 && value.fract() == 0.0
+            })
+            .ok_or_else(|| Error::from(wire::ErrorCode::InvalidArgument))?;
+        Ok(Some(
+            maximum.min(acyclic_stream::MAX_COMMAND_BYTES as f64) as usize
+        ))
+    }
+
     fn opened(&self) -> Result<(), Error> {
         let opened = Reflect::get(&self.owner, &"opened".into()).map_err(original_error)?;
         if !opened.is_undefined() {
@@ -204,7 +221,7 @@ impl Transport for JavaScriptTransport {
     }
 
     async fn availability(&self, digest: Digest) -> Result<Availability, Error> {
-        use acyclic_stream::wire_codec::session::FrameDecoder;
+        use crate::availability::framing;
         let request = self.request(
             "blobs/availability",
             &wire::AvailabilityRequest {
@@ -212,16 +229,13 @@ impl Transport for JavaScriptTransport {
             }
             .encode_to_vec(),
         )?;
-        let decoder = FrameDecoder::with_decoder(acyclic_stream::MAX_COMMAND_BYTES, |bytes| {
-            wire::AvailabilityCursor::decode(bytes)
-                .map_err(|_| acyclic_stream::StreamError::InvalidResponse)
-        });
+        let decoder = framing::decoder(request.maximum_frame_bytes()?);
         let mut frames = futures::stream::try_unfold(
             (request, decoder, Bytes::new(), true),
             |(request, mut decoder, mut chunk, mut opening)| async move {
                 loop {
                     let mut input = chunk.as_ref();
-                    let frame = decoder.read(&mut input).map_err(|_| unavailable())?;
+                    let frame = decoder.read(&mut input).map_err(framing::failure)?;
                     chunk = chunk.slice(chunk.len() - input.len()..);
                     if let Some(frame) = frame {
                         let frame = frame.try_into()?;
