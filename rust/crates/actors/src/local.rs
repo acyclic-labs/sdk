@@ -97,6 +97,15 @@ pub enum Error {
         /// Why its persistence could not be confirmed.
         source: StreamError,
     },
+    /// A subscription control was accepted, but its durable cut is unconfirmed.
+    /// Retry the original control request; this envelope is not a refusal.
+    #[error("actor subscription durability is unknown: {source}")]
+    SubscriptionDurabilityUnknown {
+        /// The original accepted state and activation publication.
+        envelope: Box<acyclic_stream::CommittedEnvelope>,
+        /// Why persistence could not be confirmed.
+        source: StreamError,
+    },
     /// Publication has a terminal outcome, but participant settlement failed.
     #[error("actor participant settlement failed: {source}")]
     Settlement {
@@ -164,7 +173,9 @@ impl Error {
             Self::CompletionFailed(_) => "completion_failed",
             Self::Escrow(_) => "escrow",
             Self::Stream(error) => error.code(),
-            Self::Unknown { .. } | Self::InvocationDurabilityUnknown { .. } => "unknown",
+            Self::Unknown { .. }
+            | Self::InvocationDurabilityUnknown { .. }
+            | Self::SubscriptionDurabilityUnknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
             Self::Conflict => "conflict",
             Self::PreconditionChanged(_) => "precondition_changed",
