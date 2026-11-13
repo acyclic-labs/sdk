@@ -138,6 +138,7 @@ rustls = { workspace = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util", "process"] }
 
 [dev-dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors", features = ["conformance"] }
 acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 # Hooks record under cfg(test) too, so lib tests observe them without test-support.

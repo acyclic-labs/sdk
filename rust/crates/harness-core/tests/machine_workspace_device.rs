@@ -739,6 +739,20 @@ async fn committed_handover(refused_close: bool) -> Result {
             }
         ));
         let (mut release, _) = listener.accept().await?;
+        if !refused_close {
+            // Composer conformance: the command is running and held open, so
+            // the queue handover is still the latest committed custody (no
+            // exit report can replace it yet). Two more owners settle it,
+            // re-sending its frames on the same socket; the marker check
+            // after the command proves the device applied them once.
+            acyclic_actors::conformance::settles_twice(
+                &handover_store
+                    .clone()
+                    .with_composer(Arc::new(TargetComposer::new(Arc::new(sockets.clone())))),
+                &handover_store.load(&actor).await?,
+            )
+            .await?;
+        }
         let result = terminal(&provider, log(&run.agent, op)?, async || {
             use tokio::io::AsyncWriteExt as _;
             // Both native shells consume one LF permit before closing the socket.

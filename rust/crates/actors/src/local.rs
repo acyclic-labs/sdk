@@ -963,6 +963,20 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .await
     }
 
+    /// Settle `snapshot`'s committed custody twice, as two owners would.
+    #[cfg(any(test, feature = "conformance"))]
+    pub(crate) async fn settle_custody_twice(&self, snapshot: &Snapshot) -> Result<(), Error> {
+        let path = snapshot
+            .state
+            .as_ref()
+            .filter(|state| state.custody)
+            .map(|_| &snapshot.path)
+            .ok_or(Error::Invalid("cut has no committed custody"))?;
+        // Each owner recovers without the other's settled-custody memory.
+        self.recover_settlement(path).await?;
+        self.recover_settlement(path).await
+    }
+
     /// Settle the participant of the claimed state's composed publication
     /// again. Its old owner may have died between that publication and its
     /// settlement; the new owner's claim fenced the old owner's publications.

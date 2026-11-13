@@ -31,6 +31,19 @@ const BUDGET_MS: u64 = 5_000;
 /// Logical spacing between alarm generations.
 const ALARM_MS: u64 = 100;
 
+/// Composer conformance. Settlement is at least once
+/// ([`crate::guest::Composition::settle`]): every owner that finds a cut's
+/// committed custody settles its participant again. Settle `cut`'s custody
+/// twice through the store's own recovery; both settlements must succeed,
+/// and the composer's external effect must apply once. A cut without
+/// committed custody is refused, so a check can never pass vacuously.
+pub async fn settles_twice<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    cut: &crate::local::Snapshot,
+) -> Result<(), Error> {
+    store.settle_custody_twice(cut).await
+}
+
 /// The host under test, already running [`Package`] under `store().root()`.
 pub trait Backend: ProviderPlatform {
     /// Fresh namespace retained for this suite invocation.
