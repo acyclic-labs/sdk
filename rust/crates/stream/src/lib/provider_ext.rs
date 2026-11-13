@@ -1,5 +1,6 @@
 struct LatestRead {
-    request: ReadRequest,
+    from: u64,
+    key: Option<ReadKeySeek>,
     before: u64,
 }
 
@@ -9,32 +10,35 @@ impl LatestRead {
         key: Option<Bytes>,
         before: u64,
         at_least: RevisionCut,
-    ) -> Option<Self> {
+    ) -> Option<(Self, ReadRequest)> {
         let last = before.checked_sub(1)?;
         let key = key.map(|key| ReadKeySeek::latest(key, before));
-        Some(Self {
-            request: ReadRequest {
-                from: if key.is_some() { 0 } else { last },
+        let from = if key.is_some() { 0 } else { last };
+        Some((
+            Self {
+                from,
+                key: key.clone(),
+                before,
+            },
+            ReadRequest {
+                from,
                 key,
                 path,
                 limit: 1,
                 at_least,
             },
-            before,
-        })
+        ))
     }
 
     fn validate(&mut self, record: &Record) -> Result<(), StreamError> {
         if record.sequence >= self.before {
             return Err(StreamError::InvalidResponse);
         }
-        match &mut self.request.key {
-            Some(selector) => selector.advance(
-                &mut self.request.from,
-                record.sequence,
-                record.headers.keys(),
-            ),
-            None if record.sequence == self.request.from => Ok(()),
+        match &mut self.key {
+            Some(selector) => {
+                selector.advance(&mut self.from, record.sequence, record.headers.keys())
+            }
+            None if record.sequence == self.from => Ok(()),
             None => Err(StreamError::InvalidResponse),
         }
     }
@@ -64,16 +68,18 @@ pub trait StreamProviderExt: StreamProvider {
         async move {
             use futures::TryStreamExt as _;
             meter.check()?;
-            let Some(mut selection) = LatestRead::new(path, key, before, at_least) else {
+            if before == 0 {
                 return Ok(Ok(NativeStreamOutput::new(
                     None,
                     acyclic_native_runtime::ReadAllocation::empty(&meter),
                 )));
-            };
-            let mut records = match self
-                .native_read(selection.request.clone(), meter.clone())
-                .await?
-            {
+            }
+            let key = key
+                .map(|key| key.into_cloneable_native(&meter))
+                .transpose()?;
+            let (mut selection, request) = LatestRead::new(path, key, before, at_least)
+                .expect("nonzero original cut has one predecessor");
+            let mut records = match self.native_read(request, meter.clone()).await? {
                 Ok(records) => records,
                 Err(error) => return Ok(Err(error)),
             };
@@ -215,10 +221,11 @@ pub trait StreamProviderExt: StreamProvider {
     ) -> impl Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
         async move {
             use futures::StreamExt as _;
-            let Some(mut selection) = LatestRead::new(path, key, before, at_least) else {
+            let Some((mut selection, request)) = LatestRead::new(path, key, before, at_least)
+            else {
                 return Ok(None);
             };
-            let mut records = self.read(selection.request.clone()).await?;
+            let mut records = self.read(request).await?;
             let record = records.next().await.transpose()?;
             if let Some(record) = &record {
                 selection.validate(record)?;

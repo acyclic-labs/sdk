@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/lib/provider_ext.rs b/rust/crates/stream/src/lib/provider_ext.rs
+--- a/rust/crates/stream/src/lib/provider_ext.rs
++++ b/rust/crates/stream/src/lib/provider_ext.rs
+@@ -82,7 +82,7 @@
+                 .transpose()?;
+             let (mut selection, request) = LatestRead::new(path, key, before, at_least)
+                 .expect("nonzero original cut has one predecessor");
+-            let mut records = match self.native_read(request, meter.clone()).await? {
++            let mut records = match self.native_read(request.clone(), meter.clone()).await? {
+                 Ok(records) => records,
+                 Err(error) => return Ok(Err(error)),
+             };

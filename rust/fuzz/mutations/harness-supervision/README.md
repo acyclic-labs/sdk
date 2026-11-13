@@ -177,3 +177,18 @@ measures real decoder allocations for every lifecycle variant, including long
 owned strings, and requires the original peak reservation and retained custody
 to cover the actual allocations and retire completely. These new executions
 remain pending. This proves neither a mounted adapter nor a live PR producer.
+
+The same `replay_tests::native_latest_before_keeps_original_cuts_and_budget`
+regression measures allocations while a nonempty original revision cut is moved
+into a denied native read. It must allocate nothing before the provider's
+refusal. A unique ordinary key likewise cannot allocate its lazy shared header
+before admission. `point-request-clone.patch` restores the unmetered request
+copy and must fail at `native point read copied its revision vector before admission`;
+`point-key-promotion.patch` removes key admission and must fail at
+`native point read promoted a unique key before admission`.
+Run these independently, require the exact assertion, reverse, then require
+the same regression to pass. The native signal query's necessary revision-vector
+copies use `RevisionCut::native_clone`, sharing the existing admitted vector
+copy implementation and retaining its guard through the original request.
+The regression also checks healthy cut-copy custody/refund and denied cut-copy
+admission. New test/mutant execution remains pending.

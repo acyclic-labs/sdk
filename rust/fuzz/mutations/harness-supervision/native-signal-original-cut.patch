@@ -7,6 +7,6 @@ diff --git a/rust/crates/harness-core/src/supervision/streams/native.rs b/rust/c
              Some(key),
 -            read.before,
 +            u64::MAX,
-             read.at_least.clone(),
+             at_least,
              original.runtime_meter(),
          )

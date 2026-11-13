@@ -48,12 +48,17 @@ async fn event_before<'a, P: NativeStreamProvider + ?Sized>(
     let original = io
         .original_native_work()
         .ok_or_else(|| refused("native signal query has no original owner"))?;
+    let (at_least, _cut_custody) = read
+        .at_least
+        .native_clone(&original.runtime_meter())
+        .map_err(|error| Error::from(original.runtime_error(error)))?
+        .into_parts();
     let result = provider
         .native_latest_before(
             read.source.clone(),
             Some(key),
             read.before,
-            read.at_least.clone(),
+            at_least,
             original.runtime_meter(),
         )
         .await;

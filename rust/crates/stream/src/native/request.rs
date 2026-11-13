@@ -72,7 +72,7 @@ fn push<T>(
     meter.record_codec(0, bytes, 0)
 }
 
-fn copy_vector<T: Clone>(
+pub(crate) fn copy_vector<T: Clone>(
     source: &[T],
     meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     allocation: &mut acyclic_native_runtime::ReadAllocation,

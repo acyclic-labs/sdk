@@ -6,6 +6,6 @@ diff --git a/rust/crates/stream/src/lib/provider_ext.rs b/rust/crates/stream/src
          async move {
              use futures::TryStreamExt as _;
 -            meter.check()?;
-             let Some(mut selection) = LatestRead::new(path, key, before, at_least) else {
+             if before == 0 {
                  return Ok(Ok(NativeStreamOutput::new(
                      None,

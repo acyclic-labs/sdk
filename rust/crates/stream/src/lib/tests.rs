@@ -285,7 +285,7 @@ mod replay_tests {
         let absent = provider
             .native_latest_before(
                 StreamPath::new("never-created")?,
-                None,
+                Some(Bytes::from(b"unique-zero-cut-key".to_vec())),
                 0,
                 Default::default(),
                 meter.original(),
@@ -295,19 +295,64 @@ mod replay_tests {
         assert_eq!(meter.read_operations.load(Ordering::SeqCst), 0);
         assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
         drop(absent);
+        let original_cut = RevisionCut::of(Revision {
+            scope: RevisionScope::new(Bytes::from_static(b"original-nonempty-cut")),
+            incarnation: 1,
+            index: 0,
+        });
+        let copied = original_cut.native_clone(&meter.original())?;
+        assert_eq!(copied.value(), &original_cut);
+        assert!(meter.held.load(Ordering::SeqCst) > 0);
+        drop(copied);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
         meter.deny_allocation.store(true, Ordering::SeqCst);
+        assert!(original_cut.native_clone(&meter.original()).is_err());
+        // A unique ordinary key would otherwise lazily allocate its shared
+        // header on clone before reaching the provider's native admission.
+        let unique_key = Some(Bytes::from(b"unique-unshared-key".to_vec()));
+        let mut refused_key = None;
+        let physical_key = acyclic_test_support::measure(|| {
+            use futures::FutureExt as _;
+            refused_key = Some(
+                provider
+                    .native_latest_before(
+                        path.clone(),
+                        unique_key,
+                        before,
+                        Default::default(),
+                        meter.original(),
+                    )
+                    .now_or_never(),
+            );
+        });
+        assert!(matches!(refused_key, Some(Some(Err(_)))));
+        assert_eq!(
+            physical_key.count_total, 0,
+            "native point read promoted a unique key before admission"
+        );
+        let mut refused = None;
+        let physical = acyclic_test_support::measure(|| {
+            use futures::FutureExt as _;
+            refused = Some(
+                provider
+                    .native_latest_before(
+                        path.clone(),
+                        None,
+                        before,
+                        original_cut,
+                        meter.original(),
+                    )
+                    .now_or_never(),
+            );
+        });
         assert!(
-            provider
-                .native_latest_before(
-                    path.clone(),
-                    None,
-                    before,
-                    Default::default(),
-                    meter.original()
-                )
-                .await
-                .is_err(),
+            matches!(refused, Some(Some(Err(_)))),
             "native point read bypassed its original allocation denial"
+        );
+        assert_eq!(
+            physical.count_total, 0,
+            "native point read copied its revision vector before admission"
         );
         meter.assert_refunded();
         meter.deny_allocation.store(false, Ordering::SeqCst);
