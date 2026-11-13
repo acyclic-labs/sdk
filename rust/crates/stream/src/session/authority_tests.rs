@@ -1106,6 +1106,15 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
             root.within_sync(|| resource.authorize("fs:/volume/public", &[], &attributes, policy));
         assert_eq!(result.is_ok(), allowed);
     }
+    for (target, allowed) in [("fs:/volume", true), ("fs:/other", false)] {
+        let next = verify::verify(
+            &fs_token(target, |_| {}),
+            &signed::Snapshot::default(),
+            signed::NOW,
+        )?;
+        let result = root.within_sync(|| resource.renew(Arc::new(next)));
+        assert_eq!(result.is_ok(), allowed);
+    }
     let mut query = TraceQuery::new(
         trace.follow(0, Default::default()).await?,
         Default::default(),
@@ -1114,7 +1123,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     let mut succeeded = 0;
     let mut unsettled = 0;
     let mut locks = 0;
-    while settled != 6 {
+    while settled != 8 {
         let Some(event) = query.next().await? else {
             return Err("diagnostic source ended".into());
         };
@@ -1130,9 +1139,10 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
                 "stream.session_authorize"
                     | "stream.resource_authorize"
                     | "stream.credential_snapshot"
+                    | "stream.credential_renewal"
             ));
             assert_eq!(start.parent, Some(parent));
-            let credential = start.name == "stream.credential_snapshot";
+            let credential = start.name.starts_with("stream.credential_");
             assert_eq!(
                 start.mechanism,
                 if credential {
@@ -1146,6 +1156,8 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
                 start.guarantee.as_deref(),
                 Some(if start.name == "stream.session_authorize" {
                     "current_trust_credential_and_resource_admission"
+                } else if start.name == "stream.credential_renewal" {
+                    "atomic_renewal_preserves_account_principal_and_grants"
                 } else if credential {
                     "atomic_credential_snapshot_against_renewal"
                 } else {
@@ -1166,7 +1178,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
             settled += 1;
         }
     }
-    assert_eq!((succeeded, unsettled, locks), (4, 2, 2));
+    assert_eq!((succeeded, unsettled, locks), (5, 3, 4));
     root.finish_submitted(None, Outcome::Succeeded)?;
     Ok(())
 }

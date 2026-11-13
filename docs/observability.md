@@ -722,5 +722,9 @@ or a fabricated failure reference.
 stream.credential_snapshot accounts for acquiring the original current-credential
 lock, cloning its existing shared capability and releasing the guard. Its
 guarantee is an atomic snapshot against renewal, with zero payload bytes and
-no copy of the credential. Scope/account guards and the renewal writer's lock
-still need their own physical observations.
+no copy of the credential. `stream.credential_renewal` accounts for the original
+writer lock through its account/principal/grant checks and conditional update;
+its guarantee is atomic renewal preserving the admitted authority ceiling.
+Rejected renewal leaves the original credential untouched and remains unsettled
+until the path retains original cause evidence. Scope/account guards preceding
+per-entry checks still need their own physical observations.
