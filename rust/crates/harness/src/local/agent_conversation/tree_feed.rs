@@ -357,7 +357,7 @@ fn directory(mut follow: DirectoryFollow) -> Job {
                 crate::client_files::SessionDirectoryEntry::Created { version: 1 }
                     if record.sequence == 0 => {}
                 crate::client_files::SessionDirectoryEntry::Root { version: 1, agent }
-                    if agent.parent().is_none() =>
+                    if record.sequence > 0 && agent.parent().is_none() =>
                 {
                     return Ok(Update::Directory(agent, follow));
                 }
@@ -377,7 +377,11 @@ fn node(
     descendants: bool,
 ) -> Job {
     async move {
-        let agent = selected.unwrap_or_else(|| connection.root().clone());
+        let connection = match selected {
+            Some(agent) => connection.select(agent).await?,
+            None => connection,
+        };
+        let agent = connection.root().clone();
         let members = if descendants {
             Some(MembershipFollow::open(connection.clone(), agent.clone(), 0, false).await?)
         } else {
@@ -480,7 +484,8 @@ impl MembershipFollow {
                     self.next = record.sequence + 1;
                     let member: crate::agent::Membership =
                         serde_json::from_slice(&record.value).map_err(failed)?;
-                    if member.version != 1 || !self.agent.contains(&member.agent) {
+                    if member.version != 1 || (member.agent != self.agent
+                        && !member.agent.is_child_of(&self.agent)) {
                         return Err(Error::Invalid("invalid agent membership".into()));
                     }
                     if member.agent != self.agent {
