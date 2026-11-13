@@ -970,14 +970,87 @@ async fn file_control_journey(guest: bool) -> Result {
                 .ok_or("missing target")?
                 .paused()
         );
-        write("control/pause", Some(""), 3).await?;
+        let control = ActorReference::new(
+            actor.account().as_bytes(),
+            actor.namespace().as_str().as_bytes(),
+            format!("file-controls-{}", agent.id()).as_bytes(),
+        )?;
+        let control_state = store.load(&control).await?;
+        let source = control_state
+            .state()
+            .and_then(|state| state.subscriptions().get("file-pause"))
+            .ok_or("control source missing")?
+            .path
+            .clone();
+        let from = stream.tail(source.clone()).await?;
+        let mut expected_inbox = stream.tail(agent.inbox()?).await?;
+        // The original producer chunks these paths: pause is in an earlier
+        // record than steering, but both share one authority revision.
+        let mut batch = vec![ClientFileChange {
+            path: "control/pause".into(),
+            expected: None,
+            text: Some(String::new()),
+        }];
+        batch.extend((0..80).map(|number| ClientFileChange {
+            path: format!("control/q{number:03}"),
+            expected: None,
+            text: Some(String::new()),
+        }));
+        batch.push(ClientFileChange {
+            path: "control/steer.md".into(),
+            expected: None,
+            text: Some("alpha".into()),
+        });
+        bound
+            .publish_files(
+                &agent,
+                FileRoot::Private {},
+                OperationId::from_bytes([3; 16]),
+                &batch,
+            )
+            .await?;
+        let source_tail = stream.tail(source.clone()).await?;
+        let records: Vec<_> = stream
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: source,
+                from,
+                limit: u32::try_from(source_tail - from)?,
+                at_least: Default::default(),
+            })
+            .await?
+            .try_collect()
+            .await?;
+        let keyed = |key: &[u8]| {
+            records.iter().find(|record| {
+                record
+                    .headers
+                    .keys()
+                    .iter()
+                    .any(|value| value.as_ref() == key)
+            })
+        };
+        let pause = keyed(b"control/pause").ok_or("pause record missing")?;
+        let steer = keyed(b"control/steer.md").ok_or("steer record missing")?;
+        assert!(
+            pause.sequence < steer.sequence,
+            "batch did not split its controls"
+        );
+        assert_eq!(pause.commit_id, steer.commit_id);
         assert!(matches!(
             event(&mut events).await?.event,
             Lifecycle::Paused { .. }
         ));
-        let mut expected_inbox = stream.tail(agent.inbox()?).await?;
+        bound.agents().runtime().complete().await?;
+        assert_eq!(
+            stream.tail(agent.inbox()?).await?,
+            expected_inbox + 1,
+            "split publication lost steering after applying pause"
+        );
         for (text, delta, number) in [("alpha", "alpha", 4), ("alpha beta", " beta", 5)] {
-            write("control/steer.md", Some(text), number).await?;
+            if number != 4 {
+                write("control/steer.md", Some(text), number).await?;
+            }
             loop {
                 let record = inbox.try_next().await?.ok_or("inbox producer closed")?;
                 if let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? {
