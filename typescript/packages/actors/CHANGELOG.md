@@ -2,6 +2,7 @@
 
 ## 0.2.0 - Unreleased
 
+- Use `ActorsClient` as the single platform-neutral client name.
 - Align the unified SDK candidate with the breaking Objects v2 public package transition.
 - Replace per-instance deployment with namespace deployment and implicit activation. Add namespace-scoped references, bound stubs, initialization gates and Durable Object alarm/socket host adapters. `deleteAll` clears storage and alarms; later access may activate the address again.
 
