@@ -20,6 +20,7 @@ where
             &work,
             work.cancellation(),
             &mut None,
+            None,
             adapter::source_publication_guard(
                 self.authored.callback_guard().cloned(),
                 Some(self.authored.cancellation().clone()),
@@ -40,6 +41,7 @@ where
         work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
         acknowledged: &mut Option<crate::NativePublicationSnapshot>,
+        operation: Option<crate::OperationId>,
         mut before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, (E, Option<MountSourceError>)>
     where
@@ -66,6 +68,7 @@ where
                 cancellation,
                 acknowledged,
                 &mut before_publication,
+                operation,
                 None,
             )
         })
@@ -158,6 +161,7 @@ where
                 cancellation,
                 &mut None,
                 &mut before_publication,
+                None,
                 Some((destination, &plan, operation)),
             )
             .await

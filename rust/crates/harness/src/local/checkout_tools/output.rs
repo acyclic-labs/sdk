@@ -134,6 +134,10 @@ impl Output {
         self.finished = true;
         Ok(())
     }
+
+    pub(super) async fn completed(&self) -> Result<()> {
+        self.writer.lock().await.output.finish().await
+    }
 }
 
 impl Drop for Output {

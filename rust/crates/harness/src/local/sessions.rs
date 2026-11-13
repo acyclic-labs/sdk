@@ -393,8 +393,8 @@ pub async fn rename(connection: &Connection, operation: OperationId, title: Stri
     let existing = snapshot.files.get("ui/title").and_then(Option::as_ref);
     let change = ClientFileChange {
         path: "ui/title".into(),
-        expected: existing.map(|file| file.file.clone()),
-        text: title,
+        expected: existing.and_then(|file| file.original().cloned()),
+        text: Some(title),
     };
     let AgentReply::ClientFilesPublished { .. } = connection
         .execute(&AgentCommand::PublishAgentFiles {

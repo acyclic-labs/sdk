@@ -92,6 +92,7 @@ pub mod source_authorization;
 /// Credited SSE data framing shared by HTTP protocol adapters.
 pub mod sse;
 pub mod store;
+pub mod supervision;
 #[doc(hidden)]
 pub mod sync;
 pub mod templates;

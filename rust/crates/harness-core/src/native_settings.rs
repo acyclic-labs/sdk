@@ -17,6 +17,16 @@ mod model;
 mod model_selection;
 mod workspace;
 
+/// Model selection and context admission from one original settings-file read.
+/// The compaction value uses the shared policy's ordinary serialized format.
+#[derive(Clone, Debug, Default)]
+pub struct ModelPreferences {
+    /// Selected provider/model, or the host's default when absent.
+    pub model: Option<String>,
+    /// Explicit context policy; absent selects verified automatic admission.
+    pub compaction: Option<crate::context::CompactionPolicy>,
+}
+
 /// Production native settings boundaries for decoder conformance.
 #[cfg(feature = "test-support")]
 pub mod test_support {

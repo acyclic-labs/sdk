@@ -244,6 +244,112 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
 }
 
 #[tokio::test]
+async fn tool_output_activity_shares_chunk_publication_and_rejects_partial_updates() -> Result<()> {
+    use crate::runtime::{
+        Bindings, ToolContext, ToolOutputActivity, ToolOutputLog, tool_output_activity_path,
+    };
+    for enabled in [false, true] {
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+        let content = storage.content_bindings();
+        let volume = content.volume.clone();
+        let mut bindings = Bindings::local();
+        bindings.scope = RuntimeScope::new(
+            Capabilities::new([
+                storage.read_capability.clone(),
+                storage.write_capability.clone(),
+                volume.directory_read_capability("", &mut None)?,
+            ]),
+            Limits::default(),
+        )?;
+        bindings.content = Some(content.clone());
+        let task = Arc::new(
+            bindings
+                .build()?
+                .agent_context(&Capabilities::new(Vec::<String>::new()), content)?,
+        );
+        let call = OperationId::from_bytes([51; 16]);
+        let mut context = ToolContext::new(task, call, "output")?;
+        context.output_activity = enabled;
+        let mut output = ToolOutputLog::new(context.clone());
+        let first = output
+            .publish_chunk("stdout/0000000000000000", b"first")
+            .await?;
+        assert_eq!(context.read_file(&first, None).await?.as_ref(), b"first");
+        let path = tool_output_activity_path(context.turn_id(), call);
+        if !enabled {
+            assert!(
+                context
+                    .read_private_path(&volume, "", &path, None)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                context
+                    .read_output_file_once("stdout/0000000000000000")
+                    .await?
+                    .map(|(file, _)| file),
+                Some(first)
+            );
+            continue;
+        }
+        let (activity, bytes) = context.read_private_path(&volume, "", &path, None).await?;
+        let cursor: ToolOutputActivity =
+            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            (cursor.version, cursor.call, cursor.turn, cursor.through),
+            (1, call, context.turn_id(), 1)
+        );
+        assert_eq!(
+            activity.version(),
+            first.version(),
+            "activity was published outside its chunk's original generation"
+        );
+        // A fresh owner recovers the exact original batch after later reads,
+        // rather than conditionally creating a new cursor beside old output.
+        let mut replay = ToolOutputLog::new(context.clone());
+        assert_eq!(
+            replay
+                .publish_chunk("stdout/0000000000000000", b"first")
+                .await?,
+            first
+        );
+        assert!(
+            output
+                .publish_chunk("stdout/0000000000000000", b"replacement")
+                .await
+                .is_err()
+        );
+        let (_, unchanged) = context.read_private_path(&volume, "", &path, None).await?;
+        assert_eq!(
+            unchanged.as_ref(),
+            bytes.as_ref(),
+            "refused output advanced its activity cursor"
+        );
+        let second = output
+            .publish_chunk("stderr/0000000000000000", b"second")
+            .await?;
+        let (next, bytes) = context.read_private_path(&volume, "", &path, None).await?;
+        assert_eq!(next.version(), second.version());
+        assert_eq!(
+            serde_json::from_slice::<ToolOutputActivity>(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .through,
+            2
+        );
+        assert_eq!(
+            serde_json::from_slice::<ToolOutputActivity>(
+                &context.read_file(&activity, None).await?
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .through,
+            1,
+            "later output rewrote the original activity receipt"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), None).await?;
     let operation = OperationId::new();

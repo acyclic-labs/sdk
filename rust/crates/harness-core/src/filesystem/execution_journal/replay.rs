@@ -260,6 +260,7 @@ where
                     } else {
                         self.verify_event_refs_with_io(operation_id, &observation.event, io)
                             .await?
+                            .0
                     };
                     let _model_hold = if retain_models {
                         None

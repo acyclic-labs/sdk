@@ -88,7 +88,7 @@ impl HeadlessOutcome {
         if let Error::Cleanup(failure) = error {
             return failure.classification.outcome;
         }
-        if matches!(error, Error::GoalBlocked(_)) {
+        if matches!(error, Error::GoalBlocked(_) | Error::ExecutionControlled(_)) {
             return Self::Blocked;
         }
         match error.code() {
@@ -126,6 +126,10 @@ impl HeadlessOutcome {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An original owner decision closed admission before dispatch. Executors
+    /// yield this control with their checkpoint rather than report a failure.
+    #[error("execution controlled by {:?}", .0.action)]
+    ExecutionControlled(crate::supervision::Control),
     /// An agent primitive failure with its original cause and uncertain request.
     #[error("{0}")]
     Agent(#[source] Box<crate::agent::Error>),
@@ -744,7 +748,10 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_)
+            | Self::Refused(_)
+            | Self::ExactEdit(_)
+            | Self::ExecutionControlled(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::ModelTokenCountUnavailable
@@ -996,7 +1003,7 @@ impl Error {
         }
     }
 
-    /// Native failures must propagate before additional provider or deadline work. The match is
+    /// Native failures and owner controls propagate before additional provider or deadline work. The match is
     /// exhaustive so every new variant is classified on purpose: a semantic failure the task or
     /// model can settle must never default to an accounting failure that strands the turn.
     #[doc(hidden)]
@@ -1007,7 +1014,7 @@ impl Error {
                 _ => false,
             },
             Self::Command(failure) => failure.classification.native_failure,
-            Self::OutputOmitted(_) => true,
+            Self::OutputOmitted(_) | Self::ExecutionControlled(_) => true,
             Self::Cleanup(_) => true,
             Self::ModelContextOverflow
             | Self::ModelTokenCountUnavailable

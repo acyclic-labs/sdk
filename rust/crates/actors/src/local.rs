@@ -14,7 +14,8 @@ pub use overlay::{Branch, Creation};
 mod record;
 pub use applied::{Applied, AppliedCut};
 pub use record::{
-    METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD, alarm_admission,
+    AdmissionState, METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD,
+    alarm_admission,
 };
 mod runtime;
 mod scheduling;
@@ -372,6 +373,7 @@ impl Snapshot {
 /// mutations (for example a Streams fork or a filesystem contribution) before
 /// submitting it exactly once.
 pub struct PreparedPublish {
+    revalidate_foreign: bool,
     own: Option<StreamPath>,
     state: Option<State>,
     call: Option<(crate::call::CallPath, Trigger)>,
@@ -480,6 +482,7 @@ impl PreparedPublish {
     /// parent composing a spawn) that joins companion creates and appends.
     pub fn foreign(key: IdempotencyKey) -> Self {
         Self {
+            revalidate_foreign: false,
             own: None,
             state: None,
             call: None,
@@ -496,6 +499,17 @@ impl PreparedPublish {
                 idempotency_key: key,
             },
         }
+    }
+    /// Recompute after a definite refusal of only foreign guards. The runtime
+    /// compares refusal observations and stops if the same guard refuses again.
+    pub fn revalidate_foreign_conflicts(&mut self) -> Result<(), Error> {
+        if self.sealed {
+            return Err(Error::Invalid(
+                "sealed publication cannot change revalidation",
+            ));
+        }
+        self.revalidate_foreign = true;
+        Ok(())
     }
     /// Join admission fences without manufacturing a companion mutation. The
     /// original state fence cannot be weakened, and disagreeing cuts are refused.
@@ -611,9 +625,8 @@ impl PreparedPublish {
         }
         Ok(())
     }
-    /// Take the request to submit it through another commit owner. Only
-    /// [`Store::submit_retained`] settles a participant or the previous cut's
-    /// committed custody, so a publication carrying either never leaves.
+    /// Take a request with no participant or unsettled prior custody. Use
+    /// [`Store::export_prepared`] to settle prior custody before exporting.
     pub fn into_request(self) -> Result<CommitRequest, Error> {
         if self.composition.is_some() {
             return Err(Error::Invalid(
@@ -991,6 +1004,23 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
     }
 
+    /// Settle the replaced cut's committed participant before contributing an
+    /// uncomposed publication to another commit owner. A participant belonging
+    /// to this candidate must still be submitted through `submit_retained`.
+    pub async fn export_prepared(
+        &self,
+        mut prepared: PreparedPublish,
+    ) -> Result<CommitRequest, Error> {
+        if prepared.composition.is_some() {
+            return prepared.into_request();
+        }
+        if let Some((path, record)) = &prepared.unsettled {
+            self.settle_custody(path, *record).await?;
+            prepared.unsettled = None;
+        }
+        prepared.into_request()
+    }
+
     /// The settled-custody memory, shared by every clone of this store.
     fn settled(
         &self,
@@ -1157,6 +1187,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 
     /// Pause/resume and in-flight publication share the identical CAS fence.
     /// An unclaimed actor (epoch 0) can be paused before its first placement.
+    /// The original activation is published with the decision, so another
+    /// runtime can observe it without a process-local wake or status probe.
     pub async fn set_paused(
         &self,
         previous: &Snapshot,
@@ -1169,14 +1201,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                let mut state = previous
-                    .state
-                    .as_ref()
-                    .filter(|_| previous.owns_epoch(epoch))
-                    .ok_or(Error::Conflict)?
-                    .clone();
-                state.paused = paused;
-                self.submit(self.prepare(previous, state, Vec::new(), key, false)?)
+                self.submit(self.prepare_paused(previous, epoch, paused, key)?)
                     .await
             }
         )
@@ -1223,6 +1248,29 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             consumed: None,
         };
         self.prepare(previous, deleted, Vec::new(), key, false)
+    }
+
+    /// Prepare the existing pause/resume decision without submitting it.
+    /// A source producer can join its original conditional file/event write
+    /// through [`PreparedPublish::join`]; the source, admission change and
+    /// activation then commit together or not at all. Refusal leaves the
+    /// observed actor untouched; Unknown retains this exact publication.
+    /// This operation performs no I/O and grants no authority over the actor.
+    pub fn prepare_paused(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        paused: bool,
+        key: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        let mut state = previous
+            .state
+            .as_ref()
+            .filter(|_| previous.owns_epoch(epoch))
+            .ok_or(Error::Conflict)?
+            .clone();
+        state.paused = paused;
+        self.prepare(previous, state, Vec::new(), key, false)
     }
 
     /// Atomically publish the checkpoint, consumed cursor, alarm and effects.
@@ -1306,15 +1354,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             transition,
             key,
         } = publication;
-        let named = match trigger {
-            Trigger::Record { sequence, .. } => Some(*sequence),
-            Trigger::Alarm { .. } => None,
-        };
+        let named = trigger.record_position().map(|(_, sequence)| sequence);
         if let Some(record) = delivered
             && named != Some(record.sequence)
         {
             return Err(Error::Invalid("delivered record differs from its trigger"));
         }
+        validate_selection(trigger, delivered)?;
         // The call's completion is a host record, joined past the guest check.
         let (call, completion) = match self.invocation_completion(
             previous,
@@ -1334,7 +1380,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 participant: participant.clone(),
                 key: key.clone(),
                 delivered: match (trigger, delivered) {
-                    (Trigger::Record { subscription, .. }, Some(record)) => Some((
+                    (
+                        Trigger::Record { subscription, .. }
+                        | Trigger::KeyedRecord { subscription, .. },
+                        Some(record),
+                    ) => Some((
                         state
                             .subscriptions
                             .get(subscription)
@@ -1425,7 +1475,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                                 error => Error::Handler(error),
                             },
                         )?;
-                        if !extends(original, &request)
+                        if !extends(original, &request, &self.root)
                             || prepared.own.as_ref().is_some_and(|own| {
                                 request.mutations().filter(|mutation| {
                                     matches!(mutation, CommitMutation::Append { path, .. } if path == own)
@@ -1490,8 +1540,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
                     Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
                 };
-                let revalidate = match (&outcome, &prepared.composition) {
-                    (Ok(CommitOutcome::Conflict(conflicts)), Some(composition)) => {
+                let revalidate = match &outcome {
+                    Ok(CommitOutcome::Conflict(conflicts)) => {
                         conflicts.iter().all(|conflict| {
                             let path = match conflict {
                                 acyclic_stream::CommitConflict::Missing { path }
@@ -1500,7 +1550,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                                 | acyclic_stream::CommitConflict::Exists { path } => path,
                             };
                             prepared.own.as_ref() != Some(path)
-                        }) && composition.revalidate(conflicts)
+                        }) && (prepared.revalidate_foreign
+                            || prepared
+                                .composition
+                                .as_ref()
+                                .is_some_and(|composition| composition.revalidate(conflicts)))
                     }
                     _ => false,
                 };
@@ -1606,6 +1660,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         .transpose()?;
         let encoded = state.encode();
         let mut prepared = PreparedPublish {
+            revalidate_foreign: false,
             own: Some(previous.path.clone()),
             state: Some(state),
             call: None,
@@ -1663,7 +1718,10 @@ fn mutation_targets(mutation: &CommitMutation, path: &StreamPath) -> bool {
 
 /// Whether a composed request keeps the original publication: every soft
 /// effect unchanged, and every hard condition and mutation in a hard effect.
-fn extends(original: &CommitRequest, composed: &CommitRequest) -> bool {
+/// A host participant may extend the shared activation append, retaining its
+/// original record prefix. Actor state, replies, journals and all other
+/// original mutations remain exact.
+fn extends(original: &CommitRequest, composed: &CommitRequest, activations: &StreamPath) -> bool {
     let hard = || composed.effects.iter().filter(|effect| !effect.soft);
     original.effects.iter().all(|effect| {
         if effect.soft {
@@ -1673,10 +1731,22 @@ fn extends(original: &CommitRequest, composed: &CommitRequest) -> bool {
             .conditions
             .iter()
             .all(|entry| hard().any(|hard| hard.conditions.contains(entry)))
-            && effect
-                .mutations
-                .iter()
-                .all(|entry| hard().any(|hard| hard.mutations.contains(entry)))
+            && effect.mutations.iter().all(|entry| {
+                hard().any(|hard| {
+                    hard.mutations
+                        .iter()
+                        .any(|candidate| match (entry, candidate) {
+                            (
+                                CommitMutation::Append { path, records },
+                                CommitMutation::Append {
+                                    path: to,
+                                    records: extended,
+                                },
+                            ) if path == activations && to == path => extended.starts_with(records),
+                            _ => candidate == entry,
+                        })
+                })
+            })
     })
 }
 
@@ -1701,6 +1771,7 @@ fn next(
     change_alarm(&mut state.alarm, transition.alarm)?;
     subscribe(&mut state.subscriptions, own, &transition.subscriptions)?;
     state.checkpoint = Some(transition.checkpoint.clone());
+    state.paused = transition.pause;
     Ok(state)
 }
 
@@ -1752,16 +1823,25 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
         Trigger::Record {
             subscription,
             sequence,
+        }
+        | Trigger::KeyedRecord {
+            subscription,
+            sequence,
+            ..
         } => {
             let cursor = &mut state
                 .subscriptions
                 .get_mut(subscription)
                 .ok_or(Error::Invalid("undeclared subscription"))?
                 .cursor;
-            if *cursor != *sequence {
+            let from = match trigger {
+                Trigger::KeyedRecord { from, .. } => *from,
+                _ => *sequence,
+            };
+            if *cursor != from || *sequence < from {
                 return Err(Error::Conflict);
             }
-            *cursor = cursor
+            *cursor = sequence
                 .checked_add(1)
                 .ok_or(Error::Invalid("subscription cursor overflow"))?;
             state.consumed = None;
@@ -1786,6 +1866,31 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
                 state.alarm.delivered_generation = Some(*generation);
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_selection(trigger: &Trigger, delivered: Option<&Record>) -> Result<(), Error> {
+    if let Trigger::KeyedRecord {
+        from,
+        sequence,
+        key,
+        ..
+    } = trigger
+        && (*sequence < *from
+            || key.len() > acyclic_stream::MAX_RECORD_KEY_BYTES
+            || !delivered.is_some_and(|record| {
+                record.sequence == *sequence
+                    && record
+                        .headers
+                        .keys()
+                        .iter()
+                        .any(|found| found.as_ref() == key.as_ref())
+            }))
+    {
+        return Err(Error::Invalid(
+            "indexed delivery differs from its selection",
+        ));
     }
     Ok(())
 }

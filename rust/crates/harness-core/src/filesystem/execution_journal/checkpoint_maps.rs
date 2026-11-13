@@ -290,7 +290,18 @@ where
                     summary.tools.insert((*step, call), state, io)?;
                 }
             }
-            ExecutionEvent::Started { .. } | ExecutionEvent::ConversationItem { .. } => {}
+            ExecutionEvent::ModelOutput { step, .. } => {
+                load(
+                    &mut summary.models,
+                    &reader,
+                    roots[2],
+                    (*step, crate::executor::ModelPurpose::Response),
+                )
+                .await?;
+            }
+            ExecutionEvent::Started { .. }
+            | ExecutionEvent::ConversationItem { .. }
+            | ExecutionEvent::Progress { .. } => {}
         }
         Ok(())
     }
@@ -347,9 +358,11 @@ where
                 roots[2] = Some(store(writer, roots[2], key.digest(io)?, value, io).await?);
             }
             ExecutionEvent::ToolStarted { .. }
+            | ExecutionEvent::ModelOutput { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. }
             | ExecutionEvent::Started { .. }
+            | ExecutionEvent::Progress { .. }
             | ExecutionEvent::ConversationItem { .. } => {}
         }
         Ok(roots)

@@ -8,6 +8,8 @@ pub mod authorization;
 pub use authorization::{AUTHORIZATION, StreamMethod};
 pub mod body;
 pub mod completion;
+#[cfg(feature = "serde")]
+pub mod serde_u64;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
@@ -195,8 +197,8 @@ include!("lib/receipt.rs");
 mod changes;
 mod record_headers;
 pub use changes::{
-    ChangeEntryRef, READER_FORMATS, WRITER_FORMAT, changes_chunk_len, changes_encoded_len,
-    decode_changes, is_changes,
+    ChangeEntryRef, READER_FORMATS, WRITER_FORMAT, changes_chunk_len, changes_context,
+    changes_encoded_len, decode_changes, is_changes,
 };
 pub use record_headers::{
     MAX_RECORD_KEY_BYTES, RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders,

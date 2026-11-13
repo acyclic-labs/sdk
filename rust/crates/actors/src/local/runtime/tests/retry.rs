@@ -222,7 +222,8 @@ impl Handler for Joined {
     ) -> GuestFuture<'a, Transition> {
         Box::pin(async move {
             let plan = match &delivery.trigger {
-                Trigger::Record { subscription, .. } => {
+                Trigger::Record { subscription, .. }
+                | Trigger::KeyedRecord { subscription, .. } => {
                     Bytes::copy_from_slice(subscription.as_bytes())
                 }
                 Trigger::Alarm { .. } => Bytes::new(),

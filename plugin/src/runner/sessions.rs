@@ -279,7 +279,7 @@ async fn select_inner(
     let local_execution = args.endpoint.is_none()
         && matches!(
             args.command,
-            None | Some(Command::Run | Command::Exec { .. })
+            None | Some(Command::Run { .. } | Command::Exec { .. })
         );
     if args.new_session
         || local_execution

@@ -1021,7 +1021,7 @@ async fn run_current(
     }
     let mut files_future = std::pin::pin!(session::follow(
         Arc::clone(&conversation),
-        ui.snapshot.generation.clone()
+        ui.snapshot.cut.clone()
     ));
     let mut usage_prices = Arc::clone(&ui.prices);
     let mut usage_future = std::pin::pin!(Some(usage(
@@ -1904,7 +1904,7 @@ async fn run_current(
             // committed projection before advancing either path's follow cut.
             files_future.set(session::follow(
                 Arc::clone(&conversation),
-                ui.snapshot.generation.clone(),
+                ui.snapshot.cut.clone(),
             ));
         }
     }

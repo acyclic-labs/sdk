@@ -470,6 +470,28 @@ mod tests {
                 .await
                 .map_err(|error| Error::Storage(format!("remote tree client connect: {error}")))?;
             restricted_remote.execute(&AgentCommand::Root {}).await?;
+            let mut tree_feed = tree.supervision_sessions().await?;
+            let mut restricted_feed = restricted_remote.supervision_sessions().await?;
+            let tree_conversation = Conversation::open(tree.clone());
+            tree_conversation
+                .publish_files(
+                    crate::client_files::FileRoot::Private {},
+                    crate::OperationId::new(),
+                    vec![crate::client_files::ClientFileChange {
+                        path: "control/pause".into(),
+                        expected: None,
+                        text: Some(String::new()),
+                    }],
+                )
+                .await?;
+            let local_pause = tree_feed.next().await?;
+            let remote_pause = restricted_feed.next().await?;
+            assert_eq!(local_pause, remote_pause);
+            assert_eq!(&local_pause.agent, tree.root());
+            assert!(matches!(
+                local_pause.event,
+                crate::supervision::Lifecycle::Paused { signal: None }
+            ));
             let connection = Connection::connect(&options.map_err(storage)?)
                 .await
                 .map_err(|error| Error::Storage(format!("directory client connect: {error}")))?;
@@ -740,7 +762,7 @@ mod tests {
                 changes: vec![crate::client_files::ClientFileChange {
                     path: "ui/title".into(),
                     expected: None,
-                    text: "Independent session".into(),
+                    text: Some("Independent session".into()),
                 }],
             };
             connection.execute(&create_title).await?;
@@ -862,7 +884,7 @@ mod tests {
             let waiting = AgentCommand::AgentFilePreviews {
                 agent: agent.clone(),
                 paths: vec!["ui/title".into()],
-                after: Some(snapshot.generation),
+                after: Some(snapshot.cut.generation),
                 bytes: 18,
             };
             let rename = AgentCommand::PublishAgentFiles {
@@ -872,8 +894,8 @@ mod tests {
                     path: "ui/title".into(),
                     expected: snapshot.files["ui/title"]
                         .as_ref()
-                        .map(|file| file.file.clone()),
-                    text: format!("Renamed session 🌳{}", "long title ".repeat(8192)),
+                        .and_then(|file| file.original().cloned()),
+                    text: Some(format!("Renamed session 🌳{}", "long title ".repeat(8192))),
                 }],
             };
             let (changed, renamed) =
@@ -899,7 +921,7 @@ mod tests {
                 changes: vec![crate::client_files::ClientFileChange {
                     path: "ui/title".into(),
                     expected: None,
-                    text: "stale create".into(),
+                    text: Some("stale create".into()),
                 }],
             };
             assert!(
