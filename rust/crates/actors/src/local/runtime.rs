@@ -1564,16 +1564,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 )?;
             let now = self.clock.now_unix_ms();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
-            let (trigger, record) = match state.alarm().pending() {
+            let (trigger, record, subscription) = match state.alarm().pending() {
                 Some(_) if due => (
                     Trigger::Alarm {
                         generation: state.alarm().generation(),
                         now_unix_ms: now,
                     },
                     None,
+                    None,
                 ),
                 _ => match self.next_record(state, inner.last_input.as_deref()).await? {
-                    Some((trigger, record)) => (trigger, Some(record)),
+                    Some((trigger, record, after)) => (trigger, Some(record), Some(after)),
                     None => {
                         // An idle actor's activation is checkpointed without a
                         // publication: its interests must be restorable first.
@@ -1694,14 +1695,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     Err(error) => return Err(error),
                 };
                 self.finish_publication(&mut publication, actor)?;
-                publication.require(self.handler.publication_conditions(actor))?;
                 Ok(publication)
             })();
-            let subscription = match &trigger {
-                Trigger::Record { subscription, .. }
-                | Trigger::KeyedRecord { subscription, .. } => Some(subscription.clone()),
-                Trigger::Alarm { .. } => None,
-            };
             let mut result = match publication {
                 Ok(publication) => {
                     inner.pending =
@@ -1762,7 +1757,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     key(&snapshot, "failure")?,
                                 )?;
                                 self.finish_publication(&mut publication, actor)?;
-                                publication.require(self.handler.publication_conditions(actor))?;
                                 Ok(publication)
                             })
                             .transpose()
@@ -1853,7 +1847,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         publication: &mut PreparedPublish,
         actor: &ActorReference,
     ) -> Result<(), Error> {
-        publication.require(self.handler.publication_conditions())?;
+        publication.require(self.handler.publication_conditions(actor))?;
         self.store
             .mark_interests(publication, actor, self.handler.manifest())
     }
@@ -1922,66 +1916,103 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         state: &State,
         after: Option<&str>,
-    ) -> Result<Option<(Trigger, Record)>, Error> {
+    ) -> Result<Option<(Trigger, Record, String)>, Error> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let subscriptions = state.subscriptions();
         let later = subscriptions.range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded));
         let earlier = after
             .into_iter()
             .flat_map(|last| subscriptions.range::<str, _>((Unbounded, Included(last))));
-        let mut selected: Option<(StreamPath, Trigger, Record)> = None;
+        let ordered = self.handler.ordered_subscriptions();
         for (id, subscription) in later.chain(earlier) {
-            let key = self.handler.subscription_key(id, state.checkpoint())?;
-            let records = self
-                .store
-                .provider()
-                .read(acyclic_stream::ReadRequest {
-                    key: key
-                        .clone()
-                        .map(|key| acyclic_stream::ReadKeySeek::exact(key, u64::MAX)),
-                    path: subscription.path.clone(),
-                    from: subscription.cursor,
-                    limit: 1,
-                    at_least: Default::default(),
-                })
-                .await;
-            let mut records = match records {
-                Ok(records) => records,
-                Err(error) if error.category() == StreamError::NotFound => continue,
-                Err(error) => return Err(error.into()),
-            };
-            if let Some(record) = records.next().await.transpose()? {
-                if record.sequence < subscription.cursor
-                    || (key.is_none() && record.sequence != subscription.cursor)
+            if !ordered.contains(id) {
+                if let Some((trigger, record)) =
+                    self.next_subscription(state, id, subscription).await?
                 {
-                    return Err(Error::Invalid("subscription skipped a record"));
+                    return Ok(Some((trigger, record, id.clone())));
                 }
-                let trigger = match key {
-                    Some(key) => Trigger::KeyedRecord {
-                        subscription: id.clone(),
-                        from: subscription.cursor,
-                        sequence: record.sequence,
-                        key,
-                    },
-                    None => Trigger::Record {
-                        subscription: id.clone(),
-                        sequence: record.sequence,
-                    },
-                };
-                if !self.handler.ordered_subscriptions().contains(id) {
-                    if selected.is_none() {
-                        return Ok(Some((trigger, record)));
-                    }
+                continue;
+            }
+            // One stable representative rotates this source against unrelated
+            // inputs. Other members participate only in its source-order cut.
+            if ordered.iter().any(|other| {
+                other < id
+                    && subscriptions
+                        .get(other)
+                        .is_some_and(|other| other.path == subscription.path)
+            }) {
+                continue;
+            }
+            let mut selected: Option<(Trigger, Record)> = None;
+            for member in ordered {
+                let Some(bound) = subscriptions
+                    .get(member)
+                    .filter(|bound| bound.path == subscription.path)
+                else {
                     continue;
-                }
-                if selected.as_ref().is_none_or(|(path, _, previous)| {
-                    path == &subscription.path && record.sequence < previous.sequence
-                }) {
-                    selected = Some((subscription.path.clone(), trigger, record));
+                };
+                if let Some((trigger, record)) =
+                    self.next_subscription(state, member, bound).await?
+                    && selected
+                        .as_ref()
+                        .is_none_or(|(_, previous)| record.sequence < previous.sequence)
+                {
+                    selected = Some((trigger, record));
                 }
             }
+            if let Some((trigger, record)) = selected {
+                return Ok(Some((trigger, record, id.clone())));
+            }
         }
-        Ok(selected.map(|(_, trigger, record)| (trigger, record)))
+        Ok(None)
+    }
+
+    async fn next_subscription(
+        &self,
+        state: &State,
+        id: &str,
+        subscription: &crate::guest::Subscription,
+    ) -> Result<Option<(Trigger, Record)>, Error> {
+        let key = self.handler.subscription_key(id, state.checkpoint())?;
+        let records = self
+            .store
+            .provider()
+            .read(acyclic_stream::ReadRequest {
+                key: key
+                    .clone()
+                    .map(|key| acyclic_stream::ReadKeySeek::exact(key, u64::MAX)),
+                path: subscription.path.clone(),
+                from: subscription.cursor,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await;
+        let mut records = match records {
+            Ok(records) => records,
+            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let Some(record) = records.next().await.transpose()? else {
+            return Ok(None);
+        };
+        if record.sequence < subscription.cursor
+            || (key.is_none() && record.sequence != subscription.cursor)
+        {
+            return Err(Error::Invalid("subscription skipped a record"));
+        }
+        let trigger = match key {
+            Some(key) => Trigger::KeyedRecord {
+                subscription: id.to_owned(),
+                from: subscription.cursor,
+                sequence: record.sequence,
+                key,
+            },
+            None => Trigger::Record {
+                subscription: id.to_owned(),
+                sequence: record.sequence,
+            },
+        };
+        Ok(Some((trigger, record)))
     }
 }
 
