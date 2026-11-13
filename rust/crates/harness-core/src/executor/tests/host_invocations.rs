@@ -70,6 +70,13 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
         let binding = executor
             .tool_binding("write")?
             .ok_or(Error::NotFound("write".into()))?;
+        let capability = binding;
+        let binding = Arc::new(crate::tools::native::alias(
+            capability.definition.clone(),
+            capability.clone(),
+            json!({"path":"receipt.txt","content":"accepted"}),
+            None,
+        )?);
         let call = ToolInvocation {
             operation_id: OperationId::new(),
             call_id: "write-receipt".into(),
@@ -134,10 +141,19 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
             let mut changed_input = call.clone();
             changed_input.arguments["content"] = "replacement".into();
             let changed_metadata = json!({"replacement": true});
+            let mut changed_mapping = crate::tools::native::alias(
+                capability.definition.clone(),
+                capability.clone(),
+                json!({"path":"receipt.txt","content":"replacement"}),
+                None,
+            )?;
+            // A public declaration alone cannot identify the executable mapping.
+            changed_mapping.definition = binding.definition.clone();
             for (attempt, selected, metadata) in [
                 (call.clone(), Arc::new(replacement), &Value::Null),
                 (changed_input, binding.clone(), &Value::Null),
                 (call.clone(), binding.clone(), &changed_metadata),
+                (call.clone(), Arc::new(changed_mapping), &Value::Null),
             ] {
                 assert!(matches!(
                     executor
