@@ -365,6 +365,19 @@ async fn independent_review_uses_selected_model_without_opening_worker_context()
         }
     }
     assert_eq!(worker.request_count(), 0);
+    let child = agent.path.child(&AgentId::from_bytes([31; 16]))?;
+    assert!(matches!(
+        executors
+            .review(
+                &agent,
+                (journal.as_ref(), None),
+                (&child, &request),
+                "parent:fixture",
+                "DIFFERENT_PARENT_POLICY"
+            )
+            .await,
+        Err(crate::Error::Conflict(_))
+    ));
     let requests = reviewer.requests();
     assert_eq!(
         requests.len(),
