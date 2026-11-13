@@ -165,7 +165,52 @@ async fn acknowledged_cuts(
     .await
 }
 
-async fn subscription_replay_requires_durability(policy: LocalDurability) -> Result<(), Failure> {
+async fn replay_control<P: StreamProvider>(
+    store: &Store<P>,
+    actor: &ActorReference,
+    fork: bool,
+) -> Result<ActorReference, Error> {
+    if fork {
+        store
+            .fork_actor(
+                &[],
+                &crate::wire::ForkActorRequest {
+                    namespace: Some(actor.namespace().as_str().into()),
+                    account_id: actor.account().as_bytes().to_vec(),
+                    actor_id: actor.id().into(),
+                    child_actor_id: "forked".into(),
+                    subscriptions: vec![crate::wire::SubscriptionSpec {
+                        subscription_id: "events".into(),
+                        stream_path: "durability/events".into(),
+                        start: Some(crate::wire::SubscriptionStart {
+                            start: Some(crate::wire::subscription_start::Start::Cursor(0)),
+                        }),
+                        placement_anchor: false,
+                    }],
+                    idempotency_key: "fork-held".into(),
+                },
+            )
+            .await
+    } else {
+        store
+            .resume_subscription(
+                &[],
+                &crate::wire::ResumeSubscriptionRequest {
+                    namespace: Some(actor.namespace().as_str().into()),
+                    account_id: actor.account().as_bytes().to_vec(),
+                    actor_id: actor.id().into(),
+                    subscription_id: "events".into(),
+                    idempotency_key: "resume-held".into(),
+                },
+            )
+            .await
+    }
+}
+
+async fn control_replay_requires_durability(
+    policy: LocalDurability,
+    fork: bool,
+) -> Result<(), Failure> {
     let directory = tempfile::tempdir()?;
     let provider = Arc::new(Faulty {
         inner: LocalStream::open(
@@ -185,6 +230,11 @@ async fn subscription_replay_requires_durability(policy: LocalDurability) -> Res
     let root = path("durability/subscription-actors")?;
     let store = Store::new(provider.clone(), root.clone());
     let actor = ActorReference::new(b"account", b"agents", b"subscription")?;
+    let target = if fork {
+        ActorReference::new(b"account", b"agents", b"forked")?
+    } else {
+        actor.clone()
+    };
     acyclic_stream::deferring_durability(async {
         let mut creation = PreparedPublish::foreign(IdempotencyKey::new(b"create-held".to_vec())?);
         creation.join(store.create(
@@ -208,50 +258,59 @@ async fn subscription_replay_requires_durability(policy: LocalDurability) -> Res
         let before = store.load(&actor).await?;
         let schedule = store.scheduling_path(store.scheduling_shard(&actor))?;
         let activations = provider.inner.tail(schedule.clone()).await?;
-        let resume = crate::wire::ResumeSubscriptionRequest {
-            namespace: Some(actor.namespace().as_str().into()),
-            account_id: actor.account().as_bytes().to_vec(),
-            actor_id: actor.id().into(),
-            subscription_id: "events".into(),
-            idempotency_key: "resume-held".into(),
-        };
         assert!(matches!(
-            store.resume_subscription(&[], &resume).await,
+            replay_control(&store, &actor, fork).await,
             Err(Error::Unknown {
                 source: StreamError::AccessDenied,
                 ..
             })
         ));
-        let accepted = store.load(&actor).await?;
-        assert_eq!(accepted.tail, before.tail + 1);
-        let mut expected = before.state().ok_or("missing held state")?.clone();
-        expected
-            .subscriptions
-            .get_mut("events")
-            .ok_or("missing held input")?
-            .paused = false;
-        assert_eq!(accepted.state(), Some(&expected));
-        assert!(!durable(&provider.inner, store.path(&actor)?, accepted.tail).await?);
-        let Err(Error::SubscriptionDurabilityUnknown { envelope, source }) =
-            store.resume_subscription(&[], &resume).await
+        let accepted = store.load(&target).await?;
+        let state = accepted.state().ok_or("missing accepted state")?;
+        assert_eq!(state.cursor("events"), Some(0));
+        assert_eq!(state.subscriptions()["events"].paused, fork);
+        assert_eq!(
+            state.checkpoint(),
+            before.state().ok_or("missing held state")?.checkpoint()
+        );
+        if fork {
+            assert_eq!(store.load(&actor).await?.tail, before.tail);
+        } else {
+            assert_eq!(accepted.tail, before.tail + 1);
+            let mut expected = before.state().ok_or("missing held state")?.clone();
+            expected
+                .subscriptions
+                .get_mut("events")
+                .ok_or("missing held input")?
+                .paused = false;
+            assert_eq!(accepted.state(), Some(&expected));
+        }
+        assert!(!durable(&provider.inner, store.path(&target)?, accepted.tail).await?);
+        let Err(Error::PublicationDurabilityUnknown { envelope, source }) =
+            replay_control(&store, &actor, fork).await
         else {
             return Err("unconfirmed subscription replay was acknowledged".into());
         };
         assert_eq!(source, StreamError::AccessDenied);
-        let state_path = store.path(&actor)?;
-        assert!(envelope.mutations.iter().any(|mutation| matches!(mutation,
-            acyclic_stream::CommittedMutation::Append(append)
-                if append.path == state_path && append.end == accepted.tail)));
+        let state_path = store.path(&target)?;
+        assert!(envelope.mutations.iter().any(|mutation| match mutation {
+            acyclic_stream::CommittedMutation::Append(append) =>
+                append.path == state_path && append.end == accepted.tail,
+            acyclic_stream::CommittedMutation::Fork(fork) =>
+                fork.destination == state_path && fork.tail == accepted.tail,
+        }));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
         assert!(!durable(&provider.inner, state_path.clone(), accepted.tail).await?);
         // Restore confirmation on the same actual device. The original receipt
         // is sealed, rather than publishing a new state or another activation.
         let restored = Store::new(Arc::new(provider.inner.clone()), root.clone());
-        restored.resume_subscription(&[], &resume).await?;
+        assert_eq!(replay_control(&restored, &actor, fork).await?, target);
         assert!(durable(&provider.inner, state_path, accepted.tail).await?);
         assert!(durable(&provider.inner, schedule.clone(), activations + 1).await?);
-        restored.resume_subscription(&[], &resume).await?;
-        assert_eq!(restored.load(&actor).await?.tail, accepted.tail);
+        replay_control(&restored, &actor, fork).await?;
+        let recovered = restored.load(&target).await?;
+        assert_eq!(recovered.tail, accepted.tail);
+        assert_eq!(recovered.state(), accepted.state());
         assert_eq!(provider.inner.tail(schedule).await?, activations + 1);
         Ok(())
     })
@@ -267,7 +326,10 @@ async fn every_actor_acknowledgement_is_covered_by_the_device_durable_cut() -> R
                 "Actors acknowledged a publication before its device durable cut: {policy:?}, confirmation_faults={confirmation_faults}"
             );
         }
-        subscription_replay_requires_durability(policy).await?;
+        for fork in [false, true] {
+            control_replay_requires_durability(policy, fork).await?;
+        }
+        super::composition::recovered_custody_requires_durability(policy).await?;
     }
     Ok(())
 }

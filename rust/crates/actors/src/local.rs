@@ -97,11 +97,11 @@ pub enum Error {
         /// Why its persistence could not be confirmed.
         source: StreamError,
     },
-    /// A subscription control was accepted, but its durable cut is unconfirmed.
-    /// Retry the original control request; this envelope is not a refusal.
-    #[error("actor subscription durability is unknown: {source}")]
-    SubscriptionDurabilityUnknown {
-        /// The original accepted state and activation publication.
+    /// A publication was observed, but its durable cut is unconfirmed.
+    /// Retry the original operation; this envelope is not a refusal.
+    #[error("actor publication durability is unknown: {source}")]
+    PublicationDurabilityUnknown {
+        /// The original accepted publication, including all its joined effects.
         envelope: Box<acyclic_stream::CommittedEnvelope>,
         /// Why persistence could not be confirmed.
         source: StreamError,
@@ -175,7 +175,7 @@ impl Error {
             Self::Stream(error) => error.code(),
             Self::Unknown { .. }
             | Self::InvocationDurabilityUnknown { .. }
-            | Self::SubscriptionDurabilityUnknown { .. } => "unknown",
+            | Self::PublicationDurabilityUnknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
             Self::Conflict => "conflict",
             Self::PreconditionChanged(_) => "precondition_changed",
@@ -910,6 +910,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         && disposition::is_fork_exclusion(&fork.exclude))
             })
         {
+            self.confirm_observed(envelope).await?;
             return Ok(true);
         }
         Err(Error::Invalid("fork recovery has a foreign publication"))
@@ -1135,6 +1136,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             Some((path, sequence)) => Some(self.record(path, *sequence).await?),
             None => None,
         };
+        let envelope = self.confirm_observed(envelope).await?;
         let appends = envelope
             .mutations
             .iter()
@@ -1488,6 +1490,21 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             });
         }
         Ok(prepared)
+    }
+
+    /// An observed acceptance certifies no persistence by itself. Retain its
+    /// original outcome when the same durability boundary cannot confirm it.
+    async fn confirm_observed(
+        &self,
+        envelope: acyclic_stream::CommittedEnvelope,
+    ) -> Result<acyclic_stream::CommittedEnvelope, Error> {
+        if let Err(source) = self.confirm_durability().await {
+            return Err(Error::PublicationDurabilityUnknown {
+                envelope: Box::new(envelope),
+                source,
+            });
+        }
+        Ok(envelope)
     }
 
     /// Writers and observers certify the same provider-owned durable prefix.
