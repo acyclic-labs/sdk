@@ -1,9 +1,7 @@
 //! Owned custody of one exact keyed commit, independent of its waiters.
 use crate::StreamProviderExt as _;
 use crate::completion::{Completion, Producer};
-use crate::{
-    AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, StreamError, StreamProvider,
-};
+use crate::{CommitOutcome, CommitRequest, StreamError, StreamProvider};
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -62,39 +60,6 @@ impl<R, H, I> Pending<R, H, I> {
     }
 }
 
-/// Original append-family custody, using the same completion as commits.
-pub type AppendPending = Pending<Result<AppendOutcome, StreamError>, (), AppendRequest>;
-
-impl AppendPending {
-    /// Transfer the original append to its executor; dropping its observers
-    /// cannot withdraw publication or change its retry family and identity.
-    pub fn submit_append<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
-        request: AppendRequest,
-        executor: &dyn crate::runtime::Executor,
-    ) -> Self {
-        let command = request.clone();
-        Self::submit_task(
-            request,
-            async move { provider.append(command).await },
-            executor,
-        )
-    }
-
-    pub(crate) fn submit_task(
-        request: AppendRequest,
-        work: impl std::future::Future<Output = Result<AppendOutcome, StreamError>>
-        + crate::ProviderTask
-        + 'static,
-        executor: &dyn crate::runtime::Executor,
-    ) -> Self {
-        let (pending, producer) = Self::prepare(request, ());
-        executor.spawn(Box::pin(async move {
-            producer.publish(work.await);
-        }));
-        pending
-    }
-}
 impl Pending {
     /// Transfers one canonical commit to the supplied executor immediately.
     /// Losing every waiter cannot withdraw an already submitted publication.
