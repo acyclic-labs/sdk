@@ -987,17 +987,40 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         .stage(operation, "trace-content", b"raw", "text/plain", None)?
         .await?;
     assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
+    assert_eq!(
+        journal
+            .load_range(
+                &staged,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 2
+                },
+                None
+            )?
+            .await?
+            .as_ref(),
+        b"aw"
+    );
     let mut storage =
-        acyclic_stream::trace::TraceQuery::new(traces.read(2, 4).await?, Default::default());
-    for (name, guarantee) in [
-        ("harness.private_stage", "authenticated_private_publication"),
-        ("harness.private_load", "authenticated_immutable_content"),
+        acyclic_stream::trace::TraceQuery::new(traces.read(2, 6).await?, Default::default());
+    for (name, guarantee, expected_bytes) in [
+        (
+            "harness.private_stage",
+            "authenticated_private_publication",
+            3,
+        ),
+        ("harness.private_load", "authenticated_immutable_content", 3),
+        (
+            "harness.private_load_range",
+            "authenticated_immutable_range",
+            2,
+        ),
     ] {
         storage.next().await?;
         assert!(
             matches!(storage.next().await?, Some(acyclic_stream::trace::Observation::Completed {
-            start, bytes: Some(3), ..
-        }) if start.name == name && start.guarantee.as_deref() == Some(guarantee))
+            start, bytes: Some(bytes), ..
+        }) if start.name == name && start.guarantee.as_deref() == Some(guarantee) && bytes == expected_bytes)
         );
     }
     let prepared = crate::model::PreparedModelRequest::prepare(
@@ -1021,7 +1044,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         .await?;
     let admitted_through = traces.tail().await?;
     let mut admission = acyclic_stream::trace::TraceQuery::new(
-        traces.read(6, u32::try_from(admitted_through - 6)?).await?,
+        traces.read(8, u32::try_from(admitted_through - 8)?).await?,
         Default::default(),
     );
     let Some(acyclic_stream::trace::Observation::Started { id: parent, .. }) =
@@ -1046,6 +1069,35 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         "canonical admission bypassed the original private publisher"
     );
     assert_eq!(admission.active().len(), 0);
+    journal.append(operation, "start", &event, None)?.await?;
+    assert!(
+        !journal
+            .append_if_tail(operation, 0, "refused", &event, None)?
+            .await?
+    );
+    let publication_through = traces.tail().await?;
+    let mut publications = acyclic_stream::trace::TraceQuery::new(
+        traces
+            .read(
+                admitted_through,
+                u32::try_from(publication_through - admitted_through)?,
+            )
+            .await?,
+        Default::default(),
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(observation) = publications.next().await? {
+        if let acyclic_stream::trace::Observation::Completed { start, .. } = observation {
+            let guarantee = match start.name.as_str() {
+                "harness.journal_append" => "idempotent_journal_publication",
+                "harness.journal_append_if_tail" => "atomic_journal_precondition_result",
+                _ => continue,
+            };
+            assert_eq!(start.guarantee.as_deref(), Some(guarantee));
+            seen.insert(start.name);
+        }
+    }
+    assert_eq!(seen.len(), 2);
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     let through = traces.tail().await?;
     let mut failed = acyclic_stream::trace::TraceQuery::new(
@@ -1075,6 +1127,21 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         .stage(operation, "unfollowed", b"quiet", "text/plain", None)?
         .await?;
     assert_eq!(journal.load(&unfollowed, None)?.await?.as_ref(), b"quiet");
+    journal.append(operation, "start", &event, None)?.await?;
+    assert_eq!(
+        journal
+            .load_range(
+                &unfollowed,
+                acyclic_fs::ByteRange {
+                    offset: 1,
+                    length: 2
+                },
+                None
+            )?
+            .await?
+            .as_ref(),
+        b"ui"
+    );
     assert_eq!(
         traces.tail().await?,
         through,

@@ -53,6 +53,15 @@ on each poll; suspension restores the preceding context, so unrelated work on
 the same worker cannot acquire that parent. Disabled observation installs no
 context and allocates no propagation task or boxed future.
 
+Journal appends, including the native accounted path, share this boundary:
+`harness.journal_append` buys `idempotent_journal_publication`, while
+`harness.journal_append_if_tail` buys `atomic_journal_precondition_result`.
+A successful conditional request means its precondition result was returned;
+it does not imply acceptance. Private range reads report only returned payload
+bytes under `authenticated_immutable_range`. The separate append tracing
+wrappers are removed; physical publication, retry identity and projection
+results stay owned by the original journal operation.
+
 Typed `Compared` deltas carry a request, output or cache-prefix comparison in
 an explicit identity domain: the preceding original publication and its
 canonical integrity digest, plus the current original digest. They contain no

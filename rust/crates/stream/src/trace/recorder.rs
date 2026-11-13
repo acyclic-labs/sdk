@@ -83,15 +83,21 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             Ok(Some(recording)) => super::context::within(recording.id(), work).await,
             _ => work.await,
         };
+        // Finish publication owns only the measurement, never a borrow of the
+        // original output. Send-only outputs need not become Sync for tracing.
+        let measured = match (&result, &admission) {
+            (Ok(value), Ok(Some(_))) => Some(bytes(value)),
+            _ => None,
+        };
         let observation = match admission {
             Err(error) => Err(error),
             Ok(None) => Ok(Settlement::Disabled),
-            Ok(Some(recording)) => match &result {
-                Ok(value) => recording
-                    .finish(bytes(value), Outcome::Succeeded)
+            Ok(Some(recording)) => match measured {
+                Some(bytes) => recording
+                    .finish(bytes, Outcome::Succeeded)
                     .await
                     .map(Settlement::Finished),
-                Err(_) => Ok(Settlement::Pending(recording)),
+                None => Ok(Settlement::Pending(recording)),
             },
         };
         Observed {

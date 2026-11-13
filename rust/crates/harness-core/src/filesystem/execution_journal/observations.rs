@@ -307,7 +307,7 @@ where
         )
     }
 
-    pub(super) fn append_projected<'a, T: 'a>(
+    pub(super) fn append_projected<'a, T: acyclic_stream::ProviderTask + 'a>(
         &'a self,
         operation: OperationId,
         expected_tail: Option<u64>,
@@ -318,45 +318,55 @@ where
         io: Option<&'a PreparationIo>,
         project: impl FnOnce(AppendObservation) -> Result<T> + acyclic_stream::ProviderTask + 'a,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, T>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_contributed(
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: if expected_tail.is_some() {
+                        "harness.journal_append_if_tail"
+                    } else {
+                        "harness.journal_append"
+                    },
+                    mechanism: acyclic_stream::trace::Mechanism::Commit,
+                    parent: None,
+                    guarantee: Some(if expected_tail.is_some() {
+                        "atomic_journal_precondition_result"
+                    } else {
+                        "idempotent_journal_publication"
+                    }),
+                },
+                async move {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                        let local = PreparationIo::from_native_work(work)?;
+                        let result = self
+                            .append_contributed(
+                                operation,
+                                expected_tail,
+                                key,
+                                event,
+                                contributions,
+                                confirmation,
+                                Some(&local),
+                            )
+                            .await;
+                        let retained = local.owned_bytes()?;
+                        drop(local.into_native_custody(retained)?);
+                        return result.and_then(project);
+                    }
+                    self.append_contributed(
                         operation,
                         expected_tail,
                         key,
                         event,
                         contributions,
                         confirmation,
-                        Some(&local),
+                        io,
                     )
-                    .await;
-                let retained = local.owned_bytes()?;
-                drop(local.into_native_custody(retained)?);
-                return result.and_then(project);
-            }
-            let span = match expected_tail {
-                Some(rev) => {
-                    crate::obs::obs_span!("acyclic.harness.journal.append_if_tail", rev = rev)
-                }
-                None => crate::obs::obs_span!("acyclic.harness.journal.append"),
-            };
-            crate::obs::traced_future(
-                span,
-                self.append_contributed(
-                    operation,
-                    expected_tail,
-                    key,
-                    event,
-                    contributions,
-                    confirmation,
-                    io,
-                ),
+                    .await
+                    .and_then(project)
+                },
+                |_| None,
             )
-            .await
-            .and_then(project)
         })
     }
 
