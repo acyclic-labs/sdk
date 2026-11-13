@@ -841,6 +841,104 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
 }
 
 #[tokio::test]
+async fn input_retries_recover_original_receipts_and_reject_changed_content() -> TestResult {
+    let (bound, agent) = binding().await?;
+    let state = bound.agents.state(&agent).await?;
+    let (volume, authority) = bound.turns.journal_authority(&state).await?;
+    let publisher = FilesystemContentPublisher::new(
+        Arc::clone(&bound.volumes),
+        &volume,
+        &authority.verifier,
+        &authority.scope,
+        bound.maximum_bytes,
+        None,
+    )?;
+    let by = Sender::Host {
+        host: "receipt-owner".into(),
+    };
+    let notice = crate::conversation::wire::Notice {
+        source: "test".into(),
+        kind: "test.event".into(),
+        body: serde_json::json!({"message":"retained"}),
+        wake: true,
+        coalesce_key: None,
+    };
+    let bytes = crate::contract::canonical_json_bytes(&notice)?;
+    for (index, (directory, media, display, same_bytes, valid)) in [
+        (
+            "inputs",
+            crate::agent::NOTICE_MEDIA_TYPE,
+            "notice",
+            true,
+            true,
+        ),
+        (
+            "inputs/notices",
+            crate::agent::NOTICE_MEDIA_TYPE,
+            "notice",
+            true,
+            true,
+        ),
+        ("inputs", "text/plain", "notice", true, false),
+        (
+            "inputs",
+            crate::agent::NOTICE_MEDIA_TYPE,
+            "changed",
+            true,
+            false,
+        ),
+        (
+            "inputs",
+            crate::agent::NOTICE_MEDIA_TYPE,
+            "notice",
+            false,
+            false,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let intent = IntentId::try_from(format!("receipt-{index}"))?;
+        let operation = staged_input_operation(&agent, "notice", &by, &intent);
+        let path = format!("{directory}/{operation}-{}.json", blake3::hash(&bytes));
+        let (original, _) = publisher
+            .stage_once(
+                operation,
+                &path,
+                if same_bytes { &bytes } else { b"different" },
+                media,
+                display,
+                ContentAccess::default(),
+            )?
+            .await?;
+        for _ in 0..2 {
+            let result = bound.stage_notice(&agent, &by, &intent, &notice).await;
+            if valid {
+                let InboxRecord::Notice {
+                    notice: crate::agent::NoticePayload::Waking(file),
+                    ..
+                } = result?
+                else {
+                    return Err("waking input lost its original receipt".into());
+                };
+                assert_eq!(*file, original);
+            } else {
+                assert!(result.is_err(), "changed publication content was admitted");
+            }
+        }
+        let mut changed = notice.clone();
+        changed.body = serde_json::json!({"message":"different"});
+        assert!(
+            bound
+                .stage_notice(&agent, &by, &intent, &changed)
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn input_previews_pin_pending_messages_without_reading_the_whole_body() -> TestResult {
     use crate::agent::{InputPreview, InputPreviewStep, Message};
     use futures::StreamExt as _;

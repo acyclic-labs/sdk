@@ -63,6 +63,9 @@ where
         self.record(RequestClass::Metadata);
         self.inner().context_capacity(model)
     }
+    fn reported_input_tokens(&self, model: &Model, metadata: &Value) -> Result<Option<u64>> {
+        self.inner().reported_input_tokens(model, metadata)
+    }
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,

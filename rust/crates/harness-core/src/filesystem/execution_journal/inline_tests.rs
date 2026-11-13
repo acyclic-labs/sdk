@@ -820,12 +820,48 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
 #[tokio::test]
 async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial_records()
 -> Result<()> {
+    for (metadata, complete_input, expected) in [
+        (
+            serde_json::json!({"usage":{"input_tokens":5,"cache_creation_input_tokens":7,"cache_read_input_tokens":11,"output_tokens":2}}),
+            Some(23),
+            Some(25),
+        ),
+        (
+            serde_json::json!({"usage":{"prompt_tokens":23,"prompt_tokens_details":{"cached_tokens":18},"completion_tokens":2}}),
+            Some(23),
+            Some(25),
+        ),
+        (
+            serde_json::json!({"usage":{"input_tokens":0,"cache_read_input_tokens":11,"output_tokens":0}}),
+            Some(11),
+            Some(11),
+        ),
+        (
+            serde_json::json!({"usage":{"input_tokens":5,"output_tokens":2}}),
+            None,
+            None,
+        ),
+        (
+            serde_json::json!({"usage":{"input_tokens":5,"output_tokens":2}}),
+            Some(u64::MAX),
+            None,
+        ),
+    ] {
+        terminal_usage_case(metadata, complete_input, expected).await?;
+    }
+    Ok(())
+}
+
+async fn terminal_usage_case(
+    metadata: serde_json::Value,
+    complete_input_tokens: Option<u64>,
+    expected_tokens: Option<u64>,
+) -> Result<()> {
     let (journal, _issuer) = test_support::journal().await?;
     let operation = OperationId::new();
     let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([69; 16]));
     let journal = journal.with_agent_events(agent.clone(), operation, 0, false);
     initialize(&journal, operation).await?;
-    let metadata = serde_json::json!({"usage":{"input_tokens":20,"output_tokens":7}});
     let completed = ModelEvent::Completed { metadata };
     let mut usage = crate::executor::model_usage::ModelCallUsage {
         version: crate::executor::ModelUsageRecord::VERSION,
@@ -851,6 +887,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
             ModelEvent::Completed { metadata } => metadata,
             _ => unreachable!(),
         }),
+        complete_input_tokens,
         started_at: None,
         completed_at: None,
         latency_ns: Some(123),
@@ -921,6 +958,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         .is_err()
     );
     usage.dispatch.operation_id = operation;
+    let original_input = usage.tokens.input;
     usage.tokens.input = Some(21);
     assert!(
         crate::executor::append_model_event(
@@ -936,7 +974,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         .is_err()
     );
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
-    usage.tokens.input = Some(20);
+    usage.tokens.input = original_input;
     let mut altered: crate::executor::ModelUsageRecord = serde_json::from_value(
         serde_json::to_value(&usage).map_err(|error| Error::Invalid(error.to_string()))?,
     )
@@ -1012,8 +1050,8 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         .await?
         .ok_or_else(|| Error::Invalid("usage query cut absent".into()))?;
     assert_eq!(cut.state.through, 1, "exact terminal replay charged twice");
-    assert_eq!(cut.state.tokens.measured, 27);
-    assert!(cut.state.tokens.complete);
+    assert_eq!(cut.state.tokens.measured, expected_tokens.unwrap_or(0));
+    assert_eq!(cut.state.tokens.complete, expected_tokens.is_some());
     assert_eq!(cut.action, crate::supervision::Action::Alert);
     assert!(
         queries
@@ -1070,6 +1108,7 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(record.dispatch.operation_id, operation);
     assert_eq!(record.tokens, usage.tokens);
+    assert_eq!(record.complete_input_tokens, complete_input_tokens);
     assert_eq!(record.latency_ns, Some(123));
     assert_eq!(record.agent_path, None);
     let after = crate::executor::usage_page(&journal, operation, "agents/usage", 0).await?;
@@ -1127,7 +1166,8 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
     let cut = queries.checkpoint().await?.unwrap();
     assert_eq!(cut.state.through, 2, "output replay counted twice");
     assert_eq!(
-        cut.state.tokens.measured, 27,
+        cut.state.tokens.measured,
+        expected_tokens.unwrap_or(0),
         "output duplicated the original usage"
     );
     assert_eq!(cut.source.sequence, 3);

@@ -374,6 +374,15 @@ impl ModelProvider for ScriptedModelProvider {
             Error::Unsupported("selected model context capacity is unavailable".into())
         })
     }
+    fn reported_input_tokens(
+        &self,
+        _: &Model,
+        metadata: &serde_json::Value,
+    ) -> Result<Option<u64>> {
+        // This inclusive counter is unambiguous; arbitrary scripted metadata
+        // with other conventions retains the trait's unknown observation.
+        Ok(metadata["usage"]["prompt_tokens"].as_u64())
+    }
 
     fn count_tokens<'a>(
         &'a self,

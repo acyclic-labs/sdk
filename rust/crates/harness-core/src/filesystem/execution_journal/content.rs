@@ -30,7 +30,7 @@ where
         key: &str,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
-        let (_identity_hold, key, path) = {
+        let (_identity_hold, key, _path) = {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let (key, path) = self.stage_identity_with_io(operation, key, io)?;
             let hold = io
@@ -53,9 +53,9 @@ where
                 super::super::PublicationLookup {
                     volume: &self.volume,
                     key: &key,
-                    expected_path: Some(&path),
+                    expected_path: None,
                     maximum_bytes: Some(super::MAXIMUM_PAYLOAD_BYTES),
-                    internal_class: Some(payload_class(&path)),
+                    internal: true,
                     purpose: super::super::PublicationPurpose::Content,
                     scope: &self.scope,
                     ceiling: None,
@@ -146,18 +146,8 @@ where
                 work,
             )
         })?;
-        // An upload identity binds its path as well as its bytes. Published
-        // summaries must not reuse the host-private execution upload identity.
-        let namespace = if path.starts_with(InternalContentClass::Summary.prefix()) {
-            "journal-summary-v1"
-        } else {
-            "journal"
-        };
         let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(
-                format_args!("{namespace}-{}", digest.to_hex()),
-                work,
-            )
+            crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
         })?)?;
         Ok((key, path))
     }
@@ -177,6 +167,11 @@ where
                 "execution journal payload exceeds limit",
             ));
         }
+        let display_name = if media_type.starts_with("text/") {
+            "execution.txt"
+        } else {
+            "execution.json"
+        };
         let (_identity_hold, key, path) = {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, io)?;
@@ -200,6 +195,41 @@ where
         let grant_hold = io
             .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
             .transpose()?;
+        // A journal key names its original publication, independently of the
+        // destination selected for a new publication. Recover that immutable
+        // receipt before entering the writer; never publish a retry elsewhere.
+        if let Some((original, _)) = self
+            .host
+            .content_for_operation_record_io(
+                super::super::PublicationLookup {
+                    volume: &self.volume,
+                    key: &key,
+                    expected_path: None,
+                    maximum_bytes: Some(super::MAXIMUM_PAYLOAD_BYTES),
+                    internal: true,
+                    purpose: super::super::PublicationPurpose::WriteReceipt,
+                    scope: &self.scope,
+                    ceiling: None,
+                },
+                io,
+            )
+            .await?
+        {
+            if original.descriptor().media_type() != media_type
+                || original.display_name() != display_name
+                || !crate::executor::with_history_io(io, |work| {
+                    original.descriptor().matches_bytes(bytes, work)
+                })?
+            {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "journal payload identity belongs to a different request",
+                ));
+            }
+            grant.recheck(io)?;
+            return Ok(original);
+        }
         let result = self
             .host
             .put_internal_content(
@@ -208,11 +238,7 @@ where
                 &path,
                 bytes,
                 media_type,
-                if media_type.starts_with("text/") {
-                    "execution.txt"
-                } else {
-                    "execution.json"
-                },
+                display_name,
                 Some(super::MAXIMUM_PAYLOAD_BYTES),
                 &key,
                 payload_class(&path),
@@ -304,7 +330,7 @@ where
         operation: OperationId,
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
-    ) -> Result<(Option<ModelEvent>, Option<u64>)> {
+    ) -> Result<(Option<ModelEvent>, Option<u64>, Option<u64>)> {
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)
@@ -450,6 +476,7 @@ where
                 }
             }
             let mut usd_nanos = None;
+            let mut tokens = None;
             if let ExecutionEvent::Model {
                 step,
                 purpose,
@@ -481,6 +508,11 @@ where
                     })?,
                     io,
                 )?;
+                tokens = record
+                    .0
+                    .complete_input_tokens
+                    .zip(record.0.tokens.output)
+                    .and_then(|(input, output)| input.checked_add(output));
                 let price = self.run_admission.as_ref().and_then(|admission| {
                     admission
                         .value
@@ -501,11 +533,11 @@ where
                     .estimated_cost
                     .token_nano_units;
             }
-            Ok((model, usd_nanos))
+            Ok((model, usd_nanos, tokens))
         }
         .await;
         #[cfg(not(target_arch = "wasm32"))]
-        if let (Ok((model, _)), Some(recheck), Some(io)) = (&result, recheck, io) {
+        if let (Ok((model, _, _)), Some(recheck), Some(io)) = (&result, recheck, io) {
             let held = model
                 .as_ref()
                 .map_or(Ok(0), ModelEvent::logical_owned_bytes)?;

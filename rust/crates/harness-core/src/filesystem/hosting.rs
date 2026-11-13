@@ -1557,6 +1557,25 @@ struct InputStager<'a, P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     maximum_bytes: Option<u64>,
 }
 
+fn staged_input_operation(
+    agent: &AgentPath,
+    kind: &str,
+    by: &Sender,
+    intent: &IntentId,
+) -> OperationId {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
+    // Like the inbox's intent key, the staged input is the sender's own:
+    // two senders' same intent never share an operation.
+    let sender = crate::agent::sender_text(by);
+    for part in [agent.as_str(), kind, sender.as_str(), intent.as_str()] {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part.as_bytes());
+    }
+    let mut operation = [0; 16];
+    operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(operation)
+}
+
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> InputStager<'_, P, O> {
     async fn stage(
         &self,
@@ -1609,20 +1628,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
                 "submitted input exceeds the selected message capacity",
             )));
         }
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
-        // Like the inbox's intent key, the staged input is the sender's own:
-        // two senders' same intent never share an operation.
-        let sender = crate::agent::sender_text(by);
-        for part in [agent.as_str(), kind, sender.as_str(), intent.as_str()] {
-            hasher.update(&(part.len() as u64).to_le_bytes());
-            hasher.update(part.as_bytes());
-        }
-        let mut operation = [0; 16];
-        operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-        let operation = OperationId::from_bytes(operation);
+        let operation = staged_input_operation(agent, kind, by, intent);
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
-        let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
+        let name = format!("{operation}-{}.{extension}", blake3::hash(source));
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(self.volumes),
             self.volume,
@@ -1632,23 +1641,37 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
             None,
         )
         .map_err(turn)?;
-        let Some((bytes, media_type)) = payload else {
-            let (staged, _) = publisher
-                .observe_staged_once(
-                    operation,
-                    None,
-                    self.maximum_bytes,
-                    ContentAccess::default(),
-                )
-                .map_err(turn)?
-                .await
-                .map_err(turn)?;
-            if staged.as_ref().is_some_and(|file| file.path() != path()) {
+        let (staged, _) = publisher
+            .observe_staged_once(
+                operation,
+                None,
+                self.maximum_bytes,
+                ContentAccess::default(),
+            )
+            .map_err(turn)?
+            .await
+            .map_err(turn)?;
+        if let Some(file) = staged.as_ref() {
+            if file.path().rsplit('/').next() != Some(name.as_str()) {
                 return Err(Error::Conflict("input identity reused with changed source"));
             }
+            if let Some((bytes, media_type)) = payload
+                && (file.descriptor().media_type() != media_type
+                    || file.display_name() != kind
+                    || !file
+                        .descriptor()
+                        .matches_bytes(bytes, &mut None)
+                        .map_err(turn)?)
+            {
+                return Err(Error::Conflict(
+                    "input identity reused with changed content",
+                ));
+            }
+        }
+        let Some((bytes, media_type)) = payload.filter(|_| staged.is_none()) else {
             return Ok(staged);
         };
-        let path = path();
+        let path = format!("inputs/{name}");
         let staged = publisher
             .stage_once(
                 operation,

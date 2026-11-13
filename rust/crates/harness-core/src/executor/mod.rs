@@ -52,6 +52,7 @@ mod composition;
 mod configuration;
 mod content;
 mod context_files;
+mod context_review;
 mod dispatch;
 mod manager;
 pub(crate) use tool_changes::decode_tool_table;
@@ -789,6 +790,7 @@ pub struct StockExecutor {
     // publish private summaries, and none elsewhere. An explicit policy is
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
+    context_management: bool,
     reconciliation_only: bool,
 }
 

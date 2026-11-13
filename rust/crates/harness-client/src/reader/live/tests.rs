@@ -50,6 +50,7 @@ fn call() -> (ContextAdmission, ModelUsageRecord, ModelPriceRecord) {
             reasoning: None,
         },
         latency_ns: None,
+        complete_input_tokens: None,
         started_at: None,
         completed_at: None,
         provider_request_id: None,
