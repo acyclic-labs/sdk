@@ -64,6 +64,7 @@ async fn handler_failure_transition_consumes_only_decided_work() -> TestResult {
         });
         let dispatched: Arc<dyn Handler> = if wire {
             let manifest = wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?;
+            let interrupt_handler = handler.clone();
             let handler = handler.clone();
             Arc::new(wire::Remote::new(
                 manifest,
@@ -72,6 +73,10 @@ async fn handler_failure_transition_consumes_only_decided_work() -> TestResult {
                     Box::pin(
                         async move { wire::invoke(handler.as_ref(), &bytes, cancellation).await },
                     ) as GuestFuture<'static, Vec<u8>>
+                },
+                move |query: Vec<u8>| -> GuestFuture<'static, bool> {
+                    let handler = interrupt_handler.clone();
+                    Box::pin(async move { wire::accepts_interrupt(handler.as_ref(), &query).await })
                 },
             ))
         } else {

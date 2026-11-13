@@ -157,10 +157,12 @@ async fn inspection_needs_only_read_access_and_preserves_the_original_writer() {
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {
-                std::future::ready(Ok::<_, WorkspaceError>(crate::OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED,
-                }))
+                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
             },
         )
         .await
@@ -199,10 +201,12 @@ async fn inspection_needs_only_read_access_and_preserves_the_original_writer() {
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| {
-                std::future::ready(Ok::<_, WorkspaceError>(crate::OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED,
-                }))
+                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
             },
         )
         .await
