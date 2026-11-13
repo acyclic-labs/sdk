@@ -2,6 +2,9 @@
 use super::{AgentPath, AgentRecord, Error, PeerAdmission};
 use acyclic_actors::{addressing::ActorReference, route};
 
+pub(super) mod notices;
+pub use notices::PeerResultRoute;
+
 pub(super) const OUTBOX: &str = "acyclic.actors.route.outbox.v1";
 pub(super) const ADMISSION: &str = "acyclic.harness.peer-admission.v1";
 

@@ -673,6 +673,225 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
         }
         assert_eq!(account.tail(routing.paths.relay(&destination)?).await?, 2);
         assert_eq!(local.tail(recipient.inbox()?).await?, 1);
+        let owned = std::sync::Arc::new(local.clone());
+        let host = AgentHost::new(
+            owned.clone(),
+            Scripted(Mutex::new(VecDeque::new())),
+            within.clone(),
+            acyclic_actors::domain::ActorLimits::default(),
+            std::sync::Arc::new(acyclic_actors::local::SystemClock),
+        )?;
+        let notices = MemoryStream::default();
+        for (sequence, (name, expected)) in names
+            .iter()
+            .zip([
+                SentReplyStatus::Answered { sequence: 0 },
+                SentReplyStatus::Dropped,
+            ])
+            .enumerate()
+        {
+            let pending = sent_reply(&owned, &within, &sender, &intent(name))
+                .await?
+                .ok_or("send missing")?;
+            assert_eq!(pending.status, SentReplyStatus::Pending);
+            let Some(Watch::PeerReply {
+                sender: watching,
+                id,
+                from,
+                ..
+            }) = pending.watch
+            else {
+                return Err("remote reply did not watch its own inbox".into());
+            };
+            assert_eq!(watching, sender);
+            assert_eq!(id, intent(name));
+            let mut changes = acyclic_stream::records_only(
+                owned
+                    .follow(FollowRequest::new(sender.inbox()?, from))
+                    .await?,
+            );
+            let original = account
+                .record_at(routing.paths.relay(&destination)?, sequence as u64)
+                .await?
+                .ok_or("relay missing")?;
+            let envelope = route::Envelope::decode(&original.value)?;
+            let peer = PeerRoute::parse(&envelope)?;
+            let receipt = route::RelayReceipt {
+                commit_id: original.commit_id,
+                sequence: original.sequence,
+            };
+            assert!(
+                peer.result(destination.clone(), &receipt, SentReplyStatus::Pending)
+                    .is_err()
+            );
+            let result = peer.result(destination.clone(), &receipt, expected.clone())?;
+            assert!(
+                PeerRoute::parse(&result).is_err(),
+                "peer grant admitted a host result"
+            );
+            let result_request = CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: result.request.idempotency_key.clone(),
+                effects: vec![result.outbox_effect(&routing.paths)?],
+            };
+            submit(&notices, result_request.clone()).await?;
+            submit(&notices, result_request).await?;
+            let queued = notices
+                .record_at(routing.paths.outbox(&destination)?, sequence as u64)
+                .await?
+                .ok_or("result outbox missing")?;
+            let result = route::Publication::decode(&queued.value)?.delivery()?;
+            let routed = PeerResultRoute::parse(&result)?;
+            routed.verify_original(&account, &routing.paths).await?;
+            result
+                .publish_relay(&account, &routing.paths, &routing.node, Vec::new())
+                .await?;
+            result
+                .publish_relay(&account, &routing.paths, &routing.node, Vec::new())
+                .await?;
+            // An owned pending send may settle even after the user opts out.
+            host.set_peer_membership(
+                &sender,
+                &Sender::User {
+                    principal: "owner".into(),
+                },
+                &intent(&format!("off-{sequence}")),
+                false,
+            )
+            .await?;
+            let delivered = routed.deliver(&host).await?;
+            assert_eq!(routed.deliver(&host).await?, delivered);
+            let event = changes.try_next().await?.ok_or("missing result event")?;
+            assert!(matches!(
+                InboxRecord::decode(&event.value)?,
+                InboxRecord::Notice {
+                    notice: NoticePayload::Quiet(_),
+                    ..
+                }
+            ));
+            let observed = sent_reply(&owned, &within, &sender, &intent(name))
+                .await?
+                .ok_or("send missing")?;
+            assert_eq!(observed.status, expected);
+            assert!(observed.watch.is_none());
+            let mut unrelated = result.clone();
+            unrelated.source = routing.node.clone();
+            assert!(
+                PeerResultRoute::parse(&unrelated)?
+                    .verify_original(&account, &routing.paths)
+                    .await
+                    .is_err(),
+                "another node claimed this result"
+            );
+            if sequence == 0 {
+                let changed =
+                    peer.result(destination.clone(), &receipt, SentReplyStatus::Dropped)?;
+                assert!(
+                    changed
+                        .publish_relay(&account, &routing.paths, &routing.node, Vec::new())
+                        .await
+                        .is_err(),
+                    "a terminal result changed under one intent"
+                );
+            }
+        }
+        assert_eq!(notices.tail(routing.paths.outbox(&destination)?).await?, 2);
+        assert_eq!(account.tail(routing.paths.relay(&routing.node)?).await?, 2);
+        assert_eq!(owned.tail(sender.inbox()?).await?, 3);
+        // A history fork retains its parent's original result bytes. Reusing
+        // that message id in the new root must still wait for a new result.
+        let mut adoption = adopted(id(52));
+        adoption.forked_at = 3;
+        let mut fork = create_root(&intent("history-fork"), adoption.clone())?;
+        let forked = fork.child.clone();
+        for effect in &mut fork.request.effects {
+            for mutation in &mut effect.mutations {
+                if let CommitMutation::Append { path, .. } = mutation
+                    && *path == forked.inbox()?
+                {
+                    *mutation = CommitMutation::Fork {
+                        source: sender.inbox()?,
+                        destination: forked.inbox()?,
+                        at_tail: 3,
+                        exclude: Vec::new(),
+                        records: vec![
+                            InboxRecord::ForkAdopted(Box::new(adoption.clone()))
+                                .encode()?
+                                .into(),
+                        ],
+                    };
+                }
+            }
+        }
+        submit(&*owned, fork.request).await?;
+        let old = owned
+            .record_at(sender.inbox()?, 1)
+            .await?
+            .ok_or("parent result missing")?;
+        let mut inherited = owned
+            .read(ReadRequest {
+                path: forked.inbox()?,
+                from: 0,
+                limit: 1,
+                key: Some(acyclic_stream::ReadKeySeek::exact(
+                    old.headers.keys()[0].clone(),
+                    4,
+                )),
+                at_least: Default::default(),
+            })
+            .await?;
+        assert_eq!(
+            inherited
+                .try_next()
+                .await?
+                .ok_or("inherited control missing")?
+                .commit_id,
+            old.commit_id
+        );
+        let admission = session_peer_admission(
+            &*owned,
+            &Capabilities::new([SEND_PEER]),
+            &forked,
+            &recipient,
+        )
+        .await?
+        .ok_or("fork grant missing")?;
+        let state = AgentState::adopted(forked.clone(), &adoption)?;
+        let step = Step {
+            outs: effect_outs(
+                &state,
+                vec![TurnEffect::Send {
+                    peer: Some(admission),
+                    delivery,
+                    to: recipient.clone(),
+                    id: intent("first"),
+                    re: None,
+                    body: Box::new(super::driver::file("message.md")?),
+                    attachments: None,
+                }],
+            ),
+            state,
+            status: None,
+            alarm: Alarm::Clear,
+        };
+        let fork_actor =
+            ActorReference::new(b"account", b"agents", forked.id().as_str().as_bytes())?;
+        submit(
+            &*owned,
+            routing.lower(
+                &fork_actor,
+                &BTreeSet::from([recipient]),
+                &step,
+                4,
+                intent_key("fork-send", &[])?,
+            )?,
+        )
+        .await?;
+        let pending = sent_reply(&owned, &fork_actor, &forked, &intent("first"))
+            .await?
+            .ok_or("fork send missing")?;
+        assert_eq!(pending.status, SentReplyStatus::Pending);
+        assert!(matches!(pending.watch, Some(Watch::PeerReply { sender, .. }) if sender == forked));
     }
     Ok(())
 }

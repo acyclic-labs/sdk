@@ -749,6 +749,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 }
                 let settled = match watch {
                     super::Watch::Record { .. } => true,
+                    super::Watch::PeerReply {
+                        sender, peer, id, ..
+                    } => {
+                        if !saved.as_ref().is_some_and(|state| state.path == sender) {
+                            return Err(Error::Record("peer wait belongs to another sender"));
+                        }
+                        super::routing::notices::matches(&record, &sender, &id, &peer)?.is_some()
+                    }
                     super::Watch::Reply(watch) => {
                         super::StatusRecord::decode(&record.value)?;
                         let actor = Agents::<P>::actor(&delivery.actor, &watch.to.id())?;

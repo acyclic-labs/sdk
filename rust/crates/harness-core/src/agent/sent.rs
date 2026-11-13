@@ -81,7 +81,7 @@ pub struct SentMessage {
 }
 
 /// Settlement of one original send, without exposing the recipient's history.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SentReplyStatus {
     /// The request or its continuing goal has not settled.
@@ -116,13 +116,14 @@ pub struct SentReply {
     pub message: SentMessage,
     /// Only the settlement of that original request.
     pub status: SentReplyStatus,
-    /// Present exactly while another recipient publication can settle it.
-    pub watch: Option<ReplyWatch>,
+    /// Present while a local status or an owned routed Notice can settle it.
+    pub watch: Option<super::Watch>,
 }
 
-/// Correlate only a send owned by `sender`. The recipient checkpoint and
-/// status position share one publication, so subscribing from `watch.from`
-/// cannot miss a concurrent answer. No transcript or output body is returned.
+/// Correlate only a send owned by `sender`. Same-node replies observe one
+/// checkpoint/status cut. Routed replies use the sender's indexed inbox and
+/// retain its observed tail, so a concurrent result cannot be missed. No
+/// transcript or output body is returned.
 pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
     provider: &std::sync::Arc<P>,
     within: &acyclic_actors::addressing::ActorReference,
@@ -135,7 +136,14 @@ pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
     let inbox = match &message.delivery {
         SentDelivery::Complete(Routed::Delivered(delivered)) => delivered.inbox,
         SentDelivery::Pending { .. } | SentDelivery::Complete(Routed::Relayed { .. }) => {
-            return Err(Error::Record("routed reply observation is not configured"));
+            let (status, watch) =
+                super::routing::notices::observe(provider.as_ref(), sender, id, &message.to)
+                    .await?;
+            return Ok(Some(SentReply {
+                message,
+                status,
+                watch,
+            }));
         }
         SentDelivery::Complete(Routed::Rejected(_)) => {
             return Ok(Some(SentReply {
@@ -155,12 +163,12 @@ pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
         super::Reply::Dropped => (SentReplyStatus::Dropped, None),
         super::Reply::Pending | super::Reply::Continuing { .. } => (
             SentReplyStatus::Pending,
-            Some(ReplyWatch {
+            Some(super::Watch::Reply(ReplyWatch {
                 to: message.to.clone(),
                 id: id.clone(),
                 inbox,
                 from: state.status_tail,
-            }),
+            })),
         ),
     };
     Ok(Some(SentReply {

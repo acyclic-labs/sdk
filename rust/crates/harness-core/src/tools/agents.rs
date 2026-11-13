@@ -796,10 +796,7 @@ impl AgentTool {
             return Ok(ToolPreparation::Deferred(crate::agent::Until {
                 operation: Some(operation),
                 input: on_input,
-                watches: pending_replies
-                    .into_iter()
-                    .map(crate::agent::Watch::Reply)
-                    .collect(),
+                watches: pending_replies.into_iter().collect(),
                 ..crate::agent::Until::quorum(pending, need).within(timeout_ms)
             }));
         }
