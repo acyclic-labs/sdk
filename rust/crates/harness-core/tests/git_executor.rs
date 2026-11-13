@@ -2755,6 +2755,20 @@ async fn raw_git_requires_the_grant_and_rejects_an_unrelated_registered_workspac
     acyclic_fs::GitCompatRepository::new(main.workspace().id(), store.clone())
         .register_branch_workspace("foreign", foreign.id(), None, false)
         .await?;
+    // Refuse unrelated repository state before trying to consume a command
+    // input. Materializing a diff tree must have the same admission boundary.
+    let denied_before_input = run(
+        &fs,
+        &store,
+        &main,
+        main.workspace().id(),
+        &["apply", "missing.patch"],
+    )
+    .await;
+    assert!(matches!(
+        denied_before_input,
+        Err(Error::Unauthorized(message)) if message.contains("outside its repository lineage")
+    ));
     // The old workspace resolver accepts this real, registered workspace.
     let unchecked =
         acyclic_fs::WorkspaceResolver::resolve(&(fs.clone(), graph), foreign.id()).await?;

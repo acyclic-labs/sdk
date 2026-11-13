@@ -196,16 +196,15 @@ where
     workspace.access.require(workspace.view.workspace()).await?;
     // A replayed request returns its saved result before reading any
     // command input (a patch file it consumed may be gone by now).
+    let repository_access = RepositoryAccess {
+        access: workspace.access,
+        filesystem: workspace.filesystem,
+        store: workspace.store,
+        current: workspace.view.workspace(),
+        repository: workspace.repository,
+    };
     if let Some(request) = &workspace.request
-        && let Some(output) = (RepositoryAccess {
-            access: workspace.access,
-            filesystem: workspace.filesystem,
-            store: workspace.store,
-            current: workspace.view.workspace(),
-            repository: workspace.repository,
-        })
-        .request_result(request.operation)
-        .await?
+        && let Some(output) = repository_access.request_result(request.operation).await?
     {
         before_effect().await?;
         return Ok(Prepared::Complete(Output {
@@ -213,6 +212,7 @@ where
             switched: None,
         }));
     }
+    repository_access.require_repository_access().await?;
     admit_checkout()?;
     let permit = workspace.lease.as_ref().map_or(
         PublicationPermit::Unrestricted,
@@ -238,7 +238,6 @@ where
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
-    executor.authorize_repository().await?;
     if let Some((branch, stat)) = crate::tools::fs_command::agent_diff(args) {
         before_effect().await?;
         let output = executor.diff_agent(branch, tree, stat).await?;

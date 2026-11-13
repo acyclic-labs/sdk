@@ -27,8 +27,8 @@ where
         Ok(state.request(operation).cloned())
     }
 
-    /// Authorizes saved output without copying it or running its command.
-    pub(crate) async fn require_saved_result_access(&self) -> crate::Result<()> {
+    /// Authorizes repository sources before reading inputs or materializing a tree.
+    pub(crate) async fn require_repository_access(&self) -> crate::Result<()> {
         self.require_result_access(&self.state().await?).await
     }
 
@@ -119,16 +119,7 @@ where
             repository: self.repository_id,
         }
     }
-
-    pub(super) async fn authorize_repository(&self) -> crate::Result<()> {
-        let state = GitCompatRepository::new(self.repository_id, self.store.clone())
-            .load()
-            .await
-            .map_err(super::errors::compat_error::<S>)?;
-        self.repository_access().authorize(&state).await
-    }
 }
-
 // Recovery executes the same typed action as first admission. Authenticate its
 // sources even if a branch was removed after the intent was persisted.
 fn pending_workspaces(

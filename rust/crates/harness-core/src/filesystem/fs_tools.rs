@@ -348,7 +348,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
                     current: &root,
                     repository: root.id(),
                 })
-                .require_saved_result_access()
+                .require_repository_access()
                 .await
             })
             .await
