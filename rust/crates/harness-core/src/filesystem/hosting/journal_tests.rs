@@ -988,6 +988,7 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
 #[tokio::test]
 async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     use crate::client_files::{ClientFileChange, FileRoot};
+    use crate::executor::{ExecutionEvent, ExecutionJournal};
     use acyclic_stream::StreamProviderExt as _;
     let (bound, agent) = binding().await?;
     let root = FileRoot::Private {};
