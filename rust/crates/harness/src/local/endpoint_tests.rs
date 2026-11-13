@@ -1197,7 +1197,10 @@ async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_s
         .await?;
     eprintln!("client file journey: awaiting descendant pause");
     let descendant_pause = loop {
-        let event = descendant_feed.next().await?;
+        let event = descendant_feed
+            .next()
+            .await
+            .map_err(|error| connection.stream_failure(error))?;
         if matches!(event.event, Lifecycle::Paused { signal: None }) {
             break event;
         }

@@ -171,9 +171,11 @@ pub(super) async fn settle(
     }
     let id = next_intent(&run.to_string(), count)?;
     Ok(ControlFlow::Break(Settlement {
+        // A continuation owns a later turn; it must never steer an unrelated
+        // turn that was queued before it.
         continuation: Some(Out::Send {
             to: agent.path.clone(),
-            record: InboxRecord::Message(Message {
+            record: InboxRecord::FollowUp(Message {
                 from: Sender::Agent {
                     path: agent.path.clone(),
                 },
