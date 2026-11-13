@@ -315,9 +315,13 @@ where
             )
             .await
         };
+        let (manifest, content) = futures::try_join!(
+            stage("manifest.json", manifest, "application/json"),
+            stage("instructions.md", content, "text/markdown"),
+        )?;
         Ok(Some(crate::agent::AnnouncedInstructions {
-            manifest: stage("manifest.json", manifest, "application/json").await?,
-            content: stage("instructions.md", content, "text/markdown").await?,
+            manifest,
+            content,
         }))
     }
 

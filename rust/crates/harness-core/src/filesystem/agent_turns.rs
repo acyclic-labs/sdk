@@ -2308,46 +2308,48 @@ where
                                     update.document.canonical().1,
                                 ) || !update.instructions.is_empty()
                             });
-                        let mut changed = Vec::new();
-                        if roster.is_some() || update.is_some() {
-                            let announcement_files = &bindings.journal.files;
-                            if let Some(roster) = roster {
+                        let files = &bindings.journal.files;
+                        let (targets, workspaces) = futures::try_join!(
+                            async {
+                                let Some(roster) = roster else {
+                                    return Ok(None);
+                                };
                                 let (bytes, digest) = roster.canonical();
-                                changed.push(AnnouncedDocument {
+                                let file = files
+                                    .stage_announcement(AnnouncementKind::Targets, digest, bytes)
+                                    .await?;
+                                Ok::<_, crate::Error>(Some(AnnouncedDocument {
                                     kind: AnnouncementKind::Targets,
                                     digest,
-                                    file: announcement_files
-                                        .stage_announcement(
-                                            AnnouncementKind::Targets,
-                                            digest,
-                                            bytes,
-                                        )
-                                        .await?,
+                                    file,
                                     instructions: None,
-                                });
-                            }
-                            if let Some(update) = update {
+                                }))
+                            },
+                            async {
+                                let Some(update) = update else {
+                                    return Ok(None);
+                                };
                                 let (bytes, digest) = update.document.canonical();
-                                changed.push(AnnouncedDocument {
+                                let (file, instructions) = futures::try_join!(
+                                    files.stage_announcement(
+                                        AnnouncementKind::Workspaces,
+                                        digest,
+                                        bytes,
+                                    ),
+                                    files.stage_instructions(
+                                        update.instructions,
+                                        bindings.content.reader.as_ref(),
+                                    ),
+                                )?;
+                                Ok::<_, crate::Error>(Some(AnnouncedDocument {
                                     kind: AnnouncementKind::Workspaces,
                                     digest,
-                                    file: announcement_files
-                                        .stage_announcement(
-                                            AnnouncementKind::Workspaces,
-                                            digest,
-                                            bytes,
-                                        )
-                                        .await?,
-                                    instructions: announcement_files
-                                        .stage_instructions(
-                                            update.instructions,
-                                            bindings.content.reader.as_ref(),
-                                        )
-                                        .await?,
-                                });
-                            }
-                        }
-                        changed
+                                    file,
+                                    instructions,
+                                }))
+                            },
+                        )?;
+                        [targets, workspaces].into_iter().flatten().collect()
                     }
                 };
                 let segment = crate::agent::turn_segment(agent).map_err(Error::from)?;
