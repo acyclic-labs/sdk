@@ -131,6 +131,11 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// The canonical capability a native declaration stands for. Grants,
     /// policy and approval match it, never the model's spelling.
     fn capability(&self) -> Option<&Tool> {
+        self.capability_owner().map(Arc::as_ref)
+    }
+    /// Shared ownership of the canonical capability, so a new presentation can
+    /// replace this declaration without composing its argument adapter again.
+    fn capability_owner(&self) -> Option<&Arc<Tool>> {
         None
     }
     /// That capability's call for `invocation`, when this is a native declaration.
