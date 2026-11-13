@@ -1079,6 +1079,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         visit(root, root, &mut result);
         result
     }
+    let plugins = task_plugins(&fixture);
     let original = snapshot(fixture._directory.path());
     // Installation pipes both streams and has no prompt or terminal.
     let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
@@ -1111,7 +1112,13 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         "doctor changed fresh state or signing authority"
     );
     // The same check must preserve existing real state byte-for-byte.
-    let ran = graphcoder(&fixture, &model.catalog, vec!["-p", "hello"], "").await;
+    let ran = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec!["--home-file", &plugins, "-p", "hello"],
+        "",
+    )
+    .await;
     succeeded(&ran);
     let existing = snapshot(fixture._directory.path());
     let reopened = graphcoder(&fixture, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
@@ -1165,6 +1172,124 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         snapshot(&fixture.workspace),
         checkout_original,
         "refused doctor changed checkout"
+    );
+    // Each aggregated refusal retains the cause its original producer reported.
+    let malformed = fixture._directory.path().join("invalid.json");
+    std::fs::write(&malformed, b"{").unwrap();
+    let credentials_error = acyclic_harness_providers::Credentials::from_file(&malformed)
+        .err()
+        .unwrap()
+        .to_string();
+    let mut registry = acyclic_harness_providers::Registry::new(
+        acyclic_harness_providers::Credentials::explicit(Default::default()),
+    )
+    .unwrap();
+    let catalog_error = registry.load_catalog(&malformed).unwrap_err().to_string();
+    let policy_error = serde_json::from_slice::<Value>(b"{")
+        .unwrap_err()
+        .to_string();
+    for (catalog, arguments, context, expected) in [
+        (
+            &model.catalog,
+            vec!["--approval-policy", malformed.to_str().unwrap(), "doctor"],
+            "local configuration:",
+            policy_error,
+        ),
+        (
+            &model.catalog,
+            vec!["--credentials", malformed.to_str().unwrap(), "doctor"],
+            "credentials file:",
+            credentials_error,
+        ),
+        (
+            &malformed,
+            vec!["doctor"],
+            "provider catalog:",
+            catalog_error,
+        ),
+    ] {
+        let before = snapshot(fixture._directory.path());
+        let refused = graphcoder(&fixture, catalog, arguments, "").await;
+        assert!(!refused.status.success());
+        let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert!(
+            report["refusals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|reason| reason.as_str().is_some_and(
+                    |reason| reason.starts_with(context) && reason.contains(&expected)
+                )),
+            "missing original cause {context} {expected}: {report}"
+        );
+        assert_eq!(
+            snapshot(fixture._directory.path()),
+            before,
+            "refused doctor changed state"
+        );
+    }
+    registry.load_catalog(&model.catalog).unwrap();
+    let expected = registry
+        .needs_credentials("fixture/undefined")
+        .unwrap_err()
+        .to_string();
+    let before = snapshot(fixture._directory.path());
+    let mut unknown = graphcoder_command(&fixture);
+    unknown
+        .arg("--settings-root")
+        .arg(&fixture.settings)
+        .arg("--catalog")
+        .arg(&model.catalog)
+        .args(["--model", "fixture/undefined", "doctor"]);
+    let refused = capture(unknown, "").await;
+    assert!(!refused.status.success());
+    let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert!(
+        report["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason.as_str().is_some_and(|reason| reason
+                .starts_with("provider/model:")
+                && reason.contains(&expected))),
+        "missing selected model cause {expected}: {report}"
+    );
+    assert_eq!(
+        snapshot(fixture._directory.path()),
+        before,
+        "refused doctor changed state"
+    );
+    std::fs::write(
+        fixture.settings.join(".codex/config.toml"),
+        "model = \"\"\n",
+    )
+    .unwrap();
+    let expected = acyclic_harness::native_settings::SettingsConfig::new(
+        &fixture.workspace,
+        &fixture.settings,
+    )
+    .codex_home(fixture.settings.join(".codex"))
+    .configured_model()
+    .unwrap_err()
+    .to_string();
+    let before = snapshot(fixture._directory.path());
+    let refused = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    assert!(!refused.status.success());
+    let report: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert!(
+        report["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason.as_str().is_some_and(|reason| reason
+                .starts_with("model settings:")
+                && reason.contains(&expected))),
+        "missing model settings cause {expected}: {report}"
+    );
+    assert_eq!(
+        snapshot(fixture._directory.path()),
+        before,
+        "refused doctor changed state"
     );
     assert_eq!(model.generated(), 1);
     model.close().await;
