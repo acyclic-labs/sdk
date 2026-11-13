@@ -131,16 +131,20 @@ fn rpc_failures_preserve_original_causes_and_outcomes() {
             ),
         ];
         let lost: Vec<_> = failures
-            .iter()
+            .into_iter()
             .filter_map(|(name, error)| {
-                let source = std::error::Error::source(error)
+                let retained = error.clone();
+                assert_eq!(retained, error);
+                drop(error);
+                let error = retained;
+                let source = std::error::Error::source(&error)
                     .and_then(|source| source.downcast_ref::<Status>());
                 (!source.is_some_and(|source| {
                     source.code() == code
                         && source.message() == status.message()
                         && source.details() == status.details()
                 }))
-                .then_some(*name)
+                .then_some(name)
             })
             .collect();
         assert!(

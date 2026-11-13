@@ -79,39 +79,8 @@ pub enum ProviderError {
     Cancelled,
 }
 
-/// A source-bearing provider failure. Private fields keep its classification
-/// free of nested source wrappers.
-#[derive(Clone, Debug)]
-pub struct ProviderFailure {
-    classification: Box<ProviderError>,
-    cause: Arc<dyn std::error::Error + Send + Sync>,
-}
-
-impl ProviderFailure {
-    /// The original bare class; its source is available through `Error::source`.
-    pub const fn classification(&self) -> &ProviderError {
-        &self.classification
-    }
-}
-
-impl fmt::Display for ProviderFailure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.classification, self.cause)
-    }
-}
-
-impl std::error::Error for ProviderFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.cause.as_ref())
-    }
-}
-
-impl PartialEq for ProviderFailure {
-    fn eq(&self, other: &Self) -> bool {
-        self.classification == other.classification && Arc::ptr_eq(&self.cause, &other.cause)
-    }
-}
-impl Eq for ProviderFailure {}
+/// Machines classification using the shared concrete local-cause owner.
+pub type ProviderFailure = acyclic_auth::failure::Failure<ProviderError>;
 
 impl ProviderError {
     /// Attach the original source without changing retry or outcome semantics.
@@ -119,10 +88,7 @@ impl ProviderError {
     pub fn with_cause(self, cause: impl std::error::Error + Send + Sync + 'static) -> Self {
         match self {
             Self::Caused(_) => self,
-            classification => Self::Caused(ProviderFailure {
-                classification: Box::new(classification),
-                cause: Arc::new(cause),
-            }),
+            classification => Self::Caused(ProviderFailure::new(classification, cause)),
         }
     }
 
@@ -130,7 +96,7 @@ impl ProviderError {
     /// This borrows at most one frame regardless of observation history.
     pub const fn classification(&self) -> &Self {
         match self {
-            Self::Caused(failure) => &failure.classification,
+            Self::Caused(failure) => failure.classification(),
             classification => classification,
         }
     }
@@ -138,7 +104,7 @@ impl ProviderError {
     /// Stable, message-free name of this failure class.
     pub const fn kind(&self) -> &'static str {
         match self {
-            Self::Caused(failure) => failure.classification.kind(),
+            Self::Caused(failure) => failure.classification().kind(),
             Self::NotFound(_) => "not_found",
             Self::Conflict(_) => "conflict",
             Self::Unsupported(_) => "unsupported",
