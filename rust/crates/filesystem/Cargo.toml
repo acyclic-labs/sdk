@@ -18,10 +18,6 @@ name = "main"
 path = "tests/main.rs"
 
 [[test]]
-name = "computed_folds"
-path = "tests/computed_folds.rs"
-
-[[test]]
 name = "browser_commit"
 path = "tests/browser_commit.rs"
 required-features = ["browser"]
