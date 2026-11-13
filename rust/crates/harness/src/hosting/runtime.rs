@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 /// One running native application. Dropping it aborts its deliveries and closes
-/// its Session lifetime. Runtime failure or loss of the served root producer
-/// closes that lifetime; child delivery failures remain local to their actor.
+/// its Session lifetime. Only runtime failure closes the same lifetime; a
+/// failed delivery belongs to its actor, not to the other agents it hosts.
 pub struct Runtime {
     task: acyclic_native_runtime::TaskHandle<()>,
     lifetime: watch::Receiver<()>,
@@ -22,25 +22,15 @@ impl Runtime {
         P: AuthorityProvider + 'static,
         O: AsyncObjectStore + 'static,
     {
-        let root = server.root().id();
-        let within = server.bound().within().clone();
         let (alive, lifetime) = watch::channel(());
-        let (failure, mut failed) = watch::channel(None);
-        let completion = failed.clone();
+        let (failure, completion) = watch::channel(None);
         let task = acyclic_native_runtime::spawn(async move {
-            tokio::select! {
-                error = server.run(|actor, error| {
+            let error = server
+                .run(|actor, error| {
                     tracing::error!(?actor, %error, "actor delivery failed");
-                    // The original root producer owns this Session's lifetime.
-                    if actor.id() == root.as_str()
-                        && actor.account() == within.account()
-                        && actor.namespace() == within.namespace()
-                    {
-                        failure.send_replace(Some(format!("{error} (actor {actor:?})")));
-                    }
-                }) => { failure.send_replace(Some(error.to_string())); }
-                _ = failed.changed() => {}
-            }
+                })
+                .await;
+            failure.send_replace(Some(error.to_string()));
             // The lifetime closes after cancellation drops the active delivery.
             drop(alive);
         });
@@ -58,7 +48,7 @@ impl Runtime {
         self.lifetime.clone()
     }
 
-    /// The retained root-producer or runtime failure that closed, or is closing,
+    /// The retained runtime failure that closed, or is closing,
     /// this lifetime. A Session closed by that lifetime only reports
     /// `unavailable`; this is its original cause.
     #[must_use]
