@@ -217,14 +217,9 @@ pub async fn connect(
     peer: PeerTrust<'_>,
     identity: Option<Identity>,
 ) -> Result<Channel, ConnectError> {
-    let url = url::Url::parse(&endpoint.uri().to_string()).map_err(|_| ConnectError::Endpoint)?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
+    let url = super::credential::base_endpoint(&endpoint.uri().to_string())
+        .map_err(|_| ConnectError::Endpoint)?;
+    if url.scheme() != "https" {
         return Err(ConnectError::Endpoint);
     }
     let mut tls = ClientTlsConfig::new();

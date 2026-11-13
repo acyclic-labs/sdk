@@ -265,15 +265,9 @@ impl Client {
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token.as_ref())?;
         let endpoint = acyclic_auth::channel::endpoint(endpoint.as_ref())?;
-        let uri = endpoint.uri();
-        let loopback = uri.host().is_some_and(|host| {
-            let host = host.trim_start_matches('[').trim_end_matches(']');
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        });
-        if uri.scheme_str() != Some("http") || !loopback {
+        let admitted = acyclic_auth::credential::base_endpoint(&endpoint.uri().to_string())
+            .map_err(|_| ConnectError::InsecureEndpoint)?;
+        if admitted.scheme() != "http" {
             return Err(ConnectError::InsecureEndpoint);
         }
         Ok(Self::from_channel(

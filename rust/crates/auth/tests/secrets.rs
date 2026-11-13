@@ -1055,21 +1055,51 @@ fn secrets_published_vectors_match_shared_request_and_reply_admission() -> TestR
 
 #[test]
 fn secrets_and_identity_share_endpoint_admission_before_credentials() {
-    for (origin, allowed) in [
-        ("https://example.com", true),
-        ("http://127.0.0.1:1234", true),
-        ("http://[::1]:1234", true),
-        ("http://localhost:1234", true),
-        ("http://example.com", false),
-        ("https://user:password@example.com", false),
-        ("https://example.com/path", false),
-        ("https://example.com?bearer=planted", false),
-        ("https://example.com#planted", false),
+    for (origin, allowed, base) in [
+        ("https://example.com", true, Some("https://example.com/")),
+        (
+            "http://127.0.0.1:1234",
+            true,
+            Some("http://127.0.0.1:1234/"),
+        ),
+        ("http://[::1]:1234", true, Some("http://[::1]:1234/")),
+        (
+            "http://localhost:1234",
+            true,
+            Some("http://localhost:1234/"),
+        ),
+        ("http://example.com", false, None),
+        ("https://user:password@example.com", false, None),
+        (
+            "https://example.com/path",
+            false,
+            Some("https://example.com/path/"),
+        ),
+        (
+            "https://example.com/a%2Fb",
+            false,
+            Some("https://example.com/a%2Fb/"),
+        ),
+        (
+            "https://example.com//",
+            false,
+            Some("https://example.com//"),
+        ),
+        ("https://example.com?bearer=planted", false, None),
+        ("https://example.com#planted", false, None),
     ] {
         assert!(
             url::Url::parse(origin).is_ok(),
             "negative control must admit the raw URL"
         );
         assert_eq!(acyclic_auth::credential::endpoint(origin).is_ok(), allowed);
+        let admitted = acyclic_auth::credential::base_endpoint(origin);
+        assert_eq!(admitted.as_ref().map(url::Url::as_str).ok(), base);
+        if let (Ok(admitted), Some(base)) = (admitted, base) {
+            assert_eq!(
+                admitted.join("child").unwrap().as_str(),
+                format!("{base}child")
+            );
+        }
     }
 }

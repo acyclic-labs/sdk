@@ -157,26 +157,9 @@ impl HttpObjects {
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
         let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
-        let mut endpoint = Url::parse(endpoint).map_err(|_| invalid())?;
-        let loopback = endpoint.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-            || maximum_response_bytes == Some(0)
-        {
+        let endpoint = acyclic_auth::credential::base_endpoint(endpoint).map_err(|_| invalid())?;
+        if maximum_response_bytes == Some(0) {
             return Err(invalid());
-        }
-        if !endpoint.path().ends_with('/') {
-            endpoint.set_path(&format!("{}/", endpoint.path()));
         }
         let authorization = token.map(credential_header).transpose()?;
         let mut transport = Client::builder().redirect(reqwest::redirect::Policy::none());

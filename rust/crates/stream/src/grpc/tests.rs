@@ -297,6 +297,13 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
         Client::connect_eager("http://127.0.0.1:1", "fixture").await,
         Err(ConnectError::InsecureEndpoint)
     ));
+    let local = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    for invalid in [format!("{local}?unexpected=query"), endpoint.clone()] {
+        assert!(matches!(
+            Client::connect_loopback(invalid, "fixture").now_or_never(),
+            Some(Err(ConnectError::InsecureEndpoint))
+        ));
+    }
     assert!(listener.accept().now_or_never().is_none());
     // The same listener can observe a real connection immediately after the
     // rejected configuration futures have settled.
