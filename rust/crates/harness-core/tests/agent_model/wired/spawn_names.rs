@@ -828,7 +828,12 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
     let receipt = sent(&*stream, &root, &message.id)
         .await?
         .ok_or("send receipt missing")?;
-    assert_eq!(receipt.delivery, Delivered::Committed { inbox: 1 });
+    assert_eq!(
+        receipt.delivery,
+        SentDelivery::Complete(acyclic_actors::route::Routed::Delivered(
+            acyclic_actors::route::Delivered { inbox: 1 }
+        ))
+    );
     let requests = model.requests();
     let results: Vec<_> = requests
         .iter()

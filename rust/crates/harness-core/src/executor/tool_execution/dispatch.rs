@@ -326,8 +326,11 @@ impl<'io> StockExecution<'io> {
                     .map(|content| ToolInvocationOutcome::Settled(content, None));
             }
         };
-        if tool.executor.requires_effect_commit(&result) {
-            journal.commit_tool_effects(self.io)?;
+        if let Some(deferral) = tool.executor.deferral(&result)? {
+            match deferral {
+                crate::tool::ToolDeferral::Effects => journal.commit_tool_effects(self.io)?,
+                crate::tool::ToolDeferral::Observe(until) => journal.defer_tool(until, self.io)?,
+            }
             return Ok(ToolInvocationOutcome::Pending(invocation.operation_id));
         }
         self.finish_tool_result(

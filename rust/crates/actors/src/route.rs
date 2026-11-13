@@ -57,6 +57,20 @@ pub enum Error {
 pub struct Paths(StreamPath);
 
 impl Paths {
+    /// Recover the canonical routing subtree and node from a committed outbox
+    /// path. Callers still prove ownership through their original publication.
+    pub fn from_outbox(path: &StreamPath) -> Result<(Self, NodeId), Error> {
+        let (parent, node) = path.as_str().rsplit_once('/').ok_or(Error::InvalidRecord)?;
+        let root = parent.strip_suffix("/outbox").ok_or(Error::InvalidRecord)?;
+        let node = acyclic_auth::decode_component(node).map_err(|_| Error::InvalidRecord)?;
+        let node = NodeId::new(&node)?;
+        let paths = Self::new(StreamPath::new(root)?);
+        if paths.outbox(&node)? != *path {
+            return Err(Error::InvalidRecord);
+        }
+        Ok((paths, node))
+    }
+
     /// Bind routing records to the host's admitted account subtree.
     pub const fn new(root: StreamPath) -> Self {
         Self(root)

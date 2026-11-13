@@ -61,7 +61,9 @@ mod release;
 mod reply;
 mod sent;
 pub(crate) use reply::entry as conversation_entry;
-pub use sent::{ReplyWatch, SentMessage, SentReply, SentReplyStatus, sent, sent_reply};
+pub use sent::{
+    ReplyWatch, SentDelivery, SentMessage, SentReply, SentReplyStatus, sent, sent_reply,
+};
 mod settled;
 #[cfg(test)]
 mod ui_tests;
@@ -122,6 +124,7 @@ pub use layout::{
     ACTORS, AGENTS, AgentId, AgentPath, NOT_INHERITED, STATUSES, TARGET_STATUS, VOLUMES,
 };
 pub use lower::{delivery_key, lower};
+mod routing;
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_QUEUED, MAX_QUEUED_BYTES, OVERSIZED_STATE, Out,
     Progress, Queued, ReviewFuture, ReviewStep, SpawnOutcome, SpawnRefusal, Step, TurnDriver,
@@ -137,6 +140,7 @@ pub use records::{
     decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
+pub use routing::Routing;
 
 /// Agent model failures.
 #[derive(Debug, thiserror::Error)]

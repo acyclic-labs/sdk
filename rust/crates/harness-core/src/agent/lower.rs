@@ -114,6 +114,19 @@ impl Builder {
 /// `cursor` is the number of inbox records consumed after this step, and `key`
 /// is the delivery's stable identity, so a retried delivery replays exactly.
 pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequest, Error> {
+    lower_routed(step, cursor, key, None)
+}
+
+pub(super) fn lower_routed(
+    step: &Step,
+    cursor: u64,
+    key: IdempotencyKey,
+    routing: Option<(
+        &super::Routing,
+        &acyclic_actors::addressing::ActorReference,
+        &BTreeSet<AgentPath>,
+    )>,
+) -> Result<CommitRequest, Error> {
     let state = &step.state;
     let path = &state.path;
     let sender = Sender::Agent { path: path.clone() };
@@ -287,6 +300,56 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     ));
                 }
                 builder.recipient(to)?;
+                let routed = routing.filter(|(_, _, remote)| remote.contains(to));
+                let mut outbox = None;
+                if let Some((routing, within, _)) = routed {
+                    let admission = step
+                        .outs
+                        .iter()
+                        .find_map(|out| match out {
+                            Out::PeerGuard {
+                                to: target,
+                                admission,
+                            } if target == to => Some(admission),
+                            _ => None,
+                        })
+                        .ok_or(Error::Record("remote send has no peer admission"))?;
+                    if !matches!(record, InboxRecord::Message(message) | InboxRecord::FollowUp(message) if message.from == sender)
+                    {
+                        return Err(Error::Record(
+                            "peer routing accepts only attributed messages",
+                        ));
+                    }
+                    let mut request = commit::send(to, &sender, record)?;
+                    let CommitMutation::Append { records, .. } =
+                        &mut request.effects[0].mutations[0]
+                    else {
+                        return Err(Error::Record("message has no ordinary inbox append"));
+                    };
+                    records[0].headers = acyclic_stream::RecordHeaders::new(
+                        Vec::new(),
+                        vec![acyclic_stream::Attribute {
+                            name: super::routing::ADMISSION.into(),
+                            value: admission.encode()?.into(),
+                        }],
+                    )
+                    .map_err(Error::Stream)?;
+                    let envelope = acyclic_actors::route::Envelope {
+                        source: routing.node.clone(),
+                        sender: super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+                            within,
+                            &path.id(),
+                        )?,
+                        to: super::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+                            within,
+                            &to.id(),
+                        )?,
+                        request,
+                    };
+                    let target = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
+                    builder.append(target.clone(), envelope.encode());
+                    outbox = Some(target);
+                }
                 if let InboxRecord::Message(message) | InboxRecord::FollowUp(message) = record
                     && message.from == sender
                 {
@@ -294,14 +357,26 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     builder.condition(CommitCondition::Absent {
                         path: marker.clone(),
                     })?;
-                    builder.append(
-                        marker,
-                        super::sent::SentRecord {
-                            to: to.clone(),
-                            id: message.id.clone(),
-                        }
-                        .encode()?,
-                    );
+                    let mut marker_record: AppendRecord = super::sent::SentRecord {
+                        to: to.clone(),
+                        id: message.id.clone(),
+                    }
+                    .encode()?
+                    .into();
+                    if let Some(outbox) = &outbox {
+                        marker_record.headers = acyclic_stream::RecordHeaders::new(
+                            Vec::new(),
+                            vec![acyclic_stream::Attribute {
+                                name: super::routing::OUTBOX.into(),
+                                value: outbox.as_str().as_bytes().to_vec().into(),
+                            }],
+                        )
+                        .map_err(Error::Stream)?;
+                    }
+                    builder.append(marker, marker_record);
+                }
+                if outbox.is_some() {
+                    continue;
                 }
                 if matches!(record, InboxRecord::Message(_) | InboxRecord::FollowUp(_))
                     && to != path

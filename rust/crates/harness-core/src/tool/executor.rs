@@ -77,6 +77,15 @@ pub enum ToolPreparation {
     Deferred(crate::agent::Until),
 }
 
+/// A provisional result yields through the original tool journal. Its producer
+/// selects the boundary; result JSON alone conveys no scheduling authority.
+pub enum ToolDeferral {
+    /// Publish the turn's recorded effects before reconciling this call.
+    Effects,
+    /// Reconcile after the selected primitive condition, releasing the delivery.
+    Observe(crate::agent::Until),
+}
+
 /// One admitted preparation future and its retained native result ownership.
 pub type ToolPreparationFuture<'a> =
     crate::conversation::BoundedContentFuture<'a, (ToolPreparation, acyclic_fs::NativeCustody)>;
@@ -117,12 +126,11 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
-    /// A provisional result whose recorded actor effects must commit before
-    /// this invocation can return its original receipt. The stock caller
-    /// publishes nothing, yields through the journal, and reconciles the same
-    /// invocation after the actor's publication barrier.
-    fn requires_effect_commit(&self, _result: &ToolResult) -> bool {
-        false
+    /// A provisional result that must reconcile through the same invocation
+    /// after its effect publication or an event condition. The journal retains
+    /// ownership; no provisional result is returned to the model.
+    fn deferral(&self, _result: &ToolResult) -> Result<Option<ToolDeferral>> {
+        Ok(None)
     }
 
     /// Commits an admitted copied workspace before its owning turn settles.

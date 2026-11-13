@@ -941,11 +941,28 @@ async fn peer_grant_allowed(
 
 fn sent_result(sent: crate::agent::SentMessage) -> ToolResult {
     let value = match sent.delivery {
-        crate::agent::Delivered::Committed { inbox } => json!({
-            "kind": "accepted", "sent": sent.to, "id": sent.id, "inbox": inbox,
+        crate::agent::SentDelivery::Complete(acyclic_actors::route::Routed::Delivered(
+            delivered,
+        )) => json!({
+            "kind": "accepted", "sent": sent.to, "id": sent.id, "inbox": delivered.inbox,
         }),
-        crate::agent::Delivered::Closed => json!({
-            "kind": "rejected", "sent": sent.to, "id": sent.id, "reason": "closed",
+        crate::agent::SentDelivery::Complete(acyclic_actors::route::Routed::Rejected(reason)) => {
+            json!({
+                "kind": "rejected", "sent": sent.to, "id": sent.id, "reason": match reason {
+                    acyclic_actors::route::Rejection::Closed => "closed",
+                    acyclic_actors::route::Rejection::NoSuchActor => "no_such_actor",
+                },
+            })
+        }
+        crate::agent::SentDelivery::Complete(acyclic_actors::route::Routed::Relayed {
+            relay_seq,
+            ..
+        }) => json!({
+            "kind": "relayed", "sent": sent.to, "id": sent.id, "relay_seq": relay_seq,
+        }),
+        crate::agent::SentDelivery::Pending { source, from } => json!({
+            "status": "pending_admission", "sent": sent.to, "id": sent.id,
+            "source": source, "from": from,
         }),
     };
     ToolResult { value }
@@ -994,8 +1011,29 @@ impl ToolExecutor for AgentTool {
         }))
     }
 
-    fn requires_effect_commit(&self, result: &ToolResult) -> bool {
-        self.name == "send" && result.value.get("status").and_then(Value::as_str) == Some("queued")
+    fn deferral(&self, result: &ToolResult) -> Result<Option<crate::tool::ToolDeferral>> {
+        if self.name != "send" {
+            return Ok(None);
+        }
+        match result.value.get("status").and_then(Value::as_str) {
+            Some("queued") => Ok(Some(crate::tool::ToolDeferral::Effects)),
+            Some("pending_admission") => {
+                let path = result
+                    .value
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::Invalid("pending send has no source".into()))?;
+                let from = result
+                    .value
+                    .get("from")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| Error::Invalid("pending send has no source position".into()))?;
+                Ok(Some(crate::tool::ToolDeferral::Observe(
+                    crate::agent::Until::record(acyclic_stream::StreamPath::new(path)?, from),
+                )))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn prepare<'a>(

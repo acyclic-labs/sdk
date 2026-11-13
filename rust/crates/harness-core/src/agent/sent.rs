@@ -2,8 +2,63 @@
 //! The marker and inbox effect share one publication; recovery reads that exact
 //! immutable envelope, never a current inbox tail or a conversation scan.
 use super::{AgentPath, AgentRecord, Delivered, Error, InboxRecord, IntentId, Sender};
+use acyclic_actors::route::{self, Routed};
 use acyclic_stream::{CommittedMutation, StreamError, StreamProviderExt as _};
 use serde::{Deserialize, Serialize};
+
+/// Original delivery or the lossless source position still awaiting admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SentDelivery {
+    /// Ordinary owning-node delivery or retained account admission.
+    Complete(Routed),
+    /// The sender effect is durable; the original account receipt is pending.
+    Pending {
+        /// Sender-local acknowledgement stream.
+        source: acyclic_stream::StreamPath,
+        /// Original outbox record's sequence.
+        from: u64,
+    },
+}
+
+impl Serialize for SentDelivery {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum View<'a> {
+            Committed {
+                inbox: u64,
+            },
+            Closed,
+            Relayed {
+                relay_seq: u64,
+            },
+            Rejected {
+                reason: &'static str,
+            },
+            PendingAdmission {
+                source: &'a acyclic_stream::StreamPath,
+                from: u64,
+            },
+        }
+        match self {
+            Self::Complete(Routed::Delivered(delivered)) => View::Committed {
+                inbox: delivered.inbox,
+            },
+            Self::Complete(Routed::Rejected(route::Rejection::Closed)) => View::Closed,
+            Self::Complete(Routed::Rejected(route::Rejection::NoSuchActor)) => View::Rejected {
+                reason: "no_such_actor",
+            },
+            Self::Complete(Routed::Relayed { relay_seq, .. }) => View::Relayed {
+                relay_seq: *relay_seq,
+            },
+            Self::Pending { source, from } => View::PendingAdmission {
+                source,
+                from: *from,
+            },
+        }
+        .serialize(serializer)
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,8 +76,8 @@ pub struct SentMessage {
     pub to: AgentPath,
     /// Original caller-owned message identity.
     pub id: IntentId,
-    /// The sequence assigned by the owning node's inbox commit, or closed.
-    pub delivery: Delivered,
+    /// The original outcome, or its source-admission event position.
+    pub delivery: SentDelivery,
 }
 
 /// Settlement of one original send, without exposing the recipient's history.
@@ -77,12 +132,18 @@ pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
     let Some(message) = sent(provider.as_ref(), sender, id).await? else {
         return Ok(None);
     };
-    let Delivered::Committed { inbox } = message.delivery else {
-        return Ok(Some(SentReply {
-            message,
-            status: SentReplyStatus::Dropped,
-            watch: None,
-        }));
+    let inbox = match &message.delivery {
+        SentDelivery::Complete(Routed::Delivered(delivered)) => delivered.inbox,
+        SentDelivery::Pending { .. } | SentDelivery::Complete(Routed::Relayed { .. }) => {
+            return Err(Error::Record("routed reply observation is not configured"));
+        }
+        SentDelivery::Complete(Routed::Rejected(_)) => {
+            return Ok(Some(SentReply {
+                message,
+                status: SentReplyStatus::Dropped,
+                watch: None,
+            }));
+        }
     };
     let actor = super::handler::Agents::<P>::actor(within, &message.to.id())?;
     let agents = super::handler::Agents::new(super::actor_store(provider)?);
@@ -129,6 +190,17 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
         return Err(Error::Record("send receipt marker is not immutable"));
     }
     let marker = SentRecord::decode(&record.value)?;
+    let outbox = record
+        .headers
+        .attributes()
+        .iter()
+        .find(|attribute| attribute.name == super::routing::OUTBOX)
+        .map(|attribute| {
+            let path = std::str::from_utf8(attribute.value.as_ref())
+                .map_err(|_| Error::Record("send outbox path is not UTF-8"))?;
+            acyclic_stream::StreamPath::new(path).map_err(Error::Stream)
+        })
+        .transpose()?;
     if marker.id != *id {
         return Err(Error::Record("send receipt intent differs"));
     }
@@ -141,10 +213,81 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
     }
     let inbox = marker.to.inbox()?;
     let mut delivery = Delivered::Closed;
+    let mut routed = None;
     for mutation in envelope.mutations {
         let CommittedMutation::Append(append) = mutation else {
             continue;
         };
+        if outbox.as_ref() == Some(&append.path) {
+            let (paths, node) =
+                route::Paths::from_outbox(&append.path).map_err(super::routing::error)?;
+            for record in append.records {
+                let envelope =
+                    route::Envelope::decode(&record.value).map_err(super::routing::error)?;
+                if envelope.source != node {
+                    return Err(Error::Record("send outbox source differs"));
+                }
+                let original = envelope
+                    .request
+                    .effects
+                    .iter()
+                    .flat_map(|effect| &effect.mutations)
+                    .filter_map(|mutation| match mutation {
+                        acyclic_stream::CommitMutation::Append { path, records }
+                            if path == &inbox =>
+                        {
+                            Some(records)
+                        }
+                        _ => None,
+                    })
+                    .flatten()
+                    .find_map(|record| match InboxRecord::decode(&record.value) {
+                        Ok(record @ (InboxRecord::Message(_) | InboxRecord::FollowUp(_))) => {
+                            Some(record)
+                        }
+                        _ => None,
+                    });
+                let Some(original) = original else {
+                    continue;
+                };
+                let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = &original
+                else {
+                    unreachable!()
+                };
+                if message.id != *id
+                    || !matches!(&message.from, Sender::Agent { path } if path == sender)
+                {
+                    continue;
+                }
+                let expected = super::commit::send(&marker.to, &message.from, &original)?;
+                if envelope.request.idempotency_key != expected.idempotency_key
+                    || envelope.sender.id().as_bytes() != sender.id().as_str().as_bytes()
+                    || envelope.to.id().as_bytes() != marker.to.id().as_str().as_bytes()
+                    || routed.is_some()
+                {
+                    return Err(Error::Record("send outbox intent differs"));
+                }
+                routed = Some(
+                    match route::receipt(
+                        provider,
+                        &paths,
+                        &node,
+                        record.sequence,
+                        &expected.idempotency_key,
+                    )
+                    .await
+                    .map_err(super::routing::error)?
+                    {
+                        Some(receipt) => SentDelivery::Complete(receipt),
+                        None => SentDelivery::Pending {
+                            source: paths.outbox_cursor(&node).map_err(Error::Stream)?,
+                            from: record.sequence,
+                        },
+                    },
+                );
+            }
+            continue;
+        }
         if append.path != inbox {
             continue;
         }
@@ -163,9 +306,17 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
             }
         }
     }
+    if outbox.is_some() && (routed.is_none() || matches!(delivery, Delivered::Committed { .. })) {
+        return Err(Error::Record("send outbox publication differs"));
+    }
     Ok(Some(SentMessage {
         to: marker.to,
         id: marker.id,
-        delivery,
+        delivery: routed.unwrap_or_else(|| {
+            SentDelivery::Complete(match delivery {
+                Delivered::Committed { inbox } => Routed::Delivered(route::Delivered { inbox }),
+                Delivered::Closed => Routed::Rejected(route::Rejection::Closed),
+            })
+        }),
     }))
 }

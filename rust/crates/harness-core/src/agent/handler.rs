@@ -47,6 +47,7 @@ pub struct AgentHandler<P: crate::store::JournalProvider + ?Sized, D> {
     manifest: Manifest,
     volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
     closes: bool,
+    routing: Option<super::Routing>,
     diagnostics: Arc<Mutex<BTreeMap<AgentPath, RetainedDiagnostic>>>,
 }
 
@@ -172,6 +173,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             },
             volumes: None,
             closes: false,
+            routing: None,
             diagnostics: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
@@ -207,6 +209,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         self.manifest.subscriptions.sort();
         self.manifest.subscriptions.dedup();
         self.agents.companions = Some(companions);
+        self
+    }
+
+    /// Bind this host's source outbox. Only peer sends consult actor locality;
+    /// file, shell and other effects never contact the account router.
+    #[must_use]
+    pub fn with_routing(mut self, routing: super::Routing) -> Self {
+        self.routing = Some(routing);
         self
     }
 
@@ -802,7 +812,34 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             participant => Some(super::lifecycle::close_participant(&path, participant)?),
         };
         let step = prepared.step();
-        let mut request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
+        let mut remote = BTreeSet::new();
+        if self.routing.is_some() {
+            let targets: BTreeSet<_> = step
+                .outs
+                .iter()
+                .filter_map(|out| match out {
+                    Out::PeerGuard { to, .. } => Some(to),
+                    _ => None,
+                })
+                .collect();
+            for to in targets {
+                let actor = Agents::<P>::actor(&delivery.actor, &to.id())?;
+                if !self
+                    .agents
+                    .store
+                    .contains(&actor)
+                    .await
+                    .map_err(|error| Error::Actor(Box::new(error)))?
+                {
+                    remote.insert(to.clone());
+                }
+            }
+        }
+        let key = delivery_key(&step.state, &trigger)?;
+        let mut request = match &self.routing {
+            Some(routing) => routing.lower(&delivery.actor, &remote, step, cursor, key)?,
+            None => lower(step, cursor, key)?,
+        };
         let retired = step.state.turn.as_ref().and_then(|turn| {
             step.outs.iter().find_map(|out| match out {
                 Out::Steered(through) => Some(super::BoundaryCut {
@@ -845,7 +882,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .outs
             .iter()
             .filter_map(|out| match out {
-                Out::Send { to, .. } => Some(to.id()),
+                Out::Send { to, .. } if !remote.contains(to) => Some(to.id()),
                 Out::Archive { target, .. } => Some(target.id()),
                 _ => None,
             })

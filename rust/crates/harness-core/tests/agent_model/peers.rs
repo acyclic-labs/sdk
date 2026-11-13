@@ -4,6 +4,165 @@ use acyclic_harness_core::Capabilities;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn remote_send_recovers_original_admission_from_its_source_publication() -> Result {
+    use acyclic_actors::{
+        addressing::ActorReference,
+        route::{self, NodeId, Paths, Routed},
+    };
+    use acyclic_stream::{FollowRequest, WhenAbsent};
+    for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+        let local = MemoryStream::default();
+        let account = MemoryStream::default();
+        let sender = create(&local, id(50)).await?;
+        let recipient = create(&local, id(51)).await?;
+        let within = ActorReference::new(b"account", b"agents", sender.id().as_str().as_bytes())?;
+        let routing = Routing {
+            paths: Paths::new(StreamPath::new("routing")?),
+            node: NodeId::new(b"source")?,
+        };
+        let destination = NodeId::new(b"destination")?;
+        let admission =
+            session_peer_admission(&local, &Capabilities::new([SEND_PEER]), &sender, &recipient)
+                .await?
+                .ok_or("peer admission missing")?;
+        let state = AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+        let names = ["first", "second"];
+        let step = Step {
+            outs: effect_outs(
+                &state,
+                names
+                    .iter()
+                    .map(|name| TurnEffect::Send {
+                        peer: Some(admission.clone()),
+                        delivery,
+                        to: recipient.clone(),
+                        id: intent(name),
+                        re: None,
+                        body: Box::new(super::driver::file("message.md").expect("valid message")),
+                        attachments: None,
+                    })
+                    .collect(),
+            ),
+            state,
+            status: None,
+            alarm: Alarm::Clear,
+        };
+        let request = routing.lower(
+            &within,
+            &BTreeSet::from([recipient.clone()]),
+            &step,
+            1,
+            intent_key("source-step", &[])?,
+        )?;
+        // Recovery cannot discover an outbox record without its sender marker.
+        assert!(sent(&local, &sender, &intent("first")).await?.is_none());
+        let receipt = match local.commit(request.clone()).await? {
+            CommitOutcome::Committed(receipt) => receipt,
+            _ => return Err("source publication conflicted".into()),
+        };
+        submit(&local, request).await?;
+        let outbox = routing.paths.outbox(&routing.node)?;
+        assert_eq!(local.tail(outbox.clone()).await?, 2);
+        assert_eq!(
+            local.tail(recipient.inbox()?).await?,
+            1,
+            "source never writes a foreign inbox"
+        );
+        for (sequence, name) in names.iter().enumerate() {
+            let marker = local
+                .head(sender.sent_message(&intent(name))?)
+                .await?
+                .last
+                .ok_or("marker missing")?;
+            let record = local
+                .record_at(outbox.clone(), sequence as u64)
+                .await?
+                .ok_or("outbox missing")?;
+            assert_eq!(record.commit_id, marker.commit_id);
+            assert_eq!(record.commit_id, receipt.commit_id);
+            let envelope = route::Envelope::decode(&record.value)?;
+            let CommitMutation::Append { records, .. } = &envelope.request.effects[0].mutations[0]
+            else {
+                return Err("message append missing".into());
+            };
+            let original = InboxRecord::decode(&records[0].value)?;
+            let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = &original else {
+                return Err("not a message".into());
+            };
+            assert_eq!(
+                message.from,
+                Sender::Agent {
+                    path: sender.clone()
+                }
+            );
+            assert_eq!(
+                envelope.request.idempotency_key,
+                send(&recipient, &message.from, &original)?.idempotency_key
+            );
+            assert_eq!(
+                sent(&local, &sender, &intent(name))
+                    .await?
+                    .ok_or("receipt missing")?
+                    .delivery,
+                SentDelivery::Pending {
+                    source: routing.paths.outbox_cursor(&routing.node)?,
+                    from: sequence as u64
+                }
+            );
+        }
+        let cursor = routing.paths.outbox_cursor(&routing.node)?;
+        let mut changes = acyclic_stream::records_only(
+            local
+                .follow(FollowRequest {
+                    when_absent: WhenAbsent::Wait,
+                    ..FollowRequest::new(cursor, 1)
+                })
+                .await?,
+        );
+        let forward = route::forward(&local, &routing.paths, &routing.node, async |envelope| {
+            envelope
+                .publish_relay(&account, &routing.paths, &destination, Vec::new())
+                .await
+        });
+        let acknowledged = changes.try_next();
+        futures::pin_mut!(forward, acknowledged);
+        match futures::future::select(forward, acknowledged).await {
+            futures::future::Either::Right((record, _)) => assert!(record?.is_some()),
+            futures::future::Either::Left((result, _)) => {
+                return Err(format!("forward stopped: {result:?}").into());
+            }
+        }
+        for (sequence, name) in names.iter().enumerate() {
+            let record = local
+                .record_at(outbox.clone(), sequence as u64)
+                .await?
+                .ok_or("outbox missing")?;
+            let envelope = route::Envelope::decode(&record.value)?;
+            let expected = Routed::Relayed {
+                key: envelope.request.idempotency_key.clone(),
+                relay_seq: sequence as u64,
+            };
+            assert_eq!(
+                envelope
+                    .publish_relay(&account, &routing.paths, &destination, Vec::new())
+                    .await?,
+                expected
+            );
+            assert_eq!(
+                sent(&local, &sender, &intent(name))
+                    .await?
+                    .ok_or("receipt missing")?
+                    .delivery,
+                SentDelivery::Complete(expected)
+            );
+        }
+        assert_eq!(account.tail(routing.paths.relay(&destination)?).await?, 2);
+        assert_eq!(local.tail(recipient.inbox()?).await?, 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn archive_closes_a_root_without_peer_membership() -> Result {
     let provider = MemoryStream::default();
     let mut root = create_root(&intent("pre-peer-root"), adopted(id(42)))?;
@@ -81,7 +240,9 @@ async fn either_opt_out_fences_prepared_peer_delivery_and_replay() -> Result {
                     .await?
                     .ok_or("missing rejection receipt")?
                     .delivery,
-                Delivered::Closed
+                SentDelivery::Complete(acyclic_actors::route::Routed::Rejected(
+                    acyclic_actors::route::Rejection::Closed
+                ))
             );
             submit(
                 &provider,

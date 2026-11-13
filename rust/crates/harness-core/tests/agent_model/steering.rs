@@ -95,7 +95,9 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             Some(SentMessage {
                 to: recipient.clone(),
                 id: expected.id.clone(),
-                delivery: Delivered::Committed { inbox: 1 },
+                delivery: SentDelivery::Complete(acyclic_actors::route::Routed::Delivered(
+                    acyclic_actors::route::Delivered { inbox: 1 }
+                )),
             })
         );
         let records = values(&stream, recipient.inbox()?).await?;
@@ -137,7 +139,9 @@ async fn steering_review_sends_skip_closed_recipients() -> Result {
             Some(SentMessage {
                 to: recipient.clone(),
                 id: intent("late"),
-                delivery: Delivered::Closed,
+                delivery: SentDelivery::Complete(acyclic_actors::route::Routed::Rejected(
+                    acyclic_actors::route::Rejection::Closed
+                )),
             })
         );
 
