@@ -278,6 +278,7 @@ mod model {
     fn race() -> Result<(), Box<dyn std::error::Error>> {
         let actor = ActorReference::new(b"account", b"agents", b"placement")?;
         let runtime = Arc::new(Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(
                 Arc::new(acyclic_stream::MemoryStream::default()),
                 StreamPath::new("actors")?,
