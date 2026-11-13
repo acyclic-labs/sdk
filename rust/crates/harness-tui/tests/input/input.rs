@@ -440,4 +440,19 @@ fn query_history_replies_preserve_edits_and_cancelled_searches() {
         input.history().entries().is_empty(),
         "query recall copied a second history authority"
     );
+    press(&mut input, KeyCode::Esc, M::NONE, 12);
+    press(&mut input, KeyCode::Home, M::NONE, 13);
+    let navigation = press(&mut input, KeyCode::Up, M::NONE, 14);
+    let [InputEffect::History { request, .. }] = navigation.as_slice() else {
+        panic!("missing navigation after search")
+    };
+    let expected = input.editor.text().to_owned();
+    assert!(input.resolve_history(*request, &expected, Some("recalled"), true, 15));
+    press(&mut input, KeyCode::Char('x'), M::NONE, 16);
+    press(&mut input, KeyCode::Home, M::NONE, 17);
+    let edited = press(&mut input, KeyCode::Up, M::NONE, 18);
+    assert!(matches!(
+        edited.as_slice(),
+        [InputEffect::History { restart: true, .. }]
+    ));
 }

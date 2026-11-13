@@ -419,10 +419,16 @@ impl PromptInput {
                 .completion
                 .action(&mut self.editor, action, select, now_ms)
         {
+            if matches!(action, Action::Tab | Action::Submit) {
+                self.history_active = false;
+            }
             return effects;
         }
         match decoded {
-            DecodedKey::Text(text) => self.editor.insert(text.encode_utf8(&mut [0; 4]), now_ms),
+            DecodedKey::Text(text) => {
+                self.history_active = false;
+                self.editor.insert(text.encode_utf8(&mut [0; 4]), now_ms);
+            }
             DecodedKey::Action { action, select } => {
                 self.apply_action(action, select, now_ms, width, &mut effects);
             }
