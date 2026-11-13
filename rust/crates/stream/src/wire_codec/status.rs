@@ -84,10 +84,7 @@ impl From<StreamError> for Status {
 /// Encodes a Stream failure, reproducing its retained member diagnostics.
 #[must_use]
 fn error_status(error: &StreamError) -> Status {
-    let refusal = match error {
-        StreamError::Refused(refusal) => Some(&**refusal),
-        _ => None,
-    };
+    let refusal = error.member_refusal().map(|refusal| &**refusal);
     let parts = Refusal::encode(refusal, canonical(error));
     Status::with_details_and_metadata(
         Code::from_i32(parts.code),

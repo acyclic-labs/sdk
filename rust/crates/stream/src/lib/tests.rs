@@ -340,12 +340,20 @@ mod replay_tests {
             );
         }
         assert_eq!(drain(&mut stream.replay(tail)).await.unwrap(), [tail]);
-        assert_eq!(
-            drain(&mut stream.replay(0).until(tail + 2)).await,
-            Err(StreamError::Unavailable)
-        );
+        assert_original_replay_failure(drain(&mut stream.replay(0).until(tail + 2)).await);
     }
 
+    fn assert_original_replay_failure(result: Result<Vec<u64>, StreamError>) {
+        let error = result.unwrap_err();
+        assert_eq!(error.category(), StreamError::Unavailable);
+        let mut cause = std::error::Error::source(&error);
+        let mut original = false;
+        while let Some(source) = cause {
+            original |= source.downcast_ref::<ReplayViolation>().is_some();
+            cause = source.source();
+        }
+        assert!(original, "replay lost the original prefix violation");
+    }
     #[tokio::test]
     async fn gaps_within_and_between_pages_fail_closed() {
         for (missing, cursor) in [(7, 0), (u64::from(REPLAY_PAGE), u64::from(REPLAY_PAGE))] {
@@ -360,7 +368,7 @@ mod replay_tests {
             )
             .await;
             let mut replay = stream.replay(0);
-            assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+            assert_original_replay_failure(drain(&mut replay).await);
             assert_eq!(
                 replay.cursor(),
                 cursor,
@@ -370,10 +378,7 @@ mod replay_tests {
                 drain(&mut stream.replay(0).until(missing)).await.unwrap(),
                 (0..missing).collect::<Vec<_>>()
             );
-            assert_eq!(
-                drain(&mut stream.replay(0).until(missing + 1)).await,
-                Err(StreamError::Unavailable)
-            );
+            assert_original_replay_failure(drain(&mut stream.replay(0).until(missing + 1)).await);
         }
         let stream = filled(
             Gapped {
@@ -389,7 +394,7 @@ mod replay_tests {
             if let Some(end) = end {
                 replay = replay.until(end);
             }
-            assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+            assert_original_replay_failure(drain(&mut replay).await);
             assert_eq!(replay.cursor(), 0, "an overlong page advanced its cursor");
         }
     }

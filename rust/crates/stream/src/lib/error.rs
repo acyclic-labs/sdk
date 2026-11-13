@@ -206,12 +206,20 @@ impl StreamError {
         })
     }
 
+    pub(crate) fn member_refusal(&self) -> Option<&StreamRefusal> {
+        let mut error = self;
+        loop {
+            match error {
+                Self::Caused(failure) => error = failure.classification(),
+                Self::Refused(refusal) => return Some(refusal),
+                _ => return None,
+            }
+        }
+    }
     /// The authority time a [`Self::not_before`] refusal carries.
     #[must_use]
     pub fn not_before_authority(&self) -> Option<u64> {
-        let Self::Refused(refusal) = self else {
-            return None;
-        };
+        let refusal = self.member_refusal()?;
         let parts = refusal.original()?;
         (parts.code == 11 && parts.message == NOT_BEFORE)
             .then(|| {
