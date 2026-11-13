@@ -996,6 +996,8 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 signed::NOW
             );
             let original = context.current().unwrap();
+            root.within_sync(|| context.renew(original.clone()))
+                .unwrap();
             let observed = root.within_sync(|| context.current()).unwrap();
             assert!(Arc::ptr_eq(&original, &observed));
             let mut query = TraceQuery::new(
@@ -1003,7 +1005,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 Default::default(),
             );
             let mut seen = std::collections::BTreeSet::new();
-            while seen.len() != 2 {
+            while seen.len() != 3 {
                 if let Observation::Completed {
                     start,
                     bytes,
@@ -1020,6 +1022,10 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                         "stream.credential_snapshot" => (
                             Mechanism::Lock,
                             "atomic_credential_snapshot_against_renewal",
+                        ),
+                        "stream.credential_renewal" => (
+                            Mechanism::Lock,
+                            "atomic_renewal_preserves_account_principal_and_grants",
                         ),
                         name => panic!("unexpected request path {name}"),
                     };

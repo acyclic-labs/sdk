@@ -321,28 +321,49 @@ impl ResourceAuthorization {
             .map_err(|_| StreamError::Unavailable)
     }
     pub(super) fn renew(&self, next: Arc<VerifiedCapability>) -> Result<(), authority::Rejection> {
-        let mut current = self
-            .capability
-            .lock()
-            .map_err(|_| authority::Rejection::Forbidden)?;
-        // Queued entries were authorized under this certified account, grants
-        // and identity. A matching principal does not bind the same account.
-        // A changed ceiling closes the channel so replay uses the new scope.
-        let (held, renewed) = (current.effective(), next.effective());
-        let account = current
-            .account_id()
-            .map_err(|_| authority::Rejection::Forbidden)?;
-        let next_account = next
-            .account_id()
-            .map_err(|_| authority::Rejection::Forbidden)?;
-        if account != next_account
-            || held.principal() != renewed.principal()
-            || !held.grants().eq(renewed.grants())
+        let work = || {
+            let mut current = self
+                .capability
+                .lock()
+                .map_err(|_| authority::Rejection::Forbidden)?;
+            // Queued entries were authorized under this certified account, grants
+            // and identity. A matching principal does not bind the same account.
+            // A changed ceiling closes the channel so replay uses the new scope.
+            let (held, renewed) = (current.effective(), next.effective());
+            let account = current
+                .account_id()
+                .map_err(|_| authority::Rejection::Forbidden)?;
+            let next_account = next
+                .account_id()
+                .map_err(|_| authority::Rejection::Forbidden)?;
+            if account != next_account
+                || held.principal() != renewed.principal()
+                || !held.grants().eq(renewed.grants())
+            {
+                return Err(authority::Rejection::Forbidden);
+            }
+            *current = next;
+            Ok(())
+        };
+        #[cfg(feature = "serde")]
         {
-            return Err(authority::Rejection::Forbidden);
+            crate::trace::observe_sync(
+                crate::trace::Request {
+                    name: "stream.credential_renewal",
+                    mechanism: crate::trace::Mechanism::Lock,
+                    parent: None,
+                    guarantee: Some("atomic_renewal_preserves_account_principal_and_grants"),
+                },
+                work,
+                |result| {
+                    result
+                        .is_ok()
+                        .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                },
+            )
         }
-        *current = next;
-        Ok(())
+        #[cfg(not(feature = "serde"))]
+        work()
     }
 }
 
