@@ -276,7 +276,7 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
     );
     #[cfg(target_os = "linux")]
     {
-        use std::{io::Write as _, os::fd::AsRawFd as _};
+        use std::{io::Write as _, os::fd::AsRawFd as _, path::PathBuf};
 
         // This control proves observation of the real syncfs call, not crash
         // persistence (the local checkpoint above covers that). A memory file
