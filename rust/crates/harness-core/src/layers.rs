@@ -22,9 +22,9 @@ pub const PARENT: &str = "parent";
 pub const ORDER: [&str; 6] = [SEED, USER_ORG, SCOPE, TEMPLATE, PARENT, HOME];
 
 mod manifest;
-pub use manifest::Manifest;
 #[cfg(not(target_arch = "wasm32"))]
 pub use manifest::ManifestTree;
+pub use manifest::{HomeApply, Manifest};
 
 /// Tool path of the agent's home volume.
 pub const HOME_PATH: &str = "volume:///home/";
