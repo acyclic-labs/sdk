@@ -370,7 +370,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 br#"{"private_source":"original","callable":{"runtime":"private"}}"#,
                 "application/json",
                 "manifest.json",
-                4096,
+                Some(4096),
                 &crate::IdempotencyKey::new("private-epoch-manifest")?,
                 None,
                 Default::default(),
@@ -397,9 +397,13 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .await
                 .expect_err("a broad guest journal grant disclosed the private epoch manifest");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
-            let denied = async { reader.read(&control, control.descriptor().byte_length(), ceiling, None)?.await }
-                .await
-                .expect_err("guest read host data through the persisted policy");
+            let denied = async {
+                reader
+                    .read(&control, control.descriptor().byte_length(), ceiling, None)?
+                    .await
+            }
+            .await
+            .expect_err("guest read host data through the persisted policy");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
         // Input references enter committed inboxes and can be inherited. The
@@ -413,7 +417,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"accepted input",
                 "text/plain",
                 "message.txt",
-                4096,
+                Some(4096),
                 &crate::IdempotencyKey::new("accepted-input")?,
                 None,
                 Default::default(),
@@ -427,7 +431,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"optional instructions",
                 "text/markdown",
                 "SKILL.md",
-                4096,
+                Some(4096),
                 &crate::IdempotencyKey::new("published-skill")?,
                 None,
                 Default::default(),
@@ -457,7 +461,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"later input",
                 "text/plain",
                 "message.txt",
-                4096,
+                Some(4096),
                 &crate::IdempotencyKey::new("later-input")?,
                 None,
                 Default::default(),
@@ -721,7 +725,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 b"shared original input",
                 "text/plain",
                 "message.txt",
-                4096,
+                Some(4096),
                 &crate::IdempotencyKey::new("shared-input")?,
                 None,
                 Default::default(),
