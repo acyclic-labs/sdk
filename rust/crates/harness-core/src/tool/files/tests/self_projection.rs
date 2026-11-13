@@ -19,7 +19,7 @@ impl ContentResidencyVerifier for ObservedReader {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
