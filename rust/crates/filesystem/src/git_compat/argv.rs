@@ -144,7 +144,7 @@ pub fn parse_git_argv<E: std::error::Error + 'static>(
                     ));
                 }
                 return Ok(GitCommand::Restore {
-                    source: args.first().cloned(),
+                    source: args.get(..separator).and_then(|source| source.first()).cloned(),
                     paths,
                 });
             }

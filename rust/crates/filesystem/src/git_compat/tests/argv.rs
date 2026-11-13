@@ -107,6 +107,10 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
             r#"{"Restore":{"source":"HEAD","paths":["src/lib.rs"]}}"#,
         ),
         (
+            &["checkout", "--", "src/lib.rs", "--literal"],
+            r#"{"Restore":{"source":null,"paths":["src/lib.rs","--literal"]}}"#,
+        ),
+        (
             &["rev-parse", "--abbrev-ref", "HEAD"],
             r#"{"RevParse":{"argument":"--abbrev-ref HEAD"}}"#,
         ),
