@@ -15,6 +15,20 @@ use std::sync::Arc;
 pub fn resolve_model<'a>(role: Option<&'a str>, fallback: Option<&'a str>) -> Option<&'a str> {
     role.or(fallback)
 }
+
+/// Every model a shipped role template selects.
+///
+/// # Errors
+/// When a shipped template does not parse.
+pub fn role_models() -> Result<std::collections::BTreeSet<String>> {
+    let mut models = std::collections::BTreeSet::new();
+    for (path, bytes) in crate::seed::tree() {
+        if path.starts_with("templates/") && path.ends_with("/AGENT.md") {
+            models.extend(parse(bytes)?.model);
+        }
+    }
+    Ok(models)
+}
 const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
