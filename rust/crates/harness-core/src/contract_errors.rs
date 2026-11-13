@@ -940,7 +940,10 @@ impl Error {
         #[cfg(not(target_arch = "wasm32"))]
         if matches!(
             self,
-            Self::NativeJson {
+            Self::NativeDiagnostic {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            } | Self::NativeJson {
                 code: crate::wire::ErrorCode::Invalid,
                 ..
             } | Self::NativeJsonAdmission {
