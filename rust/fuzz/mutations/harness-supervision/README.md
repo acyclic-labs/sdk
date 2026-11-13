@@ -14,8 +14,8 @@ spawn without a stop as its healthy control. From the repository root, apply:
 git apply rust/fuzz/mutations/harness-supervision/same-turn-stop.patch
 ```
 
-Run
-that unchanged test, and require its failure at either
+The production mutant restores late spawn admission after the archive cascade
+has frozen its child set. Run that unchanged test, and require its failure at either
 `same-turn child was not admitted and archived` or
 `same-turn spawn escaped the stop`. Compilation failure is not a successful
 negative control. Restore the source, then require the original test to pass again:
