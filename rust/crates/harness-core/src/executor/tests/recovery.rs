@@ -1,6 +1,100 @@
 use super::*;
 
 #[tokio::test]
+async fn resumed_agent_keeps_its_prompt_prefix_across_provider_configuration_changes() -> Result<()>
+{
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), None).await?;
+    let journal = storage.journal();
+    let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+    let tools = echo_tools(
+        tool.clone(),
+        json!({"type":"object"}),
+        json!({"type":"object"}),
+        crate::tool::json_projection_schema(json!({"type":"object"})),
+    )?;
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            tool_turn([echo_call("pending", json!({"value":"retained result"}))]),
+            done_turn(),
+        ])
+        .with_token_counter(fixture_token_count),
+    );
+    let original = uncompacted_executor(
+        Model::new(
+            "fixture".into(),
+            "resume".into(),
+            "provider-config-before".into(),
+        )?,
+        provider.clone(),
+        ContextPipeline::default(),
+        tools,
+    )
+    .with_tool_authority(
+        RuntimeScope::new(
+            Capabilities::new(["tool:call:example.echo"]),
+            Limits::default(),
+        )?,
+        allowed()?,
+    )?;
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: None,
+        input: ModelContent::Text("original durable context; ".repeat(512)),
+        selected_context: None,
+    };
+    // Stop after the admitted response and before dispatching its tool. This
+    // is the same pending exchange that a new runtime must resume, not a new turn.
+    original
+        .model_step(journal.as_ref(), &input, 0, &[])
+        .await?;
+    assert_eq!(tool.0.load(Ordering::SeqCst), 0);
+    let prefix = provider.requests()[0].clone();
+    let original_dispatch = provider.dispatches()[0];
+    let mut resumed = original
+        .clone()
+        .with_sampling(crate::model::ModelSampling {
+            seed: Some(42),
+            ..Default::default()
+        })?;
+    resumed.model.revision = "provider-config-after".into();
+    let result = resumed.execute(input.clone(), journal.as_ref()).await?;
+    assert_eq!(result.text, "done");
+    assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+    let requests = provider.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "resume must not dispatch the admitted response again"
+    );
+    assert_eq!(requests[0], prefix);
+    assert_eq!(requests[1].model, resumed.model);
+    assert_eq!(requests[1].sampling.seed, Some(42));
+    assert_eq!(
+        &requests[1].messages[..prefix.messages.len()],
+        prefix.messages
+    );
+    assert!(requests[1].messages.iter().any(|message| matches!(
+        &message.content,
+        ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) if call_id == "pending"
+    )));
+    assert_eq!(provider.dispatches()[0], original_dispatch);
+    assert_eq!(
+        resumed.execute(input.clone(), journal.as_ref()).await?,
+        result
+    );
+    assert_eq!(provider.requests().len(), 2);
+    let changed = TurnInput {
+        input: ModelContent::Text("replacement prompt".into()),
+        ..input
+    };
+    assert!(matches!(
+        resumed.execute(changed, journal.as_ref()).await,
+        Err(Error::Conflict(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
     let journal = Journal::default();
     let (provider, _accounting_calls) =

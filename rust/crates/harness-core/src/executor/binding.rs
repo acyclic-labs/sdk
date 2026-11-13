@@ -1,10 +1,5 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
-fn slice_is_empty<T>(slice: &&[T]) -> bool {
-    slice.is_empty()
-}
-
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         self.verify_summary_destination()?;
@@ -59,110 +54,31 @@ impl StockExecution<'_> {
             .transpose()
     }
 
-    pub(super) fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
+    /// A turn belongs to its original input and agent volume. Model selection,
+    /// executor code and resource policy are replaceable runtime configuration;
+    /// each admitted model request separately records its exact immutable bytes.
+    pub(super) fn input_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         #[derive(Serialize)]
-        struct IssuedContext<'a> {
-            admission_operation: OperationId,
-            execution_operation: OperationId,
-            task_id: Option<TaskId>,
+        struct Binding<'a> {
+            contract: &'static str,
+            operation: OperationId,
+            input: &'a ModelContent,
+            selection: Option<&'a crate::projection::SelectedModelContext>,
             private_volume: Option<&'a crate::conversation::VolumeRef>,
-            run_limits: crate::runtime::TaskRunLimits,
-            extensions: Option<&'a crate::core::ExtensionAdmission>,
         }
-        #[derive(Serialize)]
-        struct Request<'a> {
-            executor: &'static str,
-            input: &'a TurnInput,
-            model: &'a Model,
-            #[serde(
-                default,
-                skip_serializing_if = "crate::model::ModelSampling::is_default"
-            )]
-            sampling: crate::model::ModelSampling,
-            context: &'a [Value],
-            tools: &'a [crate::tool::ToolDefinition],
-            limits: Limits,
-            tool_scope: (&'a crate::Capabilities, Limits),
-            policy: Option<&'a ComponentIdentity>,
-            #[cfg(not(target_arch = "wasm32"))]
-            #[serde(skip_serializing_if = "Option::is_none")]
-            tool_hooks: Option<(&'static str, &'a [u8; 32])>,
-            #[cfg(not(target_arch = "wasm32"))]
-            #[serde(skip_serializing_if = "slice_is_empty")]
-            after_hooks: &'a [crate::plugins::AfterHook],
-            inherited_prefix: Option<&'a FileRef>,
-            compaction: &'a crate::context::CompactionPolicy,
-            model_capacity: Option<crate::context::ModelContextCapacity>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            task_context: Option<IssuedContext<'a>>,
-        }
-        // Contracts and tool definitions are temporary digest inputs. Keep
-        // their native custody on the original work, with a scope that also
-        // releases partial preparation when a stage or encoder rejects.
-        #[cfg(not(target_arch = "wasm32"))]
-        let temporary_io = self
-            .io
-            .and_then(PreparationIo::original_native_work)
-            .map(PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let io = temporary_io.as_ref().or(self.io);
-        #[cfg(target_arch = "wasm32")]
-        let io = self.io;
-        let contracts = self.context_pipeline().contracts(io)?;
-        // Live catalogs are turn inputs. Their original schemas and producer
-        // bindings are pinned by each retained model request, not this fixed
-        // executor configuration digest.
-        let tools = self
-            .stock
-            .tools
-            .fixed_definitions(self.stock.tool_scope.grants(), io)?;
-        let task_context = self.context.map(|(context, operation)| IssuedContext {
-            admission_operation: operation,
-            execution_operation: operation,
-            task_id: None,
-            private_volume: context
-                .content_binding(None)
-                .and_then(|binding| binding.writer.as_ref())
-                .map(|writer| writer.volume()),
-            run_limits: context.scope().run_limits(),
-            extensions: context.scope().extensions(),
-        });
         preparation_digest(
-            &Request {
-                executor: "acyclic.stock.v10",
-                input,
-                model: &self.stock.model,
-                sampling: self.sampling()?,
-                context: &contracts,
-                tools: &tools,
-                limits: self.stock.limits,
-                tool_scope: (
-                    self.stock.tool_scope.grants(),
-                    self.stock.tool_scope.limits(),
-                ),
-                policy: self.stock.policy_identity.as_ref(),
-                #[cfg(not(target_arch = "wasm32"))]
-                tool_hooks: self
-                    .stock
-                    .hooks
-                    .as_ref()
-                    .map(|hooks| ("1", &hooks.manifest)),
-                inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
-                #[cfg(not(target_arch = "wasm32"))]
-                after_hooks: &self.stock.after_hooks,
-                compaction: self.compaction_policy()?,
-                model_capacity: if self.unchecked()? {
-                    None
-                } else {
-                    Some(self.model_capacity()?)
-                },
-                task_context,
+            &Binding {
+                contract: "acyclic.turn.v1",
+                operation: input.operation_id,
+                input: &input.input,
+                selection: input.selected_context.as_ref(),
+                private_volume: self.context.and_then(|(context, _)| {
+                    context.content_binding(None).map(|binding| &binding.volume)
+                }),
             },
-            io,
+            self.io,
         )
     }
-
     /// Checks the bound turn journal and starts it when empty.
     pub(super) async fn ensure_started(
         &self,
@@ -209,7 +125,7 @@ impl StockExecution<'_> {
                 "execution journal has no initial request binding",
             ));
         }
-        let request_digest = self.request_digest(input)?;
+        let request_digest = self.input_digest(input)?;
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
                 request_digest: existing,
@@ -218,7 +134,7 @@ impl StockExecution<'_> {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Conflict,
-                    "execution identity is bound to another request or configuration",
+                    "turn identity is bound to another input or agent volume",
                 ));
             }
             None => {

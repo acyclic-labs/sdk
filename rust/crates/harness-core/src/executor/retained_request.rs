@@ -75,6 +75,13 @@ impl<'a> StockExecution<'a> {
         {
             return Ok(None);
         }
+        // Replay keeps the original admitted request. Its continuation is a new
+        // admission: changed configuration selects a fresh header over the same
+        // original turn history instead of carrying the old selection forward.
+        let tools = self.request_tools()?;
+        if !self.response_request_matches(&retained.request, &tools)? {
+            return Ok(None);
+        }
         let total = self.absolute_prior_count(prior.len()).await?;
         let suffix_count = total
             .checked_sub(retained.prior)

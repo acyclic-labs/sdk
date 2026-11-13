@@ -312,9 +312,9 @@ pub enum ToolRecordKind {
     reason = "journal observations preserve direct typed ref fields"
 )]
 pub enum ExecutionEvent {
-    /// Binds an operation identity to one immutable request and composition.
+    /// Binds a turn identity to its immutable input and original agent volume.
     Started {
-        /// Digest of the input, stock executor version, model, stages, and tools.
+        /// Stable turn-input digest, independent of binary and model configuration.
         request_digest: [u8; 32],
     },
     /// Appends an immutable conversation envelope at this original journal position.

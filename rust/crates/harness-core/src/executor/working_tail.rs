@@ -226,7 +226,7 @@ impl<'a> StockExecution<'a> {
         let cut = &retained.cut;
         let consumed = cut.prior_messages;
         if cut.operation != input.operation_id
-            || cut.input_digest != self.request_digest(input)?
+            || cut.input_digest != self.input_digest(input)?
             || cut.step >= step
             || consumed > prior
         {
@@ -379,7 +379,7 @@ impl<'a> StockExecution<'a> {
         let mut cut = WorkingCut {
             version: 1,
             operation: input.operation_id,
-            input_digest: self.request_digest(input)?,
+            input_digest: self.input_digest(input)?,
             step,
             prior_messages: self.absolute_prior_count(prior).await?,
             source,
@@ -444,7 +444,7 @@ impl<'a> StockExecution<'a> {
             .await?;
         if retained.cut.operation != input.operation_id
             || retained.cut.step != step
-            || retained.cut.input_digest != self.request_digest(input)?
+            || retained.cut.input_digest != self.input_digest(input)?
         {
             return Err(self.invalid_working_cut());
         }

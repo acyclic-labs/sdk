@@ -6,45 +6,12 @@ async fn save_unaccounted_request(
     journal: &Journal,
     input: &TurnInput,
     single_request: bool,
-    version: &str,
 ) -> Result<crate::model::PreparedModelRequest> {
     let execution = StockExecution {
         single_request,
         ..StockExecution::ordinary(executor)
     };
-    let mut binding = json!({
-        "executor": version,
-        "input": input,
-        "model": executor.model,
-        "context": [],
-        "tools": [],
-        "limits": executor.limits,
-        "tool_scope": [executor.tool_scope.grants(), executor.tool_scope.limits()],
-        "policy": null,
-        "inherited_prefix": null,
-        "compaction": crate::context::CompactionPolicy::Disabled,
-        "model_capacity": null,
-    });
-    if single_request {
-        binding["model_capacity"] =
-            serde_json::to_value(executor.provider.context_capacity(&executor.model)?)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-    }
-    let sampling = execution.sampling()?;
-    if !sampling.is_default() {
-        binding["sampling"] =
-            serde_json::to_value(sampling).map_err(|error| Error::Invalid(error.to_string()))?;
-    }
-    journal
-        .append(
-            input.operation_id,
-            "execution:started",
-            &ExecutionEvent::Started {
-                request_digest: preparation_digest(&binding, None)?,
-            },
-            None,
-        )?
-        .await?;
+    execution.ensure_started(journal, input).await?;
     let context_input = ContextInput::copy_for_turn(input, 0, &[], None)?;
     let base = ContextPipeline::base_context(&context_input, executor.limits, None)?;
     let (mut context, prepared) = execution
@@ -112,8 +79,7 @@ async fn disabled_compaction_dispatches_fresh_and_saved_requests_without_account
                 selected_context: None,
             };
             if saved {
-                save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v10")
-                    .await?;
+                save_unaccounted_request(&executor, &journal, &input, false).await?;
             }
             let result = executor.execute(input.clone(), &journal).await?;
             assert_eq!(result.text, "done");
@@ -163,8 +129,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
         input: ModelContent::Text("x".repeat(5_000)),
         selected_context: None,
     };
-    let prepared =
-        save_unaccounted_request(&executor, &journal, &input, false, "acyclic.stock.v10").await?;
+    let prepared = save_unaccounted_request(&executor, &journal, &input, false).await?;
     let reference = transcript::stage_request(
         &journal,
         input.operation_id,
@@ -211,7 +176,7 @@ async fn saved_started_request_reconciles_and_replays_without_fresh_admission() 
 }
 
 #[tokio::test]
-async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
+async fn saved_single_inference_keeps_its_admitted_capacity_on_replay() -> Result<()> {
     let journal = Journal::default();
     let (provider, counts) =
         counted_model(4_096, None, [ScriptedTurn::Text("inferred".into())], []);
@@ -227,7 +192,7 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
         input: ModelContent::Text("input".into()),
         selected_context: None,
     };
-    save_unaccounted_request(&executor, &journal, &input, true, "acyclic.stock.v10").await?;
+    save_unaccounted_request(&executor, &journal, &input, true).await?;
     for _ in 0..2 {
         assert_eq!(
             executor.infer(&journal, &input, None).await?.text(),
@@ -237,36 +202,11 @@ async fn saved_single_inference_keeps_its_capacity_binding() -> Result<()> {
     assert_eq!(counts.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
     assert!(matches!(
-        executor.model_step(&journal, &input, 0, &[]).await,
-        Err(Error::Conflict(_))
+        executor.model_step(&journal, &input, 0, &[]).await?.last(),
+        Some(ModelEvent::Completed { .. })
     ));
-    Ok(())
-}
-
-#[tokio::test]
-async fn obsolete_request_encoding_is_refused_before_dispatch() -> Result<()> {
-    for binding in ["acyclic.stock.v8", "acyclic.stock.v9"] {
-        let journal = Journal::default();
-        let provider = Arc::new(ScriptedModelProvider::new([done_turn()]));
-        let executor = uncompacted_executor(
-            Model::new("test".into(), "binding".into(), "1".into())?,
-            provider.clone(),
-            ContextPipeline::default(),
-            ToolRegistry::default(),
-        );
-        let input = TurnInput {
-            operation_id: OperationId::new(),
-            max_steps: None,
-            input: ModelContent::Text("saved".into()),
-            selected_context: None,
-        };
-        save_unaccounted_request(&executor, &journal, &input, false, binding).await?;
-        assert!(matches!(
-            executor.execute(input, &journal).await,
-            Err(Error::Conflict(_))
-        ));
-        assert!(provider.requests().is_empty());
-    }
+    assert_eq!(counts.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
     Ok(())
 }
 

@@ -240,7 +240,7 @@ impl StockExecution<'_> {
                 "tool prefix has another execution identity",
             ));
         };
-        if *request_digest != self.request_digest(input)? {
+        if *request_digest != self.input_digest(input)? {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Conflict,

@@ -317,6 +317,21 @@ impl StockExecution<'_> {
         prepared: &crate::model::PreparedModelRequest,
         tools: &[crate::tool::ToolDefinition],
     ) -> Result<()> {
+        if !self.response_request_matches(prepared, tools)? {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Storage,
+                "retained response request differs from selected model or tools",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn response_request_matches(
+        &self,
+        prepared: &crate::model::PreparedModelRequest,
+        tools: &[crate::tool::ToolDefinition],
+    ) -> Result<bool> {
         let request = prepared.request();
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         let io = scope.io();
@@ -346,19 +361,11 @@ impl StockExecution<'_> {
             } else {
                 request.tools == tools
             };
-        if request.summary != self.summary.is_some()
-            || request.model != self.stock.model
-            || (!request.compose_tools && !definitions_match)
-            || request.compose_tools != self.code_composition(tools)?
-            || request.sampling != self.sampling()?
-        {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "retained response request differs from selected model or tools",
-            ));
-        }
-        Ok(())
+        Ok(request.summary == self.summary.is_some()
+            && request.model == self.stock.model
+            && (request.compose_tools || definitions_match)
+            && request.compose_tools == self.code_composition(tools)?
+            && request.sampling == self.sampling()?)
     }
 }
 
