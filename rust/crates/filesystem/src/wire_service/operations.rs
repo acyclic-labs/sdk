@@ -416,7 +416,7 @@ where
             .map_err(|failure| status(&failure.error))?
             .value
         {
-            TransactionRebase::Rebased(generation) => {
+            TransactionRebase::Rebased(generation) | TransactionRebase::Current(generation) => {
                 Ok(Response::new(wire::RebaseTransactionResponse {
                     base: Some(generation_ref(&generation)),
                     conflicts: Vec::new(),

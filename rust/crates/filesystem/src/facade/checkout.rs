@@ -393,6 +393,11 @@ impl<A, O> Checkout<A, O> {
         GenerationId::from_root(self.generation_root)
     }
 
+    /// The generation this candidate's changes are based on.
+    pub(crate) const fn base_generation(&self) -> GenerationId {
+        GenerationId::from_root(self.root.base)
+    }
+
     /// Authenticated decoded generation root.
     #[must_use]
     pub fn root(&self) -> &GenerationRoot {
