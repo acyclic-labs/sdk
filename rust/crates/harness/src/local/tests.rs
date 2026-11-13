@@ -134,7 +134,9 @@ pub(super) async fn request_text(
         .expect("scripted requests have local signing custody")
         .bootstrap_scope(
             "request-inspection",
-            &crate::Capabilities::new(grants),
+            &crate::Capabilities::new(grants.into_iter().chain(std::iter::once(
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+            ))),
             None,
             &mut None,
         )?;
