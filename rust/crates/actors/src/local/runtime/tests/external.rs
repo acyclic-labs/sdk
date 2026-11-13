@@ -412,6 +412,7 @@ async fn append_source<P: StreamProvider + ?Sized>(
 #[tokio::test]
 async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() -> TestResult {
     for (external, keyed) in [(false, false), (true, false), (true, true)] {
+        eprintln!("external source case external={external} keyed={keyed}: start");
         let width = if keyed { 3 } else { 1 };
         let selected = if keyed { 1 } else { 0 };
         let through = |batch| batch * width + selected + 1;
@@ -458,6 +459,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
             Ok(())
         })
         .await?;
+        eprintln!("external source: initial completion");
         let activation = provider.tail(root()?).await?;
         append_source(&*provider, &source, 0, keyed).await?;
         assert_eq!(
@@ -483,6 +485,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
             wake.join(store.activation(&address)?)?;
             store.submit(wake).await?;
         }
+        eprintln!("external source: awaiting first delivery");
         observe_while_running(
             serving.as_mut(),
             state_after(&store, &address, |state| {
@@ -500,6 +503,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
             continue;
         }
 
+        eprintln!("external source: first delivery complete");
         let before = provider.requests();
         assert!(futures::poll!(serving.as_mut()).is_pending());
         let idle = provider.requests().since(before);
@@ -512,6 +516,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
             Ok(())
         })
         .await?;
+        eprintln!("external source: pause complete");
         append_source(&*provider, &source, width, keyed).await?;
         observe_while_running(serving.as_mut(), async {
             runtime.complete().await?;
@@ -526,6 +531,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
                 .and_then(|state| state.cursor("inbox")),
             Some(through(0))
         );
+        eprintln!("external source: paused publication complete");
         observe_while_running(serving.as_mut(), async {
             runtime.pause(&address, false).await?;
             Ok(())
@@ -543,6 +549,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
             Ok(())
         })
         .await?;
+        eprintln!("external source: resumed delivery complete");
         drop(serving);
         assert!(runtime.release(&address));
         append_source(&*provider, &source, 2 * width, keyed).await?;
@@ -553,6 +560,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
         );
         let mut serving =
             Box::pin(reopened.run(|_, error| panic!("reopened source failed: {error}")));
+        eprintln!("external source: awaiting reopened delivery");
         observe_while_running(
             serving.as_mut(),
             state_after(&store, &address, |state| {
