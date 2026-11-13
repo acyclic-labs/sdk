@@ -283,6 +283,21 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 .ok_or("outbox missing")?;
             let envelope = route::Publication::decode(&record.value)?.delivery()?;
             drop(source);
+            let account = MemoryStream::default();
+            let recipient_node = NodeId::new(b"recipient-node")?;
+            envelope
+                .publish_relay(&account, &routing.paths, &recipient_node, Vec::new())
+                .await?;
+            let original = account
+                .head(routing.paths.relay(&recipient_node)?)
+                .await?
+                .last
+                .ok_or("relay missing")?;
+            let receipt = route::RelayReceipt {
+                commit_id: original.commit_id,
+                sequence: original.sequence,
+            };
+            drop(account);
             let peer = PeerRoute::parse(&envelope)?;
             if opt_out_before_delivery {
                 host.set_peer_membership(&recipient, &user(), &intent("off"), false)
@@ -296,7 +311,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             let activation = actor_store(&destination)?.activation(&host.actor(&recipient)?)?;
             let activation_path = activation.mutations[0].path().clone();
             let before_activation = destination.tail(activation_path.clone()).await?;
-            assert_eq!(peer.deliver(&host).await?, expected);
+            assert_eq!(peer.deliver(&host, &receipt).await?, expected);
             assert_eq!(
                 destination.tail(activation_path).await?,
                 before_activation + u64::from(!opt_out_before_delivery),
@@ -310,7 +325,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             )
             .await?;
             assert_eq!(
-                peer.deliver(&host).await?,
+                peer.deliver(&host, &receipt).await?,
                 expected,
                 "exact replay changed its original outcome"
             );
@@ -331,6 +346,14 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 "sender state must remain on its own node"
             );
             if !opt_out_before_delivery {
+                let record = destination
+                    .record_at(recipient.inbox()?, 1)
+                    .await?
+                    .ok_or("inbox input missing")?;
+                assert_eq!(
+                    route::RelayReceipt::from_headers(&record.headers)?,
+                    Some(receipt)
+                );
                 let records = values(&*destination, recipient.inbox()?).await?;
                 let input = InboxRecord::decode(&records[1])?;
                 match (input, delivery) {
@@ -341,6 +364,33 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                     _ => return Err("routed delivery changed receiver semantics".into()),
                 }
             }
+            let mut changed = receipt;
+            let mut identity = *changed.commit_id.as_bytes();
+            identity[0] ^= 1;
+            changed.commit_id = acyclic_stream::CommitId::from_bytes(identity);
+            assert!(
+                peer.deliver(&host, &changed).await.is_err(),
+                "a retry replaced its original relay reference"
+            );
+            let mut altered = envelope.clone();
+            let CommitMutation::Append { records, .. } =
+                &mut altered.request.effects[0].mutations[0]
+            else {
+                unreachable!()
+            };
+            let mut attributes = vec![receipt.attribute()];
+            attributes.extend(
+                records[0]
+                    .headers
+                    .attributes()
+                    .iter()
+                    .map(|attribute| attribute.to_owned()),
+            );
+            records[0].headers = acyclic_stream::RecordHeaders::new(Vec::new(), attributes)?;
+            assert!(
+                PeerRoute::parse(&altered).is_err(),
+                "a peer supplied host-authored receipt metadata"
+            );
             let mut altered = envelope.clone();
             altered.request.effects[0]
                 .conditions
@@ -382,7 +432,10 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             altered.to =
                 ActorReference::new(b"other-account", b"agents", envelope.to.id().as_bytes())?;
             assert!(
-                PeerRoute::parse(&altered)?.deliver(&host).await.is_err(),
+                PeerRoute::parse(&altered)?
+                    .deliver(&host, &receipt)
+                    .await
+                    .is_err(),
                 "foreign account reached an owning-node writer"
             );
             for input in [

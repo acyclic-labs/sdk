@@ -1,13 +1,27 @@
 //! One follow per destination, with acknowledgement after ordinary delivery.
 use super::{Envelope, Error, NodeId, Paths, Publication, Routed, account::Reply};
 use acyclic_stream::{
-    CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome, CommitRequest,
-    FollowRequest, IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    Attribute, CommitCondition, CommitEffect, CommitId, CommitMutation, CommitOutcome,
+    CommitRequest, FollowRequest, IdempotencyKey, StreamError, StreamPath, StreamProvider,
+    StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use std::convert::Infallible;
+
+/// Host-authored original relay reference on an ordinary inbox record.
+pub const RELAY_RECEIPT: &str = "acyclic.actors.route.receipt.v1";
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct ReceiptWire {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(bytes = "bytes", tag = "2")]
+    commit_id: bytes::Bytes,
+    #[prost(uint64, tag = "3")]
+    sequence: u64,
+}
 
 /// Original account publication of one relay record. This is a reference to
 /// immutable data, not authority to send a Notice or access another node's relay.
@@ -20,6 +34,47 @@ pub struct RelayReceipt {
 }
 
 impl RelayReceipt {
+    /// Version-one host metadata. A peer sender cannot supply this attribute;
+    /// the owning delivery host joins it after validating the original input.
+    pub fn attribute(&self) -> Attribute {
+        Attribute {
+            name: RELAY_RECEIPT.into(),
+            value: ReceiptWire {
+                version: 1,
+                commit_id: bytes::Bytes::copy_from_slice(self.commit_id.as_bytes()),
+                sequence: self.sequence,
+            }
+            .encode_to_vec()
+            .into(),
+        }
+    }
+
+    /// Recover the original host reference, including after the recipient
+    /// restarts. Missing metadata is an ordinary, non-routed inbox record.
+    pub fn from_headers(headers: &acyclic_stream::RecordHeaders) -> Result<Option<Self>, Error> {
+        let attributes = headers.attributes();
+        let Some(attribute) = attributes
+            .iter()
+            .find(|attribute| attribute.name == RELAY_RECEIPT)
+        else {
+            return Ok(None);
+        };
+        let wire =
+            ReceiptWire::decode(attribute.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
+        if wire.version != 1 {
+            return Err(Error::InvalidRecord);
+        }
+        Ok(Some(Self {
+            commit_id: CommitId::from_bytes(
+                wire.commit_id
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| Error::InvalidRecord)?,
+            ),
+            sequence: wire.sequence,
+        }))
+    }
+
     /// Recover exactly this original record with one bounded read. The caller
     /// must authorize `node` before IO, then validate the returned envelope's
     /// relationship to its proposed reply or rejection Notice.

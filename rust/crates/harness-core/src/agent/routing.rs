@@ -142,6 +142,7 @@ impl<'a> PeerRoute<'a> {
     pub async fn deliver<P: crate::store::JournalProvider + ?Sized + 'static>(
         &self,
         host: &super::AgentHost<P>,
+        receipt: &route::RelayReceipt,
     ) -> Result<super::Delivered, Error> {
         if host.actor(&self.recipient)? != self.envelope.to {
             return Err(Error::Record("peer route belongs to another actor host"));
@@ -151,6 +152,23 @@ impl<'a> PeerRoute<'a> {
             .validate(host.provider().as_ref(), &self.recipient)
             .await?;
         let mut request = self.envelope.request.clone();
+        let acyclic_stream::CommitMutation::Append { records, .. } =
+            &mut request.effects[0].mutations[0]
+        else {
+            unreachable!()
+        };
+        // Preserve the account's original reference in the one inbox write,
+        // so a later answer can prove its cause without a separate receipt log.
+        let mut attributes = vec![receipt.attribute()];
+        attributes.extend(
+            records[0]
+                .headers
+                .attributes()
+                .iter()
+                .map(|attribute| attribute.to_owned()),
+        );
+        records[0].headers =
+            acyclic_stream::RecordHeaders::new(Vec::new(), attributes).map_err(Error::Stream)?;
         request.effects[0].conditions.push(
             self.admission
                 .recipient
