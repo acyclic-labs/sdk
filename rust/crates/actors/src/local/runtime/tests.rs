@@ -1124,6 +1124,7 @@ async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> Tes
             delivery.subscriptions.get("inbox"),
             Some(&Subscription {
                 path: inbox.clone(),
+                paused: false,
                 cursor: expected,
             })
         );
@@ -1241,6 +1242,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
             "inbox".to_owned(),
             Subscription {
                 path: StreamPath::new(path)?,
+                paused: false,
                 cursor,
             },
         )]))
@@ -1379,6 +1381,7 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
                         "inbox".to_owned(),
                         Subscription {
                             path: inbox.clone(),
+                            paused: false,
                             cursor: 0,
                         },
                     )]),
@@ -1475,6 +1478,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
                     "inbox".to_owned(),
                     Subscription {
                         path: inbox.clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),
@@ -1651,6 +1655,7 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
                     "inbox".to_owned(),
                     Subscription {
                         path: inbox.clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),
@@ -2029,6 +2034,7 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
             id,
             Subscription {
                 path: path.clone(),
+                paused: false,
                 cursor: 0,
             },
         );

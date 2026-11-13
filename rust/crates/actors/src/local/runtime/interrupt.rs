@@ -12,6 +12,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         trigger: &Trigger,
     ) -> Result<(), Error> {
         for (id, subscription) in state.subscriptions() {
+            if subscription.paused {
+                continue;
+            }
             if !self
                 .handler
                 .manifest()

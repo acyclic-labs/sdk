@@ -297,6 +297,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                     "inbox".to_owned(),
                     Subscription {
                         path: path("model/inbox")?,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

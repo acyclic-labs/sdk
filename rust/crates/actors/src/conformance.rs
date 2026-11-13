@@ -430,6 +430,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                         "inbox".into(),
                         Subscription {
                             path: inbox.clone(),
+                            paused: false,
                             cursor: 0,
                         },
                     )]),
@@ -1014,6 +1015,7 @@ impl<P: StreamProvider + ?Sized> Isolated<P> {
                     "inbox".into(),
                     Subscription {
                         path: inbox.clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),
@@ -1302,6 +1304,7 @@ async fn forked<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failur
             "inbox".to_owned(),
             Subscription {
                 path: path.clone(),
+                paused: false,
                 cursor: 0,
             },
         )])
@@ -1730,6 +1733,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
                 id.into(),
                 Subscription {
                     path: owner.inbox.clone(),
+                    paused: false,
                     cursor: 0,
                 },
             )

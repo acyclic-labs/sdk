@@ -477,6 +477,7 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
                         "inbox".into(),
                         Subscription {
                             path: route.inbox.clone(),
+                            paused: false,
                             cursor: 0,
                         },
                     )]),
@@ -814,6 +815,7 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
                     "inbox".into(),
                     Subscription {
                         path: inbox,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

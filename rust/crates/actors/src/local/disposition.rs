@@ -315,7 +315,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let completion =
             self.invocation_completion(previous, trigger, Some(input), Some(Err(cause)), &[])?;
         let mut state = original.clone();
-        super::consume(&mut state, &original.alarm, trigger)?;
+        super::consume(&mut state, &original.alarm, trigger, true)?;
         let path = location(&previous.path, previous.tail)?;
         let status = status_path(&path)?;
         let input_path = captured_path(&path)?;

@@ -420,6 +420,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) 
                     "inbox".into(),
                     Subscription {
                         path: inbox.path().clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

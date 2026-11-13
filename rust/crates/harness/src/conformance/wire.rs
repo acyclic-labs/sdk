@@ -120,6 +120,7 @@ fn strict(manifest: &Manifest) -> Result {
                 "inbox".into(),
                 guest::Subscription {
                     path: acyclic_stream::StreamPath::new("conformance/inbox")?,
+                    paused: false,
                     cursor: 17,
                 },
             )]
