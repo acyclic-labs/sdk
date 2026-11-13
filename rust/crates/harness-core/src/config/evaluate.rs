@@ -11,7 +11,7 @@ use std::sync::{
 };
 
 /// The evaluator's identity: a change to its semantics changes every key.
-const VERSION: &str = "acyclic.harness.config.v4";
+const VERSION: &str = "acyclic.harness.config.v5";
 
 /// Interrupt polls (QuickJS polls every ten thousand instructions)
 /// before a settings module stops. It is deterministic, so a module passes
@@ -20,8 +20,8 @@ const FUEL: u64 = 1_000;
 
 /// Files a module may import from the same pinned effective tree and `sys/`.
 pub trait Tree: Send + Sync {
-    /// Original operation accounting, when evaluation belongs to a bounded call.
-    /// This never creates a ledger or changes the tree's read authority.
+    /// Original source preparation IO. Native evaluation and result decoding
+    /// use its original allocation owner without changing read authority.
     fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
         None
     }
@@ -48,13 +48,11 @@ pub enum Surface {
 #[derive(Debug)]
 pub struct Evaluated {
     /// The plain-data result.
-    pub value: Value,
+    pub value: super::ConfigValue,
     /// Whether the export replaced the base or was a function of it.
     pub form: Form,
     /// blake3 over the module and every module it imports.
     pub digest: [u8; 32],
-    // Result bytes retire before the original caller's allocation credit.
-    pub(crate) _custody: acyclic_fs::NativeCustody,
 }
 
 impl PartialEq for Evaluated {
@@ -134,13 +132,73 @@ pub async fn compose(
     layers: &[Layer<'_>],
     tree: &dyn Tree,
     base: Value,
-) -> Result<(Value, Vec<Link>)> {
+) -> Result<(super::ConfigValue, Vec<Link>)> {
     compose_result(path, layers, tree, base).await?
 }
 
 /// The most recently evaluated result or failure. Replacing the entry drops
 /// its ownership instead of retaining every historical agent/revision.
-type Outcome = std::result::Result<Arc<(crate::javascript_allocator::EngineResult, Form)>, String>;
+#[derive(Clone)]
+enum Refusal {
+    Module(Arc<(crate::javascript_allocator::EngineResult<String>, ())>),
+    Json(crate::executor::json::JsonInputError),
+    InvalidJson,
+}
+
+impl Refusal {
+    fn module(reason: String, work: acyclic_fs::NativeWork<'_>) -> Result<Self> {
+        let custody = work
+            .map(|work| {
+                work.claim(
+                    (std::mem::size_of::<String>() + reason.capacity()) as u64,
+                    1,
+                    acyclic_fs::WorkCounters::UNCHARGED,
+                )
+            })
+            .transpose()?;
+        Ok(Self::Module(
+            crate::javascript_allocator::EngineResult {
+                value: reason,
+                custody,
+            }
+            .share((), work)?,
+        ))
+    }
+
+    fn error(self, path: &str, work: acyclic_fs::NativeWork<'_>) -> Result<Error> {
+        Ok(match self {
+            Self::Module(reason) => {
+                if let Some(work) = work {
+                    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+                    let message = crate::executor::with_history_io(Some(&io), |history| {
+                        crate::executor::preparation_format(
+                            format_args!("{path}: {}", reason.0.value),
+                            history,
+                        )
+                    })?;
+                    let custody = io.into_native_custody(message.capacity() as u64)?;
+                    Error::NativeDiagnostic {
+                        code: crate::wire::ErrorCode::Invalid,
+                        message,
+                        custody,
+                    }
+                } else {
+                    Error::Invalid(format!("{path}: {}", reason.0.value))
+                }
+            }
+            Self::Json(kind) => Error::NativeJsonAdmission {
+                code: crate::wire::ErrorCode::Invalid,
+                kind,
+            },
+            Self::InvalidJson => Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "evaluated configuration is invalid JSON",
+            },
+        })
+    }
+}
+
+type Outcome = std::result::Result<Arc<(crate::javascript_allocator::EngineResult, Form)>, Refusal>;
 type Cache = Mutex<Option<([u8; 32], Outcome)>>;
 
 fn cache() -> &'static Cache {
