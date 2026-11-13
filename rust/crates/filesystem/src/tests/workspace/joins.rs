@@ -304,6 +304,77 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_order()
+-> Result<(), Box<dyn Error>> {
+    use crate::kernel::{GenerationRoot, KernelAccounting, Owned};
+
+    crate::initialize_test_native_io();
+    let fs = Fs::memory();
+    let workspace = unbounded!(fs, create_workspace("wide-lineage"))?;
+    let cancellation = CancellationToken::new();
+    let mut setup = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut leaves = Vec::new();
+    let mut template = None;
+    for ordinal in 0..64 {
+        workspace.write_text("/value", &ordinal.to_string()).await?;
+        let generation = unbounded!(workspace, head())?;
+        let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
+            fs.objects(),
+            generation.id().object_id(),
+            workspace.volume.config(),
+            &mut setup,
+            &cancellation,
+        )
+        .await?;
+        let bytes = (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64;
+        let root = Owned::new(root, allocation, bytes);
+        let leaf = GenerationRoot {
+            volume_id: root.value.volume_id,
+            root_file_id: root.value.root_file_id,
+            file_table: root.value.file_table,
+            parents: Vec::new(),
+            required_features: 0,
+        };
+        leaves.push(GenerationId::from_root(
+            crate::test_support::put_generation_root(fs.objects(), &leaf).await?,
+        ));
+        template = Some(leaf);
+        root.retire(&mut setup)?;
+    }
+    // Descending identities force the old sorted vector to copy every suffix.
+    leaves.sort_unstable_by(|left, right| right.cmp(left));
+    let source = unbounded!(workspace, generation(leaves[0]))?;
+    let mut copied = Vec::new();
+    for count in [16, 64] {
+        let mut root = template.clone().ok_or("missing lineage root")?;
+        root.parents.extend_from_slice(&leaves[..count]);
+        let id = GenerationId::from_root(
+            crate::test_support::put_generation_root(fs.objects(), &root).await?,
+        );
+        let target = unbounded!(workspace, generation(id))?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let ancestor = fs
+            .workspace_common_ancestor_with_accounting(
+                &source,
+                &target,
+                None,
+                &mut KernelAccounting::native(&original, &cancellation),
+                &cancellation,
+            )
+            .await?;
+        assert_eq!(ancestor.id, leaves[0]);
+        assert_eq!(ancestor.volume_id, root.volume_id);
+        copied.push(original.receipt().bytes_copied);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    assert!(copied[1] <= 4 * copied[0], "lineage copy work: {copied:?}");
+    Ok(())
+}
+
 async fn apply_planned<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     plan: &JoinPlan<A, O>,
     idempotency_key: IdempotencyKey,
