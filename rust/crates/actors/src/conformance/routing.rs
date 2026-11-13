@@ -10,6 +10,43 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt as _;
 
+async fn drain_one<P: StreamProvider + ?Sized>(
+    provider: &P,
+    paths: &Paths,
+    node: &NodeId,
+    expected: &IdempotencyKey,
+    acknowledged: u64,
+) -> Result<(), Failure> {
+    let mut changes = acyclic_stream::records_only(
+        provider
+            .follow(acyclic_stream::FollowRequest::new(
+                paths.relay_cursor(node).map_err(Error::from)?,
+                acknowledged,
+            ))
+            .await
+            .map_err(Error::from)?,
+    );
+    let drain = crate::route::drain(provider, paths, node, async |envelope| {
+        if &envelope.request.idempotency_key != expected {
+            return Err(crate::route::Error::InvalidRecord);
+        }
+        match provider.commit(envelope.request).await? {
+            CommitOutcome::Committed(_) => Ok(()),
+            CommitOutcome::Conflict(_) => Err(crate::route::Error::InvalidRecord),
+        }
+    });
+    let next = changes.try_next();
+    futures::pin_mut!(drain, next);
+    match futures::future::select(drain, next).await {
+        futures::future::Either::Left((result, _)) => Err(violation(format!(
+            "drain stopped before acknowledging delivery: {result:?}"
+        ))),
+        futures::future::Either::Right((record, _)) => {
+            require(record.map_err(Error::from)?.is_some(), "ack follow ended")
+        }
+    }
+}
+
 fn violation(detail: impl std::fmt::Display) -> Failure {
     Failure::Violation {
         case: "routing-storage",
@@ -236,25 +273,78 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         restored == envelope,
         "relay altered the original ordinary-delivery request",
     )?;
-    let delivered = provider
-        .commit(restored.request.clone())
+    // Stop the real drain at the crash cut: ordinary delivery committed, but
+    // its acknowledgement did not. Reopening must replay that exact request.
+    let interrupted =
+        crate::route::drain(
+            provider,
+            &paths,
+            &placement.node,
+            async |envelope| match provider.commit(envelope.request).await? {
+                CommitOutcome::Committed(_) => Err(StreamError::Unavailable.into()),
+                CommitOutcome::Conflict(_) => Err(crate::route::Error::InvalidRecord),
+            },
+        )
+        .await;
+    require(
+        matches!(
+            interrupted,
+            Err(crate::route::Error::Stream(StreamError::Unavailable))
+        ),
+        "drain did not stop at the pre-ack crash cut",
+    )?;
+    require(
+        values(
+            provider,
+            paths.relay_cursor(&placement.node).map_err(Error::from)?,
+        )
+        .await?
+        .is_empty(),
+        "failed delivery advanced the durable relay cursor",
+    )?;
+    drain_one(
+        provider,
+        &paths,
+        &placement.node,
+        &restored.request.idempotency_key,
+        0,
+    )
+    .await?;
+    let inbox = StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?;
+    require(
+        values(provider, inbox.clone()).await?.len() == 1,
+        "ordinary delivery replay duplicated input",
+    )?;
+    let mut following = envelope.clone();
+    following.request.idempotency_key = key(&root, "following-send")?;
+    following.request.effects[0].mutations[0] = CommitMutation::Append {
+        path: inbox.clone(),
+        records: vec!["following peer input".into()],
+    };
+    let accepted = provider
+        .commit(
+            following
+                .relay_request(&paths, &placement.node)
+                .map_err(violation)?,
+        )
         .await
         .map_err(Error::from)?;
     require(
-        matches!(delivered, CommitOutcome::Committed(_)),
-        "relay and inbox spent the same provider key",
+        matches!(accepted, CommitOutcome::Committed(_)),
+        "following relay refused",
     )?;
-    // Reconstruct from the durable relay, as after loss between inbox commit
-    // and acknowledgement. Only the ordinary request is submitted again.
-    let replay = Envelope::decode(records[0].value.clone()).map_err(violation)?;
+    drain_one(
+        provider,
+        &paths,
+        &placement.node,
+        &following.request.idempotency_key,
+        1,
+    )
+    .await?;
+    let inputs = values(provider, inbox).await?;
     require(
-        provider.commit(replay.request).await.map_err(Error::from)? == delivered,
-        "ordinary delivery replay changed its receipt",
-    )?;
-    let inbox = StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?;
-    require(
-        values(provider, inbox).await?.len() == 1,
-        "ordinary delivery replay duplicated input",
+        inputs.len() == 2 && inputs[1].value.as_ref() == b"following peer input",
+        "reopened drain repeated acknowledged input or changed FIFO",
     )?;
     let mut changed = envelope;
     changed.request.effects[0].mutations[0] = CommitMutation::Append {

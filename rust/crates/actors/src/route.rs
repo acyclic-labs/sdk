@@ -12,6 +12,8 @@ use prost::Message as _;
 
 mod node;
 pub use node::{NodeActor, NodeLink, NodePresence, open_link, open_request};
+mod drain;
+pub use drain::drain;
 
 /// Opaque, nonempty node identity, encoded by the shared resource-ID primitive.
 pub type NodeId = ResourceId;
@@ -75,6 +77,12 @@ impl Paths {
     /// The destination node's single account-owned relay.
     pub fn relay(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
         self.child("relay", node.as_bytes())
+    }
+
+    /// The node's durable consumed prefix. Its publication is the relay drain
+    /// event used by account storage admission; it contains no message body.
+    pub fn relay_cursor(&self, node: &NodeId) -> Result<StreamPath, StreamError> {
+        StreamPath::new(format!("{}/ack", self.relay(node)?))
     }
 
     /// One node's socket-driven presence, shared by all its session rows.
