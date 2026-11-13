@@ -10,6 +10,8 @@ pub(super) mod cursor_codec;
 pub struct LazyDirectoryEntry {
     /// Profile-aware child name.
     pub name: LogicalName,
+    /// Stable SDK identity, shared with lookup and source aliases.
+    pub file_id: FileId,
     /// Exact observed kind.
     pub kind: SourceNodeKind,
     /// Whether the authored checkout supplies the binding.
@@ -434,6 +436,7 @@ impl<
                             names += entry.name.retained_bytes() as u64;
                             entries.value.push(LazyDirectoryEntry {
                                 name: entry.name,
+                                file_id: entry.file_id,
                                 kind: source_kind(entry.kind),
                                 authored: true,
                                 source: None,
@@ -562,6 +565,7 @@ impl<
                 entries.allocation.absorb(&mut guard)?;
                 entries.value.push(LazyDirectoryEntry {
                     name,
+                    file_id: self.source_file_id(&entry.node.file_identity, ctx)?,
                     kind: entry.node.kind,
                     authored: false,
                     source: Some(entry.node),

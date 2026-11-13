@@ -9,6 +9,7 @@ pub(super) const FORMAT: &str = "lazy-v1";
 
 pub(super) trait PrivateView: Send + Sync {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
+    fn config(&self) -> acyclic_fs::VolumeConfig;
     fn validate<'a>(
         &'a self,
         cut: &'a LazySnapshotRef,
@@ -56,6 +57,9 @@ where
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId {
         self.workspace().id()
+    }
+    fn config(&self) -> acyclic_fs::VolumeConfig {
+        self.workspace().volume_config()
     }
     fn validate<'a>(
         &'a self,

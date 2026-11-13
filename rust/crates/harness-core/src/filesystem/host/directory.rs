@@ -1,6 +1,8 @@
 use super::*;
 use acyclic_fs::access::{Action, PreparedPath};
 pub(in crate::filesystem) mod cursor;
+#[cfg(not(target_arch = "wasm32"))]
+mod lazy;
 
 /// A bounded authorized physical page. Empty entries with `next` are progress.
 #[derive(Debug)]
@@ -174,9 +176,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         guard().await?;
         let workspace = self.open(&reference.0, Some(io)).await?;
         guard().await?;
-        let generation = match request.generation {
-            Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => self.current_generation(&workspace, io).await?,
+        #[cfg(not(target_arch = "wasm32"))]
+        let snapshot = self
+            .private_snapshot(&workspace, request.generation, io)
+            .await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let lazy_generation = snapshot.as_ref().map(|cut| cut.authored_generation);
+        #[cfg(target_arch = "wasm32")]
+        let lazy_generation: Option<GenerationId> = None;
+        let generation = match (lazy_generation, request.generation) {
+            (Some(generation), _) => self.select_generation(&workspace, generation, io).await?,
+            (None, Some(expected)) => self.generation(&workspace, expected, Some(io)).await?,
+            (None, None) => self.current_generation(&workspace, io).await?,
         };
         guard().await?;
         let scope = request.grant.policy_scope();
@@ -211,6 +222,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             generation,
             view,
             data_access,
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshot,
         })
     }
 
@@ -229,8 +242,82 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.private_view.is_some() && io.original_native_work().is_none() {
+            // One original-ledger handoff covers cursor decode, source work and
+            // disclosure. No cursor crosses independently admitted ledgers.
+            let owner = io.account(acyclic_fs::kernel::NativeAccounting::take)?;
+            let native = PreparationIo::from_native_work(&owner.work)?;
+            let result = async {
+                let Some((page, hold)) = self
+                    .list_directory_page_inner(request, &native, guard)
+                    .await?
+                else {
+                    return Ok(None);
+                };
+                let bytes = hold.bytes();
+                hold.into_retained()?;
+                let allocation = native.into_native_custody(bytes)?;
+                owner.return_allocation(allocation, bytes)?;
+                Ok::<_, Error>(Some((page, bytes)))
+            }
+            .await;
+            io.account(|ctx| owner.restore(ctx))?;
+            return result?
+                .map(|(page, bytes)| Ok((page, io.guard_owned(bytes)?)))
+                .transpose();
+        }
+        self.list_directory_page_inner(request, io, guard).await
+    }
+
+    async fn list_directory_page_inner<'io, F, Fut>(
+        &self,
+        request: DirectoryListing<'_>,
+        io: &'io PreparationIo,
+        guard: &mut F,
+    ) -> Result<
+        Option<(
+            (GenerationRef, AuthorizedDirectoryPage),
+            DecodeReservation<'io>,
+        )>,
+    >
+    where
+        F: FnMut() -> Fut + acyclic_stream::ProviderTask,
+        Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
+    {
+        #[cfg(target_arch = "wasm32")]
+        if request
+            .after
+            .is_some_and(|token| token.starts_with("lazy:"))
+        {
+            return Err(io.invalid("lazy directory cursors require native source support"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let lazy_cursor = self.open_lazy_directory_cursor(&request, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let lazy_reference = lazy_cursor
+            .as_ref()
+            .map(|cursor| self.private_generation_ref(cursor.snapshot(), None, io))
+            .transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let _lazy_reference_hold = lazy_reference
+            .as_ref()
+            .map(|reference| io.guard_owned(reference.logical_owned_bytes()?))
+            .transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(expected), Some(selected)) = (request.generation, &lazy_reference) {
+            if expected != selected {
+                return Err(io.invalid("directory cursor generation differs from selection"));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let request = DirectoryListing {
+            generation: lazy_reference.as_ref().or(request.generation),
+            ..request
+        };
         let continuation = request
             .after
+            .filter(|token| !token.starts_with("lazy:"))
             .map(|token| cursor::open(&self.provider, request.volume, request.path, token, io))
             .transpose()?;
         if let (Some(expected), Some((generation, _, _))) = (request.generation, &continuation) {
@@ -268,18 +355,60 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let selected = async {
             guard().await?;
             let after = continuation.as_ref().map(|cursor| &cursor.1);
-            let Some((mut page, custody)) = io.sdk_if_present(
-                generation
-                    .list_directory(
+            #[cfg(not(target_arch = "wasm32"))]
+            let lazy_page = if let Some(cut) = &selection.snapshot {
+                Some(
+                    self.lazy_directory_page(
+                        cut,
+                        request.volume,
+                        request.path,
                         &requested.0,
-                        after,
+                        lazy_cursor,
                         request.maximum_entries,
                         io,
-                        io.cancellation(),
                     )
-                    .await,
-            )?
-            else {
+                    .await?,
+                )
+            } else {
+                if lazy_cursor.is_some() {
+                    return Err(io.invalid("lazy directory cursor requires its original view"));
+                }
+                None
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let (loaded, lazy_next) = match lazy_page {
+                Some((page, next, custody)) => (Some((page, Some(custody))), next),
+                None => (
+                    io.sdk_if_present(
+                        generation
+                            .list_directory(
+                                &requested.0,
+                                after,
+                                request.maximum_entries,
+                                io,
+                                io.cancellation(),
+                            )
+                            .await,
+                    )?,
+                    None,
+                ),
+            };
+            #[cfg(target_arch = "wasm32")]
+            let (loaded, lazy_next): (_, Option<String>) = (
+                io.sdk_if_present(
+                    generation
+                        .list_directory(
+                            &requested.0,
+                            after,
+                            request.maximum_entries,
+                            io,
+                            io.cancellation(),
+                        )
+                        .await,
+                )?,
+                None,
+            );
+            let Some((mut page, custody)) = loaded else {
                 return Ok(None);
             };
             let page_bytes = raw_owned_bytes(&page)?;
@@ -304,7 +433,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ..Default::default()
             })?;
             let now = super::super::access::access_now()?;
-            let next = if page.has_more {
+            let next = if let Some(next) = lazy_next {
+                page_hold.adopt(next.capacity() as u64)?;
+                Some(next)
+            } else if page.has_more {
                 let name = page
                     .entries
                     .last()
@@ -330,6 +462,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             // Do not expose a physical prefetch hint for an unauthorized successor.
             page.next_residency = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            let reference = match &selection.snapshot {
+                Some(cut) => self.private_generation_ref(cut, request.generation, io)?,
+                None => bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?,
+            };
+            #[cfg(target_arch = "wasm32")]
             let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
             let wrapper_bytes = (std::mem::size_of::<AuthorizedDirectoryPage>()
@@ -381,6 +519,8 @@ pub(super) struct DirectorySelection<'io, A: 'static, O: 'static> {
     pub(super) generation: acyclic_fs::Generation<A, O>,
     view: super::super::access::CompiledAccess<'io>,
     data_access: Option<(Workspace<A, O>, super::super::access::CompiledAccess<'io>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    snapshot: Option<acyclic_fs::kernel::Retained<acyclic_fs::LazySnapshotRef>>,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DirectorySelection<'_, A, O> {

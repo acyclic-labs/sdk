@@ -620,6 +620,50 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         16_384,
         None,
     )?;
+    fn options<'a>(
+        generation: Option<&'a acyclic_harness_core::resources::GenerationRef>,
+        after: Option<&'a str>,
+    ) -> acyclic_harness_core::filesystem::DirectoryOptions<'a> {
+        acyclic_harness_core::filesystem::DirectoryOptions {
+            generation,
+            after,
+            maximum_entries: 1,
+            ceiling: None,
+        }
+    }
+    let (directory_cut, first) = projected_reader
+        .list_private_directory(&child_volume, "", "ui", options(None, None))
+        .await?
+        .ok_or("computed directory was absent")?;
+    assert_eq!(directory_cut.as_resource().version(), Some("lazy-v1"));
+    assert_eq!(first.entries.len(), 1);
+    let continuation = first
+        .next
+        .as_deref()
+        .ok_or("computed directory did not page")?;
+    let (resumed_cut, second) = projected_reader
+        .list_private_directory(
+            &child_volume,
+            "",
+            "ui",
+            options(Some(&directory_cut), Some(continuation)),
+        )
+        .await?
+        .ok_or("computed continuation lost its directory")?;
+    assert_eq!(resumed_cut, directory_cut);
+    assert_ne!(first.entries[0].name, second.entries[0].name);
+    assert!(
+        projected_reader
+            .list_private_directory(
+                &child_volume,
+                "",
+                "ui/turns",
+                options(None, Some(continuation))
+            )
+            .await
+            .is_err(),
+        "a continuation must not authorize another directory"
+    );
     let (selected, projected, _) = projected_reader
         .read_private_range(
             &child_volume,
