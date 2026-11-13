@@ -156,6 +156,8 @@ fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandErr
     let stop = CancellationToken::new();
     let budget = WorkBudget {
         durability_operations: 0,
+        source_bytes_read: b"complete".len() as u64,
+        object_bytes_written: b"complete".len() as u64,
         ..WorkBudget::UNBOUNDED
     };
     let mut visible = DemandWork::new(budget, &stop);
@@ -168,6 +170,26 @@ fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandErr
             &mut visible,
         )?;
     }
+    assert_eq!(visible.work.object_bytes_written, b"complete".len() as u64);
+    assert_eq!(visible.work.source_bytes_read, b"complete".len() as u64);
+    let mut refused = DemandWork::new(
+        WorkBudget {
+            object_bytes_written: 0,
+            ..budget
+        },
+        &stop,
+    );
+    assert!(
+        held.root
+            .publish_immutable(
+                Path::new("unfunded"),
+                b"bytes",
+                NativeDurability::Visibility,
+                &mut refused,
+            )
+            .is_err()
+    );
+    assert!(!directory.path().join("unfunded").exists());
     let before = std::fs::metadata(directory.path().join(leaf))?;
     let mut durable = DemandWork::new(
         WorkBudget {
