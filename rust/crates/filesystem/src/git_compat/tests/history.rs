@@ -1,6 +1,58 @@
 use super::*;
 
 #[tokio::test]
+async fn log_pages_stop_at_external_publication_parents() {
+    let child = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    let GitCommandOutput::Committed(source) = child
+        .record_commit(None, generation(1), BTreeSet::new(), "child", "author", 1)
+        .await
+        .expect("child commit")
+    else {
+        panic!("expected child commit");
+    };
+    let parent = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    let GitCommandOutput::Committed(published) = parent
+        .record_publication(GitPublicationRecord {
+            tree: tree(2),
+            workspace_tree: tree(2),
+            source_head: Some(source.id),
+            tracked_paths: BTreeSet::new(),
+            capture_proof: None,
+            message: "publication".to_owned(),
+            author: "author".to_owned(),
+            authored_at_seconds: 2,
+        })
+        .await
+        .expect("publication into empty parent")
+    else {
+        panic!("expected publication commit");
+    };
+    assert_eq!(published.parents, [source.id]);
+    // One item ends exactly at the page boundary; two reaches the external
+    // first parent while walking. Neither may return an unusable cursor.
+    for maximum in [1, 2] {
+        let GitCommandOutput::Commits { commits, next } = parent
+            .execute(
+                GitCommand::Log {
+                    maximum,
+                    object: None,
+                },
+                tree(2),
+            )
+            .await
+            .expect("available local history")
+        else {
+            panic!("expected history page");
+        };
+        assert_eq!(
+            commits.iter().map(|commit| commit.id).collect::<Vec<_>>(),
+            [published.id]
+        );
+        assert_eq!(next, None);
+    }
+}
+
+#[tokio::test]
 async fn log_pages_reach_the_root_without_following_a_moving_head() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let mut expected = Vec::new();

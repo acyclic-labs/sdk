@@ -135,12 +135,13 @@ pub(super) fn walk_commits(
 ) -> (Vec<GitCommit>, Option<GitCommitId>) {
     let mut commits = Vec::new();
     while let Some(id) = next {
+        let Some(commit) = state.commits.get(&id) else {
+            next = None;
+            break;
+        };
         if commits.len() >= usize::try_from(maximum).unwrap_or(usize::MAX) {
             break;
         }
-        let Some(commit) = state.commits.get(&id) else {
-            break;
-        };
         commits.push(commit.clone());
         next = commit.parents.first().copied();
     }
