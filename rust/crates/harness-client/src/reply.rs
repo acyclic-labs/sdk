@@ -28,6 +28,42 @@ pub struct ChildAgent {
     pub created_at_micros: Option<u64>,
     /// Commit time of the status returned at this page cut.
     pub updated_at_micros: Option<u64>,
+    /// Account peer metadata conveys no session-control or file authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<PeerSession>,
+}
+
+/// Display metadata from the account directory, without remote actor reads.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+#[serde(deny_unknown_fields)]
+pub struct PeerSession {
+    /// Canonical encoded ActorReference, including account and namespace.
+    pub address: String,
+    /// Canonical encoded immutable node identity, used as the device key.
+    pub node: String,
+    /// Public display fields, never an approval binding or private transcript.
+    #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+    pub profile: acyclic_harness_core::agent::SessionProfile,
+    /// Original directory publication revision.
+    pub rev: u64,
+    /// Socket presence at the page's liveness cut.
+    pub online: bool,
+}
+
+impl PeerSession {
+    /// Recover the qualified address without treating metadata as authority.
+    pub fn actor(&self) -> Result<acyclic_auth::addressing::ActorReference, CommandError> {
+        let bytes =
+            acyclic_auth::decode_component(&self.address).map_err(|_| CommandError::Invalid)?;
+        let node = acyclic_auth::decode_component(&self.node).map_err(|_| CommandError::Invalid)?;
+        acyclic_auth::addressing::ResourceId::new(&node).map_err(|_| CommandError::Invalid)?;
+        if self.rev == 0 {
+            return Err(CommandError::Invalid);
+        }
+        acyclic_auth::addressing::ActorReference::decode(&bytes).map_err(|_| CommandError::Invalid)
+    }
 }
 
 /// Original pending action identity; the immutable request is read separately.
@@ -877,21 +913,30 @@ fn validate_reply(
         }
         (AgentReply::Children { items, next }, AgentCommand::Children { agent, page }) => {
             let mut seen = std::collections::BTreeSet::new();
-            if items
-                .iter()
-                .any(|item| !item.agent.is_child_of(agent) || !seen.insert(&item.agent))
-            {
+            if items.iter().any(|item| {
+                item.peer.is_some() || !item.agent.is_child_of(agent) || !seen.insert(&item.agent)
+            }) {
                 return Err(CommandError::Invalid);
             }
             (items.len(), next, page)
         }
-        (AgentReply::Children { items, next }, AgentCommand::Sessions { page, .. }) => {
+        (AgentReply::Children { items, next }, AgentCommand::Sessions { page, scope, .. }) => {
             let mut seen = std::collections::BTreeSet::new();
-            if items
-                .iter()
-                .any(|item| item.agent.parent().is_some() || !seen.insert(&item.agent))
-            {
-                return Err(CommandError::Invalid);
+            let qualified = items.first().is_some_and(|item| item.peer.is_some());
+            for item in items {
+                if item.agent.parent().is_some() || item.peer.is_some() != qualified {
+                    return Err(CommandError::Invalid);
+                }
+                if let Some(peer) = &item.peer {
+                    if *scope != crate::SessionsScope::Peers
+                        || peer.actor()?.id() != item.agent.id().as_str()
+                    {
+                        return Err(CommandError::Invalid);
+                    }
+                }
+                if !seen.insert((item.peer.as_ref().map(|peer| &peer.address), &item.agent)) {
+                    return Err(CommandError::Invalid);
+                }
             }
             (items.len(), next, page)
         }

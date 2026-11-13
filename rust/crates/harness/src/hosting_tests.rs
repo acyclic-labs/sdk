@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[path = "hosting_tests/account_pages.rs"]
+mod account_pages;
 #[path = "hosting_tests/session_pages.rs"]
 mod session_pages;
 
@@ -48,6 +50,7 @@ impl TurnExecutors for Never {
 /// Allows every command until denied; runs children unless childless.
 #[derive(Default)]
 struct Owner {
+    peer_directory: Option<PeerDirectory>,
     denied: AtomicBool,
     revoke_read: AtomicBool,
     revoke_query: AtomicBool,
@@ -64,6 +67,10 @@ struct QueryPause {
 }
 
 impl Platform for Owner {
+    fn peer_directory(&self) -> Option<&PeerDirectory> {
+        self.peer_directory.as_ref()
+    }
+
     fn sessions(&self) -> bool {
         self.sessions.load(Ordering::SeqCst)
     }

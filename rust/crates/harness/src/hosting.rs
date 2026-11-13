@@ -30,8 +30,10 @@ mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::Runtime;
 mod diff;
+mod peers;
 mod queries;
 pub use diff::{DIFF_FILE_BYTES, DiffSource};
+pub use peers::PeerDirectory;
 
 /// Original lazy input source; filtered work is distinct from an empty cut.
 pub type InputPreviewSource =
@@ -64,6 +66,13 @@ use std::sync::Arc;
 /// policy for the verified principal's command. Identity comes only from the
 /// session credential; the platform never supplies a caller here.
 pub trait Platform: ProviderPlatform + 'static {
+    /// Account directory reached with the host's custodied, attenuated client.
+    /// This binding grants callers nothing: command authority and live root
+    /// membership are checked by the shared dispatch and directory query.
+    fn peer_directory(&self) -> Option<&PeerDirectory> {
+        None
+    }
+
     /// Explicitly serve the roots of this placement as independent sessions.
     /// Tree-only hosts retain their existing routing and credential boundary.
     fn sessions(&self) -> bool {
@@ -1381,6 +1390,9 @@ where
                 if peers && requester.parent().is_some() {
                     return Err(Error::Record("peer discovery requires a root requester"));
                 }
+                if peers && let Some(directory) = self.platform.peer_directory() {
+                    return self.account_peers(directory, requester, page).await;
+                }
                 let parent = match command {
                     AgentCommand::Children { agent, .. } => self.within_tree(agent)?.children()?,
                     AgentCommand::Sessions { .. } if peers && self.platform.sessions() => {
@@ -1479,6 +1491,7 @@ where
                         status: None,
                         created_at_micros: None,
                         updated_at_micros: None,
+                        peer: None,
                     });
                 }
                 let last_scanned = listed_paths.last().cloned();
