@@ -1493,6 +1493,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(true);
             };
             if state.deleted() {
+                self.external.remove(actor);
                 // Deletion is terminal: nothing is left to deliver or wake.
                 inner.observed = None;
                 self.subscriptions
@@ -1580,7 +1581,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         // publication: its interests must be restorable first.
                         if !inner.interests_marked {
                             self.store
-                                .persist_interests(actor, state, self.handler.manifest())
+                                .persist_interests(actor, state, self.handler.as_ref())
                                 .await?;
                             inner.interests_marked = true;
                         }
@@ -1849,7 +1850,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<(), Error> {
         publication.require(self.handler.publication_conditions(actor))?;
         self.store
-            .mark_interests(publication, actor, self.handler.manifest())
+            .mark_interests(publication, actor, self.handler.as_ref())
     }
 
     fn prepare_transition(
