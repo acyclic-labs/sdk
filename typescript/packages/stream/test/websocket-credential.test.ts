@@ -38,9 +38,7 @@ test("WebSocket lease custody covers queued bytes, writes and producer loss", as
       const controller = new AbortController();
       const connect = webSocketSession("https://example.test", cache.provider, (_url, protocols) => {
         expect(protocols[0]).toBe("acyclic.session.v1");
-        expect(protocols[1]?.startsWith("acyclic.bearer.")).toBeTrue();
-        const encoded = protocols[1]!.slice("acyclic.bearer.".length);
-        expect(Buffer.from(encoded, "base64url").equals(Buffer.from(token, "utf8"))).toBeTrue();
+        expect(protocols[1]).toBe(`acyclic.bearer.${Buffer.from(token, "utf8").toString("base64url")}`);
         // Inspect the original credential before routing to the unauthenticated
         // loopback fixture, which negotiates only the session framing protocol.
         const socket = new WebSocket(server.url.href.replace("http:", "ws:"), [protocols[0]!]);
