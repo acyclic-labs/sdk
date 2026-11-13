@@ -64,6 +64,7 @@ impl<'a> StockExecution<'a> {
         }
         self.review.enabled.store(true, Ordering::Release);
         self.review.stopped.store(false, Ordering::Release);
+        self.review.paused.store(false, Ordering::Release);
         let worker = async {
             let result = worker.await;
             self.review.paused.store(
@@ -89,18 +90,17 @@ impl<'a> StockExecution<'a> {
         input: &TurnInput,
         step: u32,
         prior: &[ModelMessage],
-        events: &[ModelEvent],
+        metadata: &Value,
     ) -> Result<()> {
         if !self.review.enabled.load(Ordering::Acquire) {
             return Ok(());
         }
-        let Some(completion @ ModelEvent::Completed { metadata }) = events
-            .iter()
-            .rev()
-            .find(|event| matches!(event, ModelEvent::Completed { .. }))
-        else {
+        if input
+            .max_steps
+            .is_some_and(|maximum| step >= maximum.saturating_sub(1))
+        {
             return Ok(());
-        };
+        }
         let usage = ModelTokenUsage::reported(metadata);
         let Some(input_tokens) = usage.input else {
             return Ok(());
@@ -161,12 +161,12 @@ impl<'a> StockExecution<'a> {
         {
             let (original, hold) =
                 load_json::<ModelUsageRecord>(journal, reference, self.io).await?;
-            model_usage::validate(
+            model_usage::validate_metadata(
                 &original,
                 input.operation_id,
                 step,
                 ModelPurpose::Response,
-                completion,
+                metadata,
                 self.io,
             )?;
             observation.latency_ns = original.latency_ns;
@@ -183,6 +183,11 @@ impl<'a> StockExecution<'a> {
         let (source, bytes) = with_history_io(self.io, |work| {
             crate::context::clone_context(&base, Some(through), work)
         })?;
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record((
+            "context review source messages",
+            through as u64,
+        ));
         let hold = self.io.map(|io| io.guard_owned(bytes)).transpose()?;
         let job = Job {
             step,
@@ -392,7 +397,7 @@ impl<'a> StockExecution<'a> {
     ) -> Result<()> {
         loop {
             let requested = self.review.requested.notified();
-            let stopped = self.review.stop.notified();
+            let stopped = self.context_review_stopped();
             if self.review.stopped.load(Ordering::Acquire) {
                 return Ok(());
             }
@@ -434,6 +439,18 @@ impl<'a> StockExecution<'a> {
             state.ready = Some(result);
             drop(state);
             self.review.completed.notify_one();
+        }
+    }
+
+    async fn context_review_stopped(&self) {
+        loop {
+            let stopped = self.review.stop.notified();
+            if self.review.stopped.load(Ordering::Acquire) {
+                return;
+            }
+            // A previous scoped run can leave a notification permit. Only
+            // this run's terminal state authorises cancelling its producer.
+            stopped.await;
         }
     }
 

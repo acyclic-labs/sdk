@@ -234,6 +234,19 @@ pub(crate) fn validate(
             "usage admission failed: no original terminal model event; recovery: select the original committed Completed observation",
         ));
     };
+    validate_metadata(record, operation, step, purpose, metadata, io)
+}
+
+/// The stock collector already owns the original Completed metadata. Keep its
+/// admission on the same validation path without cloning that JSON value.
+pub(super) fn validate_metadata(
+    record: &ModelUsageRecord,
+    operation: OperationId,
+    step: u32,
+    purpose: ModelPurpose,
+    metadata: &Value,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
     if record.version != ModelUsageRecord::VERSION
         || !record.completed
         || record.abandoned.is_none()

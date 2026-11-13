@@ -13,10 +13,10 @@
     "steps": [
       {
         "when": {
-          "contains": "Summarize the preceding context for the continuing worker."
+          "contains": "You manage this worker's context outside its turns."
         },
         "text": [
-          "BACKGROUND_SAVED_FACT"
+          "{\"version\":1,\"summary\":\"BACKGROUND_SAVED_FACT\",\"review_at_input_tokens\":18000}"
         ]
       },
       {
@@ -125,7 +125,7 @@
     ],
     "last_model_absent": [
       "xxxxxxxxxxxxxxxx",
-      "Summarize the preceding context"
+      "You manage this worker's context outside its turns."
     ]
   }
 }

@@ -1,6 +1,113 @@
 use super::*;
 use futures::FutureExt as _;
 
+fn original_metadata(events: &[ModelEvent]) -> &Value {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            ModelEvent::Completed { metadata } => Some(metadata),
+            _ => None,
+        })
+        .expect("the provider completed this request")
+}
+
+/// A provider-request count alone misses cancelled preparation. Count the
+/// actual source construction, including a control restoring the old caller.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Result<()> {
+    for count in [2, 64] {
+        let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: "done".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({"usage":{"prompt_tokens":1024,"completion_tokens":1}}),
+            }),
+        ])]));
+        let stock = StockExecutor::new(
+            Model::new("fixture".into(), "selected".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_automatic_compaction()?;
+        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 8192).await?;
+        let journal_owner = storage.journal();
+        let journal = journal_owner.as_ref();
+        let mut messages: Vec<_> = (0..count)
+            .map(|index| ModelMessage {
+                role: if index % 2 == 0 {
+                    ModelRole::User
+                } else {
+                    ModelRole::Assistant
+                },
+                content: ModelContent::Text(format!("Earlier finding {index}.")),
+            })
+            .collect();
+        let input_text = ModelContent::Text("Complete the task.".into());
+        messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: input_text.clone(),
+        });
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            max_steps: None,
+            input: input_text,
+            selected_context: Some(SelectedModelContext {
+                selection: crate::conversation::ModelContextSelection {
+                    conversation_revision: messages.len() as u64,
+                    message_ids: (1..=messages.len())
+                        .map(|index| uuid::Uuid::from_u128(index as u128))
+                        .collect(),
+                    checkpoint: None,
+                },
+                messages,
+            }),
+        };
+        let (result, trace) = acyclic_test_support::differential::observe_async::<
+            _,
+            (&'static str, u64),
+        >(stock.execute(input.clone(), journal))
+        .await;
+        let output = result?;
+        assert_eq!(output.text, "done");
+        assert!(
+            !trace
+                .iter()
+                .any(|(event, _)| *event == "context review source messages")
+        );
+        let execution = StockExecution::ordinary(&stock);
+        let old_caller = async {
+            execution
+                .request_context_review(journal, &input, 0, &[], &output.metadata)
+                .await?;
+            Ok(ExecutionProgress::Ready(()))
+        };
+        let (result, trace) = acyclic_test_support::differential::observe_async::<
+            _,
+            (&'static str, u64),
+        >(execution.with_context_review(journal, &input, old_caller))
+        .await;
+        result?;
+        let constructed: Vec<_> = trace
+            .into_iter()
+            .filter(|(event, _)| *event == "context review source messages")
+            .collect();
+        assert_eq!(
+            constructed,
+            vec![("context review source messages", count as u64)]
+        );
+        assert_eq!(
+            provider.request_count(),
+            1,
+            "the negative control wastes preparation without generating another request"
+        );
+    }
+    Ok(())
+}
+
 /// A blocked housekeeping request must neither stall the worker nor change
 /// its cached prefix. Only a finished, source-bound decision may rewrite it.
 #[tokio::test]
@@ -71,10 +178,15 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             },
         ];
         let initial_prior = prior.clone();
+        // An immediately settled run leaves its notification unconsumed. A
+        // subsequent review on the same session must use its own lifecycle.
+        execution
+            .with_context_review(journal, &input, async { Ok(ExecutionProgress::Ready(())) })
+            .await?;
         let worker = async {
             let events = execution.model_step(journal, &input, 0, &prior).await?;
             execution
-                .request_context_review(journal, &input, 0, &prior, &events)
+                .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
                 .await?;
             started.notified().await;
             let before = provider.request(0).unwrap();
@@ -144,7 +256,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
                 );
             }
             execution
-                .request_context_review(journal, &input, 2, &prior, &events)
+                .request_context_review(journal, &input, 2, &prior, original_metadata(&events))
                 .await?;
             assert!(
                 execution
@@ -181,7 +293,13 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             .await?;
         let replay = async {
             reopened
-                .request_context_review(journal, &input, 0, &initial_prior, &events)
+                .request_context_review(
+                    journal,
+                    &input,
+                    0,
+                    &initial_prior,
+                    original_metadata(&events),
+                )
                 .await?;
             assert!(
                 reopened
@@ -270,7 +388,7 @@ async fn invalid_context_decisions_preserve_history_and_original_admissions() ->
         let worker = async {
             let events = execution.model_step(journal, &input, 0, &prior).await?;
             execution
-                .request_context_review(journal, &input, 0, &prior, &events)
+                .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
                 .await?;
             started.notified().await;
             release.notify_one();
@@ -355,7 +473,7 @@ async fn worker_settlement_cancels_an_unfinished_context_review() -> Result<()> 
     let worker = async {
         let events = execution.model_step(journal, &input, 0, &prior).await?;
         execution
-            .request_context_review(journal, &input, 0, &prior, &events)
+            .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
             .await?;
         started.notified().await;
         Ok(ExecutionProgress::Ready(()))

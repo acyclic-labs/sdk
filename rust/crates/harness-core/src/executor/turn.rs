@@ -241,17 +241,15 @@ impl StockExecution<'_> {
                         return Err(error);
                     }
                 };
-                self.request_context_review(journal, input, step, &prior_messages, &model_events)
-                    .await?;
                 self.retire_working_history(&mut prior_messages, Some(&mut steering))
                     .await?;
                 if let Some(control) = journal.supervision().await? {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
-                let part_start = prior_messages.len();
+                let source_messages = prior_messages.len();
                 let collected =
                     self.collect_step_events(input, step, model_events, &mut prior_messages)?;
-                output.include(&collected, &prior_messages[part_start..], self.io)?;
+                output.include(&collected, &prior_messages[source_messages..], self.io)?;
                 let CollectedStep {
                     calls,
                     text,
@@ -260,6 +258,14 @@ impl StockExecution<'_> {
                     parts,
                 } = collected;
                 if completion == StepCompletion::Incomplete {
+                    self.request_context_review(
+                        journal,
+                        input,
+                        step,
+                        &prior_messages[..source_messages],
+                        &metadata,
+                    )
+                    .await?;
                     if !parts {
                         self.append_assistant_part(
                             &mut prior_messages,
@@ -312,6 +318,14 @@ impl StockExecution<'_> {
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(reason) = stop {
+                        self.request_context_review(
+                            journal,
+                            input,
+                            step,
+                            &prior_messages[..source_messages],
+                            &metadata,
+                        )
+                        .await?;
                         let answer = if parts { "" } else { text.as_str() };
                         self.continue_after_stop(&mut prior_messages, answer, reason)?;
                         stock_retire_text(text, self.io)?;
@@ -329,6 +343,14 @@ impl StockExecution<'_> {
                             }
                         }
                         if !notices.is_empty() {
+                            self.request_context_review(
+                                journal,
+                                input,
+                                step,
+                                &prior_messages[..source_messages],
+                                &metadata,
+                            )
+                            .await?;
                             let answer = if parts { "" } else { text.as_str() };
                             self.continue_after_stop(
                                 &mut prior_messages,
@@ -350,6 +372,14 @@ impl StockExecution<'_> {
                     }
                     return Ok(ExecutionProgress::Ready((text, metadata, parts)));
                 }
+                self.request_context_review(
+                    journal,
+                    input,
+                    step,
+                    &prior_messages[..source_messages],
+                    &metadata,
+                )
+                .await?;
                 stock_retire_text(text, self.io)?;
                 stock_retire_text(std::mem::take(&mut unfinished), self.io)?;
                 for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
