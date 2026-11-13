@@ -6,6 +6,76 @@ impl<
     S: LazyWorkspaceStore,
 > LazyWorkspace<A, O, D, S>
 {
+    /// Whether authored state differs between exact cuts. Source observations
+    /// alone are reads, so they never require publishing a fork back to its parent.
+    pub async fn has_authored_changes_between(
+        &self,
+        baseline: LazySnapshotRef,
+        selected: LazySnapshotRef,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        if baseline.workspace_id != self.workspace.id()
+            || selected.workspace_id != self.workspace.id()
+        {
+            return Err(LazyWorkspaceError::StaleIdentity);
+        }
+        self.validate_snapshot(baseline, ctx).await?;
+        self.validate_snapshot(selected, ctx).await?;
+        if selected.authored_generation != baseline.authored_generation
+            || selected.shadows != baseline.shadows
+        {
+            return Ok(true);
+        }
+        let mut pending = Owned::allocate(1, ctx)?;
+        pending.value.push(selected.overlay);
+        let result = async {
+            while let Some(id) = pending.value.pop() {
+                if id == baseline.overlay {
+                    continue;
+                }
+                let node = self
+                    .store
+                    .load_lazy_overlay(id, ctx)
+                    .await?
+                    .ok_or(LazyWorkspaceError::NotFound)?;
+                let changed = async {
+                    Ok::<_, LazyWorkspaceError>(
+                        if let LazyOverlay::Node {
+                            path,
+                            change,
+                            left,
+                            right,
+                            ..
+                        } = &node.0
+                        {
+                            for child in [*left, *right] {
+                                pending.ensure_for_push(usize::MAX, ctx)?;
+                                pending.value.push(child);
+                            }
+                            matches!(change, LazyOverlayChange::Tombstone { .. })
+                                && self
+                                    .overlay_fact(baseline.overlay, path, ctx)
+                                    .await?
+                                    .as_ref()
+                                    != Some(change)
+                        } else {
+                            false
+                        },
+                    )
+                }
+                .await;
+                retire_node(node, ctx)?;
+                if changed? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        .await;
+        pending.retire(ctx)?;
+        result
+    }
+
     /// Lists deleted source versions under a bounded result count.
     pub async fn source_tombstones(
         &self,

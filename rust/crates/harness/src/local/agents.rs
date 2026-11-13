@@ -497,7 +497,10 @@ struct CompletionTarget {
 #[cfg(any(test, not(target_arch = "wasm32")))]
 impl CompletionTarget {
     /// Select the completed cut only after every admitted command publishes.
-    async fn source(&self) -> Result<acyclic_fs::GitGenerationRef> {
+    async fn source(
+        &self,
+        project: &crate::conversation::VolumeRef,
+    ) -> Result<Option<acyclic_fs::GitGenerationRef>> {
         let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
             &self.workspace.state,
         ))
@@ -516,19 +519,49 @@ impl CompletionTarget {
                 .settle_publications(&self.context(), &mut state)
                 .await?;
         }
-        let source = view
-            .workspace()
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let selected = view.snapshot(&mut accounting).await.map_err(storage)?;
+        if let Some(origin) = view
+            .state(&mut accounting)
             .await
             .map_err(storage)?
-            .value;
-        Ok(acyclic_fs::GitGenerationRef {
-            workspace_id: view.workspace().id(),
-            generation: source.id(),
-        })
+            .fork_origin
+        {
+            let name = project.storage_name(&mut None)?;
+            let initial = self
+                .workspace
+                .filesystem
+                .workspace_for_creation_operation(
+                    &name,
+                    view.workspace().volume_config(),
+                    origin.operation_id,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .ok_or_else(|| Error::Conflict("child has no creating generation".into()))?;
+            let baseline = acyclic_fs::LazySnapshotRef::new(
+                view.workspace().id(),
+                initial.id(),
+                origin.snapshot.source,
+                origin.snapshot.overlay,
+                origin.snapshot.shadows,
+            );
+            if !view
+                .has_authored_changes_between(baseline, selected, &mut accounting)
+                .await
+                .map_err(storage)?
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(acyclic_fs::GitGenerationRef {
+            workspace_id: selected.workspace_id,
+            generation: selected.authored_generation,
+        }))
     }
 
     fn commands(&self) -> super::workspace::git::Commands<'_> {
@@ -580,7 +613,9 @@ impl LocalHarness {
         let own = self
             .completion_target(root, agent, &child_project, turn)
             .await?;
-        let source = own.source().await?;
+        let Some(source) = own.source(&child_project).await? else {
+            return Ok(());
+        };
         let target = self
             .completion_target(root, &parent, &parent_project, turn)
             .await?;

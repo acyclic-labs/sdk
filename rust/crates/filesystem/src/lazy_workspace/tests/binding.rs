@@ -1,6 +1,51 @@
 use super::*;
 
 #[tokio::test]
+async fn observations_need_no_publication_but_source_deletions_do() {
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    let (lookup, allocation) = root.lookup("/read", accounting!()).await.unwrap();
+    root.retire_lookup((lookup, allocation), accounting!())
+        .unwrap();
+    let observed = root.snapshot(accounting!()).await.unwrap();
+    assert!(
+        !root
+            .has_authored_changes_between(cut, observed, accounting!())
+            .await
+            .unwrap()
+    );
+    root.remove("/removed", None, accounting!()).await.unwrap();
+    assert_eq!(
+        root.head(accounting!()).await.unwrap().id(),
+        cut.authored_generation
+    );
+    let deleted = root.snapshot(accounting!()).await.unwrap();
+    assert!(
+        root.has_authored_changes_between(cut, deleted, accounting!())
+            .await
+            .unwrap()
+    );
+    // Later authored mutations cannot change the answer for an earlier cut.
+    root.workspace()
+        .write_text("/authored", "later")
+        .await
+        .unwrap();
+    assert!(
+        !root
+            .has_authored_changes_between(cut, observed, accounting!())
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn retained_snapshot_rejects_the_previous_overlay_format_before_loading_it() {
     // Overlay nodes are independently versioned, even when loaded outside a
     // workspace binding or reconstructed from another retained context.
