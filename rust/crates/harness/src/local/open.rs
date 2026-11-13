@@ -746,7 +746,6 @@ impl Opening {
             sampling,
             served: self.config.served,
             active_directory: self.config.active_directory,
-            skill_cache: context::skills::cache(),
             #[cfg(test)]
             context_read_observer: None,
             #[cfg(any(test, not(target_arch = "wasm32")))]

@@ -1,20 +1,5 @@
 use super::*;
-use crate::context::{ContextRoot, DiscoveryWork, SkillCatalog, SkillMetadata};
-
-/// A catalog and the identity of the layer stack it was discovered over.
-type Catalog = Option<([u8; 32], SkillCatalog)>;
-
-#[derive(Default)]
-pub(in crate::local) struct Catalogs {
-    project: Catalog,
-    private: Catalog,
-}
-
-pub(in crate::local) type Cache = crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalogs>>;
-
-pub(in crate::local) fn cache() -> Cache {
-    crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(Catalogs::default()))
-}
+use crate::context::{ContextRoot, DiscoveryWork, SkillMetadata};
 
 pub(super) use crate::context::PROJECT_SKILL_ROOTS as PROJECT_ROOTS;
 
@@ -149,8 +134,8 @@ impl LocalHarness {
     }
 
     /// The project's skills, or the agent's private ones: its home's
-    /// `skills/` over the seed's. Each catalog is reused while the identity
-    /// of its pinned layer stack is unchanged.
+    /// `skills/` over the seed's. Immutable source storage can reuse its pinned
+    /// metadata; discovery must still check this binding's original reader.
     async fn volume_skills(
         &self,
         binding: &Binding<'_>,
@@ -158,7 +143,6 @@ impl LocalHarness {
         work: &mut DiscoveryWork,
         private: bool,
     ) -> Result<Vec<SkillMetadata>> {
-        use crate::layers::{SEED, stack_digest};
         let volume = if private {
             binding.scratch
         } else {
@@ -167,7 +151,7 @@ impl LocalHarness {
         let name = volume.storage_name(&mut None)?;
         let workspace = crate::filesystem::workspace_ref(volume.provider().clone(), &name)?;
         // Instructions already selected this generation. Reuse it both for
-        // consistency and to keep cache hits free of authority stream reads.
+        // consistency without selecting another source revision.
         let observed;
         let generation = if let Some(generation) = generation {
             generation
@@ -176,28 +160,6 @@ impl LocalHarness {
             &observed
         };
         let (seed, seeded) = &self.seed;
-        // The home layer is named by its volume, so agents never share it.
-        let home = (name.as_str(), generation.as_resource().key());
-        let stack = if private {
-            stack_digest([(SEED, seeded.as_resource().key()), home])
-        } else {
-            stack_digest([("source-root", binding.project_root.as_bytes()), home])
-        };
-        {
-            let cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
-            let catalog = if private {
-                &cache.private
-            } else {
-                &cache.project
-            };
-            if let Some((cached, catalog)) = catalog
-                && *cached == stack
-                && let Some(skills) = catalog.reuse(work)?
-            {
-                return Ok(skills);
-            }
-        }
-        let before = *work;
         let root = |volume: &VolumeRef, directory: &str| ContextRoot {
             volume: volume.clone(),
             directory: directory.into(),
@@ -257,14 +219,161 @@ impl LocalHarness {
             }
             skills
         };
-        let catalog = SkillCatalog::capture(skills.clone(), *work, before)?;
-        let mut cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
-        let slot = if private {
-            &mut cache.private
-        } else {
-            &mut cache.project
-        };
-        *slot = Some((stack, catalog));
         Ok(skills)
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn immutable_skill_catalogs_recheck_each_readers_source_authority() -> Result<()> {
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let harness = LocalHarness::open(
+            crate::LocalHarnessConfig::native_host(checkout.path())
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .state_directory(state.path().join("runtime")),
+        )
+        .await?;
+        let signer = harness
+            .root_authority
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("fixture signing custody".into()))?;
+        let allowed_reader = harness.context_reader()?;
+        let binding = Binding {
+            project: &harness.project,
+            project_root: "",
+            scratch: &harness.scratch,
+            journal: &harness.journal,
+            reader: allowed_reader.as_ref(),
+            verifier: harness.verifier.clone(),
+            scope: &harness.signed,
+            workspace: None,
+        };
+        for (private, volume, directory, name) in [
+            (false, &harness.project, PROJECT_ROOTS[0], "project-secret"),
+            (true, &harness.scratch, crate::seed::SKILLS, "home-secret"),
+        ] {
+            let workspace = crate::filesystem::workspace_ref(
+                volume.provider().clone(),
+                &volume.storage_name(&mut None)?,
+            )?;
+            let generation = harness
+                .files
+                .apply(
+                    &workspace,
+                    None,
+                    &[
+                        crate::filesystem::WorkspaceMutation::CreateDirectory {
+                            path: format!("/{directory}/{name}"),
+                        },
+                        crate::filesystem::WorkspaceMutation::PutFile {
+                            path: format!("/{directory}/{name}/SKILL.md"),
+                            bytes: format!(
+                                "---\nname: {name}\ndescription: metadata requires source authority\n---\nprivate body\n"
+                            )
+                            .into_bytes()
+                            .into(),
+                        },
+                    ],
+                    &crate::IdempotencyKey::new(format!("skill-authority-{name}"))?,
+                )
+                .await?;
+            let ceiling = acyclic_fs::access::Capability::subtree(
+                None,
+                "unrelated",
+                &[
+                    acyclic_fs::access::Action::List,
+                    acyclic_fs::access::Action::Read,
+                ],
+            )
+            .map_err(storage)?
+            .to_scope_label()
+            .map_err(storage)?;
+            for grants in [
+                crate::Capabilities::default(),
+                crate::Capabilities::new(
+                    harness
+                        .signed
+                        .capabilities()
+                        .iter()
+                        .chain([ceiling.as_str()]),
+                ),
+            ] {
+                let denied = signer.bootstrap_scope(
+                    "skill-source-denied",
+                    &grants,
+                    Some(harness.root),
+                    &mut None,
+                )?;
+                let denied_reader = FilesystemContentVerifier::new(
+                    harness.files.clone(),
+                    &harness.verifier,
+                    &denied,
+                    harness.limits.file_bytes,
+                    None,
+                )?;
+                let forbidden = Binding {
+                    reader: denied_reader.as_ref(),
+                    scope: &denied,
+                    verifier: harness.verifier.clone(),
+                    workspace: None,
+                    ..binding
+                };
+                // Cold refusal is the control: the original reader has no
+                // authority even though the immutable source exists.
+                assert_eq!(
+                    harness
+                        .volume_skills(
+                            &forbidden,
+                            Some(&generation),
+                            &mut Default::default(),
+                            private
+                        )
+                        .await
+                        .unwrap_err()
+                        .code(),
+                    crate::wire::ErrorCode::Unauthorized
+                );
+                let skills = harness
+                    .volume_skills(
+                        &binding,
+                        Some(&generation),
+                        &mut Default::default(),
+                        private,
+                    )
+                    .await?;
+                assert!(skills.iter().any(|skill| skill.name == name));
+                // Same generation and same source root, after an authorized
+                // read: cached metadata must not disclose it to another scope.
+                assert_eq!(
+                    harness
+                        .volume_skills(
+                            &forbidden,
+                            Some(&generation),
+                            &mut Default::default(),
+                            private
+                        )
+                        .await
+                        .unwrap_err()
+                        .code(),
+                    crate::wire::ErrorCode::Unauthorized
+                );
+                assert_eq!(
+                    harness
+                        .volume_skills(
+                            &binding,
+                            Some(&generation),
+                            &mut Default::default(),
+                            private
+                        )
+                        .await?,
+                    skills
+                );
+            }
+        }
+        Ok(())
     }
 }

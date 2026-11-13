@@ -128,7 +128,6 @@ pub struct LocalHarness {
     /// [`LocalHarnessConfig::served`].
     served: Option<Arc<dyn Verifier>>,
     active_directory: String,
-    skill_cache: context::skills::Cache,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     settings: Option<Arc<crate::native_settings::SettingsConfig>>,
     /// Plugins admitted at session start, including descriptions, after-hooks
