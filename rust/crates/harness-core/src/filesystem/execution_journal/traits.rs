@@ -672,7 +672,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.authenticate_publication_with_io(operation, file, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.authenticate_publication",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("original_publication_identity"),
+                },
+                self.authenticate_publication_with_io(operation, file, io),
+                |_| None,
+            )
         })
     }
 
@@ -682,7 +691,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.authenticate_summary_with_io(file, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.authenticate_summary",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("authenticated_summary_provenance"),
+                },
+                self.authenticate_summary_with_io(file, io),
+                |_| None,
+            )
         })
     }
 
@@ -693,7 +711,16 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.verify_selected_context_with_io(operation, selected, io)
+            self.observe_request(
+                acyclic_stream::trace::Request {
+                    name: "harness.verify_selected_context",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("authenticated_selected_context"),
+                },
+                self.verify_selected_context_with_io(operation, selected, io),
+                |_| None,
+            )
         })
     }
 

@@ -71,6 +71,10 @@ It retains the original append bytes, path, retry family and idempotency key;
 dropping every observer cannot withdraw publication. There is no diagnostic
 suspension after the accepted claim. Failures without retained cause evidence
 remain unfinished rather than fabricating a terminal result.
+Ordinary journal publication identity, summary provenance and selected-context
+authentication emit `AuthCheck` spans through the same demand-selected recorder.
+The checks preserve their original decision and cause; byte counts remain unknown
+because these boundaries do not own a complete physical-read accounting result.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

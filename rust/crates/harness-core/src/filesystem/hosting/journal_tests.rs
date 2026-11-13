@@ -1094,6 +1094,33 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         assert_eq!(start.guarantee.as_deref(), Some(guarantee));
         seen.insert(start.name);
     }
+    let checks_from = traces.tail().await?;
+    assert!(
+        !journal
+            .authenticate_publication(operation, &staged, None)?
+            .await?
+    );
+    assert!(!journal.authenticate_summary(&staged, None)?.await?);
+    let mut checks = acyclic_stream::trace::TraceQuery::new(
+        traces.read(checks_from, 4).await?,
+        Default::default(),
+    );
+    for (name, guarantee) in [
+        (
+            "harness.authenticate_publication",
+            "original_publication_identity",
+        ),
+        (
+            "harness.authenticate_summary",
+            "authenticated_summary_provenance",
+        ),
+    ] {
+        checks.next().await?;
+        assert!(matches!(checks.next().await?,
+            Some(acyclic_stream::trace::Observation::Completed { start, bytes: None, .. })
+            if start.name == name && start.mechanism == acyclic_stream::trace::Mechanism::AuthCheck
+                && start.guarantee.as_deref() == Some(guarantee)));
+    }
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     let through = traces.tail().await?;
     let mut failed = acyclic_stream::trace::TraceQuery::new(
