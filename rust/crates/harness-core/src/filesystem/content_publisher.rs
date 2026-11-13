@@ -285,6 +285,39 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemContentPublisher<A, O>
 {
+    /// Admits a new file destination at the current authorized cut without
+    /// publishing or consuming its payload. Resolve an original publication
+    /// before calling this: a replay belongs to its original cut. Publication
+    /// still revalidates authority and destination at its transaction cut.
+    #[doc(hidden)]
+    pub fn admit_path<'a>(
+        &'a self,
+        path: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
+        self.grant
+            .require(&self.volume, VolumeOperation::Write, access.io)?;
+        crate::executor::with_history_io(access.io, |work| {
+            crate::conversation::validate_content_path(path, work)
+        })?;
+        BoundedContentFuture::new(access.io, || async move {
+            let reference =
+                super::bounded_io::content_workspace(&self.host.provider, &self.volume, access.io)?;
+            let workspace = self.host.open(&reference, access.io).await?;
+            self.host
+                .authorize_content_write(
+                    &workspace,
+                    &self.grant,
+                    path,
+                    false,
+                    access.ceiling,
+                    access.io,
+                )?
+                .await?;
+            Ok(())
+        })
+    }
+
     pub(super) async fn observe_publication(
         &self,
         operation: OperationId,
