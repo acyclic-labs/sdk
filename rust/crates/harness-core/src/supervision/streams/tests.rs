@@ -278,12 +278,16 @@ async fn original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage()
     // to trust a caller-supplied spending boolean. Progress and a quiet turn
     // both break the consecutive spending-turn run.
     for (index, (spent_tokens, progress, expected)) in [
-        (true, false, 1),
-        (true, true, 0),
-        (true, false, 1),
-        (false, false, 0),
-        (true, false, 1),
-        (true, false, 2),
+        (true, Some(false), 1),
+        (true, Some(true), 0),
+        (true, Some(false), 1),
+        // Missing original content coverage breaks an absence proof without
+        // claiming positive progress. The next known unchanged turn counts.
+        (true, None, 0),
+        (true, Some(false), 1),
+        (false, Some(false), 0),
+        (true, Some(false), 1),
+        (true, Some(false), 2),
     ]
     .into_iter()
     .enumerate()
@@ -314,17 +318,18 @@ async fn original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage()
             sequence: sequence + 1,
             ..source
         };
-        let progress = if progress {
-            queries.project_progress(&source, turn, &policy).await?
-        } else {
-            queries
-                .project(&source, &Observation::Progress, &policy)
-                .await?
-        };
+        let measurement = queries
+            .project_native_capture(&source, turn, progress, &policy)
+            .await?;
         assert!(matches!(
-            provider.commit(publish(sequence + 1, progress)?).await?,
+            provider.commit(publish(sequence + 1, measurement)?).await?,
             CommitOutcome::Committed(_)
         ));
+        assert_eq!(
+            queries.progress_in_turn(turn).await?.0,
+            progress == Some(true),
+            "unavailable capture evidence became positive progress"
+        );
         let source = Position {
             sequence: sequence + 2,
             ..source
@@ -352,9 +357,9 @@ async fn original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage()
             .project_settlement(
                 &Position {
                     stream: agent.inbox()?,
-                    sequence: 24,
+                    sequence: 30,
                 },
-                106,
+                108,
                 &Policy::default(),
             )
             .await?

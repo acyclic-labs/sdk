@@ -17,6 +17,7 @@ pub(super) enum Invocation<'a> {
 pub(super) enum Inputs<'a> {
     PolicyChanged,
     Progress,
+    NativeCapture(Option<bool>),
     Usage {
         tokens: Option<u64>,
         usd_nanos: Option<u64>,
@@ -122,6 +123,21 @@ where
             }));
         }
         let (step, call_id) = match event {
+            ExecutionEvent::NativeCapture { receipt } => {
+                if !self
+                    .run_admission
+                    .as_ref()
+                    .is_some_and(|source| source.value.no_progress_turns.is_some())
+                {
+                    return Ok(None);
+                }
+                let (record, _hold) = crate::executor::load_json::<
+                    crate::runtime::NativeCaptureProgress,
+                >(self, receipt, io)
+                .await?;
+                record.validate(operation, receipt)?;
+                return Ok(Some(Inputs::NativeCapture(record.changed)));
+            }
             ExecutionEvent::Progress { .. } => {
                 return Ok(self
                     .run_admission
@@ -212,6 +228,12 @@ where
         if matches!(inputs, Inputs::Progress) {
             return queries
                 .project_progress(source, *turn, policy)
+                .await
+                .map(Some);
+        }
+        if let Inputs::NativeCapture(changed) = inputs {
+            return queries
+                .project_native_capture(source, *turn, *changed, policy)
                 .await
                 .map(Some);
         }
