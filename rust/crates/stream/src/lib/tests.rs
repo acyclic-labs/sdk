@@ -47,6 +47,39 @@ mod error_code_tests {
     }
 
     #[test]
+    fn boxed_native_causes_survive_cloning_without_changing_classification() {
+        use std::error::Error as _;
+        for category in StreamError::ALL {
+            let native: Box<dyn std::error::Error + Send + Sync + 'static> =
+                Box::new(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+            let original = category.clone().with_boxed_source(native);
+            let cloned = original.clone();
+            assert!(std::ptr::eq(
+                original.source().unwrap().source().unwrap(),
+                cloned.source().unwrap().source().unwrap(),
+            ));
+            assert_eq!(original, cloned);
+            drop(original);
+            let cause = cloned
+                .source()
+                .unwrap()
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .expect("original native error type");
+            assert_eq!(cause.kind(), std::io::ErrorKind::BrokenPipe);
+            assert_eq!(cloned.category(), category);
+            assert_eq!(cloned.code(), category.code());
+            assert_eq!(cloned.uncertain(), category.uncertain());
+            #[cfg(feature = "serde")]
+            assert_eq!(
+                serde_json::to_value(&cloned).unwrap(),
+                serde_json::to_value(&category).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn wire_codes_are_pinned_and_round_trip() {
         let codes = StreamError::ALL.map(|error| error.code());
         assert_eq!(

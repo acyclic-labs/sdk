@@ -165,6 +165,17 @@ impl StreamError {
         })
     }
 
+    /// Retain an already boxed native cause with the same clone and category
+    /// guarantees as [`Self::with_source`]. The original concrete source remains
+    /// downcastable; it is shared as an Arc, not wrapped in another error.
+    #[must_use]
+    pub fn with_boxed_source(
+        self,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    ) -> Self {
+        Self::Caused(acyclic_auth::failure::Failure::from_boxed(self, source))
+    }
+
     /// Unavailability with its original typed attribution. Recovery still follows
     /// the unavailable category; attribution is diagnostic, not retry permission.
     #[must_use]
