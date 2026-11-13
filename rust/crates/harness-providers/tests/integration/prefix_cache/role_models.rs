@@ -363,7 +363,11 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     // wins, and without one descendants inherit their actual parent.
     let role = acyclic_harness::templates::seed_model("worker")?;
     assert_eq!(
-        resumed.child_profile(&kid, "worker").await?.model.as_deref(),
+        resumed
+            .child_profile(&kid, "worker")
+            .await?
+            .model
+            .as_deref(),
         acyclic_harness::templates::resolve_model(role.as_deref(), creation.model.as_deref())
     );
     let body = resumed

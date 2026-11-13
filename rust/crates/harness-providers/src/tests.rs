@@ -543,6 +543,79 @@ fn native_code_declaration_and_appended_tool_notices_project_on_every_protocol()
     Ok(())
 }
 
+/// A settled answer followed by hook context (the feedback plugin's
+/// retrospective, a Stop reason) is the next request's only new input. It
+/// extends the cached prefix in place and ends the conversation, so no route
+/// rewrites its system span or synthesizes a `(continue)` turn.
+#[test]
+fn hook_context_after_an_answer_extends_the_prefix_on_every_route() -> Result<()> {
+    const NOTICE: &str = "What slowed you down or blocked you?";
+    let routes = [
+        (Adapter::Chat, false),
+        (Adapter::Responses, false),
+        (Adapter::Responses, true),
+        (Adapter::Anthropic, false),
+        (Adapter::Gemini, false),
+    ];
+    for (adapter, login) in routes {
+        let (mut provider, _) = provider(adapter, 200);
+        if login {
+            Arc::make_mut(&mut provider.config).authentication =
+                crate::Authentication::ApiKeyOrCodexLogin;
+        }
+        let (prepared, _) = request(&provider)?;
+        let base = prepared.request().clone();
+        let mut noticed = base.clone();
+        noticed.messages.extend([
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("answer".into()),
+            },
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(NOTICE.into()),
+            },
+        ]);
+        let base = projection::body(&provider, &base)?;
+        let noticed = projection::body(&provider, &noticed)?;
+        let route = format!("{adapter:?} login={login}");
+        let (system, conversation) = match adapter {
+            Adapter::Chat => (None, "messages"),
+            Adapter::Responses => (login.then_some("instructions"), "input"),
+            Adapter::Anthropic => (Some("system"), "messages"),
+            Adapter::Gemini => (Some("systemInstruction"), "contents"),
+        };
+        if let Some(system) = system {
+            // Control: the leading system run is still hoisted.
+            assert!(base[system].to_string().contains("system"), "{route}");
+            assert_eq!(base[system], noticed[system], "{route}: system rewritten");
+        }
+        let (base, noticed) = (
+            base[conversation]
+                .as_array()
+                .ok_or_else(|| invalid("no base conversation"))?,
+            noticed[conversation]
+                .as_array()
+                .ok_or_else(|| invalid("no conversation"))?,
+        );
+        assert_eq!(
+            &base[..],
+            &noticed[..base.len()],
+            "{route}: prefix rewritten"
+        );
+        let last = noticed
+            .last()
+            .ok_or_else(|| invalid("empty conversation"))?
+            .to_string();
+        assert!(
+            last.contains(NOTICE),
+            "{route}: notice is not the last input"
+        );
+        assert!(!last.contains("(continue)"), "{route}: synthetic turn");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn model_provider_dispatch_projects_protocol_and_binds_accounting() -> Result<()> {
     for (adapter, _) in fixtures() {

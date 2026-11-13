@@ -712,12 +712,13 @@ async fn run(
     // overflow remains reachable when no count request is necessary.
     let pressure = "x".repeat(CONTEXT_TOKENS as usize * 3 / 5);
     for name in ["m12", "m13"] {
-        transport
-            .state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .1
-            .extend([program(name, "3 + 3"), text("filled")]);
+        let start = {
+            let mut state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
+            state
+                .1
+                .extend([program(name, "3 + 3"), text("filled"), retrospective()]);
+            state.2.len()
+        };
         let acyclic_harness::agent::Delivered::Committed { inbox } = agents
             .send(&root, &user(), &message(&root, name, &pressure).await?)
             .await?
@@ -742,7 +743,9 @@ async fn run(
             }
         }
         let state = transport.state.lock().unwrap_or_else(|p| p.into_inner());
-        let reported = &state.2[state.2.len() - 2..];
+        // The turn's call, its answer and the settlement's retrospective.
+        let reported = &state.2[start..];
+        assert_eq!(reported.len(), 3, "{family}: pressure turn requests");
         assert_eq!(
             observed.len(),
             reported.len(),
@@ -791,7 +794,14 @@ async fn run(
     let (parent, child, grandchild) = (bodies("parent"), bodies("child"), bodies("grandchild"));
     assert!(parent.len() >= 5, "{family}: parent sent {}", parent.len());
     assert!(child.len() >= 4, "{family}: child sent {}", child.len());
-    assert_eq!(grandchild.len(), 1, "{family}: grandchild requests");
+    // The grandchild's answer and its settlement's retrospective.
+    assert_eq!(grandchild.len(), 2, "{family}: grandchild requests");
+    extends(
+        family,
+        "grandchild retrospective",
+        grandchild[0],
+        grandchild[1],
+    )?;
     // The window advances only at its page cut: exactly one request starts
     // a new prefix, and every other one extends the request before it.
     let mut cut = None;
@@ -813,8 +823,9 @@ async fn run(
         "{family}: nothing follows the page cut"
     );
     // The child forks the parent's settled conversation: the turn before the
-    // spawning one, whose last request was the parent's third.
-    extends(family, "child request 0", parent[2], child[0])?;
+    // spawning one, whose last request was its retrospective, the parent's
+    // fifth (two turns of an answer and a retrospective, after one tool call).
+    extends(family, "child request 0", parent[4], child[0])?;
     for (index, pair) in child.windows(2).enumerate() {
         extends(
             family,
@@ -824,8 +835,9 @@ async fn run(
         )?;
     }
     // The grandchild forks the child's settled first turn, whose last request
-    // was the child's second, and keeps the child's directive where it was.
-    extends(family, "grandchild request 0", child[1], grandchild[0])?;
+    // was its retrospective, the child's third, and keeps the child's
+    // directive where it was.
+    extends(family, "grandchild request 0", child[2], grandchild[0])?;
     // R44 negative controls mutate valid semantic prefix fields in the actual
     // second request. The same byte-extension guard must reject every change.
     let later: Value = serde_json::from_slice(parent[1])?;
@@ -876,7 +888,7 @@ async fn run(
     assert!(departure(b"{\"messages\":[]}", parent[1]).is_some());
 
     let tight: Vec<&Bytes> = tight.iter().map(|sent| &sent.body).collect();
-    let [near, before, evicted, continued] = tight[..] else {
+    let [near, before, retrospect, evicted, continued, last] = tight[..] else {
         return Err(format!("{family}: {} requests near the window", tight.len()).into());
     };
     // Within the window nothing is evicted.
@@ -885,6 +897,19 @@ async fn run(
         "{family}: evicted within the window"
     );
     extends(family, "the step near the window", near, before)?;
+    // Each retrospective extends its settled answer in place.
+    extends(
+        family,
+        "the retrospective near the window",
+        before,
+        retrospect,
+    )?;
+    extends(
+        family,
+        "the retrospective after the backstop",
+        continued,
+        last,
+    )?;
     // The backstop replaces the oldest messages with its marker: the bytes
     // before the message array stay cached, and the turn's next step extends
     // the evicted request.
