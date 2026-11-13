@@ -112,7 +112,7 @@ impl File {
 
     /// Borrow the current public value without IO or an aggregate history scan.
     pub fn value<'a>(&'a self, reader: &'a Reader) -> Result<Value<'a>, Error<'a>> {
-        self.custody.check(reader)?;
+        self.custody.check(reader, &self.source)?;
         let observed_tail = self.source.observed_tail(reader)?;
         Ok(Value {
             covered_through: self.next,
@@ -129,7 +129,7 @@ impl File {
 
     /// Shared projection, including lazy access to active original evidence.
     pub fn query<'a>(&'a self, reader: &'a Reader) -> Result<&'a TraceQuery<()>, Error<'a>> {
-        self.custody.check(reader)?;
+        self.custody.check(reader, &self.source)?;
         self.source.observed_tail(reader)?;
         Ok(&self.query)
     }
@@ -142,7 +142,9 @@ impl File {
         reader: &'a Reader,
         count: NonZeroU32,
     ) -> Result<usize, ReadError<'a>> {
-        self.custody.check(reader).map_err(ReadError::Source)?;
+        self.custody
+            .check(reader, &self.source)
+            .map_err(ReadError::Source)?;
         let page = self
             .source
             .page(reader, self.next, count)

@@ -33,11 +33,12 @@ pub struct Custody {
 
 impl Custody {
     /// Retained projections must also check the original source's admission.
-    pub fn check(&self, reader: &Reader) -> Result<(), Error<'static>> {
+    pub fn check(&self, reader: &Reader, source: &Source) -> Result<(), Error<'static>> {
         if !self
             .reader
             .ptr_eq(&std::sync::Arc::downgrade(&reader.identity))
             || self.facts.strong_count() == 0
+            || !reader.cache().retains_custody(&source.stream, &self.facts)
         {
             Err(Error::ContinuityLost)
         } else {
