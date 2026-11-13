@@ -255,9 +255,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         reference: &FileRef,
         grant: &ContentGrant,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        let maximum_bytes = maximum_bytes
+            .into()
+            .unwrap_or(reference.descriptor().byte_length());
         grant.require_file_read(reference, io)?;
         let temporary = PreparationIo::temporary(io)?;
         let io = temporary.as_ref().or(io);
@@ -522,7 +525,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         generation: &GenerationRef,
         original: Option<&GenerationRef>,
-        maximum_delta: u64,
+        maximum_delta: Option<u64>,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let temporary;
@@ -581,7 +584,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let delta = length
             .checked_sub(prefix)
-            .filter(|delta| *delta <= maximum_delta)
+            .filter(|delta| maximum_delta.is_none_or(|maximum| *delta <= maximum))
             .ok_or_else(|| crate::Error::tool_rejected("append delta exceeds admitted capacity"))?;
         let chunk = io.sdk(
             selected
