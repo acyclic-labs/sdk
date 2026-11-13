@@ -886,3 +886,95 @@ async fn every_original_layer_fences_the_same_consuming_commit()
     assert_eq!(retained.request().idempotency_key.as_bytes(), &[32]);
     Ok(())
 }
+
+#[tokio::test]
+async fn source_groups_keep_original_layer_pins_and_the_callers_root_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_stream::StreamProviderExt as _;
+    for changed in [
+        None,
+        Some(0_usize),
+        Some(1),
+        Some(2),
+        Some(3),
+        Some(4),
+        Some(5),
+        Some(6),
+    ] {
+        let stream = Arc::new(MemoryStream::default());
+        let fs = Fs::new(
+            StreamAuthorityStore::new(Arc::clone(&stream)),
+            acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+            acyclic_fs::EmbeddedCapabilities::MEMORY,
+        );
+        let token = acyclic_fs::CancellationToken::new();
+        let mut sources = Vec::new();
+        for name in super::super::ORDER {
+            sources.push(
+                fs.create_workspace(name, WorkBudget::UNBOUNDED, &token)
+                    .await?
+                    .value,
+            );
+        }
+        let root = fs
+            .create_workspace("root-policy", WorkBudget::UNBOUNDED, &token)
+            .await?
+            .value;
+        let mut generations = Vec::new();
+        for source in &sources {
+            generations.push(source.head(WorkBudget::UNBOUNDED, &token).await?.value);
+        }
+        let manifest = Manifest::new(std::array::from_fn(|index| &generations[index]));
+        let original_root = root
+            .capture_policy_cut(WorkBudget::UNBOUNDED, &token)
+            .await?
+            .value;
+        if let Some(position) = changed {
+            let source = if position == 6 {
+                &root
+            } else {
+                &sources[position]
+            };
+            source.write_text("/settings", "changed").await?;
+        }
+        let io = crate::filesystem::PreparationIo::for_unmeasured(&token)?;
+        // Layer evidence is formed after the competing edit, from the original
+        // generation pins. The caller's root evidence must be retained too.
+        let policy = manifest.policy_group(&[original_root], &io).await?;
+        let destination = StreamPath::new("observations/source-cut")?;
+        let commit = FilesystemCommit::new(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![],
+                vec![CommitMutation::Append {
+                    path: destination.clone(),
+                    records: vec![AppendRecord::from(acyclic_stream::OwnedBytes::from_static(
+                        b"accepted",
+                    ))],
+                }],
+            )],
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"consume-source-cut".to_vec())?,
+        });
+        let outcome = policy
+            .scope(fs.submit_commit(commit, WorkBudget::UNBOUNDED, &token))
+            .await?
+            .value;
+        if changed.is_some() {
+            assert!(matches!(
+                outcome,
+                acyclic_fs::FilesystemCommitOutcome::Rejected(_)
+            ));
+            assert_eq!(
+                stream.tail(destination).await,
+                Err(acyclic_stream::StreamError::NotFound)
+            );
+        } else {
+            assert!(matches!(
+                outcome,
+                acyclic_fs::FilesystemCommitOutcome::Committed(_)
+            ));
+            assert_eq!(stream.tail(destination).await?, 1);
+        }
+    }
+    Ok(())
+}

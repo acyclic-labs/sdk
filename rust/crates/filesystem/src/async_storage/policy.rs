@@ -51,8 +51,19 @@ mod tests {
 pub struct PolicyCut {
     pub(crate) owner: [u8; 16],
     pub(crate) authority: AuthorityId,
-    pub(crate) head: Head,
-    pub(crate) epoch_tail: u64,
+    pub(crate) evidence: CutEvidence,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CutEvidence {
+    Authority {
+        head: Head,
+        epoch_tail: u64,
+    },
+    Generation {
+        generation: GenerationId,
+        lineage: u64,
+    },
 }
 
 thread_local! {
@@ -71,8 +82,23 @@ impl PolicyCut {
         Self {
             owner,
             authority,
-            head,
-            epoch_tail,
+            evidence: CutEvidence::Authority { head, epoch_tail },
+        }
+    }
+
+    pub(crate) fn generation(
+        owner: [u8; 16],
+        authority: AuthorityId,
+        generation: GenerationId,
+        lineage: u64,
+    ) -> Self {
+        Self {
+            owner,
+            authority,
+            evidence: CutEvidence::Generation {
+                generation,
+                lineage,
+            },
         }
     }
 
@@ -151,31 +177,43 @@ impl ScopedCuts {
     }
 }
 impl PolicyGroup {
-    /// Funds one authenticated cut copy before allocation on the supplied work.
+    /// Joins ordered source slices with one funded copy and no staging vector.
     /// Retaining or polling this group shares its backing without allocating.
     pub fn new<W: crate::facade::FsWork>(
-        cuts: &[PolicyCut],
+        parts: &[&[PolicyCut]],
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = (|| -> Result<Self, crate::FsError> {
             accounting.check()?;
-            let bytes = cuts
-                .len()
+            accounting.charge_items(parts.len() as u64)?;
+            let mut first = None;
+            let mut count = 0_usize;
+            for part in parts {
+                first = first.or_else(|| part.first());
+                count = count
+                    .checked_add(part.len())
+                    .ok_or(crate::WorkError::Overflow)?;
+            }
+            let bytes = count
                 .checked_mul(std::mem::size_of::<PolicyCut>())
                 .ok_or(crate::WorkError::Overflow)? as u64;
             let copying = WorkCounters {
-                items_examined: cuts.len() as u64,
+                items_examined: (count as u64)
+                    .checked_add(if count > 1 { parts.len() as u64 } else { 0 })
+                    .ok_or(crate::WorkError::Overflow)?,
                 bytes_copied: bytes,
                 ..WorkCounters::UNCHARGED
             };
             accounting.admit(copying)?;
-            let cuts = match cuts {
-                [] => None,
-                [cut] => {
+            let cuts = match count {
+                0 => None,
+                1 => {
                     accounting.charge(copying)?;
-                    Some(ScopedCuts(ScopedCutStorage::One(*cut)))
+                    Some(ScopedCuts(ScopedCutStorage::One(
+                        *first.ok_or(crate::WorkError::Overflow)?,
+                    )))
                 }
                 _ => {
                     let shared = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
@@ -191,8 +229,12 @@ impl PolicyGroup {
                         &mut accounting,
                     )?;
                     accounting.charge(copying)?;
+                    let mut cuts = Vec::with_capacity(count);
+                    for part in parts {
+                        cuts.extend_from_slice(part);
+                    }
                     Some(ScopedCuts(ScopedCutStorage::Many(Arc::new(RetainedCuts {
-                        cuts: cuts.to_vec(),
+                        cuts,
                         _allocation: allocation,
                     }))))
                 }
@@ -224,7 +266,7 @@ mod grouped_tests {
             let first = PolicyCut::new([3; 16], AuthorityId::from_bytes([4; 16]), Head::genesis(Epoch::GENESIS), 1);
             let second = PolicyCut::new([3; 16], AuthorityId::from_bytes([5; 16]), Head::genesis(Epoch::GENESIS), 1);
             let expected = if empty { vec![first] } else { vec![first, second] };
-            let group = PolicyGroup::new(if empty { &[] } else { &[first, second] }, WorkBudget::UNBOUNDED, &token).unwrap().value;
+            let group = PolicyGroup::new(&[if empty { &[] } else { &[first, second] }], WorkBudget::UNBOUNDED, &token).unwrap().value;
             let mut future = Box::pin(first.scope(group.scope(futures::future::poll_fn(move |_| {
                 assert!(PolicyCut::current().is_some_and(|current| current.as_slice() == expected));
                 if complete { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }

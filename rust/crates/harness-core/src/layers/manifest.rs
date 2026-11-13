@@ -162,9 +162,34 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     }
 }
 
-impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStore + 'static>
-    Manifest<'_, StreamAuthorityStore<P>, O>
+impl<
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+> Manifest<'_, StreamAuthorityStore<P>, O>
 {
+    /// Retains each original generation's publication condition together with
+    /// the caller's original root cuts. This never resolves a replacement head.
+    /// The caller enters this one complete group only around publication.
+    pub async fn policy_group(
+        &self,
+        additional: &[acyclic_fs::PolicyCut],
+        io: &crate::filesystem::PreparationIo,
+    ) -> crate::Result<acyclic_fs::PolicyGroup> {
+        let first = io.sdk(
+            self.generations[0]
+                .capture_policy_cut(io, io.cancellation())
+                .await,
+        )?;
+        let mut cuts = [first; 6];
+        for (cut, source) in cuts.iter_mut().zip(self.generations).skip(1) {
+            *cut = io.sdk(source.capture_policy_cut(io, io.cancellation()).await)?;
+        }
+        io.sdk(acyclic_fs::PolicyGroup::new(
+            &[&cuts, additional],
+            io,
+            io.cancellation(),
+        ))
+    }
     /// Checks an admitted candidate's actual changed paths against the
     /// original permissions, admits that exact candidate against the retained
     /// sources, then contributes its publication to the caller's commit.

@@ -27,7 +27,7 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
     )
     .map_err(|(cause, _)| cause)?;
     let before = original.live_allocation_bytes();
-    let group = crate::PolicyGroup::new(&cuts, &original, &token)?;
+    let group = crate::PolicyGroup::new(&[&cuts], &original, &token)?;
     assert!(original.live_allocation_bytes() > before);
     let effect = StreamPath::new("harness/approval-answer")?;
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
@@ -118,10 +118,10 @@ async fn external_composition_policy_fence(seal: bool, changed: usize) -> TestRe
         1,
         WorkCounters::UNCHARGED,
     )?;
-    assert!(crate::PolicyGroup::new(&cuts, &original, &token).is_err());
+    assert!(crate::PolicyGroup::new(&[&cuts], &original, &token).is_err());
     drop(occupied);
     token.cancel();
-    assert!(crate::PolicyGroup::new(&cuts, &original, &token).is_err());
+    assert!(crate::PolicyGroup::new(&[&cuts], &original, &token).is_err());
     Ok(())
 }
 

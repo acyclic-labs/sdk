@@ -970,9 +970,7 @@ async fn a_dropped_preparation_rolls_the_commit_back() -> Result<(), Box<dyn Err
 
 /// Ordinary transactions retain every external source across the publication
 /// combiner; an edit or retirement of either source refuses the whole write.
-#[tokio::test]
-async fn transaction_publication_retains_all_external_policy_sources() -> Result<(), Box<dyn Error>>
-{
+async fn transaction_policy_sources(pinned: bool) -> Result<(), Box<dyn Error>> {
     for changed in [
         None,
         Some((0_usize, false)),
@@ -990,13 +988,22 @@ async fn transaction_publication_retains_all_external_policy_sources() -> Result
         ];
         let target = unbounded!(fs, create_workspace("target"))?;
         let before = unbounded!(target, head())?.id();
-        let cuts = [
-            unbounded!(sources[0], capture_policy_cut())?,
-            unbounded!(sources[1], capture_policy_cut())?,
-        ];
-        let policy = crate::PolicyGroup::new(&cuts, WorkBudget::UNBOUNDED, &token)
-            .map_err(|failure| failure.error)?
-            .value;
+        let original = if pinned {
+            Some([
+                unbounded!(sources[0], head())?,
+                unbounded!(sources[1], head())?,
+            ])
+        } else {
+            None
+        };
+        let captured = if pinned {
+            None
+        } else {
+            Some([
+                unbounded!(sources[0], capture_policy_cut())?,
+                unbounded!(sources[1], capture_policy_cut())?,
+            ])
+        };
         let mut transaction = unbounded!(target, begin_transaction(IdempotencyKey::new()))?;
         unbounded!(
             transaction,
@@ -1013,6 +1020,18 @@ async fn transaction_publication_retains_all_external_policy_sources() -> Result
                 sources[position].write_text("/settings", "changed").await?;
             }
         }
+        // Capture from the original pins AFTER an edit or retirement. Opening
+        // current source heads here would silently replace the admitted input.
+        let cuts = match original {
+            Some(original) => [
+                unbounded!(original[0], capture_policy_cut())?,
+                unbounded!(original[1], capture_policy_cut())?,
+            ],
+            None => captured.unwrap(),
+        };
+        let policy = crate::PolicyGroup::new(&[&cuts], WorkBudget::UNBOUNDED, &token)
+            .map_err(|failure| failure.error)?
+            .value;
         let committed = policy
             .scope(transaction.commit::<WorkspaceError, _, _>(
                 None,
@@ -1036,4 +1055,11 @@ async fn transaction_publication_retains_all_external_policy_sources() -> Result
         }
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn transaction_publication_retains_all_external_policy_sources() -> Result<(), Box<dyn Error>>
+{
+    transaction_policy_sources(false).await?;
+    transaction_policy_sources(true).await
 }
