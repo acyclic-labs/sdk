@@ -89,6 +89,11 @@ Full and Actors-only capture retain every historical Actors input and its proven
 Versioned invocation and State writer captures retain the earlier corpus and
 provenance, including transitions that contain the earlier State version.
 
+Run `node capture-controls.mjs` on the same POSIX host after capture. It removes
+source restoration and separately corrupts a real State writer's first byte;
+the original signal regression and golden checker must reject those mutations.
+The controller waits for its child and restores each original source before exit.
+
 `python3 actor-negative-control.py --persisted-alarms` covers the deployed
 State codec after actual Store publications: a committed input sets an alarm,
 its firing preserves the deadline while consuming the generation, and a second
