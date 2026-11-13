@@ -5,6 +5,98 @@ use std::time::Duration;
 const MODE: &str = "ACYCLIC_TEST_NATIVE_LAUNCH";
 const MARKER: &str = "ACYCLIC_TEST_NATIVE_LAUNCH_MARKER";
 
+thread_local! {
+    static PREPARED_AT: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn preparation_finished() {
+    if let Some(now) = PREPARED_AT.with(std::cell::Cell::get) {
+        set_capture_clock(Some(now));
+    }
+}
+
+/// Simulates time spent preparing a grant, then runs the real launch and
+/// capture. An absolute deadline is the negative control: it must expire.
+#[tokio::test]
+async fn grant_preparation_does_not_consume_a_launch_relative_timeout() -> io::Result<()> {
+    struct ClockReset;
+    impl Drop for ClockReset {
+        fn drop(&mut self) {
+            PREPARED_AT.with(|clock| clock.set(None));
+            set_capture_clock(None);
+        }
+    }
+    struct Inspect {
+        deadline: Instant,
+        collect: Collect,
+    }
+    impl Owner<Recorder> for Inspect {
+        type Output = ProcessCapture<Recorder>;
+        fn tree(
+            self,
+            tree: ProcessTree,
+            schedule: CaptureSchedule,
+            maximum: Option<usize>,
+            input: Option<OwnedCaptureInput>,
+            handler: Recorder,
+        ) -> Self::Output {
+            assert_eq!(schedule, CaptureSchedule::Deadline(self.deadline));
+            self.collect.tree(tree, schedule, maximum, input, handler)
+        }
+        #[cfg(feature = "test-support")]
+        fn answered(self, outcome: CaptureOutcome<Recorder>) -> Self::Output {
+            self.collect.answered(outcome)
+        }
+    }
+    crate::initialize_native_io_services()?;
+    for relative in [false, true] {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("work"))?;
+        let began = Instant::now();
+        let prepared = began + Duration::from_secs(2);
+        let budget = Duration::from_secs(1);
+        let mut request = command(root.path());
+        request.schedule = if relative {
+            CaptureSchedule::FromLaunch(budget)
+        } else {
+            CaptureSchedule::Deadline(began + budget)
+        };
+        let reset = ClockReset;
+        set_capture_clock(Some(began));
+        PREPARED_AT.with(|clock| clock.set(Some(prepared)));
+        let launched = request.start(
+            Recorder::default(),
+            Inspect {
+                deadline: prepared + budget,
+                collect: Collect(TaskSpawner::current()),
+            },
+        );
+        drop(reset);
+        if relative {
+            let Ok(capture) = launched else {
+                panic!("preparation consumed the child's timeout")
+            };
+            assert_eq!(
+                capture
+                    .await?
+                    .result
+                    .map_err(io::Error::other)?
+                    .status
+                    .code(),
+                Some(3)
+            );
+            assert!(root.path().join("marker").exists());
+        } else {
+            let Err(LaunchFailure::Refused { failure, .. }) = launched else {
+                panic!("an absolute deadline was renewed after preparation")
+            };
+            assert_eq!(failure.error.kind(), io::ErrorKind::TimedOut);
+            assert!(!root.path().join("marker").exists());
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn child() -> io::Result<()> {
     if std::env::var_os(MODE).is_none() {

@@ -196,7 +196,7 @@ impl CaptureRequest {
     }
 
     fn start<H: CaptureHandler, O: Owner<H>>(
-        self,
+        mut self,
         mut handler: H,
         owner: O,
     ) -> Result<O::Output, LaunchFailure<H>> {
@@ -226,8 +226,18 @@ impl CaptureRequest {
             pump::retire(&mut handler, true, Some(&error));
             return Err(LaunchFailure::Control { error, handler });
         }
+        // Grant preparation precedes spawn: its refusal is definitive and
+        // keeps its typed cause. Only the spawn itself can be indeterminate.
+        if let Some(grant) = &self.execution_grant
+            && let Err(error) = ProcessTree::prepare_granted(&mut self.command, grant, None)
+        {
+            pump::retire(&mut handler, true, Some(&error));
+            return Err(LaunchFailure::Control { error, handler });
+        }
         // A relative timeout starts here, at launch: no wait before the
         // process exists counts against it.
+        #[cfg(test)]
+        tests::preparation_finished();
         let schedule = self.schedule.launched();
         match schedule {
             CaptureSchedule::Deadline(deadline) if capture_now() >= deadline => {
@@ -264,14 +274,6 @@ impl CaptureRequest {
             if let Some(result) = answered {
                 return Ok(owner.answered(CaptureOutcome::new(handler, result)));
             }
-        }
-        // Grant preparation precedes spawn: its refusal is definitive and
-        // keeps its typed cause. Only the spawn itself can be indeterminate.
-        if let Some(grant) = &self.execution_grant
-            && let Err(error) = ProcessTree::prepare_granted(&mut command, grant, None)
-        {
-            pump::retire(&mut handler, true, Some(&error));
-            return Err(LaunchFailure::Control { error, handler });
         }
         let tree = match &self.custody {
             Some(custody) => ProcessTree::spawn_in_custody(&mut command, custody),
