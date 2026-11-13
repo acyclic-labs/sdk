@@ -320,7 +320,7 @@ pub(crate) async fn one_keyed_record<P: crate::store::JournalProvider + ?Sized>(
     )
     .await
 }
-/// A keyed selection keeps its inclusive lower bound; an unkeyed selection
+/// A keyed selection uses the shared cursor contract; an unkeyed selection
 /// must return the exact cursor. Both reject a producer exceeding one record.
 pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
@@ -334,10 +334,8 @@ pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Size
             "single-record selection requires one output slot",
         ));
     }
-    let from = request.from;
-    let keyed = request.key.is_some();
-    let mut selected = request.key.clone();
-    let mut selected_from = from;
+    let mut from = request.from;
+    let mut key = request.key.clone();
     let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_selection(client, request, quota.work()).await? {
         Ok(records) => records,
@@ -359,15 +357,13 @@ pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Size
         if let Some(record) = records.next(quota.work()).await? {
             let held = sdk_record_retained_bytes(&record, quota.work());
             quota.adopt(held)?;
-            if position != 0
-                || record.sequence < from
-                || (!keyed && record.sequence != from)
-                || selected.as_mut().is_some_and(|seek| {
-                    seek.advance(&mut selected_from, record.sequence, record.headers.keys())
-                        .is_err()
-                })
-                || record.value.len() > acyclic_stream::MAX_RECORD_BYTES
-            {
+            let selected = match key.as_mut() {
+                Some(key) => key
+                    .advance(&mut from, record.sequence, record.headers.keys())
+                    .is_ok(),
+                None => record.sequence == from,
+            };
+            if position != 0 || !selected || record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
                 return Err(boundary(
                     quota.work(),
                     Storage,
