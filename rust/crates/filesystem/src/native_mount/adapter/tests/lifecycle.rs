@@ -639,11 +639,11 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
 }
 
 #[test]
-fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn std::error::Error>>
-{
+fn native_attribute_listings_skip_foreign_class_page_reads()
+-> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::{AttributeEntry, AttributePage, BlobNode, BlobPage, Child};
     let mut reads = Vec::new();
-    for annotation_count in [0, 16] {
+    for foreign_count in [0, 8] {
         let fs = Fs::memory();
         let (source, _) = sources_with_fs(
             &fs,
@@ -669,7 +669,9 @@ fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn 
                 let mut children = Vec::new();
                 for (class, count) in [
                     (AttributeClass::PosixXattr, 2),
-                    (AttributeClass::Annotation, annotation_count),
+                    (AttributeClass::WindowsStream, foreign_count),
+                    (AttributeClass::MacResourceFork, foreign_count),
+                    (AttributeClass::Annotation, foreign_count),
                 ] {
                     for index in 0..count {
                         let name = AttributeName::new(
@@ -716,12 +718,17 @@ fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn 
         let detached = source.detach_file(&path)?;
         let mut counts = Vec::new();
         for kind in 0..3 {
-            let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
-            let (page, allocation) = match kind {
-                0 => source.list_attributes_with_meter(&path, None, 256, &work)?,
-                1 => attached.list_attributes_with_meter(None, 256, &work)?,
-                _ => detached.list_attributes_with_meter(None, 256, &work)?,
+            let list = |cursor: Option<&[u8]>,
+                        maximum_entries,
+                        work: &crate::NativeMaterializationWork| {
+                match kind {
+                    0 => source.list_attributes_with_meter(&path, cursor, maximum_entries, work),
+                    1 => attached.list_attributes_with_meter(cursor, maximum_entries, work),
+                    _ => detached.list_attributes_with_meter(cursor, maximum_entries, work),
+                }
             };
+            let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+            let (page, allocation) = list(None, 256, &work)?;
             assert_eq!(
                 page.names,
                 [b"user.value-00".to_vec(), b"user.value-01".to_vec()]
@@ -731,9 +738,30 @@ fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn 
             assert!(counts[kind] > 0, "the real backing store must be read");
             drop(page);
             drop(allocation);
+            for (cursor, expected, next) in [
+                (
+                    None,
+                    Some(b"user.value-00".as_slice()),
+                    Some(b"user.value-00".as_slice()),
+                ),
+                (
+                    Some(b"user.value-00".as_slice()),
+                    Some(b"user.value-01".as_slice()),
+                    None,
+                ),
+                (Some(b"user.value-01".as_slice()), None, None),
+            ] {
+                let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+                let (page, allocation) = list(cursor, 1, &work)?;
+                let expected: Vec<_> = expected.into_iter().map(<[u8]>::to_vec).collect();
+                assert_eq!(page.names, expected);
+                assert_eq!(page.next_cursor.as_deref(), next);
+                drop(page);
+                drop(allocation);
+            }
         }
         reads.push(counts);
-        if annotation_count != 0 {
+        if foreign_count != 0 {
             let listing = source.runtime.block_on(
                 || async {
                     source
@@ -754,14 +782,14 @@ fn native_attribute_listings_skip_annotation_page_reads() -> Result<(), Box<dyn 
             )??;
             assert_eq!(
                 listing.value.entries.len(),
-                18,
-                "ordinary volume reads retain all annotations"
+                2 + 3 * foreign_count,
+                "ordinary volume reads retain every attribute class"
             );
         }
     }
     assert_eq!(
         reads[0], reads[1],
-        "annotations must add no reads to path, attached or detached listings"
+        "foreign classes must add no reads to path, attached or detached listings"
     );
     Ok(())
 }
