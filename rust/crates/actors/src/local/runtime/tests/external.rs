@@ -643,7 +643,9 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
         assert!(futures::poll!(watching.as_mut()).is_pending());
         state.subscriptions.get_mut("inbox").unwrap().paused = true;
         registry.refresh(&address, &state, handler.as_ref(), &wake)?;
-        let stopped = watching.await;
+        let std::task::Poll::Ready(stopped) = futures::poll!(watching.as_mut()) else {
+            panic!("suspended source did not release its follow")
+        };
         assert!(stopped.result.is_ok());
         assert!(
             stopped.watch.is_none(),
