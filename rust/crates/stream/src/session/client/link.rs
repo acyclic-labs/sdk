@@ -97,7 +97,12 @@ impl Pool {
         self.connections.advance()?;
         Ok(node)
     }
-    pub(super) fn dial(&mut self, node: wire::SessionNode, channel: Option<Endpoint>) {
+    pub(super) fn dial(
+        &mut self,
+        node: wire::SessionNode,
+        channel: Option<Endpoint>,
+        mut backoff: Option<acyclic_auth::operation::Backoff>,
+    ) {
         let name = node.node_id.clone();
         if self.links.contains_key(&name) || self.dials.contains_key(&name) {
             return;
@@ -148,6 +153,9 @@ impl Pool {
                 opening: Arc::clone(&progress),
                 future: Box::pin(context.scope(async move {
                     let mut attempt = 0_u32;
+                    if let Some(backoff) = &mut backoff {
+                        executor.sleep(backoff.delay_ms()).await;
+                    }
                     let outcome = loop {
                         let result = observation
                             .operation
@@ -170,6 +178,7 @@ impl Pool {
                             .await;
                         match result {
                             Ok((node, mut link, response)) => {
+                                link.backoff = backoff;
                                 link.observation = Some(observation);
                                 break Ok((node, link, response));
                             }
@@ -181,7 +190,14 @@ impl Pool {
                                     break Err(failure.error);
                                 }
                                 attempt = attempt.saturating_add(1);
-                                executor.sleep(10).await;
+                                let backoff = backoff.get_or_insert_with(|| {
+                                    acyclic_auth::operation::Backoff::new(
+                                        10,
+                                        1_000,
+                                        uuid::Uuid::new_v4().as_fields().0,
+                                    )
+                                });
+                                executor.sleep(backoff.delay_ms()).await;
                                 let retry = Observation::session(attempt);
                                 retry
                                     .operation
@@ -427,10 +443,6 @@ impl Pool {
         } else {
             node
         };
-        let registering = self
-            .routes
-            .on_node(node)
-            .any(|(_, route)| route.live() && route.ready.is_some());
         let ids = self
             .routes
             .on_node(node)
@@ -455,18 +467,10 @@ impl Pool {
                 placement_epoch: 0,
             },
             Some(link.channel.clone()),
+            Some(link.backoff.take().unwrap_or_else(|| {
+                acyclic_auth::operation::Backoff::new(10, 1_000, uuid::Uuid::new_v4().as_fields().0)
+            })),
         );
-        if registering && let Some(mut dial) = self.dials.remove(destination) {
-            let executor = self.executor.clone();
-            // Back off after EOF so a repeatedly disconnected transport yields
-            // to cancellation and other work before opening another RPC.
-            let opening = dial.future;
-            dial.future = Box::pin(async move {
-                executor.sleep(10).await;
-                opening.await
-            });
-            self.dials.insert(destination.into(), dial);
-        }
         Ok(())
     }
 }
@@ -517,6 +521,7 @@ async fn handshake(
     sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
     let link = Link {
+        backoff: None,
         opening_subscription,
         opening_credentials,
         observation: None,

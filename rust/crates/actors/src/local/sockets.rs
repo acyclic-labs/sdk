@@ -262,12 +262,12 @@ fn open_effects(
 
 /// Pacing for retries of one keyed request whose outcome is unknown.
 struct Undecided {
-    delay: u32,
+    backoff: Option<acyclic_auth::operation::Backoff>,
 }
 
 impl Undecided {
     const fn new() -> Self {
-        Self { delay: 1 }
+        Self { backoff: None }
     }
 
     /// Wait before retrying the identical request when `error` leaves its
@@ -282,8 +282,14 @@ impl Undecided {
         ) {
             return Err(error);
         }
-        executor.sleep(self.delay).await;
-        self.delay = self.delay.saturating_mul(2).min(BACKOFF_CEILING_MS);
+        let backoff = self.backoff.get_or_insert_with(|| {
+            acyclic_auth::operation::Backoff::new(
+                1,
+                BACKOFF_CEILING_MS,
+                uuid::Uuid::new_v4().as_fields().0,
+            )
+        });
+        executor.sleep(backoff.delay_ms()).await;
         Ok(())
     }
 }

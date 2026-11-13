@@ -7,7 +7,9 @@
 use futures::{Future, FutureExt, future::Shared};
 use std::{sync::Arc, time::Duration};
 
+mod backoff;
 mod bytes;
+pub use backoff::Backoff;
 pub use bytes::{
     ProtectedBytes, bytes_owner_allocation_bytes, protect_bytes, reserve_protected_bytes,
 };
