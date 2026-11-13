@@ -98,12 +98,8 @@ impl PeerRoute<'_> {
             let record = head
                 .last
                 .ok_or(Error::Record("peer directory row is empty"))?;
-            let row = SessionRow::decode(&record.value)?;
-            if record.origin != path
-                || record.sequence.checked_add(1) != Some(head.tail)
-                || row.rev != head.tail
-                || node.is_some_and(|node| node != &row.node)
-            {
+            let row = SessionRow::from_record(&path, head.tail, &record)?;
+            if node.is_some_and(|node| node != &row.node) {
                 return Err(Error::Record(
                     "peer directory row ownership or revision differs",
                 ));

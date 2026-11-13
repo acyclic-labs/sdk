@@ -27,6 +27,7 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.inner().inspect_idempotency(idempotency_key).await
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.requests.record_head_selections(&request);
         self.record(if request.paths.is_empty() && request.children.is_some() {
             RequestClass::List
         } else {
@@ -66,6 +67,7 @@ impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Cou
         request: HeadsRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, Heads> {
+        self.requests.record_head_selections(&request);
         self.record(RequestClass::Head);
         self.inner().native_heads(request, meter)
     }

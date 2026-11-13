@@ -102,7 +102,7 @@ impl Requests {
 
 /// A clonable ledger handle retained when a counted provider is type erased.
 #[derive(Clone)]
-pub struct RequestLedger(Arc<[AtomicU64; 6]>);
+pub struct RequestLedger(Arc<[AtomicU64; 7]>);
 
 impl RequestLedger {
     /// Starts an independent empty ledger.
@@ -123,6 +123,21 @@ impl RequestLedger {
         Requests(std::array::from_fn(|index| {
             self.0[index].load(Ordering::Relaxed)
         }))
+    }
+
+    /// Selections in `HeadsRequest.paths` and `retained`, excluding child credit.
+    /// This counts work within a batched request; `u64::MAX` loses precision.
+    pub fn named_head_selections(&self) -> u64 {
+        self.0[6].load(Ordering::Relaxed)
+    }
+
+    fn record_head_selections(&self, request: &crate::HeadsRequest) {
+        let selected = u64::try_from(request.paths.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(u64::try_from(request.retained.len()).unwrap_or(u64::MAX));
+        let _ = self.0[6].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            Some(count.saturating_add(selected))
+        });
     }
 }
 
@@ -169,6 +184,11 @@ impl<P> Counted<P> {
     /// Retains accounting after moving this provider into a trait object.
     pub fn ledger(&self) -> RequestLedger {
         self.requests.clone()
+    }
+
+    /// Named selections issued through this wrapper, shared by its clones.
+    pub fn named_head_selections(&self) -> u64 {
+        self.requests.named_head_selections()
     }
 }
 
@@ -269,6 +289,7 @@ mod tests {
         let requested = ledger.requests().since(before);
         assert_eq!(requested.class(RequestClass::Head), 1);
         assert_eq!(requested.auxiliary(Some(RequestClass::Head)), Some(0));
+        assert_eq!(ledger.named_head_selections(), 1);
 
         // Listing is the requested data operation here. Its independent result
         // oracle stays intact; a method-class name cannot turn it into a probe.

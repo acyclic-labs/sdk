@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 mod registry;
 pub use registry::{SessionPublication, SessionRegistry};
+mod page;
+pub use page::{SessionPage, SessionPeer};
 
 /// Public phase only; approval bindings and host-local paths stay on their node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +132,19 @@ impl Serialize for SessionRow {
 }
 
 impl SessionRow {
+    pub(crate) fn from_record(
+        path: &acyclic_stream::StreamPath,
+        tail: u64,
+        record: &acyclic_stream::Record,
+    ) -> Result<Self, Error> {
+        let row = Self::decode(&record.value)?;
+        if record.origin != *path || record.sequence.checked_add(1) != Some(tail) || row.rev != tail
+        {
+            return Err(Error::Record("session row provenance or revision differs"));
+        }
+        Ok(row)
+    }
+
     /// Initial membership row, joined to the original root creation.
     pub fn new(node: NodeId, profile: SessionProfile) -> Self {
         Self {

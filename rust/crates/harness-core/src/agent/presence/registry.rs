@@ -93,8 +93,8 @@ impl SessionPublication {
         let row = match provider.head(path.clone()).await {
             Ok(head) => {
                 let record = head.last.ok_or(Error::Record("session row is empty"))?;
-                let row = SessionRow::decode(&record.value)?;
-                if row.rev != head.tail || &row.node != node {
+                let row = SessionRow::from_record(&path, head.tail, &record)?;
+                if &row.node != node {
                     return Err(Error::Record("session row ownership or revision differs"));
                 }
                 Some(row)
@@ -291,8 +291,10 @@ impl<P: StreamProvider + ?Sized> CallProvider for SessionRegistry<P> {
                 .rev
                 .checked_sub(1)
                 .ok_or(StreamError::InvalidArgument)?;
-            if let Some(record) = provider.record_at(path, sequence).await? {
-                if SessionRow::decode(&record.value).map_err(stream_error)? != publication.row
+            if let Some(record) = provider.record_at(path.clone(), sequence).await? {
+                if SessionRow::from_record(&path, publication.row.rev, &record)
+                    .map_err(stream_error)?
+                    != publication.row
                     || !record.headers.attributes().iter().any(|attribute| {
                         attribute.name == ORIGIN && attribute.value.as_ref() == key.as_bytes()
                     })

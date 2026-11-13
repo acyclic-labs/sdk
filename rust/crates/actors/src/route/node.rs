@@ -160,23 +160,34 @@ impl NodePresence {
         })
     }
 
+    /// Decode a presence record selected at its owning node's original path.
+    /// This proves provenance, never caller authority to observe that path.
+    pub fn from_record(
+        record: &acyclic_stream::Record,
+        path: &StreamPath,
+        node: &NodeId,
+    ) -> Result<Self, Error> {
+        let presence = Self::decode(&record.value)?;
+        if record.origin != *path || &presence.node != node {
+            return Err(Error::InvalidRecord);
+        }
+        Ok(presence)
+    }
+
     /// One bounded head observation, with no per-session query or timer.
     pub async fn read<P: StreamProvider + ?Sized>(
         provider: &P,
         paths: &Paths,
         node: &NodeId,
     ) -> Result<Option<Self>, Error> {
-        let head = match provider.head(paths.presence(node)?).await {
+        let path = paths.presence(node)?;
+        let head = match provider.head(path.clone()).await {
             Ok(head) => head,
             Err(error) if error.category() == StreamError::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let record = head.last.ok_or(Error::InvalidRecord)?;
-        let presence = Self::decode(&record.value)?;
-        if &presence.node != node {
-            return Err(Error::InvalidRecord);
-        }
-        Ok(Some(presence))
+        Ok(Some(Self::from_record(&record, &path, node)?))
     }
 }
 

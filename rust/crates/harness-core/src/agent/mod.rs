@@ -57,7 +57,10 @@ mod notices;
 mod presence;
 pub use names::NameIndex;
 pub use notices::{ApprovalControl, ApprovalSelection, NoticeSelection};
-pub use presence::{SessionPhase, SessionProfile, SessionPublication, SessionRegistry, SessionRow};
+pub use presence::{
+    SessionPage, SessionPeer, SessionPhase, SessionProfile, SessionPublication, SessionRegistry,
+    SessionRow,
+};
 pub(crate) mod records;
 mod release;
 mod reply;
