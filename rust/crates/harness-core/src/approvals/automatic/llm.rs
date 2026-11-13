@@ -62,7 +62,13 @@ pub(crate) async fn review_model(
     let pipeline = ContextPipeline::from_source(
         source,
         "approval-review",
-        crate::executor::stock_string_copy("1", io)?,
+        match policy {
+            Some(policy) => crate::executor::stock_string_copy(
+                blake3::hash(policy.as_bytes()).to_hex().as_str(),
+                io,
+            )?,
+            None => crate::executor::stock_string_copy("1", io)?,
+        },
         io,
     )?;
     let executor = StockExecutor::new(
