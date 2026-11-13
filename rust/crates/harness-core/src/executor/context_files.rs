@@ -34,15 +34,14 @@ impl StockExecution<'_> {
         let key = with_history_io(io, |work| {
             preparation_format(format_args!("manager:{step}:files"), work)
         })?;
-        let staged = journal.staged_ref(input.operation_id, &key, io)?.await;
+        let staged = journal.staged_ref(input.operation_id, &key, io)?.await?;
         match staged {
-            Ok(file) => {
+            Some(file) => {
                 drop(key);
                 scope.finish(file.logical_owned_bytes()?)?;
                 return Ok(Some(file));
             }
-            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
-            Err(error) => return Err(error),
+            None => {}
         }
         let binding = destination.bindings();
         let access = ContentAccess {

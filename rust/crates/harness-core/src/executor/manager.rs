@@ -75,9 +75,9 @@ impl StockExecution<'_> {
         let key = with_history_io(self.io, |work| {
             preparation_format(format_args!("manager:{step}:part:{part}:window"), work)
         })?;
-        let located = journal.staged_ref(input.operation_id, &key, self.io)?.await;
+        let located = journal.staged_ref(input.operation_id, &key, self.io)?.await?;
         match located {
-            Ok(file) => {
+            Some(file) => {
                 let selected =
                     retain_preparation(load_json::<ManagerWindow>(journal, &file, self.io).await?)?;
                 if selected.version != 1
@@ -94,8 +94,7 @@ impl StockExecution<'_> {
                 }
                 return Ok(selected.end as usize);
             }
-            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
-            Err(error) => return Err(error),
+            None => {}
         }
         let purpose = if part == 0 {
             ModelPurpose::Summary

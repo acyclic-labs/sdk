@@ -433,20 +433,22 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
-    /// Observes an already staged immutable payload by its original operation and retry key.
+    /// Observes an immutable payload by its original operation and retry key,
+    /// before consulting live sources during recovery. `None` means that this
+    /// exact identity has no publication; authorization and storage failures
+    /// remain errors, never permission to select replacement content.
     fn staged_ref<'a>(
         &'a self,
         _operation_id: OperationId,
         _idempotency_key: &'a str,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<FileRef>>> {
         Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Unsupported,
             "original staged-payload observation is unavailable",
         ))
     }
-
     /// Reads an exact version under the journal owner's grant and verifies its descriptor.
     fn load<'a>(
         &'a self,
