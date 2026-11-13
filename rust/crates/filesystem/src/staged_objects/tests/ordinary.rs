@@ -1161,9 +1161,10 @@ async fn decoded_miss_cannot_adopt_a_replaced_resident_or_another_admission_orig
     Ok(())
 }
 
-#[tokio::test]
-async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
--> Result<(), Box<dyn std::error::Error>> {
+async fn stale_spilled_pin_and_publication(
+    preserve_pin: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use futures::TryFutureExt as _;
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
     let directory = tempfile::tempdir()?;
@@ -1176,17 +1177,22 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
     drop(previous);
     let mut pin_accounting =
         crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
-    let pin_gate = store.collection.unswept(&mut pin_accounting).await?;
+    let mut pin_gate = Some(store.collection.unswept(&mut pin_accounting).await?);
     let mut collector = std::pin::pin!(store.collection.begin());
     let mut context = Context::from_waker(Waker::noop());
     assert!(matches!(
         collector.as_mut().poll(&mut context),
         Poll::Pending
     ));
+    if !preserve_pin {
+        drop(pin_gate.take());
+        assert!(
+            collector.as_mut().poll(&mut context).is_pending(),
+            "collector overtook its spill-backed pin"
+        );
+    }
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
     let objects = [id];
-    // Private spill relief no longer publishes or enters the collection gate.
-    // Only actual publication can participate in this lock-order cycle.
     let mut publication = std::pin::pin!(store.flush(
         PublicationScope {
             objects: &objects,
@@ -1198,32 +1204,27 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
         publication.as_mut().poll(&mut context),
         Poll::Pending
     ));
-    // A publisher queued behind the collector cannot own spill access
-    // needed by the earlier pin. The former order fails here without a
-    // timer or a test that hangs on the circular wait.
-    assert!(
-        store.spill_io.try_read().is_ok(),
-        "queued publication owns the pin's spill lock"
-    );
     let mut accounting =
         crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
-    let admitted = store
-        .collection
-        .admit_held(
-            pin_gate,
-            &store,
-            PublicationScope {
-                objects: &[id],
-                proven_at,
-            },
-            |_| false,
-            &mut accounting,
-        )
-        .await?;
+    let admission = store.collection.admit_held(
+        pin_gate.take().ok_or("missing pin barrier")?,
+        &store,
+        PublicationScope {
+            objects: &objects,
+            proven_at,
+        },
+        |_| false,
+        &mut accounting,
+    );
+    // The publisher joins the new collection epoch. It may legitimately hold
+    // spill access during I/O; its progress does not depend on this old pin.
+    // Drive both real operations instead of treating a held lock as a cycle.
+    let (admitted, published) =
+        futures::try_join!(admission, publication.map_err(crate::FsError::Object),)?;
     assert_eq!(accounting.spent().object_bytes_read, bytes.len() as u64);
     drop(admitted);
     let collecting = collector.await;
-    drop(publication.await?);
+    drop(published);
     drop(collecting);
     let read = store
         .read(
@@ -1234,4 +1235,16 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
         .await?;
     assert_eq!(read.bytes, bytes);
     Ok(())
+}
+
+#[tokio::test]
+async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    stale_spilled_pin_and_publication(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "collector overtook its spill-backed pin")]
+async fn stale_spilled_pin_negative_control_detects_early_retirement() {
+    stale_spilled_pin_and_publication(false).await.unwrap();
 }

@@ -48,6 +48,14 @@ impl Drop for RetainedGrowth {
 }
 
 impl MemoryStream {
+    /// A presence hint for read-side refresh, never authority to skip a guard
+    /// or its original write allowance. Such callers retain `pin_replay`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
+        self.replay_in(&*self.state.read().await, key.as_bytes())
+            .map(|entry| entry.is_some())
+    }
+
     fn install_retained(
         &self,
         state: &mut State,
@@ -96,9 +104,22 @@ impl MemoryStream {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
-        self.replay_in(&*self.state.read().await, key.as_bytes())
-            .map(|entry| entry.is_some())
+    pub(crate) async fn pin_replay(
+        &self,
+        key: &IdempotencyKey,
+    ) -> Result<Option<ReplayPin>, StreamError> {
+        let state = self.state.read().await;
+        Ok(state
+            .lookup_fact(key.as_bytes(), |items| {
+                if let Some(work) = &self.work {
+                    work.record(work.meter.examine(items, 0))?;
+                }
+                Ok::<_, StreamError>(())
+            })?
+            .map(|(fact, ephemeral)| ReplayPin {
+                fact: fact.clone(),
+                ephemeral,
+            }))
     }
 
     /// The cut a guarded Commit's guard can observe: whether its key has a

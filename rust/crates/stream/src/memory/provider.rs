@@ -747,39 +747,50 @@ impl crate::NativeStreamProvider for MemoryStream {
     ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
         let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
-            crate::WriteRequest::Append(request) => Work::start(
-                meter,
-                crate::native::span!("acyclic.stream.append"),
-                |work, completion| {
-                    completion.observe_output(
-                        async move {
-                            let provider = self.with_context(Arc::clone(&work));
-                            let existing = provider.has_replay(&request.idempotency_key).await;
-                            let existing = match existing {
-                                Ok(existing) => existing,
-                                Err(error) => return work.finish(Err(error)),
-                            };
-                            if !existing
-                                && let Err(error) = work.reserve_write(
+            crate::WriteRequest::Append(request) => {
+                Work::start(
+                    meter,
+                    crate::native::span!("acyclic.stream.append"),
+                    |work, completion| {
+                        completion.observe_output(
+                            async move {
+                                let provider = self.with_context(Arc::clone(&work));
+                                let existing = provider.pin_replay(&request.idempotency_key).await;
+                                let existing = match existing {
+                                    Ok(existing) => existing,
+                                    Err(error) => return work.finish(Err(error)),
+                                };
+                                if let Some(pin) = existing {
+                                    let _input = match provider.append_claim(&request) {
+                                        Ok(input) => input,
+                                        Err(error) => return work.finish(Err(error)),
+                                    };
+                                    return work.finish(
+                                        provider.project_pinned_append(&request, &pin).map(
+                                            |outcome| (crate::WriteOutcome::Append(outcome), None),
+                                        ),
+                                    );
+                                }
+                                if let Err(error) = work.reserve_write(
                                     request
                                         .records
                                         .iter()
                                         .map(AppendRecord::payload_bytes)
                                         .sum(),
-                                )
-                            {
-                                return work.finish(Err(error));
-                            }
-                            work.finish(provider.append_inner(request).await.map(
-                                |(outcome, allocation)| {
-                                    (crate::WriteOutcome::Append(outcome), allocation)
-                                },
-                            ))
-                        },
-                        |result| crate::native::outcome(result, StreamError::code),
-                    )
-                },
-            ),
+                                ) {
+                                    return work.finish(Err(error));
+                                }
+                                work.finish(provider.append_inner(request).await.map(
+                                    |(outcome, allocation)| {
+                                        (crate::WriteOutcome::Append(outcome), allocation)
+                                    },
+                                ))
+                            },
+                            |result| crate::native::outcome(result, StreamError::code),
+                        )
+                    },
+                )
+            }
             crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
                 self.guarded_commit(
                     request,
@@ -838,24 +849,14 @@ impl MemoryStream {
                                     .replay_in(&state, request.idempotency_key.as_bytes())
                                     .map_err(E::from)?
                                 {
-                                    if *replayed != digest {
-                                        return Err(E::from(StreamError::IdempotencyMismatch));
-                                    }
-                                    let IdempotencyOutcome::Commit(value) = result else {
-                                        return Err(E::from(StreamError::IdempotencyMismatch));
-                                    };
-                                    let (receipt, mut claim) = provider
-                                        .replayed(&request, value, provider.revisions.at(index))
-                                        .map_err(E::from)?;
-                                    let envelope = provider
-                                        .selected_envelope(value, accepted, &mut claim)
-                                        .map_err(E::from)?;
-                                    return commit_projection(
-                                        CommitOutcome::Committed(receipt),
-                                        envelope,
-                                    )
-                                    .map(|outcome| (outcome, claim))
-                                    .map_err(E::from);
+                                    return provider
+                                        .project_replayed_commit(
+                                            &request,
+                                            digest,
+                                            (replayed, result, index),
+                                            accepted,
+                                        )
+                                        .map_err(E::from);
                                 }
                                 // An unguarded Commit observes nothing before
                                 // its locked plan, which rechecks its key.

@@ -26,14 +26,7 @@ impl MemoryStream {
         StreamError,
     > {
         #[cfg(not(target_arch = "wasm32"))]
-        let _input = self.adopt(
-            request.records.capacity() * std::mem::size_of::<AppendRecord>()
-                + request
-                    .records
-                    .iter()
-                    .map(|record| record.headers.owned_bytes())
-                    .sum::<usize>(),
-        )?;
+        let _input = self.append_claim(request)?;
         let bytes = request
             .records
             .iter()
@@ -135,15 +128,16 @@ impl MemoryStream {
                         &scope,
                         ephemeral
                             .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
-                        EphemeralReplay {
-                            live: None,
-                            key: request.idempotency_key.clone(),
-                            next: None,
+                        RetainedFact {
+                            previous: None,
+                            replay: Some(request.idempotency_key.0.clone()),
+                            next: Default::default(),
                             digest,
                             result,
                             envelope: Some(envelope),
                             index: decision,
                             _allocation: allocation,
+                            _header: None,
                         },
                     ),
                 }
@@ -172,5 +166,17 @@ impl MemoryStream {
             work.record(work.meter.record_codec(0, 0, hashed))?;
         }
         Ok(digest)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn append_claim(&self, request: &AppendRequest) -> Result<Allocation, StreamError> {
+        self.adopt(
+            request.records.capacity() * std::mem::size_of::<AppendRecord>()
+                + request
+                    .records
+                    .iter()
+                    .map(|record| record.headers.owned_bytes())
+                    .sum::<usize>(),
+        )
     }
 }

@@ -97,15 +97,16 @@ impl MemoryStream {
                         &scope,
                         ephemeral
                             .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
-                        EphemeralReplay {
-                            live: None,
-                            key: request.idempotency_key.clone(),
-                            next: None,
+                        RetainedFact {
+                            previous: None,
+                            replay: Some(request.idempotency_key.0.clone()),
+                            next: Default::default(),
                             digest,
                             result,
                             envelope: Some(envelope),
                             index: decision,
                             _allocation: Default::default(),
+                            _header: None,
                         },
                     ),
                 }

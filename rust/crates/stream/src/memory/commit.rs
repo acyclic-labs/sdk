@@ -106,15 +106,16 @@ impl CommitPublication {
                     stream,
                     scope,
                     retention,
-                    EphemeralReplay {
-                        live: None,
-                        key,
-                        next: None,
+                    RetainedFact {
+                        previous: None,
+                        replay: Some(key.0),
+                        next: Default::default(),
                         digest,
                         result,
                         envelope: None,
                         index,
                         _allocation: self.resident,
+                        _header: None,
                     },
                 );
             }

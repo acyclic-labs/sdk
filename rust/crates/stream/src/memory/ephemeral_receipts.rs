@@ -12,30 +12,84 @@ struct EphemeralReceipts {
     commits: EphemeralCommits,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct ReplayPin {
+    fact: RetainedFactRef,
+    pub(crate) ephemeral: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MemoryStream {
+    fn project_pinned_append(
+        &self,
+        request: &AppendRequest,
+        pin: &ReplayPin,
+    ) -> Result<AppendOutcome, StreamError> {
+        if self.append_request_digest(request)? != pin.fact.digest {
+            return Err(StreamError::IdempotencyMismatch);
+        }
+        let IdempotencyOutcome::Append(value) = &pin.fact.result else {
+            return Err(StreamError::IdempotencyMismatch);
+        };
+        Ok(self.replayed_append(value))
+    }
+
+    pub(crate) fn project_pinned_replay(
+        &self,
+        request: &mut CommitRequest,
+        pin: &ReplayPin,
+        accepted: bool,
+    ) -> Result<(crate::WriteOutcome, Allocation), StreamError> {
+        let digest = self.digest(request)?;
+        self.project_replayed_commit(
+            request,
+            digest,
+            (&pin.fact.digest, &pin.fact.result, pin.fact.index),
+            accepted,
+        )
+    }
+
+    fn project_replayed_commit(
+        &self,
+        request: &CommitRequest,
+        digest: [u8; 32],
+        (replayed, result, index): Replayed<'_>,
+        accepted: bool,
+    ) -> Result<(crate::WriteOutcome, Allocation), StreamError> {
+        if *replayed != digest {
+            return Err(StreamError::IdempotencyMismatch);
+        }
+        let IdempotencyOutcome::Commit(value) = result else {
+            return Err(StreamError::IdempotencyMismatch);
+        };
+        let (receipt, mut claim) = self.replayed(request, value, self.revisions.at(index))?;
+        let envelope = self.selected_envelope(value, accepted, &mut claim)?;
+        commit_projection(CommitOutcome::Committed(receipt), envelope)
+            .map(|outcome| (outcome, claim))
+    }
+}
+
 struct EphemeralReplay {
-    live: Option<Arc<std::sync::atomic::AtomicBool>>,
-    key: IdempotencyKey,
+    live: Arc<std::sync::atomic::AtomicBool>,
     next: Option<CommitId>,
-    digest: [u8; 32],
-    result: IdempotencyOutcome,
-    envelope: Option<CommittedEnvelope>,
-    index: u64,
-    _allocation: Allocation,
+    fact: RetainedFactRef,
+}
+
+impl std::ops::Deref for EphemeralReplay {
+    type Target = RetainedFact;
+    fn deref(&self) -> &Self::Target {
+        &self.fact
+    }
 }
 
 impl EphemeralReplay {
     fn is_live(&self) -> bool {
-        self.live
-            .as_ref()
-            .is_some_and(|live| live.load(std::sync::atomic::Ordering::Acquire))
+        self.live.load(std::sync::atomic::Ordering::Acquire)
     }
     fn envelope(&self) -> &CommittedEnvelope {
-        match &self.result {
-            IdempotencyOutcome::Commit(envelope) => envelope,
-            _ => self.envelope.as_ref().unwrap_or_else(|| {
-                unreachable!("successful append and fork retain their original envelope")
-            }),
-        }
+        self.fact.envelope().unwrap_or_else(|| {
+            unreachable!("successful append, fork and commit retain their original envelope")
+        })
     }
 }
 
@@ -63,13 +117,13 @@ fn ephemeral_key<E>(
 }
 
 impl State {
-    fn lookup_replay<E>(
+    fn lookup_fact<E>(
         &self,
         key: &[u8],
         mut probe: impl FnMut(u64) -> Result<(), E>,
-    ) -> Result<Option<Replayed<'_>>, E> {
+    ) -> Result<Option<(&RetainedFactRef, bool)>, E> {
         if let Some(replay) = self.replay(key, &mut probe)? {
-            return Ok(Some((&replay.digest, &replay.result, replay.index)));
+            return Ok(Some((&replay.fact, false)));
         }
         if self.ephemeral.roots.is_empty() {
             return Ok(None);
@@ -78,7 +132,17 @@ impl State {
             .ephemeral
             .receipts
             .lookup(key, probe)?
-            .map(|replay| (&replay.digest, &replay.result, replay.index)))
+            .map(|replay| (&replay.fact, true)))
+    }
+
+    fn lookup_replay<E>(
+        &self,
+        key: &[u8],
+        probe: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<Option<Replayed<'_>>, E> {
+        Ok(self
+            .lookup_fact(key, probe)?
+            .map(|(fact, _)| (&fact.digest, &fact.result, fact.index)))
     }
 
     fn ephemeral_key_is_spent<E>(
@@ -97,6 +161,7 @@ struct EphemeralRetention {
     key: EphemeralKey,
     allocation: Allocation,
     probes: ReplayProbes,
+    fact: RetainedFactRef,
 }
 
 impl MemoryStream {
@@ -124,13 +189,17 @@ impl MemoryStream {
             key,
             allocation: self.allocate(bytes)?,
             probes: self.reserve_replay_probes(items)?,
+            fact: RetainedFact::reserved(self.allocate(
+                std::mem::size_of::<RetainedFact>() + 2 * std::mem::size_of::<usize>(),
+            )?),
         }))
     }
 }
 
 struct ReceiptInsertWork<'a> {
     stream: &'a MemoryStream,
-    retention: &'a mut EphemeralRetention,
+    allocation: &'a mut Allocation,
+    probes: &'a mut ReplayProbes,
 }
 
 impl acyclic_collections::IndexWork for ReceiptInsertWork<'_> {
@@ -143,13 +212,12 @@ impl acyclic_collections::IndexWork for ReceiptInsertWork<'_> {
     fn charge_items(&mut self, items: u64) -> Result<(), Self::Error> {
         // Acceptance consumes the original reservation even after cancellation;
         // a meter's recording error cannot interrupt namespace/receipt install.
-        self.stream
-            .record_replay_probe(&mut self.retention.probes, items);
+        self.stream.record_replay_probe(self.probes, items);
         Ok(())
     }
     fn claim(&mut self, bytes: u64) -> Result<Allocation, Self::Error> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.retention.allocation {
+        if let Some(allocation) = self.allocation.as_mut() {
             let bytes = usize::try_from(bytes).unwrap_or_else(|_| {
                 unreachable!("a physical index node has a representable layout")
             });
@@ -167,8 +235,8 @@ impl Ephemeral {
         &mut self,
         stream: &MemoryStream,
         scope: &Scope,
-        mut retention: EphemeralRetention,
-        mut fact: EphemeralReplay,
+        retention: EphemeralRetention,
+        mut fact: RetainedFact,
     ) {
         let Scope::Ephemeral(root) = scope else {
             unreachable!("only leased writes reserve ephemeral retention")
@@ -177,13 +245,30 @@ impl Ephemeral {
             .roots
             .get_mut(root)
             .unwrap_or_else(|| unreachable!("the publication lock retains the write's lease"));
-        let id = fact.envelope().commit_id;
-        fact.live = Some(Arc::clone(&lease.live));
-        fact.next = lease.first_commit;
-        let indexed_key = retention.key;
+        let EphemeralRetention {
+            key: indexed_key,
+            mut allocation,
+            mut probes,
+            fact: mut owner,
+        } = retention;
+        let reserved = owner
+            .get_mut()
+            .unwrap_or_else(|| unreachable!("unpublished fact has one owner"));
+        fact._header = reserved._header.take();
+        *reserved = fact;
+        let id = owner
+            .envelope()
+            .unwrap_or_else(|| unreachable!("successful write envelope"))
+            .commit_id;
+        let fact = EphemeralReplay {
+            live: Arc::clone(&lease.live),
+            next: lease.first_commit,
+            fact: owner,
+        };
         let mut work = ReceiptInsertWork {
             stream,
-            retention: &mut retention,
+            allocation: &mut allocation,
+            probes: &mut probes,
         };
         *self
             .receipts
@@ -224,7 +309,10 @@ impl EphemeralReceipts {
             .remove_if(*id.as_bytes(), |_| true)
             .unwrap_or_else(|| unreachable!("a lease owns every fact in its retirement list"));
         let key = ephemeral_key(
-            fact.value().key.as_bytes(),
+            fact.value()
+                .replay
+                .as_deref()
+                .unwrap_or_else(|| unreachable!("leased retry key")),
             &mut ReceiptProbe(|_| Ok::<(), std::convert::Infallible>(())),
         )
         .unwrap_or_else(|never| match never {});

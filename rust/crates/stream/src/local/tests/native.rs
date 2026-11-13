@@ -5,6 +5,103 @@ mod headers;
 mod heads;
 mod reads;
 
+fn cached_lease_result(
+    original: &CommitOutcome,
+    observed: &CommitOutcome,
+    tail: Result<u64, StreamError>,
+) {
+    assert_eq!(observed, original, "retired receipt was re-executed");
+    assert_eq!(
+        tail,
+        Err(StreamError::NotFound),
+        "retry resurrected a durable path"
+    );
+}
+
+#[tokio::test]
+async fn lease_replays_pin_success_across_visibility_and_publication_waits()
+-> Result<(), Box<dyn std::error::Error>> {
+    for at_publication in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let root = StreamPath::new("retry-lease")?;
+        let lease = provider.lease_ephemeral(root.clone()).await?;
+        let request = plain_append(root.clone());
+        let original = provider.commit(request.clone()).await?;
+        let gate = if at_publication {
+            provider.inner.publication.write().await
+        } else {
+            provider.inner.visibility.write().await
+        };
+        let meter = Arc::new(Meter::local());
+        let (observed, examined) = tokio::sync::oneshot::channel();
+        *meter.examined_once.lock().unwrap() = Some(observed);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let guard_calls = Arc::clone(&calls);
+        let mut replay = Box::pin(provider.native_commit_with_guard(
+            request,
+            None,
+            meter.original(),
+            move || {
+                guard_calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err::<(), NativeGuardFailure>(NativeGuardFailure::Owner(1)))
+            },
+        ));
+        // On the current-thread executor the lookup runs synchronously from
+        // its examination event until the held lock suspends it. No readiness
+        // loop or sleep chooses this race boundary.
+        tokio::select! {
+            result = &mut replay => return Err(format!("replay missed its held lock: {result:?}").into()),
+            result = examined => result?,
+        }
+        lease.settle().await?;
+        assert_eq!(
+            provider.inner.provider.tail(root.clone()).await,
+            Err(StreamError::NotFound)
+        );
+        drop(gate);
+        let output = replay.await??;
+        cached_lease_result(&original, output.value(), provider.tail(root).await);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "cached success ran its guard"
+        );
+        drop(output);
+        drop(provider);
+        meter.assert_refunded();
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[should_panic(expected = "retired receipt was re-executed")]
+async fn lease_replay_negative_control_detects_the_unpinned_shortcut() {
+    let directory = tempfile::tempdir().unwrap();
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default())
+        .await
+        .unwrap();
+    let root = StreamPath::new("retry-lease").unwrap();
+    let lease = provider.lease_ephemeral(root.clone()).await.unwrap();
+    let request = plain_append(root.clone());
+    let original = provider.commit(request.clone()).await.unwrap();
+    // Restore the old boolean-only observation, then execute without the
+    // guard after the saved result disappears. This uses the real provider.
+    assert!(
+        provider
+            .inner
+            .provider
+            .pin_replay(&request.idempotency_key)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    lease.settle().await.unwrap();
+    let observed = provider.commit(request).await.unwrap();
+    cached_lease_result(&original, &observed, provider.tail(root).await);
+}
+
 #[tokio::test]
 async fn native_lease_receipts_preserve_exact_keys_and_retire_their_original_custody()
 -> Result<(), Box<dyn std::error::Error>> {

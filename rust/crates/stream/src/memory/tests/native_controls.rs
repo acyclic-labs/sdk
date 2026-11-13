@@ -6,6 +6,44 @@ use acyclic_native_runtime::ReadAllocation;
 use std::sync::atomic::Ordering;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[tokio::test]
+async fn native_append_replay_cannot_spend_unreserved_write_credit_after_lease_release()
+-> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let root = path("append-replay-lease")?;
+    let lease = provider.lease_ephemeral(root.clone()).await?;
+    let request = AppendRequest {
+        path: root.clone(),
+        records: vec![OwnedBytes::from_static(b"private").into()],
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let original = provider.append(request.clone()).await?;
+    let blocked = provider.publication.lock().await;
+    let mut settling = Box::pin(lease.settle());
+    assert!(futures::poll!(settling.as_mut()).is_pending());
+    let meter = Arc::new(Meter::default());
+    meter.limit.store(0, Ordering::SeqCst);
+    let mut replay =
+        Box::pin(provider.native_write(crate::WriteRequest::Append(request), meter.original()));
+    // If execution waits for publication, release owns the earlier FIFO turn.
+    // A retained result can instead complete immediately without write credit.
+    let first = futures::poll!(replay.as_mut());
+    drop(blocked);
+    settling.await?;
+    let output = match first {
+        std::task::Poll::Ready(result) => result??,
+        std::task::Poll::Pending => replay.await??,
+    };
+    assert_eq!(output.value(), &crate::WriteOutcome::Append(original));
+    assert_eq!(provider.tail(root).await, Err(StreamError::NotFound));
+    drop(output);
+    drop(provider);
+    meter.assert_refunded();
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 async fn cancelled_lease_settlement(owned: bool) -> MemoryResult<()> {
     let provider = MemoryStream::default();
     let root = path("cancelled-lease")?;
