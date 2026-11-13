@@ -384,6 +384,7 @@ impl Handler for NodeActor {
                 response,
                 effects,
                 alarm: AlarmChange::Keep,
+                pause: false,
                 participant: None,
                 subscriptions: Vec::new(),
             })
