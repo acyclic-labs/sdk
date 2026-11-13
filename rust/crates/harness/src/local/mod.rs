@@ -117,6 +117,7 @@ pub struct LocalHarness {
     /// The original host registry selection for tools bound to each turn.
     agent_tools: Vec<String>,
     question_plugin: bool,
+    feedback_plugin: Option<bool>,
     approval_models: std::collections::BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
     /// Absent for passive native-host coordination.
     agent: Option<(Model, Arc<dyn ModelProvider>)>,

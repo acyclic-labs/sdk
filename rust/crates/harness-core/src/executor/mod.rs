@@ -746,6 +746,8 @@ pub struct StepBinding {
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
     #[cfg(not(target_arch = "wasm32"))]
+    host_hooks: Option<Arc<crate::hooks::Hooks>>,
+    #[cfg(not(target_arch = "wasm32"))]
     // Retain the admitted data and its original engine/allocation custody together.
     plugin_set: Option<Arc<crate::plugins::Enabled>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -767,6 +769,8 @@ pub struct StockExecutor {
     epoch_tools: Option<Arc<Vec<crate::tool::ToolDefinition>>>,
     #[cfg(not(target_arch = "wasm32"))]
     hooks: Option<Arc<crate::hooks::BoundHooks>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    host_hooks: Option<Arc<crate::hooks::Hooks>>,
     #[cfg(not(target_arch = "wasm32"))]
     plugin_set: Option<Arc<crate::plugins::Enabled>>,
     /// A prompt hook's block: the turn fails with it before any model request.

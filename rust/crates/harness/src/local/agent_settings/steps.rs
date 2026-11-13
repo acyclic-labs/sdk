@@ -1,4 +1,4 @@
-//! One local source of journal-retained per-step model selections.
+//! One local source of journal-retained per-step model and plugin selections.
 use super::*;
 use crate::{
     agent::{AgentState, WorkspaceRole},
@@ -8,7 +8,7 @@ use crate::{
 };
 use std::sync::{Mutex, MutexGuard, Weak};
 
-type Current = Option<(blake3::Hash, Option<Arc<StepBinding>>)>;
+type Current = Option<(blake3::Hash, Arc<StepBinding>)>;
 
 pub(in crate::local) struct Steps {
     local: Weak<LocalHarness>,
@@ -84,15 +84,14 @@ impl StepConfiguration for Steps {
             };
             let tree = Tree::for_step(&volumes, journal, operation, step, io).await?;
             let cut = tree.cut()?;
-            let previous = {
+            {
                 let current = self.current()?;
                 if let Some((previous, binding)) = current.as_ref()
                     && *previous == cut
                 {
-                    return Ok(binding.clone());
+                    return Ok(Some(Arc::clone(binding)));
                 }
-                current.as_ref().and_then(|(_, binding)| binding.clone())
-            };
+            }
             let resolver = local
                 .models
                 .as_deref()
@@ -110,20 +109,23 @@ impl StepConfiguration for Steps {
             )
             .await?;
             let sampling = settings.sampling.and_then(Sampling::model_sampling);
-            let selected = previous.as_deref().unwrap_or(&self.template);
-            if selected.matches_model(&settings.model, sampling, settings.effort) {
-                *self.current()? = Some((cut, previous.clone()));
-                return Ok(previous);
-            }
-            let binding = self.template.bind_model(
-                settings.model,
-                sampling,
-                settings.effort,
+            let plugins = plugins(
+                local.question_plugin,
+                local.feedback_plugin,
+                &tree,
+                self.agent,
+                local.clock.as_ref(),
+            )
+            .await?
+            .into_shared()?;
+            let binding = self.template.bind_configuration(
+                (settings.model, sampling, settings.effort),
+                plugins,
                 Arc::clone(&self.reader),
                 local.limits.file_bytes,
                 io,
             )?;
-            *self.current()? = Some((cut, Some(Arc::clone(&binding))));
+            *self.current()? = Some((cut, Arc::clone(&binding)));
             Ok(Some(binding))
         })
     }

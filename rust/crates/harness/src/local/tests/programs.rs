@@ -357,6 +357,10 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         ScriptedTurn::Text("ready".into()),
         code("select-settings", r#"
             import {write} from 'acyclic';
+            await write('volume:///home/plugins/step-guard/plugin.ts', "export default {name:'step-guard',description:'Selected tool context',matcher:{tool:{action:['exec'],command:'selected-native'}}};", 'any');
+            await write('volume:///home/plugins/step-guard/hooks/before-tool.sh', `printf '%s' '{"hookSpecificOutput":{"additionalContext":"selected-step-hook"}}'`, 'any');
+            await write('volume:///home/plugins/step-guard/hooks/before-tool.ps1', `[Console]::Out.Write('{"hookSpecificOutput":{"additionalContext":"selected-step-hook"}}')`, 'any');
+            await write('volume:///home/plugins.ts', "export default base => ({...base,'step-guard':{enabled:true}});", 'any');
             await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: 'low', sampling: {temperature: 0.75}};", 'any');
             export default 'selected';
         "#),
@@ -470,6 +474,13 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     let before = first.request(1).unwrap();
     let after = second.request(0).unwrap();
     let finished = second.request(1).unwrap();
+    let hook_contexts = |request: &ModelRequest| {
+        request.messages.iter().filter(|message| {
+            matches!(&message.content, ModelContent::Text(text) if text == "selected-step-hook")
+        }).count()
+    };
+    assert_eq!(hook_contexts(&after), 0);
+    assert_eq!(hook_contexts(&finished), 1);
     assert_eq!(result(&after, "select-settings")?, "selected");
     assert_eq!(after.model.name, "second");
     assert_eq!(after.sampling.temperature, Some(0.75));
@@ -677,5 +688,54 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         second_route.model_profile(&model()?)?.unwrap().reasoning(),
         reasoning_baseline
     );
+    let command = if cfg!(windows) {
+        "[Console]::Out.Write('selected-native')"
+    } else {
+        "printf selected-native"
+    };
+    let probe = format!(
+        "export default await tools.shell({{command:{}}});",
+        serde_json::to_string(command).map_err(|error| Error::Invalid(error.to_string()))?
+    );
+    first.extend([
+        code("disable-step-hook", &format!(
+            "import {{write}} from 'acyclic'; await write('volume:///home/plugins.ts', \"export default base => ({{...base,'step-guard':{{enabled:false}}}});\", 'any'); {probe}"
+        )),
+        code("probe-disabled-hook", &probe),
+        ScriptedTurn::Text("hook disabled".into()),
+    ]);
+    let disabled = observed
+        .send(
+            "disable-step-hook",
+            "Disable the plugin without changing models",
+        )
+        .await?;
+    assert!(disabled.outcome.is_completed(), "{:?}", disabled.outcome);
+    assert_eq!(
+        observed.conversation.output_text(&disabled).await?,
+        "hook disabled"
+    );
+    let before_disable = first.request(5).unwrap();
+    let after_disable = first.request(6).unwrap();
+    let disabled_result = first.request(7).unwrap();
+    assert_eq!(
+        hook_contexts(&after_disable),
+        hook_contexts(&before_disable) + 1
+    );
+    assert_eq!(
+        hook_contexts(&disabled_result),
+        hook_contexts(&after_disable)
+    );
+    assert_eq!(
+        result(&after_disable, "disable-step-hook")?["stdout"],
+        "selected-native"
+    );
+    assert_eq!(
+        result(&disabled_result, "probe-disabled-hook")?["stdout"],
+        "selected-native"
+    );
+    assert_eq!(system_prefix(&after_disable)?, frozen_prefix);
+    assert_eq!(system_prefix(&disabled_result)?, frozen_prefix);
+    assert_eq!((first.request_count(), second.request_count()), (8, 10));
     Ok(())
 }

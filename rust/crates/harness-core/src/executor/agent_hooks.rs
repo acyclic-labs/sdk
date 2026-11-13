@@ -9,14 +9,16 @@ use crate::{
 };
 
 impl StockExecutor {
-    /// Binds the turn's pinned hook configuration `source`, then runs its
+    /// Binds the turn's pinned imported host configuration `source` ahead of
+    /// admitted `plugins`, then runs its
     /// prompt events: `SessionStart` once per agent `session` and
     /// `UserPromptSubmit` on every turn. `SessionStart` is keyed by the
     /// session, not the turn, so it runs on the agent's first turn (a forked
     /// child's included) and every later turn reads back its recorded
     /// outcome, keeping its context. Their context precedes the turn; a block
     /// fails the turn when it runs, before any model request. Hooks bind per
-    /// turn, outside the frozen context epoch: they are behaviour, not prefix.
+    /// turn for prompt events; step selection may replace plugin execution
+    /// rules while retaining these original host rules and the frozen prefix.
     /// The source reader retains host custody only for loading this pinned
     /// configuration; hook commands keep the original task context and scope.
     pub async fn with_agent_hooks(
@@ -26,6 +28,7 @@ impl StockExecutor {
         prompt: &ModelContent,
         session: OperationId,
         source: Option<(&FileRef, &dyn crate::conversation::ContentResidencyVerifier)>,
+        plugins: &crate::plugins::Enabled,
     ) -> Result<Self> {
         let Some((source, reader)) = source else {
             return Ok(self);
@@ -44,20 +47,17 @@ impl StockExecutor {
             None,
         )
         .await?;
-        let mut digest = blake3::Hasher::new_derive_key("acyclic.agent.hooks/v1");
-        digest.update(blake3::hash(&bytes).as_bytes());
         let rules: Hooks = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("hook configuration: {error}")))?;
-        if rules.is_empty() {
-            return Ok(self);
+        let mut executor = self;
+        let host = Arc::new(rules);
+        let bound = crate::hooks::bind_rules(&host, &plugins.rules, None)?;
+        executor.host_hooks = Some(host);
+        if bound.rules.is_empty() {
+            return Ok(executor);
         }
-        let bound = Arc::new(BoundHooks {
-            rules,
-            manifest: *digest.finalize().as_bytes(),
-        });
         let prompt = prompt_text(context, prompt).await?;
         let context = Arc::new(context.clone());
-        let mut executor = self;
         let mut stages = Vec::new();
         for event in HookEvent::at(HookSite::Prompt) {
             let (input, operation) = match event {

@@ -47,6 +47,8 @@ impl StockExecutor {
             #[cfg(not(target_arch = "wasm32"))]
             hooks: self.hooks,
             #[cfg(not(target_arch = "wasm32"))]
+            host_hooks: self.host_hooks,
+            #[cfg(not(target_arch = "wasm32"))]
             plugin_set: self.plugin_set,
             #[cfg(not(target_arch = "wasm32"))]
             prompt_block: self.prompt_block,
@@ -67,6 +69,8 @@ impl StockExecutor {
             tools: self.tools.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             hooks: self.hooks.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            host_hooks: self.host_hooks.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             plugin_set: self.plugin_set.clone(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -159,6 +163,8 @@ impl StockExecutor {
             epoch_tools: None,
             #[cfg(not(target_arch = "wasm32"))]
             hooks: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            host_hooks: None,
             #[cfg(not(target_arch = "wasm32"))]
             plugin_set: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -463,24 +469,18 @@ impl StepBinding {
         &self.model.0
     }
 
-    /// Whether an admitted selection retains this exact protected model owner
-    /// and explicit sampling. This comparison does not grant any authority.
-    pub fn matches_model(
+    /// Binds a complete admitted step through the same canonical composition.
+    /// Imported host rules retain their original order and authority ahead of
+    /// selected plugin rules. Prompt events and prefix remain with the turn.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn bind_configuration(
         &self,
-        model: &Arc<crate::model::ResolvedModel>,
-        sampling: Option<crate::model::ModelSampling>,
-        effort: Option<crate::config::Effort>,
-    ) -> bool {
-        Arc::ptr_eq(&self.model.0, model) && self.sampling == sampling && self.effort == effort
-    }
-    /// Binds another admitted model through the same canonical stock composition.
-    /// The template's executable revisions and hooks stay under the running turn's
-    /// original authority; selected native declarations cannot widen that authority.
-    pub fn bind_model(
-        &self,
-        model: Arc<crate::model::ResolvedModel>,
-        sampling: Option<crate::model::ModelSampling>,
-        effort: Option<crate::config::Effort>,
+        (model, sampling, effort): (
+            Arc<crate::model::ResolvedModel>,
+            Option<crate::model::ModelSampling>,
+            Option<crate::config::Effort>,
+        ),
+        plugins: Arc<crate::plugins::Enabled>,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
         maximum_bytes: Option<u64>,
         io: Option<&PreparationIo>,
@@ -494,10 +494,16 @@ impl StepBinding {
         if let Some(sampling) = sampling {
             executor = executor.with_sampling(sampling)?;
         }
-        #[cfg(not(target_arch = "wasm32"))]
         {
-            executor.hooks = self.hooks.clone();
-            executor.plugin_set = self.plugin_set.clone();
+            let empty = crate::hooks::Hooks::default();
+            let hooks = crate::hooks::bind_rules(
+                self.host_hooks.as_deref().unwrap_or(&empty),
+                &plugins.rules,
+                temporary,
+            )?;
+            executor = executor.with_hooks(Some(hooks));
+            executor.host_hooks = self.host_hooks.clone();
+            executor.plugin_set = Some(plugins);
             executor.prompt_block = self
                 .prompt_block
                 .as_ref()

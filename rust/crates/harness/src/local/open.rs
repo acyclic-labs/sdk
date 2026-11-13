@@ -729,6 +729,7 @@ impl Opening {
             signed,
             preset: self.preset,
             question_plugin: self.config.question,
+            feedback_plugin: self.config.feedback,
             agent_tools: self
                 .config
                 .default_tools
