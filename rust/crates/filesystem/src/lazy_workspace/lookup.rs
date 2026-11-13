@@ -141,7 +141,7 @@ impl<
                 source: saved_source, node: saved_node, complete: true,
             }) if saved_source == source && saved_node == node);
             let change = LazyOverlayChange::Observe {
-                source: *source,
+                source: source.clone(),
                 node: *node,
                 complete,
             };
@@ -162,13 +162,7 @@ impl<
             .checkout(crate::model::GenerationSelector::Head, ctx)
             .await?;
         let result = self
-            .inspect_unauthored(
-                &mut checkout.value,
-                path,
-                None,
-                InspectBasis::default(),
-                ctx,
-            )
+            .inspect_unauthored(&mut checkout.value, path, InspectBasis::default(), ctx)
             .await;
         checkout.retire(ctx)?;
         let (lookup, _, guard) = result?;
@@ -178,23 +172,27 @@ impl<
     /// Resolves a frozen cut, returning known absence and actual source participation.
     pub async fn lookup_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        self.validate_snapshot(cut, ctx).await?;
+        self.validate_snapshot(&cut, ctx).await?;
         let mut checkout = self
             .checkout(
                 crate::model::GenerationSelector::Exact(cut.authored_generation),
                 ctx,
             )
             .await?;
-        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let state = LazyWorkspaceState::new(
+            cut.workspace_id,
+            cut.source.clone(),
+            cut.overlay,
+            cut.shadows,
+        );
         let result = self
             .inspect_unauthored(
                 &mut checkout.value,
                 path,
-                Some(cut),
                 InspectBasis {
                     state: Some(&state),
                     retain_pinned_observation: true,
@@ -222,17 +220,12 @@ impl<
     /// Classifies a path at a frozen cut, preserving authenticated absence.
     pub async fn stat_at_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<LazyStat>, LazyWorkspaceError> {
-        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
-        let result = match &lookup {
-            Some(LazyLookup::Source { .. }) if cut.source != self.source.reference() => {
-                Err(LazyWorkspaceError::StaleSource)
-            }
-            _ => Ok(lookup.as_ref().map(LazyLookup::stat)),
-        };
+        let (lookup, _, guard) = self.lookup_at_snapshot(&cut, path, ctx).await?;
+        let result = Ok(lookup.as_ref().map(LazyLookup::stat));
         match lookup {
             Some(lookup) => self.retire_lookup((lookup, guard), ctx)?,
             None => crate::kernel::retire_allocation(guard, 0, ctx)?,
@@ -244,7 +237,6 @@ impl<
         &self,
         checkout: &mut crate::Checkout<A, O>,
         path: &str,
-        frozen: Option<LazySnapshotRef>,
         basis: InspectBasis<'_>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Option<LazyLookup>, bool, KernelOwnedAllocation), LazyWorkspaceError> {
@@ -291,7 +283,7 @@ impl<
         };
         if self.tombstoned(state.overlay, path, ctx).await?
             || self
-                .saved_source_subtree(state.overlay, state.source, path, ctx)
+                .saved_source_subtree(state.overlay, &state.source, path, ctx)
                 .await?
         {
             return Ok((None, false, ctx.claim_owned(0, 0)?));
@@ -309,14 +301,11 @@ impl<
             }
             _ => {
                 if let Some(node) = basis.listed {
-                    (state.source, Some(node), false)
+                    (state.source.clone(), Some(node), false)
                 } else {
-                    if frozen.is_some() && state.source != self.source.reference() {
-                        return Err(LazyWorkspaceError::StaleSource);
-                    }
                     (
-                        state.source,
-                        self.source_lookup(state.source, path, ctx).await?,
+                        state.source.clone(),
+                        self.source_lookup(&state.source, path, ctx).await?,
                         true,
                     )
                 }
@@ -375,7 +364,7 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<FileId, LazyWorkspaceError> {
         Ok(crate::demand::source_file_id(
-            &self.source.reference().identity,
+            &self.source.identity(),
             identity,
             ctx,
         )?)
@@ -394,11 +383,15 @@ impl<
             LazyLookup::Authored { record, .. } => {
                 if record.kind == FileKind::Directory {
                     let state = self.state(ctx).await?;
-                    if let Some(LazyOverlayChange::Observe { node, .. }) =
+                    if let Some(LazyOverlayChange::Observe { source, node, .. }) =
                         self.overlay_fact(state.overlay, path, ctx).await?
                         && node.kind == SourceNodeKind::Directory
                     {
-                        return self.source_file_id(&node.file_identity, ctx);
+                        return Ok(crate::demand::source_file_id(
+                            &source.identity,
+                            &node.file_identity,
+                            ctx,
+                        )?);
                     }
                 }
                 Ok(record.file_id)

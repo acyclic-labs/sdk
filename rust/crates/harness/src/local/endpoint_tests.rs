@@ -104,6 +104,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             let page = session
                 .children_page(
                     ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(parent.children().map_err(exchange)?),
                         after: None,
                         hierarchy_version: None,
@@ -259,6 +260,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             session
                 .children_page(
                     ChildrenPageRequest {
+                        offset: 0,
                         parent: Some(foreign.children().map_err(exchange)?),
                         after: None,
                         hierarchy_version: None,
@@ -366,6 +368,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .await;
     let page = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
+            offset: 0,
             parent: Some(connection.root.children().map_err(exchange)?),
             after: None,
             hierarchy_version: None,
@@ -411,6 +414,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     eprintln!("tree reader: child spawn committed");
     let populated = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
+            offset: 0,
             parent: Some(connection.root.children().map_err(exchange)?),
             after: None,
             hierarchy_version: None,
@@ -540,6 +544,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .session
         .read_provider()
         .children_page(acyclic_stream::ChildrenPageRequest {
+            offset: 0,
             parent: Some(session.root.children().map_err(exchange)?),
             after: None,
             hierarchy_version: None,
@@ -557,6 +562,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     // owner can discover both roots; this original tree credential sees only its own.
     let page = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
+            offset: 0,
             parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(exchange)?),
             after: None,
             hierarchy_version: None,

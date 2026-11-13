@@ -1,6 +1,63 @@
 use super::*;
 use serde::Serialize;
 
+#[test]
+fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
+    use acyclic_fs::{
+        Digest, GenerationId, LazyOverlayId, LazyShadowId, LazySnapshotRef, ObjectId, ObjectKind,
+        WorkspaceId,
+        demand::{DemandSource, Empty, Routed},
+        kernel::{KernelAccounting, LogicalName, NameEncoding},
+    };
+    let cancel = acyclic_fs::CancellationToken::new();
+    let mut accounting = KernelAccounting::Standalone {
+        allocations: Default::default(),
+        work: acyclic_fs::WorkCounters::UNCHARGED,
+        budget: acyclic_fs::WorkBudget::UNBOUNDED,
+        cancellation: &cancel,
+    };
+    let routed = Routed::new(
+        Empty,
+        LogicalName::new(NameEncoding::Utf8, b"view".to_vec()).unwrap(),
+        Empty,
+        acyclic_fs::VolumeLimits::default(),
+    );
+    let source = futures::executor::block_on(routed.reference(&mut accounting)).unwrap();
+    let snapshot = LazySnapshotRef::new(
+        WorkspaceId::from_bytes([4; 16]),
+        GenerationId::from_root(ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: Digest::from_bytes([5; 32]),
+            storage: None,
+        }),
+        source,
+        LazyOverlayId::from_bytes([6; 32]),
+        serde_json::from_value::<LazyShadowId>(serde_json::to_value([7_u8; 32]).unwrap()).unwrap(),
+    );
+    assert_layout_covers_decode(&snapshot);
+    let object = serde_json::to_value(&snapshot).unwrap();
+    let sequence = serde_json::to_vec(&[
+        &object["id"],
+        &object["workspace_id"],
+        &object["authored_generation"],
+        &object["source"],
+        &object["overlay"],
+        &object["shadows"],
+    ])
+    .unwrap();
+    let reserved = layout_reservation::<LazySnapshotRef>(&sequence)
+        .expect("sequence fields must align with serde");
+    let mut decoded = None;
+    let physical = acyclic_test_support::measure(|| {
+        decoded = Some(serde_json::from_slice::<LazySnapshotRef>(&sequence).unwrap());
+    });
+    assert_eq!(decoded.as_ref(), Some(&snapshot));
+    assert!(
+        reserved >= physical.bytes_max as u64,
+        "source components were not funded"
+    );
+}
+
 mod borrowed_records {
     use super::*;
     use proptest::prelude::*;

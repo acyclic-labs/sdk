@@ -1,5 +1,16 @@
 use super::*;
 
+pub(super) async fn selected_source_reference<D: DemandSource>(
+    source: &D,
+    retained: Option<&SourceReference>,
+    ctx: &mut KernelAccounting<'_>,
+) -> Result<SourceReference, LazyWorkspaceError> {
+    match retained {
+        Some(source) => Ok(source.clone()),
+        None => source.reference(ctx).await.map_err(Into::into),
+    }
+}
+
 impl<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -17,7 +28,7 @@ impl<
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, crate::Generation<A, O>), LazyWorkspaceError> {
-        let original = source.reference();
+        let original = source.reference(ctx).await?;
         let generation = accounted!(ctx, |work, cancel| fs
             .create_workspace_with_operation::<_, (), WorkspaceError>(
                 name,
@@ -30,8 +41,8 @@ impl<
         let lazy = Self::bind(generation.workspace().clone(), source, store, ctx).await?;
         lazy.state(ctx)
             .await?
-            .validate_root_binding(lazy.workspace.id(), original)?;
-        if lazy.source.reference() != original {
+            .validate_root_binding(lazy.workspace.id(), original.clone())?;
+        if lazy.source.reference(ctx).await? != original {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok((lazy, generation))
@@ -44,7 +55,7 @@ impl<
         store: S,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
-        let reference = source.reference();
+        let reference = source.reference(ctx).await?;
         if store
             .load_lazy_workspace(workspace.id(), ctx)
             .await?
@@ -55,7 +66,7 @@ impl<
                 .compare_and_swap_lazy_workspace(
                     workspace.id(),
                     0,
-                    LazyWorkspaceState::new(workspace.id(), reference, overlay, shadows),
+                    LazyWorkspaceState::new(workspace.id(), reference.clone(), overlay, shadows),
                     ctx,
                 )
                 .await?
@@ -102,7 +113,7 @@ impl<
             .ok_or(LazyWorkspaceError::NotFound)?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != workspace.id()
-            || state.source.identity != source.reference().identity
+            || state.source.identity != source.identity()
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -124,6 +135,10 @@ impl<
         let lazy = Self {
             workspace,
             source,
+            retained_source: state
+                .fork_origin
+                .filter(|origin| origin.snapshot.source.identity == state.source.identity)
+                .map(|origin| origin.snapshot.source),
             store,
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
@@ -147,12 +162,76 @@ impl<
         Self::open(workspace, Arc::clone(&self.source), self.store.clone(), ctx).await
     }
 
+    /// Binds a ready fork to its own live source namespace, exactly once.
+    ///
+    /// Authored files, observations, tombstones, shadows and the immutable fork
+    /// origin remain unchanged. The new namespace must differ from the origin;
+    /// replaying the same binding succeeds, while a different claimant refuses.
+    /// Old source capabilities can still serve their explicitly retained cuts.
+    pub async fn bind_fork_source<E: DemandSource + 'static>(
+        &self,
+        source: Arc<E>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazyWorkspace<A, O, E, S>, LazyWorkspaceError> {
+        let mut state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.pending_remove.is_some()
+        {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        state.require_ready_fork()?;
+        let origin = state
+            .fork_origin
+            .as_ref()
+            .ok_or(LazyWorkspaceError::Concurrent)?;
+        let identity = source.identity();
+        if identity == origin.snapshot.source.identity {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        let bound = state.source.identity == identity;
+        if !bound && state.source != origin.snapshot.source {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        let reference = source.reference(ctx).await?;
+        if reference.identity != identity || (bound && !reference.follows(&state.source)) {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        if !bound {
+            let revision = state.revision;
+            state.revision = revision.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            state.source = reference;
+            if !self
+                .store
+                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, state, ctx)
+                .await?
+            {
+                return Err(LazyWorkspaceError::Concurrent);
+            }
+        }
+        Ok(LazyWorkspace {
+            workspace: self.workspace.clone(),
+            source,
+            retained_source: None,
+            store: self.store.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            _allocation: None,
+        })
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn watch_source(
         &self,
         sink: Arc<dyn crate::demand::SourceChangeSink>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<Box<dyn crate::demand::SourceWatch>>, LazyWorkspaceError> {
+        if self.retained_source.is_some() {
+            return Ok(None);
+        }
         let cancel = cancellation(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = ctx.native_work() {
@@ -162,9 +241,16 @@ impl<
         accept_receipt(result, ctx)
     }
 
-    /// This view's original demand source namespace and current epoch; no IO.
-    pub fn source_reference(&self) -> SourceReference {
-        self.source.reference()
+    /// Stable source namespace, without capturing its current cut or doing IO.
+    pub fn source_identity(&self) -> [u8; 16] {
+        self.source.identity()
+    }
+
+    pub(crate) async fn source_reference(
+        &self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, LazyWorkspaceError> {
+        selected_source_reference(self.source.as_ref(), self.retained_source.as_ref(), ctx).await
     }
 
     /// Captures an ordinary complete cut without enumeration.
@@ -175,7 +261,7 @@ impl<
         let state = self.state(ctx).await?;
         let head = self.head(ctx).await?;
         ctx.charge(WorkCounters {
-            bytes_hashed: LazySnapshotRef::hash_bytes(head.id()),
+            bytes_hashed: LazySnapshotRef::hash_bytes(head.id(), &state.source),
             ..WorkCounters::UNCHARGED
         })?;
         Ok(LazySnapshotRef::new(
@@ -187,7 +273,7 @@ impl<
         ))
     }
 
-    /// Loads the ready binding, following a shared source's newer epoch.
+    /// Loads the ready binding, retaining a fork's source cut.
     pub async fn state(
         &self,
         ctx: &mut KernelAccounting<'_>,
@@ -216,8 +302,8 @@ impl<
     /// Loads the ready binding at the source's current epoch. A source
     /// shared by several workspaces advances its epoch when any of them
     /// observes a change; that invalidates source cursors, not this
-    /// workspace's authored or observed state, so every reader of the
-    /// binding follows the newer epoch rather than treating it as stale.
+    /// workspace's authored or observed state. Root bindings follow the newer
+    /// epoch; forks retain the source cut captured by their creation.
     pub(crate) async fn current_binding(
         &self,
         missing: fn() -> LazyWorkspaceError,
@@ -228,15 +314,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or_else(missing)?;
-        let source = self.source.reference();
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source.identity != source.identity
-            || state.source.epoch > source.epoch
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        state.require_ready_fork()?;
+        let source = self.binding_source(&state, ctx).await?;
         if state.source == source {
             return Ok(state);
         }
@@ -256,6 +334,24 @@ impl<
         Err(LazyWorkspaceError::Concurrent)
     }
 
+    /// A root follows its provider; a fork owns its original source cut.
+    pub(super) async fn binding_source(
+        &self,
+        state: &LazyWorkspaceState,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<SourceReference, LazyWorkspaceError> {
+        let source = self.source_reference(ctx).await?;
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.source.identity != source.identity
+            || !source.follows(&state.source)
+        {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        state.require_ready_fork()?;
+        Ok(source)
+    }
+
     /// Selects companion indexes for a retained mounted checkout without mutation.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn mounted_read_state(
@@ -271,15 +367,7 @@ impl<
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::NotFound)?;
-        let source = self.source.reference();
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source.identity != source.identity
-            || state.source.epoch > source.epoch
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
-        state.require_ready_fork()?;
+        let source = self.binding_source(&state, ctx).await?;
         if let Some(pending) = &state.pending_remove {
             if state.source != source {
                 return Err(LazyWorkspaceError::StaleSource);
@@ -314,7 +402,7 @@ impl<
             .ok_or(LazyWorkspaceError::NotFound)?;
         if state.schema_version != LAZY_STATE_SCHEMA
             || state.workspace_id != self.workspace.id()
-            || state.source.identity != self.source.reference().identity
+            || state.source.identity != self.source.identity()
         {
             return Err(LazyWorkspaceError::StaleSource);
         }
@@ -403,14 +491,14 @@ impl<
 
     pub(crate) async fn source_lookup(
         &self,
-        source: SourceReference,
+        source: &SourceReference,
         path: &str,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
         crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
             let path = self.namespace_path(path, ctx)?;
             let result = accounted!(ctx, |work, cancel| self.source.lookup(
-                source,
+                source.clone(),
                 &path.value,
                 work,
                 cancel
@@ -479,20 +567,20 @@ impl<
     /// Validates a cut and its available indexes and generation without rebinding.
     pub async fn validate_snapshot(
         &self,
-        cut: LazySnapshotRef,
+        cut: &LazySnapshotRef,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         ctx.charge(WorkCounters {
-            bytes_hashed: LazySnapshotRef::hash_bytes(cut.authored_generation),
+            bytes_hashed: LazySnapshotRef::hash_bytes(cut.authored_generation, &cut.source),
             ..WorkCounters::UNCHARGED
         })?;
         if cut.workspace_id != self.workspace.id()
-            || cut.source.identity != self.source.reference().identity
-            || cut
+            || cut.source.identity != self.source.identity()
+            || *cut
                 != LazySnapshotRef::new(
                     cut.workspace_id,
                     cut.authored_generation,
-                    cut.source,
+                    cut.source.clone(),
                     cut.overlay,
                     cut.shadows,
                 )

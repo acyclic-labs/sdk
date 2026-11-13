@@ -337,6 +337,40 @@ impl Serialize for ObjectId {
     }
 }
 
+impl<'de> Deserialize<'de> for ObjectId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Reference;
+        impl<'de> serde::de::Visitor<'de> for Reference {
+            type Value = ObjectId;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("one complete canonical object reference")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<ObjectId, E> {
+                ObjectId::try_from(bytes).map_err(E::custom)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut input: A,
+            ) -> Result<ObjectId, A::Error> {
+                use serde::de::Error as _;
+                // The largest canonical reference is fixed by the format. No
+                // untrusted length is used for allocation or iteration bounds.
+                let mut bytes = [0; ObjectId::ENCODED_LEN];
+                let mut length = 0;
+                while let Some(byte) = input.next_element::<u8>()? {
+                    let slot = bytes
+                        .get_mut(length)
+                        .ok_or_else(|| A::Error::custom(ObjectIdError::Length))?;
+                    *slot = byte;
+                    length += 1;
+                }
+                self.visit_bytes(&bytes[..length])
+            }
+        }
+        deserializer.deserialize_bytes(Reference)
+    }
+}
+
 /// Physical location of lineage-sealed bytes. The referring object's hash binds
 /// this association; the plaintext digest remains the filesystem identity.
 #[derive(

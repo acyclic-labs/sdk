@@ -156,6 +156,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
 
     let page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             parent: Some(store.failures_path(&owner)?),
             after: None,
             hierarchy_version: None,
@@ -419,6 +420,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         .await?;
     let second_page = provider
         .children_page(ChildrenPageRequest {
+            offset: 0,
             parent: Some(store.failures_path(&owner)?),
             after: Some(child.path.clone()),
             hierarchy_version: None,

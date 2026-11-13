@@ -1,5 +1,6 @@
 #[derive(Clone)]
 struct PathState {
+    changed_at: u64,
     history: Option<Arc<History>>,
     ranges: HistoryRanges,
     keys: KeyTree,

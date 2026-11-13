@@ -1,7 +1,7 @@
 use super::*;
 
 /// An immutable namespace selection. The original producer supplies its
-/// generation and path; this does not assert a file length or content digest.
+/// provider generation and path; this does not assert a file length or digest.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(
     Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
@@ -89,8 +89,9 @@ impl PathSelectionView<'_> {
     }
 }
 
-/// An immutable authored file selection. This identifies the selected generation
-/// and path; it makes no whole-file digest or native snapshot completeness claim.
+/// An immutable file selection at a provider-owned namespace generation.
+/// Lazy generations include the authored generation and complete source cut;
+/// this selection makes no whole-file digest claim.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(
     Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
@@ -146,7 +147,8 @@ pub(crate) fn names_generation(
 ) -> bool {
     let key = generation.as_resource().key();
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    Some(file.version().len()) == key.len().checked_mul(2)
+    generation.as_resource().version().is_none()
+        && Some(file.version().len()) == key.len().checked_mul(2)
         && file.version().bytes().eq(key
             .iter()
             .flat_map(|byte| [HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]]))

@@ -305,6 +305,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
         acyclic_fs::WorkspaceId::from_bytes([19; 16]),
         decoded,
         acyclic_fs::demand::SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
             identity: [20; 16],
             epoch: 0,
         },

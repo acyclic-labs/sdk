@@ -5,7 +5,7 @@ use std::sync::Arc;
 mod native;
 mod shared;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use native::NativeAccounting;
+pub use native::NativeAccounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub use shared::{ErasedRetainedArc, ErasedRetainedWeak};
 pub use shared::{RetainedArc, RetainedWeak};

@@ -98,7 +98,7 @@ type WireRequest =
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
-  | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
+  | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly offset?: bigint; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
@@ -139,11 +139,13 @@ export function wireRequest(request: WireRequest): Uint8Array {
         });
         if (request.durableThrough !== undefined) requireSequenceType(request.durableThrough);
         return toBinary(HeadsRequestSchema, create(HeadsRequestSchema, {
+          ...(request.at === undefined ? {} : { at: request.at }),
           projection: request.projection === "tail" ? HeadProjection.TAIL : request.projection === "watermarks" ? HeadProjection.WATERMARKS : HeadProjection.HISTORY,
           ...(request.durableThrough === undefined ? {} : { durableThrough: request.durableThrough }),
           paths: [...request.paths], limit: request.limit, atLeast: [...(request.atLeast ?? [])],
           retained: [...(request.retained ?? [])],
           ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", limit: request.children.limit,
+            ...(request.children.offset === undefined ? {} : { offset: request.children.offset }),
             ...(request.children.parent === undefined ? {} : { parent: request.children.parent }),
             ...(request.children.tailStream === undefined ? {} : { tailStream: request.children.tailStream }),
             ...(request.children.after === undefined ? {} : { after: request.children.after }),
@@ -185,12 +187,14 @@ export function wireRequest(request: WireRequest): Uint8Array {
         requireSequenceType(request.from);
         return toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: request.path, from: request.from }));
       case "children_page":
+        if (request.offset !== undefined) requireSequenceType(request.offset);
         if (request.tailStream !== undefined) requirePathType(request.tailStream);
         if (request.parent !== undefined) requirePathType(request.parent);
         if (request.after !== undefined) requirePathType(request.after);
         if (request.hierarchyVersion !== undefined) requireBytesType(request.hierarchyVersion);
         requireLimitType(request.limit);
         return toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, {
+          ...(request.offset === undefined ? {} : { offset: request.offset }),
           limit: request.limit,
           ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }),
           ...(request.parent === undefined ? {} : { parent: request.parent }),

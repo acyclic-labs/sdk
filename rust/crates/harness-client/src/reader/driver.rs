@@ -477,16 +477,17 @@ pub(super) async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) ->
         Op::Head { stream, .. } => provider.head(stream).await.map(Outcome::Head),
         Op::Children {
             parent,
-            after,
+            index,
             limit,
             tail,
             version,
             ..
         } => provider
             .children_page(ChildrenPageRequest {
+                offset: u64::from(index) * u64::from(limit),
                 tail_stream: tail,
                 parent: Some(parent),
-                after,
+                after: None,
                 hierarchy_version: version,
                 limit,
             })
@@ -538,6 +539,67 @@ async fn read<P: StreamProvider + ?Sized>(
 mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+
+    #[test]
+    fn indexed_listing_reaches_cold_and_evicted_pages_in_one_request() {
+        use super::super::{Priority, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            let parent = StreamPath::new("indexed/children").unwrap();
+            for child in 0..257u32 {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(format!("{parent}/{child:03}")).unwrap(),
+                        records: vec![b"child".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let mut reader = Reader::new(ReaderPolicy {
+                listing_limit: 2,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            // No earlier page is fetched or retained, including after eviction.
+            // The maximum page also exercises multiplication above u32::MAX.
+            for (frame, index) in [100, u32::MAX, 100].into_iter().enumerate() {
+                reader.cache.clear_listings();
+                reader.begin_frame(frame as u64);
+                reader.plan([(
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index,
+                        tail: None,
+                        witness: None,
+                    },
+                    Priority::Visible,
+                )]);
+                let [op]: [Op; 1] = reader.poll(frame as u64).try_into().unwrap();
+                assert!(matches!(&op, Op::Children { index: selected, .. } if *selected == index));
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, frame as u64);
+                let page = reader.cache.listing(&parent, index).unwrap();
+                if index == u32::MAX {
+                    assert!(page.children.is_empty());
+                    assert!(page.next.is_none());
+                } else {
+                    assert_eq!(
+                        page.children
+                            .iter()
+                            .map(StreamPath::as_str)
+                            .collect::<Vec<_>>(),
+                        ["indexed/children/200", "indexed/children/201"]
+                    );
+                    assert_eq!(page.next.as_ref(), page.children.last());
+                }
+                assert!(reader.poll(frame as u64).is_empty());
+                assert_eq!(reader.cache.listings(&parent).count(), 1);
+            }
+        });
+    }
 
     #[test]
     fn record_coordinates_refuse_unrepresentable_ends_before_retaining_bytes() {
@@ -1778,6 +1840,77 @@ mod tests {
     }
 
     #[test]
+    fn cold_indexed_pages_establish_one_hierarchy_before_parallel_reads() {
+        use super::super::{Priority, ReaderPolicy, Want};
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            for path in ["parent/a", "parent/b", "parent/c"] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(path).unwrap(),
+                        records: vec![b"value".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let parent = StreamPath::new("parent").unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                listing_limit: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            reader.plan([1, 2].map(|index| {
+                (
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index,
+                        tail: None,
+                        witness: None,
+                    },
+                    Priority::Visible,
+                )
+            }));
+            let mut initial = reader.poll(0);
+            assert_eq!(
+                initial.len(),
+                1,
+                "unfenced pages could select different cuts"
+            );
+            let first = initial.pop().unwrap();
+            let id = first.id();
+            let outcome = execute(&provider, first).await;
+            reader.complete(id, outcome, 0);
+            let second = reader.poll(0).pop().unwrap();
+            assert!(matches!(
+                &second,
+                Op::Children {
+                    version: Some(_),
+                    ..
+                }
+            ));
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("parent/aa").unwrap(),
+                    records: vec![b"new".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+            let id = second.id();
+            let outcome = execute(&provider, second).await;
+            assert!(matches!(
+                &outcome,
+                Outcome::Failed(StreamError::HierarchyChanged)
+            ));
+            reader.complete(id, outcome, 0);
+            assert!(reader.cache().listings(&parent).next().is_none());
+        });
+    }
+
+    #[test]
     fn changed_hierarchy_abandons_old_pages_before_another_driver_wake() {
         use super::super::{Priority, ReaderPolicy, Want};
 
@@ -1858,12 +1991,15 @@ mod tests {
             );
             reader.plan(parents.iter().map(|parent| want(parent, 1)));
             let fresh = reader.poll(0);
-            assert_eq!(fresh.len(), 2);
+            assert_eq!(
+                fresh.len(),
+                1,
+                "one unfenced request establishes the new hierarchy"
+            );
             assert!(fresh.iter().all(|op| matches!(
                 op,
                 Op::Children {
-                    index: 0,
-                    after: None,
+                    index: 1,
                     version: None,
                     ..
                 }
@@ -2033,7 +2169,6 @@ mod tests {
                     id: 2,
                     parent: StreamPath::new("agents").unwrap(),
                     index: 0,
-                    after: None,
                     limit: 8,
                     tail: Some(StreamPath::new("conversation").unwrap()),
                     version: None,

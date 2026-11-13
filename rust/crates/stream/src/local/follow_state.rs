@@ -8,11 +8,15 @@ struct FollowState {
     failed: watch::Receiver<Option<LocalStreamFailure>>,
     done: bool,
     span: obs::OperationSpan,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl crate::snapshot::Snapshot for Box<FollowState> {
     #[cfg(feature = "test-support")]
     const OBSERVE: bool = true;
     type Output = Option<crate::Record>;
+    fn caller_retains_pending(&self) -> bool {
+        self.provider.work.is_some()
+    }
     async fn read(&mut self) -> Result<Self::Output, StreamError> {
         let state = &mut **self;
         state

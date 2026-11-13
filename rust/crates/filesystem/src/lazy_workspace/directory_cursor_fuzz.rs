@@ -73,6 +73,35 @@ pub fn check(bytes: &[u8]) -> bool {
     valid
 }
 
+#[test]
+fn seeded_continuations_preserve_scalar_and_composite_cuts() {
+    let cancellation = CancellationToken::new();
+    let work = work(&cancellation).unwrap();
+    let baseline = work.live_allocation_bytes();
+    for (_, seed) in seeds().unwrap() {
+        let mut decoded = false;
+        for profile in PROFILES {
+            if let Ok(cursor) =
+                LazyDirectoryCursor::decode(&seed, profile, crate::VolumeLimits::default(), &work)
+            {
+                decoded = true;
+                cursor
+                    .retire(&mut KernelAccounting::NativeOriginal {
+                        work: &work,
+                        cancellation: &cancellation,
+                    })
+                    .unwrap();
+            }
+        }
+        assert!(
+            decoded,
+            "no admitted profile could decode a generated continuation"
+        );
+        assert!(check(&seed));
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+}
+
 /// Capture every durable continuation phase with plain and sealed generations.
 pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     let cancellation = CancellationToken::new();
@@ -84,74 +113,94 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
     };
     let limits = crate::VolumeLimits::default();
     let source = SourceReference {
+        components: acyclic_stream::OwnedBytes::new(),
         identity: [2; 16],
         epoch: 3,
     };
     let mut seeds = Vec::new();
     for sealed in [false, true] {
-        let generation = GenerationId::from_root(ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: Digest::from_bytes([4; 32]),
-            storage: sealed.then_some(ObjectStorage {
-                locator: Digest::from_bytes([5; 32]),
-                root_file_id: FileId::from_bytes([6; 16]),
-                origin_generation: Digest::from_bytes([7; 32]),
-            }),
-        });
-        let cut = LazySnapshotRef::new(
-            WorkspaceId::from_bytes([1; 16]),
-            generation,
-            source,
-            LazyOverlayId::from_bytes([8; 32]),
-            LazyShadowId::from_bytes([9; 32]),
-        );
-        for (profile_tag, profile) in PROFILES.into_iter().enumerate() {
-            for phase_tag in 0..4 {
-                let (directory, mut allocation) = NamespacePath::parse_in_profile(
-                    "/retained",
-                    profile,
-                    limits,
+        for composite in [false, true] {
+            let source = if composite {
+                SourceReference::pair(
+                    [12; 16],
+                    &source,
+                    &SourceReference {
+                        identity: [13; 16],
+                        epoch: 7,
+                        components: acyclic_stream::OwnedBytes::new(),
+                    },
                     &mut ctx,
-                    work.cancellation(),
-                )?;
-                let phase = match phase_tag {
-                    0 => LazyDirectoryPhase::Source(None),
-                    1 => LazyDirectoryPhase::Source(Some(SourceCursor::detached(source, 11))),
-                    2 => LazyDirectoryPhase::Authored(None),
-                    _ => {
-                        let encoding = crate::kernel::NameEncoding::native_for_profile(profile);
-                        let bytes = match encoding {
-                            crate::kernel::NameEncoding::WindowsUtf16Le => {
-                                "entry".encode_utf16().flat_map(u16::to_le_bytes).collect()
-                            }
-                            crate::kernel::NameEncoding::PosixBytes => b"entry-\xff".to_vec(),
-                            crate::kernel::NameEncoding::Utf8 => b"entry".to_vec(),
-                        };
-                        let name = LogicalName::new(encoding, bytes).map_err(|error| {
-                            crate::FsError::from(CanonicalDecodeError::Invariant(
-                                CanonicalInvariant::Name(error),
-                            ))
-                        })?;
-                        let (name, mut backing) =
-                            name.clone_with_accounting(&mut ctx, work.cancellation())?;
-                        allocation.absorb(&mut backing)?;
-                        LazyDirectoryPhase::Authored(Some(name))
-                    }
-                };
-                let cursor = LazyDirectoryCursor {
-                    cut,
-                    directory,
-                    phase,
-                    allocation,
-                };
-                let encoded = cursor.encode(&work)?;
-                let captured = encoded.0.clone();
-                drop(encoded);
-                seeds.push((
-                    format!("directory-cursor-{sealed}-{profile_tag}-{phase_tag}"),
-                    captured,
-                ));
-                cursor.retire(&mut ctx)?;
+                )?
+            } else {
+                source.clone()
+            };
+            let generation = GenerationId::from_root(ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: Digest::from_bytes([4; 32]),
+                storage: sealed.then_some(ObjectStorage {
+                    locator: Digest::from_bytes([5; 32]),
+                    root_file_id: FileId::from_bytes([6; 16]),
+                    origin_generation: Digest::from_bytes([7; 32]),
+                }),
+            });
+            let cut = LazySnapshotRef::new(
+                WorkspaceId::from_bytes([1; 16]),
+                generation,
+                source.clone(),
+                LazyOverlayId::from_bytes([8; 32]),
+                LazyShadowId::from_bytes([9; 32]),
+            );
+            for (profile_tag, profile) in PROFILES.into_iter().enumerate() {
+                for phase_tag in 0..4 {
+                    let (directory, mut allocation) = NamespacePath::parse_in_profile(
+                        "/retained",
+                        profile,
+                        limits,
+                        &mut ctx,
+                        work.cancellation(),
+                    )?;
+                    let phase = match phase_tag {
+                        0 => LazyDirectoryPhase::Source(None),
+                        1 => LazyDirectoryPhase::Source(Some(SourceCursor::detached(
+                            source.clone(),
+                            11,
+                        ))),
+                        2 => LazyDirectoryPhase::Authored(None),
+                        _ => {
+                            let encoding = crate::kernel::NameEncoding::native_for_profile(profile);
+                            let bytes = match encoding {
+                                crate::kernel::NameEncoding::WindowsUtf16Le => {
+                                    "entry".encode_utf16().flat_map(u16::to_le_bytes).collect()
+                                }
+                                crate::kernel::NameEncoding::PosixBytes => b"entry-\xff".to_vec(),
+                                crate::kernel::NameEncoding::Utf8 => b"entry".to_vec(),
+                            };
+                            let name = LogicalName::new(encoding, bytes).map_err(|error| {
+                                crate::FsError::from(CanonicalDecodeError::Invariant(
+                                    CanonicalInvariant::Name(error),
+                                ))
+                            })?;
+                            let (name, mut backing) =
+                                name.clone_with_accounting(&mut ctx, work.cancellation())?;
+                            allocation.absorb(&mut backing)?;
+                            LazyDirectoryPhase::Authored(Some(name))
+                        }
+                    };
+                    let cursor = LazyDirectoryCursor {
+                        cut: cut.clone(),
+                        directory,
+                        phase,
+                        allocation,
+                    };
+                    let encoded = cursor.encode(&work)?;
+                    let captured = encoded.0.clone();
+                    drop(encoded);
+                    seeds.push((
+                        format!("directory-cursor-{sealed}-{composite}-{profile_tag}-{phase_tag}"),
+                        captured,
+                    ));
+                    cursor.retire(&mut ctx)?;
+                }
             }
         }
     }

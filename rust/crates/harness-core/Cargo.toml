@@ -35,6 +35,10 @@ path = "examples/config-types.rs"
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "computed_ui_records"
+path = "tests/computed_ui_records.rs"
+
 [features]
 research = ["acyclic-observability/research"]
 provenance-export = ["metrics-export", "dep:oxrdf", "dep:oxttl"]
@@ -47,6 +51,7 @@ wasm = ["acyclic-stream/wasm", "dep:tsify"]
 
 [dependencies]
 memchr = "=2.8.3"
+pulldown-cmark.workspace = true
 tar = { version = "=0.4.46", default-features = false }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 oxrdf = { version = "=0.3.5", default-features = false, optional = true }

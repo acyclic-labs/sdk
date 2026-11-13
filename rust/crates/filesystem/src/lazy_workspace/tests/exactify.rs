@@ -15,7 +15,7 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let (paths, _) = root
-        .enumerate_paths("/", cut, &state, &mut accounting)
+        .enumerate_paths("/", &cut, &state, &mut accounting)
         .await
         .unwrap();
     let lookup = root.inspect("/file.txt", accounting!()).await.unwrap();
@@ -66,7 +66,7 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
     let stale = root
         .exactify_into(
             "/",
-            cut,
+            &cut,
             paths,
             start,
             crate::PublicationPermit::Unrestricted,
@@ -97,7 +97,7 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
 }
 
 #[tokio::test]
-async fn historical_exactification_keeps_observations_and_refreshes_unresolved_paths() {
+async fn historical_exactification_retains_observed_and_unresolved_source_cuts() {
     for observed in [false, true] {
         let fs = Fs::memory();
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
@@ -128,14 +128,7 @@ async fn historical_exactification_keeps_observations_and_refreshes_unresolved_p
             .await
             .unwrap()
             .value;
-        assert_eq!(
-            bytes.as_slice(),
-            if observed {
-                b"source".as_slice()
-            } else {
-                b"changed".as_slice()
-            }
-        );
+        assert_eq!(bytes.as_slice(), b"source");
     }
 }
 

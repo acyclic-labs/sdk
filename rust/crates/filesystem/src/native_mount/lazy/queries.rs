@@ -208,7 +208,6 @@ where
             .inspect_unauthored(
                 &mut checkout,
                 text,
-                None,
                 crate::lazy_workspace::InspectBasis {
                     state: Some(&state),
                     authored_absent: true,
@@ -251,7 +250,7 @@ where
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
         let pin = match &lookup {
             LazyLookup::Source { node, source } if node.kind == SourceNodeKind::RegularFile => {
-                Some(source_content_pin(*source, node))
+                Some(source_content_pin(source.clone(), node))
             }
             _ => None,
         };
@@ -281,7 +280,7 @@ where
     ) -> Result<(Resolution, Option<Box<dyn DemandFile>>), MountSourceError> {
         for _ in 0..2 {
             let resolution = self.resolve(path, text, owner, work).await?;
-            let Resolution::Unauthored(LazyLookup::Source { node, source }, _) = resolution else {
+            let Resolution::Unauthored(LazyLookup::Source { node, source }, _) = &resolution else {
                 return Ok((resolution, None));
             };
             if node.kind != SourceNodeKind::RegularFile {
@@ -290,7 +289,7 @@ where
             let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
             let opened = self
                 .lazy
-                .open_source_file(text, source, node, &mut accounting)
+                .open_source_file(text, source.clone(), *node, &mut accounting)
                 .await;
             match opened {
                 Ok(file) => return Ok((resolution, Some(file))),

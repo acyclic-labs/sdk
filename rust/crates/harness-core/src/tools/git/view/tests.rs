@@ -854,7 +854,7 @@ fn volume_view_pins_exact_generations_for_both_capture_modes() -> TestResult {
                     .tree(true, PublicationPermit::Unrestricted)
                     .await
                     .unwrap();
-                prop_assert_eq!(lazy, exact);
+                prop_assert_eq!(&lazy, &exact);
                 prop_assert!(matches!(exact, GitTreeRef::Exact(_)));
                 let bytes = view.read("/note", 256).await.unwrap();
                 prop_assert_eq!(bytes.as_ref(), text.as_bytes());

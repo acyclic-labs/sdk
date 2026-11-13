@@ -1482,6 +1482,7 @@ pub(super) async fn orphans<P: StreamProvider + ?Sized>(
         loop {
             let page = match provider
                 .children_page(acyclic_stream::ChildrenPageRequest {
+                    offset: 0,
                     tail_stream: None,
                     parent: Some(log.clone()),
                     after,

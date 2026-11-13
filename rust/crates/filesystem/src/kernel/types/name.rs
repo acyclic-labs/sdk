@@ -116,7 +116,10 @@ impl LogicalName {
         finish_owned(owned, result)
     }
 
-    fn validate_bytes(encoding: NameEncoding, bytes: &[u8]) -> Result<(), TreePageError> {
+    pub(crate) fn validate_bytes(
+        encoding: NameEncoding,
+        bytes: &[u8],
+    ) -> Result<(), TreePageError> {
         if bytes.is_empty() {
             return Err(TreePageError::EmptyName);
         }

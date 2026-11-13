@@ -166,6 +166,7 @@ pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
         return Ok(None);
     }
     let request = HeadsRequest {
+        at: None,
         retained: Default::default(),
         durable_through: None,
         projection: HeadProjection::History,

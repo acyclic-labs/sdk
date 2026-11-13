@@ -29,6 +29,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let path = self.store.path(actor)?;
         let placement = StreamPath::new(format!("{path}/placement"))?;
         let request = acyclic_stream::HeadsRequest {
+            at: None,
             retained: Default::default(),
             durable_through: None,
             projection: acyclic_stream::HeadProjection::History,

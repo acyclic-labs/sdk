@@ -837,7 +837,7 @@ async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
             "fork" => {
                 next.fork_origin = Some(crate::lazy_workspace::LazyForkOrigin {
                     operation_id: crate::OperationId::new(),
-                    snapshot: cut,
+                    snapshot: cut.clone(),
                     config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
                     phase: crate::lazy_workspace::LazyForkPhase::Prepared,
                 })

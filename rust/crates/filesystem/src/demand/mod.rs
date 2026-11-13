@@ -38,6 +38,7 @@ pub use page::*;
 mod contracts;
 pub use contracts::*;
 mod computed;
+mod shared;
 pub use computed::*;
 mod fold;
 pub use fold::*;

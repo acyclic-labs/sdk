@@ -46,6 +46,8 @@ macro_rules! accounted {
 pub struct LazyWorkspace<A: 'static, O: 'static, D, S> {
     workspace: Workspace<A, O>,
     source: Arc<D>,
+    // Recovered from the immutable fork origin; roots follow their provider.
+    retained_source: Option<SourceReference>,
     store: S,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<crate::NativeAllocation>,
@@ -64,6 +66,7 @@ impl<A: 'static, O: 'static, D, S: Clone> LazyWorkspace<A, O, D, S> {
         Ok(Arc::new(Self {
             workspace: self.workspace.clone(),
             source: Arc::clone(&self.source),
+            retained_source: self.retained_source.clone(),
             store: self.store.clone(),
             _allocation: allocation,
         }))
@@ -123,6 +126,7 @@ pub use model::{
 };
 pub use store::{LazyWorkspaceStore, MemoryLazyWorkspaceStore};
 pub(crate) use work::retained_directory_page_bytes;
+pub(crate) use work::source_file_metadata;
 use work::*;
 
 #[cfg(test)]
