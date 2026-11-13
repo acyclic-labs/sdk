@@ -168,6 +168,31 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
                 original.projection_schema
             );
         }
+        // An unchanged retained declaration can be selected again. A host edit
+        // under the same public revision must still conflict instead of silently
+        // reusing a different argument mapping, refusal or contract.
+        for change in ["mapping", "refusal", "contract"] {
+            let mut changed = shell_entries(profile)?;
+            for (mapping, definition) in &mut changed {
+                match change {
+                    "mapping" => {
+                        mapping.arguments = Some(serde_json::json!({"command": "changed"}))
+                    }
+                    "refusal" => mapping.refuse.push("command".into()),
+                    "contract" => definition.description.push_str(" Different contract."),
+                    _ => unreachable!(),
+                }
+            }
+            assert!(
+                matches!(
+                    NativeTools::from_definitions(changed)?.bind(&mut registry),
+                    Err(Error::Conflict(_))
+                ),
+                "changed {change} reused an existing native revision"
+            );
+        }
+        retained.bind(&mut registry)?;
+        let selected = registry.get("shell", None, None)?.unwrap();
         let expected = vec![selected.definition.clone()];
         assert_eq!(registry.definitions(None)?, expected);
         assert_eq!(

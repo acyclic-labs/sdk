@@ -79,8 +79,14 @@ impl ToolExecutor for Adapter {
             .record_kind(&adapted.invocation, result, work)
     }
 
-    fn capability(&self) -> Option<&Arc<Tool>> {
-        Some(&self.capability)
+    fn canonical_binding(&self) -> Option<crate::tool::CanonicalBinding<'_>> {
+        let (arguments, refused) = self.arguments.binding();
+        Some(crate::tool::CanonicalBinding {
+            capability: &self.capability,
+            implementation: &self.original,
+            arguments,
+            refused,
+        })
     }
 
     fn canonical(
