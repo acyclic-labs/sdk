@@ -41,7 +41,7 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os(CASE).is_some_and(|case| case == "foreign-env") {
         let refusal =
-            crate::FileLock::try_acquire(admission_file()?, crate::FileLockMode::Exclusive)
+            crate::FileLock::try_acquire(admission_file()?.0, crate::FileLockMode::Exclusive)
                 .unwrap_err();
         assert_eq!(
             refusal.kind(),
@@ -95,6 +95,32 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
     }
     let _poisoned = Poisoned(poisoned);
 
+    // The former abstract socket name was public too. A different user can
+    // bind it without entering the owner's private directory. Keep it bound
+    // but not listening, so any regression fails instead of awaiting a peer.
+    let reserved = socket()?;
+    let mut legacy: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    legacy.sun_family = libc::AF_UNIX as _;
+    let name = format!(
+        "acyclic-packet-device-v1-{}-{}",
+        crate::private_file::effective_user(),
+        namespace("mnt")?
+    );
+    for (slot, byte) in legacy.sun_path[1..].iter_mut().zip(name.bytes()) {
+        *slot = byte as _;
+    }
+    let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
+    if unsafe {
+        libc::bind(
+            reserved.as_raw_fd(),
+            (&raw const legacy).cast(),
+            length as _,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error().into());
+    }
+
     let private = tempfile::tempdir()?;
     std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o777))?;
     assert_eq!(
@@ -114,7 +140,7 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
     admission_directory(private.path())?;
 
     {
-        let _held = crate::FileLock::acquire(admission_file()?, crate::FileLockMode::Exclusive)?;
+        let _held = crate::FileLock::acquire(admission_file()?.0, crate::FileLockMode::Exclusive)?;
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([TEST, "--exact", "--nocapture"])
             .env(CASE, "foreign-env")
