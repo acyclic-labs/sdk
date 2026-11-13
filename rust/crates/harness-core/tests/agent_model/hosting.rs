@@ -537,6 +537,10 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
             &acyclic_harness_core::Capabilities::new([
                 acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
                 file.volume().capability(
+                    acyclic_harness_core::conversation::VolumeOperation::Write,
+                    &mut None,
+                )?,
+                file.volume().capability(
                     acyclic_harness_core::conversation::VolumeOperation::Read,
                     &mut None,
                 )?,

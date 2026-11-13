@@ -805,6 +805,11 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             host.authorize_volume_creation(&read_only, &private)?;
             host.authorize_volume_creation(&read_only, &foreign)
                 .expect_err("read-only source admission allocated a fresh source volume");
+            let before = host.create_volume(&foreign).await?;
+            let retained = host
+                .create_volume_admitted(&foreign, Some(&read_only))
+                .await?;
+            assert_eq!(retained, before);
             host.authorize_retained_writer(&read_only, &foreign)
                 .await
                 .expect_err("read-only source admission acquired an existing writer");
@@ -899,6 +904,11 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             )?;
             host.authorize_volume_creation(&administrator_scope, &foreign)
                 .expect_err("a later-generation grant authorized initial storage creation");
+            let before = host.create_volume(&foreign).await?;
+            let retained = host
+                .create_volume_admitted(&foreign, Some(&administrator_scope))
+                .await?;
+            assert_eq!(retained, before);
             host.authorize_retained_writer(&administrator_scope, &foreign)
                 .await?;
             let (_administrator_producer, administrator_stopped) =

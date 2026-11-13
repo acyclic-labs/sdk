@@ -153,12 +153,18 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             super::super::bounded_io::content_workspace(&self.volumes.provider, &volume, None)
                 .map_err(turn)?;
         let initial = if after.is_none() && session.is_some() {
-            if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            Some(
                 self.volumes
-                    .authorize_volume_creation(scope, &volume)
-                    .map_err(turn)?;
-            }
-            Some(self.volumes.create_volume(&volume).await.map_err(turn)?)
+                    .create_volume_admitted(
+                        &volume,
+                        match &self.admission {
+                            TurnAdmission::Admitted { scope, .. } => Some(scope),
+                            _ => None,
+                        },
+                    )
+                    .await
+                    .map_err(turn)?,
+            )
         } else {
             None
         };
@@ -300,12 +306,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     ) -> Result<GenerationRef, Error> {
         let (volume, scope, verifier) = self.client_volume(agent, session).await?;
         if session.is_some() {
-            if let TurnAdmission::Admitted { scope, .. } = &self.admission {
-                self.volumes
-                    .authorize_volume_creation(scope, &volume)
-                    .map_err(turn)?;
-            }
-            self.volumes.create_volume(&volume).await.map_err(turn)?;
+            self.volumes
+                .create_volume_admitted(
+                    &volume,
+                    match &self.admission {
+                        TurnAdmission::Admitted { scope, .. } => Some(scope),
+                        _ => None,
+                    },
+                )
+                .await
+                .map_err(turn)?;
         }
         let publisher = FilesystemContentPublisher::new(
             self.volumes.clone(),

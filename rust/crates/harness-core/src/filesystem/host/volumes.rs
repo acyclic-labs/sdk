@@ -324,6 +324,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// Creates the unique physical workspace for a logical volume.
     pub async fn create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
+        self.create_volume_admitted(volume, None).await
+    }
+
+    pub(in crate::filesystem) async fn create_volume_admitted(
+        &self,
+        volume: &VolumeRef,
+        scope: Option<&Scope>,
+    ) -> Result<WorkspaceObservation> {
         let (name, operation) = self.volume_creation(volume)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let original = self
@@ -338,6 +346,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map_err(|failure| map_error(failure.error))?;
         if original.value.is_none() {
+            if let Some(scope) = scope {
+                self.authorize_volume_creation(scope, volume)?;
+            }
             self.filesystem
                 .create_workspace_with_operation::<_, (), WorkspaceError>(
                     &name,
