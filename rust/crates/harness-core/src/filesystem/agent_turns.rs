@@ -772,7 +772,6 @@ where
             within,
             actor_root: None,
             clock: Arc::new(acyclic_actors::local::SystemClock),
-            actor_root: None,
             host,
             issuer,
             templates,
