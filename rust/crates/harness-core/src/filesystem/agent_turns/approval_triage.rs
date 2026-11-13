@@ -168,7 +168,7 @@ where
                 publisher
                     .stage_once(
                         operation,
-                        &format!("inputs/approval-summaries/{operation}.txt"),
+                        &format!("inputs/approval-summary-{operation}.txt"),
                         &summary,
                         "text/plain",
                         "approval-summary",

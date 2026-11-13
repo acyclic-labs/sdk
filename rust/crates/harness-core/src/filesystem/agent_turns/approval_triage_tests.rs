@@ -6,7 +6,7 @@ use crate::{
     conversation::Limits,
     filesystem::{StockExecutors, TurnContext},
     interaction::{ApprovalRoute, ApprovalSubject, Interaction, InteractionOutcome},
-    model::{Model, ModelContent},
+    model::{Model, ModelContent, ModelProvider, ModelResolver},
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
 };
@@ -56,6 +56,20 @@ async fn family(
         (Limits::default(), None::<crate::context::CompactionPolicy>),
         Arc::new(NoWorkerContext),
     );
+    // The original root template may select a role model over the host fallback.
+    let selected_provider: Arc<dyn ModelProvider> = reviewer.clone();
+    let executors = executors.with_models(Arc::new(ModelResolver::new(
+        "test/reviewer",
+        move |selection| {
+            let (provider, name) = selection
+                .split_once('/')
+                .ok_or_else(|| Error::Invalid("expected provider/model selection".into()))?;
+            Ok((
+                Model::new(provider.into(), name.into(), "1".into())?,
+                selected_provider.clone(),
+            ))
+        },
+    )));
     let (bound, parent, children) = family_with(Arc::new(executors)).await?;
     Ok((bound, parent, children, reviewer))
 }
@@ -320,10 +334,28 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         );
     }
     let summary = reviewed.summary.ok_or("escalations were not summarized")?;
-    let (_, bindings, _) = turns.parent_review_binding(&parent_state, None).await?;
-    let bytes = bindings
-        .journal
-        .reader
+    let authority = crate::filesystem::agent_authority(
+        &turns.issuer,
+        &turns.admission,
+        &parent,
+        &parent_state.volumes,
+        std::slice::from_ref(&summary),
+    )
+    .await?;
+    assert!(
+        !authority
+            .scope
+            .capabilities()
+            .contains(crate::contract::capability::HARNESS_HOST)
+    );
+    let reader = FilesystemContentVerifier::new(
+        turns.host.clone(),
+        &authority.verifier,
+        &authority.scope,
+        turns.limits.maximum_bytes,
+        None,
+    )?;
+    let bytes = reader
         .read(&summary, summary.descriptor().byte_length(), None, None)?
         .await?;
     let text = std::str::from_utf8(&bytes)?;

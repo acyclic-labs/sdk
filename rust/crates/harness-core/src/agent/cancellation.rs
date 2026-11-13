@@ -316,6 +316,15 @@ pub(super) struct Driver<'a, P: ?Sized, D: ?Sized> {
 impl<P: crate::store::JournalProvider + ?Sized, D: super::TurnDriver + ?Sized> super::TurnDriver
     for Driver<'_, P, D>
 {
+    fn review<'a>(
+        &'a self,
+        agent: &'a super::AgentState,
+        cursor: u64,
+        cancellation: acyclic_actors::guest::CancellationToken,
+    ) -> super::ReviewFuture<'a> {
+        self.inner.review(agent, cursor, cancellation)
+    }
+
     fn step<'a>(
         &'a self,
         agent: &'a super::AgentState,
