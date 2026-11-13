@@ -772,7 +772,8 @@ async fn a_refused_acknowledgment_recovers_the_publication_by_its_key() -> Resul
     let published = crate::store::operations::one_record(&landed, &head, 0, &mut None)
         .await?
         .expect("published checkpoint");
-    assert_eq!(published.commit_id, committed);
+    assert_eq!(published.commit_id, committed.0);
+    assert_eq!(published.committed_at_micros, committed.1);
     // Control: an undecided commit with no idempotency fact stays unknown.
     let lost = Arc::new(RefusedAcknowledgment {
         inner: acyclic_stream::MemoryStream::default(),

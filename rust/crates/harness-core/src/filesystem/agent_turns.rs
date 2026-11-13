@@ -655,6 +655,7 @@ pub struct TurnLimits {
 /// [`TurnHost`] binding every agent to its executor and a journal on its
 /// private volume, under a conversation authority named by the agent's id.
 pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
@@ -752,6 +753,7 @@ where
         Self {
             stream,
             within,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
             issuer,
             templates,
@@ -765,6 +767,13 @@ where
             #[cfg(feature = "test-support")]
             binding_fault: None,
         }
+    }
+
+    /// Share the scheduler's original clock with journal deadline admission.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Injects a deterministic failure before a turn binds or reads content.
@@ -2361,6 +2370,7 @@ where
                 let journal = journal
                     .with_model_boundary(Arc::new(boundary))
                     .with_stop(stop)
+                    .with_clock(Arc::clone(&self.clock))
                     .with_agent_approvals(Arc::clone(&approvals));
                 // Only this agent's selected turns have a journal on its private
                 // volume; an inherited ancestor turn is not a local predecessor.

@@ -179,6 +179,17 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Box::pin(std::future::pending())
     }
 
+    /// The owning host's absolute deadline event for reversible preparation.
+    /// An unbound journal refuses rather than substituting another clock.
+    fn preparation_deadline(
+        &self,
+        _deadline_unix_ms: u64,
+    ) -> Result<acyclic_stream::BoxProviderFuture<'static, Result<()>>> {
+        Err(Error::Unsupported(
+            "execution journal has no host clock".into(),
+        ))
+    }
+
     /// Implementations must scope sequences and retry keys by `operation_id`.
     fn replay<'a>(
         &'a self,
@@ -243,6 +254,24 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
             io,
             crate::wire::ErrorCode::Unsupported,
             "atomic execution journal append is unavailable",
+        ))
+    }
+
+    /// Appends a fresh exclusive claim at the exact tail and returns its committed
+    /// timestamp in microseconds, directly from publication. Refusal or a repeated
+    /// claim returns `None`; a claim never discovers its receipt by reading storage.
+    fn claim_if_tail<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _expected_tail: u64,
+        _claim_id: &'a str,
+        _event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal has no timestamped claim publication",
         ))
     }
 

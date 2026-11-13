@@ -452,6 +452,7 @@ where
             turns.limits,
             turns.approval_policy,
         )
+        .with_clock(turns.clock.clone())
         .with_filesystem_tools();
         let turner = Arc::new(configure(turner));
         let templates = turner.templates();

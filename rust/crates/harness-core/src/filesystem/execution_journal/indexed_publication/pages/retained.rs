@@ -68,20 +68,37 @@ impl<P: crate::store::JournalProvider + ?Sized> NativeCut<'_, '_, P> {
     pub(in crate::filesystem::execution_journal) async fn finish(
         self,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<Option<acyclic_stream::CommitId>> {
+    ) -> Result<Option<(acyclic_stream::CommitId, u64)>> {
         let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let (outcome, retained) = self
             .commit
             .finish(Some(self.cut.operation), None, &mut quota)
             .await?;
         quota.adopt(retained)?;
-        let result = self.cut.confirm(
-            &outcome,
-            self.publication.pages_tail,
-            self.publication.records,
-            self.publication.observation,
-            self.publication.checkpoint,
-        );
+        let result = self
+            .cut
+            .confirm(
+                &outcome,
+                self.publication.pages_tail,
+                self.publication.records,
+                self.publication.observation,
+                self.publication.checkpoint,
+            )
+            .map(|commit| {
+                commit.map(|commit| {
+                    (
+                        commit,
+                        match &outcome {
+                            acyclic_stream::CommitOutcome::Committed(receipt) => {
+                                receipt.committed_at_micros
+                            }
+                            acyclic_stream::CommitOutcome::Conflict(_) => {
+                                unreachable!("confirmed commit")
+                            }
+                        },
+                    )
+                })
+            });
         drop(outcome);
         drop(quota);
         result
