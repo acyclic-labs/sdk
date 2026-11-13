@@ -284,6 +284,34 @@ async fn verify_observation(
             "repeated selection changed admitted demand",
         ));
     }
+    // Select distinct interests through the complete viewport transaction.
+    // Keep the settled record and do not poll the additional lazy follows.
+    let visible = (1..=17u8)
+        .map(|id| {
+            fixture
+                .agent
+                .child(&acyclic_harness::agent::AgentId::from_bytes([id; 16]))
+                .map(|agent| AgentSelection::new(agent, 0, 0))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| failure("distinct_viewport", error))?;
+    let expected = std::iter::once(&fixture.agent)
+        .chain(visible.iter().map(|selection| &selection.agent))
+        .cloned()
+        .collect::<Vec<_>>();
+    client
+        .set_viewport(selection(), visible, std::iter::empty())
+        .map_err(|error| failure("distinct_viewport", error))?;
+    if !client.selected_agents().eq(expected.iter())
+        || client.conversation().next_sequence() != cursor
+        || client.conversation().revision() != revision
+        || client.conversation().records().len() != 1
+    {
+        return Err(failure(
+            "distinct_viewport",
+            "explicit demand was capped or reset retained records",
+        ));
+    }
     let unknown = match fixture.agent.parent() {
         Some(parent) => parent,
         None => fixture
@@ -331,6 +359,7 @@ async fn verify_observation(
             "retain_selection",
             "complete_cursor_refusal",
             "retain_repeated_selection",
+            "distinct_viewport",
             "unknown_authority",
             "reselection_cursor",
         ],

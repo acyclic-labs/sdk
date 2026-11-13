@@ -53,7 +53,7 @@ function refused(step: string, code: string, action: () => unknown): void {
   throw new Error(`CLIENT_CONFORMANCE ${step}: expected ${code}`);
 }
 
-/** The six observation oracles from Rust client::verify_observation, through
+/** Shared observation oracles from Rust client::verify_observation, through
  * the public WASM client. Native verify additionally validates provider tails;
  * this runner requires the same host-provisioned settled-cut fixture. Neither
  * runner establishes turn execution, byte/credit bounds or endpoint bootstrap. */
@@ -105,6 +105,21 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
       || exactJson(client.selectedAgents()) !== exactJson([fixture.agent])) {
       throw new Error("CLIENT_CONFORMANCE retain_repeated_selection: repeated selection changed admitted records");
     }
+    // Exercise distinct demand through the complete viewport transaction,
+    // retaining the original settled record while the new follows stay lazy.
+    const visible = Array.from({length: 17}, (_, index) =>
+      `${fixture.agent}/children/${(index + 1).toString(16).padStart(2, "0").repeat(16)}`);
+    const viewport = [fixture.agent, ...visible];
+    client.setViewport(viewport,
+      BigUint64Array.of(fixture.conversation_from, ...visible.map(() => 0n)),
+      BigUint64Array.of(fixture.status_from, ...visible.map(() => 0n)), []);
+    const expanded = client.agentWindow(fixture.agent);
+    if (exactJson(client.selectedAgents()) !== exactJson(viewport)
+      || expanded.firstSequence !== before.firstSequence || expanded.nextSequence !== before.nextSequence
+      || expanded.recordCount !== before.recordCount || expanded.retainedBytes !== before.retainedBytes
+      || expanded.revision <= unchanged.revision) {
+      throw new Error("CLIENT_CONFORMANCE distinct_viewport: explicit demand was capped or reset retained records");
+    }
     // This is the same fixed test identity used by the native suite, not a
     // frontend agent-address constructor. Rust admits each selected path.
     const parentEdge = fixture.agent.lastIndexOf("/children/");
@@ -118,7 +133,7 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
     if (reselected.nextSequence !== before.nextSequence || reselected.recordCount !== 0n) {
       throw new Error("CLIENT_CONFORMANCE reselection_cursor: evicted history retained or cursor reset");
     }
-    return {passed: ["exact_conversation", "exact_status", "retain_selection", "retain_repeated_selection",
+    return {passed: ["exact_conversation", "exact_status", "retain_selection", "retain_repeated_selection", "distinct_viewport",
       "unknown_authority", "reselection_cursor"]};
   } finally { client.close(); client.free(); }
 }

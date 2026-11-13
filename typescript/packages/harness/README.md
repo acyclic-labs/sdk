@@ -50,9 +50,10 @@ visible, and output subscriptions are encoded `SessionSubscription` values for
 the visible tool panes. The Rust core replaces the complete viewport atomically;
 omitted agents and panes release their follows and cached records. Pass `[]` for
 output subscriptions when the tool pane is hidden. Overlapping interests retain
-their cursors. The combined cap is 16 interests (two per agent, one per pane);
-over-capacity input leaves the previous viewport intact. `setView` remains the
-agent-only operation for callers managing output lifetimes separately.
+their cursors. Explicit demand has no default count cap; callers select only the
+agents and panes they need. Invalid replacements leave the previous viewport
+intact. `setView` remains the agent-only operation for callers managing output
+lifetimes separately.
 
 Read individual displayed records rather than copying a whole conversation.
 Closing the client releases all interests. No idle agent needs its own client,
@@ -112,8 +113,8 @@ The endpoint conformance runner is `bun examples/client-conformance.ts`. Supply
 same fixture bytes, provisioned through the endpoint's ordinary AgentHost.
 
 The public `verifyClientObservation` checks exact conversation/status records,
-retained selection, atomic interest-capacity refusal, unrequested authority and
-cursor-preserving reselection through the shipping WASM client. The native suite
+retained selection, distinct viewport admission without a default count cap,
+unrequested authority and cursor-preserving reselection through the shipping WASM client. The native suite
 also validates provider tails before observation; the TS observation entry requires
 the supplied settled-cut fixture and does not claim that extra preflight. Controls
 and tool output use `verifyClientControls` and `verifyClientToolOutput`. Reports
