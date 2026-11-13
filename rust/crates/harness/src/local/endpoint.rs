@@ -231,7 +231,6 @@ impl Connection {
             ),
             None => Error::exchange(ExchangeStep::Session, error),
         }
-        Error::exchange(ExchangeStep::Session, error)
     }
 
     /// Executes `command` once on this connection's tree.
