@@ -159,6 +159,21 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
             native.execution_grant = workspace_grant(&mounts, &mut native.environment)?;
             // Grant selection must not be responsible for environment setup.
             native.environment.clear();
+            #[cfg(windows)]
+            {
+                for name in ["home", "userprofile"] {
+                    native.environment.insert(
+                        name.into(),
+                        home.to_str().expect("UTF-8 private home").into(),
+                    );
+                }
+                for name in ["tmpdir", "temp", "tmp"] {
+                    native.environment.insert(
+                        name.into(),
+                        project.path().to_str().expect("UTF-8 project").into(),
+                    );
+                }
+            }
         }
         let result = run(
             ShellInput {

@@ -1,6 +1,16 @@
 use super::{Error, Result};
 use std::{collections::BTreeMap, path::Path};
 
+pub(super) fn environment_key_matches(key: &str, name: &str) -> bool {
+    if cfg!(windows) {
+        key.chars()
+            .flat_map(char::to_uppercase)
+            .eq(name.chars().flat_map(char::to_uppercase))
+    } else {
+        key == name
+    }
+}
+
 pub(super) fn validate(
     executable: &Path,
     cwd: &Path,

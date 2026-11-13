@@ -96,11 +96,16 @@ pub fn prepare<T>(
     }
     invocation.cwd = cwd;
     for (name, value) in mounts.environment()? {
-        if invocation.environment.insert(name, value).is_some() {
+        if invocation
+            .environment
+            .keys()
+            .any(|key| super::invocation::environment_key_matches(key, &name))
+        {
             return Err(Error::Invalid(
                 "volume discovery hint collides with the explicit process environment".into(),
             ));
         }
+        invocation.environment.insert(name, value);
     }
     // Shell commands receive only the host's explicit ordinary variables and
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
@@ -127,13 +132,7 @@ pub fn prepare<T>(
                 invocation
                     .environment
                     .iter()
-                    .find(|(key, _)| {
-                        if cfg!(windows) {
-                            key.eq_ignore_ascii_case(name)
-                        } else {
-                            key.as_str() == name
-                        }
-                    })
+                    .find(|(key, _)| super::invocation::environment_key_matches(key, name))
                     .map(|(_, value)| value.into())
             });
         invocation.executable = search.resolve(program).map_err(Error::process_io)?;
@@ -191,8 +190,12 @@ pub fn workspace_environment<T>(
         #[cfg(windows)]
         "USERPROFILE",
     ] {
-        if let std::collections::btree_map::Entry::Vacant(home) = environment.entry(name.into()) {
-            home.insert(
+        if !environment
+            .keys()
+            .any(|key| super::invocation::environment_key_matches(key, name))
+        {
+            environment.insert(
+                name.into(),
                 home_root
                     .to_str()
                     .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
@@ -214,11 +217,15 @@ pub fn workspace_environment<T>(
     let temporary = temporary
         .to_str()
         .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?;
-    environment.insert("TMPDIR".into(), temporary.into());
-    #[cfg(windows)]
-    {
-        environment.insert("TEMP".into(), temporary.into());
-        environment.insert("TMP".into(), temporary.into());
+    for name in [
+        "TMPDIR",
+        #[cfg(windows)]
+        "TEMP",
+        #[cfg(windows)]
+        "TMP",
+    ] {
+        environment.retain(|key, _| !super::invocation::environment_key_matches(key, name));
+        environment.insert(name.into(), temporary.into());
     }
     Ok(())
 }
