@@ -199,7 +199,6 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             Out::Checkpoint
             | Out::Announced(_)
             | Out::Steered(_)
-            | Out::ConsumedInputs(_)
             | Out::Notices(_)
             | Out::PendingSpawns(_)
             | Out::AwaitReplies(_)

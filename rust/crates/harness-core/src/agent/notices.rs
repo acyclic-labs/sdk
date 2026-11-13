@@ -93,3 +93,13 @@ impl ApprovalSelection {
         Ok(())
     }
 }
+
+/// Pending independent reviews retain only an original range and one frozen page.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalControl {
+    /// Original pending inbox range; other event kinds can interleave.
+    pub range: Range<u64>,
+    /// Frozen page and policy, committed before inference.
+    pub selected: Option<ApprovalSelection>,
+}

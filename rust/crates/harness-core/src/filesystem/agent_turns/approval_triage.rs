@@ -1,6 +1,6 @@
 //! Parent controls retain original input and policy cuts before independent review.
 use super::*;
-use crate::agent::{Approval, ApprovalSelection, InboxRecord, OpenTriage, Out, TurnInput};
+use crate::agent::{Approval, ApprovalSelection, InboxRecord, OpenTriage, Out};
 use crate::approvals::{ApprovalResponder, RuleVerdict};
 use serde::Serialize;
 
@@ -76,10 +76,8 @@ where
                 at_least: Default::default(),
             })
             .await?;
-        let mut consumed = Vec::new();
         let mut outs = Vec::new();
         let mut summary = Vec::new();
-        let mut operation = None;
         let mut next = selection.range.start;
         while let Some(record) = records.try_next().await? {
             if record.sequence != next
@@ -94,25 +92,8 @@ where
             let InboxRecord::ApprovalRequested(request) = InboxRecord::decode(&record.value)
                 .map_err(|error| Error::Invalid(error.to_string()))?
             else {
-                if record.sequence == selection.range.start {
-                    return Err(Error::Invalid(
-                        "approval page starts with another input".into(),
-                    ));
-                }
                 continue;
             };
-            if record.sequence == selection.range.start {
-                operation = Some(
-                    crate::agent::turn_id(
-                        agent,
-                        &TurnInput::ApprovalRequested {
-                            child: request.child.clone(),
-                            id: request.id.clone(),
-                        },
-                    )
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                );
-            }
             if !request.child.is_child_of(&agent.path) {
                 return Err(Error::Unauthorized(
                     "review source is not a direct child".into(),
@@ -160,19 +141,21 @@ where
                 .map_err(|error| Error::Invalid(error.to_string()))?;
                 summary.push(b'\n');
             }
-            consumed.push(record.sequence);
         }
-        if next != selection.range.end || consumed.first() != Some(&selection.range.start) {
-            return Err(Error::Invalid(
-                "approval source page is incomplete or starts with another input".into(),
-            ));
+        if next != selection.range.end {
+            return Err(Error::Invalid("approval source page is incomplete".into()));
         }
         let summary = if summary.is_empty() {
             None
         } else {
             use crate::conversation::ContentPublisher as _;
-            let operation = operation
-                .ok_or_else(|| Error::Invalid("approval summary has no original input".into()))?;
+            let mut hasher = blake3::Hasher::new_derive_key("acyclic.parent-approval-page.v1");
+            let identity =
+                serde_json::to_vec(selection).map_err(|error| Error::Invalid(error.to_string()))?;
+            hasher.update(&identity);
+            let mut bytes = [0; 16];
+            hasher.finalize_xof().fill(&mut bytes);
+            let operation = OperationId::from_bytes(bytes);
             let publisher = FilesystemContentPublisher::new(
                 Arc::clone(&self.host),
                 &bindings.journal.volume,
@@ -195,10 +178,6 @@ where
                     .0,
             )
         };
-        Ok(OpenTriage {
-            summary,
-            consumed,
-            outs,
-        })
+        Ok(OpenTriage { summary, outs })
     }
 }

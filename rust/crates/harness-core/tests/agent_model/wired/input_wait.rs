@@ -151,8 +151,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
                 host.send(
                     &path,
                     &super::super::user(),
-                    &InboxRecord::ApprovalRequested(ApprovalRequested {
-                        child: path.clone(),
+                    &InboxRecord::Approval(Approval {
                         id: intent(&format!("independent-before-reply-{index}")),
                     }),
                 )

@@ -160,8 +160,7 @@ async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
         let root = host
             .create(&intent(&format!("create-{n}")), adopted(id(n + 1)))
             .await?;
-        let start = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: child(&root)?,
+        let start = InboxRecord::Approval(Approval {
             id: intent(&format!("start-{n}")),
         });
         host.send(&root, &user(), &start).await?;
@@ -176,8 +175,7 @@ async fn stuck(hold: bool, active: usize) -> Result<Option<String>> {
             .forget();
         let first: Vec<AgentPath> = waiters.lock().map_err(|_| "waiters")?.clone();
         for (n, parent) in first.iter().enumerate() {
-            let turn = InboxRecord::ApprovalRequested(ApprovalRequested {
-                child: parent.clone(),
+            let turn = InboxRecord::Approval(Approval {
                 id: intent(&format!("turn-{n}")),
             });
             host.send(&child(parent)?, &user(), &turn).await?;
@@ -328,8 +326,7 @@ async fn completion_burst_wakes_root_on_last_delivery() -> Result {
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     host.drain_event(&root).await?;
-    let start = InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: root.clone(),
+    let start = InboxRecord::Approval(Approval {
         id: intent("start"),
     });
     host.send(&root, &user(), &start).await?;

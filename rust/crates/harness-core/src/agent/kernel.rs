@@ -44,6 +44,8 @@ pub struct Control {
     pub turn: bool,
     /// A parked condition also resumes when inbox input is queued.
     pub input: bool,
+    /// Independent approval control is pending, separate from the worker turn.
+    pub review: bool,
 }
 
 impl Control {
@@ -55,6 +57,7 @@ impl Control {
         reported: false,
         turn: false,
         input: false,
+        review: false,
     };
 }
 
@@ -119,6 +122,8 @@ pub const fn admit(control: Control, kind: Admit) -> Admitted {
 pub enum Pick {
     /// No turn step.
     Nothing,
+    /// Review independent controls without changing the worker invocation.
+    Review,
     /// Continue the turn in progress without input.
     Resume,
     /// Start or feed the turn with the front of the queue.
@@ -132,6 +137,9 @@ pub enum Pick {
 pub const fn pick(control: Control, alarm_wake: bool, queued: bool, approval_ready: bool) -> Pick {
     if control.closed || matches!(control.mode, Mode::Done) {
         return Pick::Nothing;
+    }
+    if control.review && !(alarm_wake && matches!(control.mode, Mode::Await(Some(_)))) {
+        return Pick::Review;
     }
     match control.mode {
         Mode::Approval if control.turn => {
@@ -326,6 +334,9 @@ pub const fn alarm(
         } else {
             None
         };
+    }
+    if control.review && !matches!(control.mode, Mode::Done) {
+        return Some(CONTINUE_NOW);
     }
     match control.mode {
         Mode::Done => None,

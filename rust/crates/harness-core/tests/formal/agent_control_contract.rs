@@ -4,6 +4,8 @@ use super::production::{Control, Mode};
 pub fn runnable(control: Control, queued: bool, approval_queued: bool, pending: usize) -> bool {
     if control.closed {
         pending > 0 && !control.archive_refused
+    } else if control.review && !matches!(control.mode, Mode::Done) {
+        true
     } else {
         match control.mode {
             Mode::Done => false,

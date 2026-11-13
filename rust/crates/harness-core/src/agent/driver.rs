@@ -229,8 +229,6 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 pub struct OpenTriage {
     /// One merged escalation; absent when every selected ask was resolved.
     pub summary: Option<FileRef>,
-    /// Original approval-request inbox sequences, in increasing order.
-    pub consumed: Vec<u64>,
     /// Decision wakes published with the control's actor checkpoint.
     pub outs: Vec<Out>,
 }
@@ -608,8 +606,6 @@ struct Checkpoint {
     /// Whether the original announcement delta was committed before execution.
     opened: bool,
     notices: Option<super::NoticeSelection>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    triage: Option<super::ApprovalSelection>,
 }
 
 /// The input of the turn a step continues (kept in the checkpoint) and its
@@ -1072,6 +1068,39 @@ async fn pending_spawns(agent: &AgentState, open: &OpenTurn) -> Result<Vec<Out>,
 }
 
 impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
+    fn review<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        cursor: u64,
+        cancellation: acyclic_actors::guest::CancellationToken,
+    ) -> super::ReviewFuture<'a> {
+        Box::pin(async move {
+            let pending = agent
+                .approval_control
+                .as_ref()
+                .ok_or(Error::Record("review has no original control"))?;
+            let result = if let Some(selected) = &pending.selected {
+                crate::core::until_turn_stopped(
+                    Some(cancellation),
+                    self.host.triage(agent, selected),
+                )
+                .await
+                .map(super::ReviewStep::Reviewed)
+            } else {
+                crate::core::until_turn_stopped(
+                    Some(cancellation),
+                    self.host.select_approvals(
+                        agent,
+                        pending.range.start,
+                        cursor.min(pending.range.end),
+                    ),
+                )
+                .await
+                .map(super::ReviewStep::Selected)
+            };
+            result.map_err(host_error)
+        })
+    }
     fn step<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -1104,93 +1133,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 };
                 return settle_selection(agent, &open, turn, inbox, input, refusal).await;
             }
-            if matches!(&input, TurnInput::ApprovalRequested { .. }) {
-                let selection = checkpoint(agent)?.and_then(|checkpoint| checkpoint.triage);
-                let Some(selection) = selection else {
-                    let Some(selection) = opened(
-                        crate::core::until_turn_stopped(
-                            Some(cancellation.clone()),
-                            self.host.select_approvals(agent, inbox, cursor),
-                        )
-                        .await,
-                        &cancellation,
-                    )?
-                    else {
-                        return Ok(cancelled_open(agent, inbox));
-                    };
-                    selection.validate(&agent.path, inbox)?;
-                    if selection.range.end > cursor {
-                        return Err(Error::Record(
-                            "approval selection exceeds its original delivery",
-                        ));
-                    }
-                    return Ok(TurnStep {
-                        checkpoint: Some(encode(&Checkpoint {
-                            inbox,
-                            input,
-                            segment,
-                            announcements: Vec::new(),
-                            opened: false,
-                            notices: None,
-                            triage: Some(selection),
-                        })?),
-                        outs: Vec::new(),
-                        wait: Wait::Continue,
-                        drops: None,
-                    });
-                };
-                selection.validate(&agent.path, inbox)?;
-                let Some(reviewed) = opened(
-                    crate::core::until_turn_stopped(
-                        Some(cancellation.clone()),
-                        self.host.triage(agent, &selection),
-                    )
-                    .await,
-                    &cancellation,
-                )?
-                else {
-                    return Ok(cancelled_open(agent, inbox));
-                };
-                if reviewed.consumed.first() != Some(&inbox)
-                    || reviewed
-                        .consumed
-                        .iter()
-                        .any(|sequence| !selection.range.contains(sequence))
-                {
-                    return Err(Error::Record(
-                        "review consumed inputs outside its original selection",
-                    ));
-                }
-                let mut outs = reviewed.outs;
-                outs.push(Out::ConsumedInputs(reviewed.consumed));
-                let checkpoint = reviewed
-                    .summary
-                    .map(|summary| {
-                        encode(&Checkpoint {
-                            inbox,
-                            input: TurnInput::Notice {
-                                id: super::IntentId::try_from(format!("approval-summary-{inbox}"))?,
-                                notice: Box::new(summary),
-                            },
-                            segment,
-                            announcements: Vec::new(),
-                            opened: false,
-                            notices: None,
-                            triage: None,
-                        })
-                    })
-                    .transpose()?;
-                return Ok(TurnStep {
-                    wait: if checkpoint.is_some() {
-                        Wait::Continue
-                    } else {
-                        Wait::Input
-                    },
-                    checkpoint,
-                    outs,
-                    drops: None,
-                });
-            }
             if agent.turn.is_none()
                 && let Some(notices) = super::NoticeSelection::pending(agent)
             {
@@ -1199,7 +1141,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // the same source range, never a newer pending batch.
                 return Ok(TurnStep {
                     checkpoint: Some(encode(&Checkpoint {
-                        triage: None,
                         inbox,
                         input,
                         segment,
@@ -1231,7 +1172,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // the same selection instead of rebuilding it from new heads.
                 return Ok(TurnStep {
                     checkpoint: Some(encode(&Checkpoint {
-                        triage: None,
                         inbox,
                         input,
                         segment,
@@ -1307,7 +1247,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                                     // conflicting rewrite through its original actor.
                                     return Ok(TurnStep {
                                         checkpoint: Some(encode(&Checkpoint {
-                                            triage: None,
                                             inbox,
                                             input,
                                             segment,
@@ -1399,7 +1338,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         .ok_or(Error::Record("turn effect segments exhausted"))?;
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
-                            triage: None,
                             inbox,
                             input,
                             segment,
@@ -1435,7 +1373,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     outs.extend(pending_spawns(agent, &open).await?);
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
-                            triage: None,
                             inbox,
                             input,
                             segment,
@@ -1478,7 +1415,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     outs.extend(pending_spawns(agent, &open).await?);
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
-                            triage: None,
                             inbox,
                             input,
                             segment,
