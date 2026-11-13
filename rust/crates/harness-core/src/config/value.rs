@@ -144,6 +144,21 @@ impl crate::filesystem::UploadRecord for super::AgentConfig {
     }
 }
 
+impl crate::filesystem::UploadRecord for super::RequestMatch {
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        let bytes = crate::core::owned_sum([
+            crate::core::owned_buffer::<String>(self.action.capacity())?,
+            self.command
+                .as_ref()
+                .map_or(0, |text| text.capacity() as u64),
+            self.path.as_ref().map_or(0, |text| text.capacity() as u64),
+        ])?;
+        self.action.iter().try_fold(bytes, |bytes, text| {
+            crate::core::owned_sum([bytes, text.capacity() as u64])
+        })
+    }
+}
+
 impl crate::filesystem::UploadRecord for super::Policy {
     fn logical_owned_bytes(&self) -> Result<u64> {
         [&self.deny, &self.only]

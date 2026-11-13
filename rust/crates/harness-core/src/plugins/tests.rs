@@ -350,7 +350,7 @@ async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<(
         read_hook(
             &tree,
             None,
-            "plugins/helper/hooks/before-tool.sh".into(),
+            "plugins/helper/hooks/before-tool.sh",
             Some(&io)
         )
         .await,
@@ -399,5 +399,71 @@ async fn native_rule_metadata_refuses_before_installation() -> Result<()> {
         None,
     )?;
     assert!(!hooks.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_plugin_retains_only_settings_used_by_installed_rules() -> Result<()> {
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 16 * 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let baseline = work.live_allocation_bytes();
+    for has_hook in [false, true] {
+        let mut previous = None;
+        for (selector, manifest, payload) in [
+            (
+                "export default {helper:{enabled:true,config:{payload:'p'.repeat(0),kind:'settings'}}};",
+                "export default {name:'helper',description:'helper',defaults:{unused:'d'.repeat(0)}};",
+                0,
+            ),
+            (
+                "export default {helper:{enabled:true,config:{payload:'p'.repeat(65536),kind:'settings'}}};",
+                "export default {name:'helper',description:'helper',defaults:{unused:'d'.repeat(65536)}};",
+                65536,
+            ),
+        ] {
+            let mut files = BTreeMap::from([("plugins/helper/plugin.ts", manifest)]);
+            if has_hook {
+                files.insert("plugins/helper/hooks/before-tool.sh", "exit 0");
+                files.insert("plugins/helper/hooks/before-tool.ps1", "exit 0");
+            }
+            let tree = Metered {
+                files: Files(files),
+                io: &io,
+            };
+            let layers = [Layer {
+                name: "home",
+                generation: "one",
+                bytes: Some(selector.as_bytes()),
+            }];
+            let admitted = load(&tree, &layers, "owner").await?;
+            config::evaluate(
+                "retirement-probe.ts",
+                b"export default null;",
+                &Files(BTreeMap::new()),
+                &Value::Null,
+                Surface::Data,
+            )
+            .await?;
+            let retained = work.live_allocation_bytes();
+            if let Some(previous) = previous {
+                assert_eq!(
+                    retained - previous,
+                    if has_hook { payload } else { 0 },
+                    "only the installed rule's settings copy may retain its payload credit"
+                );
+            }
+            previous = Some(retained);
+            drop(admitted);
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
     Ok(())
 }
