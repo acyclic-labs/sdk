@@ -352,7 +352,7 @@ where
 }
 
 #[tokio::test]
-async fn chat_without_counter_honors_file_and_argument_compaction_choices() {
+async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices() {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     for (choice, session_client) in [
         "automatic",
@@ -394,7 +394,10 @@ async fn chat_without_counter_honors_file_and_argument_compaction_choices() {
         )
         .unwrap();
         let mut command = graphcoder_command(&fixture);
+        let plugins = task_plugins(&fixture);
         command
+            .arg("--home-file")
+            .arg(&plugins)
             .arg("--settings-root")
             .arg(&fixture.settings)
             .arg("--catalog")
@@ -412,17 +415,25 @@ async fn chat_without_counter_honors_file_and_argument_compaction_choices() {
         let output = capture(command, "").await;
         if matches!(
             choice,
-            "argument" | "file" | "explicit_model" | "explicit_compaction" | "explicit_both"
+            "automatic"
+                | "argument"
+                | "file"
+                | "explicit_model"
+                | "explicit_compaction"
+                | "explicit_both"
         ) {
             assert_eq!(succeeded(&output), "fixture answer\n");
             assert_eq!(model.generated(), 1);
         } else {
-            assert!(!output.status.success());
+            assert!(
+                !output.status.success(),
+                "{choice} session={session_client}: {output:?}"
+            );
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains(match choice {
                     "invalid_file" => "compaction",
                     "invalid_model" => "model must be a nonempty string",
-                    _ => "configure a verified input token counter",
+                    _ => unreachable!("only invalid selected defaults refuse startup"),
                 }),
                 "{output:?}"
             );
