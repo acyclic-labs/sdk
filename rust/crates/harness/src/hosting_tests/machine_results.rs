@@ -8,7 +8,7 @@ use crate::{
     executor::{ExecutionEvent, ExecutionJournal},
     filesystem::{
         FilesystemExecutionJournal, FilesystemJournalBinding, StockExecutors, Tasks,
-        agent_authority,
+        agent_journal_authority,
     },
     model::{Model, ModelEvent, ToolCall},
     runtime::{Bindings, InProcessTargets, RuntimeScope},
@@ -354,7 +354,8 @@ async fn observe(
     use acyclic_harness_client::ReadTarget;
     let bound = server.bound();
     let state = bound.agents().state(agent).await?;
-    let authority = agent_authority(
+    let (journal_volume, authority) = agent_journal_authority(
+        bound.volumes(),
         bound.issuer(),
         bound.admission(),
         agent,
@@ -400,17 +401,13 @@ async fn observe(
     request.when_absent = acyclic_stream::WhenAbsent::Wait;
     let mut conversation =
         acyclic_stream::records_only(bound.agents().provider().follow(request).await?);
-    let entry = loop {
-        let record = conversation
-            .next()
-            .await
-            .ok_or("conversation producer lost")??;
-        let entry = ConversationEntry::decode(&record.value)?;
-        if entry.output.volume() != authority.private.volume()? {
-            continue;
-        }
-        break entry;
-    };
+    let record = conversation
+        .next()
+        .await
+        .ok_or("conversation producer lost")??;
+    let entry = ConversationEntry::decode(&record.value)?;
+    assert_eq!(entry.output.volume(), &journal_volume);
+    assert_ne!(&journal_volume, authority.private.volume()?);
     eprintln!("{agent}: original conversation output observed");
     // This scenario has one execution segment. Reopen its original journal
     // read-only and require its own ToolCompleted file, before awaiting delivery.
@@ -425,7 +422,7 @@ async fn observe(
         bound.agents().provider().clone(),
         bound.volumes().clone(),
         FilesystemJournalBinding {
-            volume: authority.private.volume()?,
+            volume: &journal_volume,
             verifier: &authority.verifier,
             scope: &authority.scope,
             io: None,
@@ -464,12 +461,8 @@ async fn observe(
     // whatever bytes a later raw writer puts at the same path.
     let expected = journal.load(&file, None)?.await?;
     let workspace = crate::resources::WorkspaceRef::new(
-        authority.private.volume()?.provider().clone(),
-        authority
-            .private
-            .volume()?
-            .storage_name(&mut None)?
-            .into_bytes(),
+        journal_volume.provider().clone(),
+        journal_volume.storage_name(&mut None)?.into_bytes(),
         None,
     )?;
     bound
