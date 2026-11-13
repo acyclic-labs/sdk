@@ -20,6 +20,23 @@ pub(super) trait PrivateView: Send + Sync {
         ctx: &'a mut KernelAccounting<'_>,
         io: &'a PreparationIo,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, LazySnapshotRef>>;
+    fn directory<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        cursor: Option<acyclic_fs::LazyDirectoryCursor>,
+        maximum: u32,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_fs::LazyDirectoryPage,
+                acyclic_fs::kernel::KernelOwnedAllocation,
+            ),
+        >,
+    >;
     fn read<'a>(
         &'a self,
         cut: &'a LazySnapshotRef,
@@ -57,6 +74,30 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, LazySnapshotRef>> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             self.snapshot(ctx).await.map_err(Into::into)
+        })
+    }
+    fn directory<'a>(
+        &'a self,
+        cut: &'a LazySnapshotRef,
+        path: &'a str,
+        cursor: Option<acyclic_fs::LazyDirectoryCursor>,
+        maximum: u32,
+        ctx: &'a mut KernelAccounting<'_>,
+        io: &'a PreparationIo,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            (
+                acyclic_fs::LazyDirectoryPage,
+                acyclic_fs::kernel::KernelOwnedAllocation,
+            ),
+        >,
+    > {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            self.list_directory_at_snapshot(cut, path, cursor, maximum, ctx)
+                .await
+                .map(|(page, _, allocation)| (page, allocation))
+                .map_err(Into::into)
         })
     }
     fn read<'a>(

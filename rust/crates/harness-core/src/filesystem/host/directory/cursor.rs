@@ -56,9 +56,19 @@ pub(in crate::filesystem) fn seal<'io>(
         NameEncoding::WindowsUtf16Le => 2,
     };
     plain.0[5 + generation.len()..].copy_from_slice(after.as_bytes());
-    let mut sealed = io.buffer(CursorKey::sealed_len(length))?;
+    seal_payload(volume, path, &plain.0, io)
+}
+
+/// The same confidential envelope also carries the shared lazy cursor codec.
+pub(super) fn seal_payload<'io>(
+    volume: &VolumeRef,
+    path: &str,
+    plain: &[u8],
+    io: &'io PreparationIo,
+) -> Result<(String, DecodeReservation<'io>)> {
+    let mut sealed = io.buffer(CursorKey::sealed_len(plain.len()))?;
     key(io)?
-        .seal_into(&context(volume, path, io)?, &plain.0, &mut sealed.0)
+        .seal_into(&context(volume, path, io)?, plain, &mut sealed.0)
         .map_err(|_| io.invalid("directory cursor could not be sealed"))?;
     let encoded_length = sealed
         .0
@@ -83,6 +93,16 @@ pub(super) fn open<'io>(
     token: &str,
     io: &'io PreparationIo,
 ) -> Result<(GenerationRef, LogicalName, DecodeReservation<'io>)> {
+    let plain = open_payload(volume, path, token, io)?;
+    decode_authored(provider, plain, io)
+}
+
+pub(super) fn open_payload<'io>(
+    volume: &VolumeRef,
+    path: &str,
+    token: &str,
+    io: &'io PreparationIo,
+) -> Result<(Vec<u8>, DecodeReservation<'io>)> {
     let mut sealed = io.buffer(token.len())?;
     let written = STANDARD
         .decode_slice(token, &mut sealed.0)
@@ -95,6 +115,14 @@ pub(super) fn open<'io>(
     key(io)?
         .open_into(&context(volume, path, io)?, &sealed.0, &mut plain.0)
         .map_err(|_| io.invalid("invalid directory cursor"))?;
+    Ok(plain)
+}
+
+fn decode_authored<'io>(
+    provider: &ProviderRef,
+    plain: (Vec<u8>, DecodeReservation<'io>),
+    io: &'io PreparationIo,
+) -> Result<(GenerationRef, LogicalName, DecodeReservation<'io>)> {
     let header: [u8; 4] = plain
         .0
         .get(..4)

@@ -44,6 +44,12 @@ impl std::fmt::Debug for LazyDirectoryCursor {
     }
 }
 impl LazyDirectoryCursor {
+    /// Original logical cut selected by this continuation. This is an address,
+    /// not authority; resuming still validates the snapshot and current reader.
+    pub fn snapshot(&self) -> &LazySnapshotRef {
+        &self.cut
+    }
+
     /// Actual retained directory and continuation backing.
     pub fn retained_bytes(&self) -> Result<u64, LazyWorkspaceError> {
         self.directory
