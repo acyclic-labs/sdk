@@ -87,6 +87,12 @@ pub(crate) fn children_page_len(
 }
 
 pub(crate) fn heads_len(view: &crate::Heads) -> usize {
+    heads_len_with_durability(view, false)
+}
+
+/// Deferred providers can fill durable watermarks after capturing the view.
+/// Reserve their largest captured value without asserting that it is durable.
+pub(crate) fn heads_len_with_durability(view: &crate::Heads, deferred: bool) -> usize {
     let revision = &view.snapshot;
     let snapshot = (if revision.scope.as_bytes().is_empty() {
         0
@@ -100,6 +106,7 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
         .iter()
         .map(|head| {
             block_len(head.as_ref().map_or(0, |head| {
+                let durable = if deferred { head.tail } else { head.durable };
                 block_len(
                     uint_len((head.tail != 0).then_some(head.tail))
                         .saturating_add(
@@ -107,7 +114,7 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
                                 .as_ref()
                                 .map_or(0, |record| block_len(record_len(record, None))),
                         )
-                        .saturating_add(uint_len((head.durable != 0).then_some(head.durable)))
+                        .saturating_add(uint_len((durable != 0).then_some(durable)))
                         .saturating_add(uint_len(head.retained_through))
                         .saturating_add(
                             head.origin

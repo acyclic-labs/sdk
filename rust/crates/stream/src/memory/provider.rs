@@ -1,3 +1,10 @@
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum HeadDurability {
+    Volatile,
+    Durable,
+    Deferred,
+}
+
 impl MemoryStream {
     pub(crate) async fn follow_inner(
         &self,
@@ -46,7 +53,9 @@ impl MemoryStream {
     ) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        let view = self.capture_heads(&request, false).await?;
+        let view = self
+            .capture_heads(&request, HeadDurability::Volatile)
+            .await?;
         Ok(view)
     }
 
@@ -113,18 +122,18 @@ impl MemoryStream {
 impl MemoryStream {
     /// Captures an already validated request whose minimum cut was awaited
     /// outside any adapter publication lock. There is no boxed inner dispatch.
-    /// `durable` confirms this captured state was durably published; deferred
-    /// providers instead fill their independently captured durability cut.
+    /// Durable providers confirm the captured state. Deferred providers reserve
+    /// later watermark fields without claiming durability during capture.
     pub(crate) async fn capture_heads(
         &self,
         request: &crate::HeadsRequest,
-        durable: bool,
+        durability: HeadDurability,
     ) -> Result<crate::Heads, StreamError> {
         let mut view = self.empty_heads(request);
         view.heads
             .try_reserve_exact(request.paths.len())
             .map_err(|_| StreamError::Capacity)?;
-        self.capture_heads_into(request, durable, &mut view, None)
+        self.capture_heads_into(request, durability, &mut view, None)
             .await?;
         Ok(view)
     }
@@ -143,7 +152,7 @@ impl MemoryStream {
     async fn capture_heads_into(
         &self,
         request: &crate::HeadsRequest,
-        durable: bool,
+        durability: HeadDurability,
         view: &mut crate::Heads,
         _work: CaptureWork<'_>,
     ) -> Result<(), StreamError> {
@@ -177,7 +186,7 @@ impl MemoryStream {
                     path,
                     request.projection,
                     request.durable_through,
-                    durable,
+                    durability == HeadDurability::Durable,
                     _work,
                 )
             };
@@ -198,8 +207,11 @@ impl MemoryStream {
                 .min(request.limit - request.selection_count()?);
         }
         view.snapshot = self.revisions.at(state.decision);
-        let remaining =
-            crate::MAX_COMMAND_BYTES.saturating_sub(crate::wire_codec::requests::heads_len(view));
+        let deferred = durability == HeadDurability::Deferred
+            && request.projection != crate::HeadProjection::Tail;
+        let remaining = crate::MAX_COMMAND_BYTES.saturating_sub(
+            crate::wire_codec::requests::heads_len_with_durability(view, deferred),
+        );
         view.children = children
             .map(|request| children_at(&state, request, remaining))
             .transpose()?;
@@ -946,8 +958,13 @@ impl MemoryStream {
             ))?;
         }
         work.record(work.meter.check())?;
-        self.capture_heads_into(request, false, &mut output.value, Some(work))
-            .await?;
+        self.capture_heads_into(
+            request,
+            HeadDurability::Volatile,
+            &mut output.value,
+            Some(work),
+        )
+        .await?;
         work.record(work.meter.check())?;
         let (view, allocation) = output.into_parts();
         Ok((view, Some(allocation)))

@@ -388,7 +388,11 @@ impl StreamProvider for BrowserStream {
         if request.paths.is_empty() && request.children.is_none() && !request.retained.is_empty() {
             return self
                 .with_retained(
-                    async |provider| provider.capture_heads(&request, true).await,
+                    async |provider| {
+                        provider
+                            .capture_heads(&request, crate::memory::HeadDurability::Durable)
+                            .await
+                    },
                     |view| {
                         view.retained
                             .iter()
@@ -397,8 +401,12 @@ impl StreamProvider for BrowserStream {
                 )
                 .await;
         }
-        self.with_provider(async move |provider| provider.capture_heads(&request, true).await)
-            .await
+        self.with_provider(async move |provider| {
+            provider
+                .capture_heads(&request, crate::memory::HeadDurability::Durable)
+                .await
+        })
+        .await
     }
 
     fn write(

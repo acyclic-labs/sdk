@@ -373,8 +373,12 @@ impl StreamProvider for JournalStream {
         if !request.at_least.is_empty() {
             self.wait_revision(&request.at_least).await?;
         }
-        self.query(async move |provider| provider.capture_heads(&request, true).await)
-            .await
+        self.query(async move |provider| {
+            provider
+                .capture_heads(&request, crate::memory::HeadDurability::Durable)
+                .await
+        })
+        .await
     }
 
     fn write(

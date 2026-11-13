@@ -430,7 +430,11 @@ impl StreamProvider for PostgresStream {
                     self.refresh().await?;
                 }
                 self.inner.core.revisions.wait(&request.at_least).await?;
-                let view = self.inner.core.capture_heads(&request, true).await?;
+                let view = self
+                    .inner
+                    .core
+                    .capture_heads(&request, crate::memory::HeadDurability::Durable)
+                    .await?;
                 if !current
                     && view
                         .retained
@@ -440,7 +444,11 @@ impl StreamProvider for PostgresStream {
                     // Immutable hits need no current observation. A missing
                     // publication or position still needs the journal's cut.
                     self.refresh().await?;
-                    return self.inner.core.capture_heads(&request, true).await;
+                    return self
+                        .inner
+                        .core
+                        .capture_heads(&request, crate::memory::HeadDurability::Durable)
+                        .await;
                 }
                 Ok(view)
             }
