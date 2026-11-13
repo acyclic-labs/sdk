@@ -10,7 +10,9 @@ const isCursor = (value: unknown): value is ProviderCursor =>
 
 const noPreceding = new Uint8Array();
 
-export type ProviderReply<T> = { value: T } | { code: string };
+/** A failure keeps its original refusal, so details such as a not-before
+ * authority time reach the Rust reader unchanged. */
+export type ProviderReply<T> = { value: T } | { code: string; refusal?: unknown };
 export interface StreamProviderCursor {
   next(): Promise<ProviderReply<Uint8Array | null>>;
   close(): void;
@@ -25,9 +27,12 @@ export interface OwnedStreamProviderPort extends StreamProviderPort {
   close(): void;
 }
 
-export function providerFailure(error: unknown): { code: string } {
-  return { code: typeof error === "object" && error !== null && "code" in error
-    && typeof error.code === "string" ? error.code : "unavailable" };
+export function providerFailure(error: unknown): { code: string; refusal?: unknown } {
+  if (typeof error !== "object" || error === null || !("code" in error) || typeof error.code !== "string") {
+    return { code: "unavailable" };
+  }
+  return "refusal" in error && error.refusal !== undefined
+    ? { code: error.code, refusal: error.refusal } : { code: error.code };
 }
 
 /** Transfer one canonical provider into an injected port. Rust owns canonical
