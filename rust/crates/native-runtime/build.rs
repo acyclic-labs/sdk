@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "runner/fuse_protocol.rs",
         "runner/request.rs",
         "runner/packet_device.rs",
+        "src/process_tree/packet_device_receipt.rs",
         "runner/sys.rs",
         "src/process_tree/record.rs",
         "src/process_tree/warden.rs",

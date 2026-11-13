@@ -1,6 +1,7 @@
 //! One event-driven host for packet devices. The owner retains only a stream.
 //! No callback, namespace lookup, or wait for an owner runs in this process.
 
+use super::packet_device_receipt::Receipt;
 use super::{fuse_protocol, receive_handles, sys};
 use core::ptr;
 use sys::{Errno, Fd};
@@ -411,8 +412,18 @@ impl Session {
         if output.filled != needed {
             return Ok(());
         }
-        let Some(count) = write(self.device, output.slice(0, needed))? else {
-            return Ok(());
+        let count = match write(self.device, output.slice(0, needed)) {
+            Ok(Some(count)) => count,
+            Ok(None) => return Ok(()),
+            Err(error) if matches!(self.response, Response::Backend) => {
+                // A failed atomic device write publishes no bytes. Preserve
+                // the original errno for the caller's policy (cache invalidation
+                // can legitimately miss an inode) and keep the session alive.
+                output.filled = 0;
+                send_receipt(self.control, Receipt::Rejected(error.0))?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
         };
         if count != needed {
             return Err(Errno(sys::EPIPE));
@@ -432,9 +443,7 @@ impl Session {
         let response = core::mem::replace(&mut self.response, Response::Backend);
         match response {
             Response::Backend => {
-                if sys::write(self.control, &[1])? != 1 {
-                    return Err(Errno(sys::EPIPE));
-                }
+                send_receipt(self.control, Receipt::Published)?;
             }
             Response::Session {
                 transition,
@@ -690,7 +699,7 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 ptr::drop_in_place(garbage);
                 sys::unmap(garbage.cast(), core::mem::size_of::<Session>());
                 // Receipt follows physical device closure and buffer destruction.
-                let _ = sys::write(control, &[0]);
+                let _ = send_receipt(control, Receipt::Retired);
                 sys::close(control);
                 garbage = next;
             }
@@ -699,6 +708,14 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
             return Ok(());
         }
     }
+}
+
+fn send_receipt(control: Fd, receipt: Receipt) -> Result<(), Errno> {
+    let bytes: [u8; Receipt::SIZE] = receipt.try_into().map_err(|()| Errno(sys::EINVAL))?;
+    if sys::write(control, &bytes)? != bytes.len() {
+        return Err(Errno(sys::EPIPE));
+    }
+    Ok(())
 }
 
 struct Options {

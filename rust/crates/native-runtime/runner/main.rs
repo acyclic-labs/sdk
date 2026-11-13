@@ -25,6 +25,8 @@ mod device;
 mod entry;
 mod fuse_protocol;
 mod packet_device;
+#[path = "../src/process_tree/packet_device_receipt.rs"]
+mod packet_device_receipt;
 #[path = "../src/process_tree/record.rs"]
 mod record;
 mod request;
