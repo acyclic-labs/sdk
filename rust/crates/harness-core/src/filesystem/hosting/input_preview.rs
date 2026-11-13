@@ -171,6 +171,13 @@ where
                     && let Some(message) = entry.admitted_message(*inbox, input)
                 {
                     let reader = bound.input_reader(&state, &message.body).await?;
+                    if message.body.descriptor().media_type() == crate::agent::USER_INPUT_MEDIA_TYPE {
+                        let mut steps = structured_preview(&*reader, &message.body, maximum, selection, *inbox);
+                        while let Some(step) = steps.next().await {
+                            yield step?;
+                        }
+                        return;
+                    }
                     let preview = input_prefix(&*reader, &message.body, 0, maximum).await?;
                     yield InputPreviewStep::Selected(Some(preview));
                     return;

@@ -17,6 +17,62 @@ pub(super) struct Reply {
     pub previous: bool,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_harness::{
+        LocalHarness,
+        local::WorkspaceMounting,
+        model::Model,
+        test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
+    };
+
+    #[tokio::test]
+    async fn queued_recall_preserves_original_text_and_the_unsent_draft() -> Result<(), Failure> {
+        let directory = tempfile::tempdir()?;
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace)?;
+        let model = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("answer".into()),
+            ScriptedTurn::Text("none".into()),
+        ]));
+        let harness = Arc::new(
+            LocalHarness::open(
+                local_harness_config(
+                    &workspace,
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        model,
+                    ),
+                )?
+                .without_default_tools()
+                .feedback_plugin(false)
+                .without_user_settings()
+                .state_directory(directory.path().join("state"))
+                .workspace_mounting(WorkspaceMounting::Physical),
+            )
+            .await?,
+        );
+        let conversation = Arc::new(Conversation::open(harness.connect().await?));
+        let original = "first\r\nsecond\rlast";
+        conversation.send("original", original).await?;
+        conversation.wait_current_input().await?;
+        let mut history = History::new(conversation);
+        history.request(1, "draft".into(), true, None, true);
+        history.request(2, "draft".into(), true, None, false);
+        let first = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+        let second = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+        assert_eq!(first.text.as_deref(), Some(original));
+        assert_eq!(second.request, 2);
+        assert_eq!(second.text.as_deref(), Some(original));
+        let editor = super::super::Editor::new(original);
+        history.request(3, editor.text().into(), false, None, false);
+        let restored = futures::future::poll_fn(|cx| history.poll(cx)).await?;
+        assert_eq!(restored.text.as_deref(), Some("draft"));
+        Ok(())
+    }
+}
+
 struct Navigation {
     request: u64,
     expected: String,
@@ -129,10 +185,10 @@ impl History {
                         self.refresh();
                         Some(self.draft.clone())
                     }
-                    None => None,
+                    None => self.cursor.map(|index| self.messages[index].clone()),
                 };
                 if let Some(text) = &text {
-                    self.shown = Some(text.clone());
+                    self.shown = Some(super::Editor::new(text).text().to_owned());
                 }
                 return Poll::Ready(Ok(Reply {
                     request: next.request,
