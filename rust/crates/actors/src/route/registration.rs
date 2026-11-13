@@ -244,6 +244,23 @@ impl CallPublication {
     pub fn effect(&self, paths: &Paths) -> Result<CommitEffect, Error> {
         Publication::effect(paths, &self.node, Body::Call(self.wire()))
     }
+
+    /// Invoke on the existing authenticated session and acknowledge only its
+    /// exact original success reply. Transport failure never advances a cursor.
+    pub async fn publish(
+        &self,
+        client: &Client,
+        credential: u32,
+        maximum_reply_bytes: usize,
+    ) -> Result<(), Error> {
+        let reply = client
+            .actor_call(&self.invocation, credential, maximum_reply_bytes)
+            .await?;
+        if reply != self.reply {
+            return Err(StreamError::InvalidResponse.into());
+        }
+        Ok(())
+    }
 }
 
 /// One versioned node outbox record. Metadata and messages use the same follow
@@ -296,15 +313,7 @@ impl Publication {
             Self::Placement(registration) => {
                 register(client, credential, paths, registration, maximum_reply_bytes).await
             }
-            Self::Call(call) => {
-                let reply = client
-                    .actor_call(&call.invocation, credential, maximum_reply_bytes)
-                    .await?;
-                if reply != call.reply {
-                    return Err(StreamError::InvalidResponse.into());
-                }
-                Ok(())
-            }
+            Self::Call(call) => call.publish(client, credential, maximum_reply_bytes).await,
             Self::Delivery(_) => Err(Error::InvalidRecord),
         }
     }

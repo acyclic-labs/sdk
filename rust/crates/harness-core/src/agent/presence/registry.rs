@@ -127,17 +127,22 @@ impl SessionPublication {
         .into())
     }
 
-    /// The row and its account publication share the source's original commit.
-    /// Root registration joins first, so forwarding cannot overtake placement.
-    pub fn effects(&self, paths: &Paths) -> Result<[CommitEffect; 2], Error> {
-        let call = route::CallPublication {
+    fn call(&self) -> Result<route::CallPublication, Error> {
+        Ok(route::CallPublication {
             node: self.row.node.clone(),
             invocation: self.invocation()?,
             reply: Bytes::copy_from_slice(self.key()?.as_bytes()),
-        };
+        })
+    }
+
+    /// The row and its account publication share the source's original commit.
+    /// Root registration joins first, so forwarding cannot overtake placement.
+    pub fn effects(&self, paths: &Paths) -> Result<[CommitEffect; 2], Error> {
         Ok([
             self.effect()?,
-            call.effect(paths).map_err(super::super::routing::error)?,
+            self.call()?
+                .effect(paths)
+                .map_err(super::super::routing::error)?,
         ])
     }
 
@@ -149,14 +154,10 @@ impl SessionPublication {
         credential: u32,
         maximum_reply_bytes: usize,
     ) -> Result<(), Error> {
-        let response = client
-            .actor_call(&self.invocation()?, credential, maximum_reply_bytes)
+        self.call()?
+            .publish(client, credential, maximum_reply_bytes)
             .await
-            .map_err(Error::Stream)?;
-        if response.as_ref() != self.key()?.as_bytes() {
-            return Err(Error::Stream(StreamError::InvalidResponse));
-        }
-        Ok(())
+            .map_err(super::super::routing::error)
     }
 }
 
