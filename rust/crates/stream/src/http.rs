@@ -498,7 +498,12 @@ impl StreamProvider for HttpStream {
 impl crate::NativeStreamProvider for HttpStream {}
 
 fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
-    acyclic_auth::credential::bearer_header(token).map_err(ConnectError::caused)
+    acyclic_auth::credential::bearer_header(token).map_err(|error| match error {
+        acyclic_auth::credential::CredentialError::Invalid => {
+            ConnectError::refused("invalid_credential")
+        }
+        error => ConnectError::caused(error),
+    })
 }
 
 // Dropping a pending physical HTTP request cancels that request, independently
