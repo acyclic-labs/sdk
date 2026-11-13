@@ -114,7 +114,7 @@ pub(super) async fn run_with_filesystem<
             }
         }
     }
-    check_provider(&case.expect, &provider, journal.as_ref()).await?;
+    check_provider(&case.expect, &provider, storage.content_reader()).await?;
     check_events(&case.expect, journal.as_ref(), operation).await?;
     check_files(&case.expect.files, &storage).await?;
     Ok(Outcome { storage, operation })
@@ -285,7 +285,7 @@ async fn run_turn(
 async fn check_provider(
     expected: &Expectations,
     provider: &ScriptedModelProvider,
-    journal: &dyn acyclic_harness::executor::ExecutionJournal,
+    reader: &dyn acyclic_harness::conversation::ContentResidencyVerifier,
 ) -> TestResult {
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
@@ -338,7 +338,11 @@ async fn check_provider(
                 let file = files
                     .next()
                     .ok_or_else(|| format!("request_files[{index}][{file_index}]: missing file"))?;
-                let actual = journal.load(file, None)?.await?;
+                // Request sources retain their own owner; the journal grants
+                // only its private payloads, not arbitrary model input files.
+                let actual = reader
+                    .read(file, file.descriptor().byte_length(), None, None)?
+                    .await?;
                 if actual.as_ref() != expected.as_bytes() {
                     return Err(format!(
                         "request_files[{index}][{file_index}]: expected {expected:?}, got {:?}",

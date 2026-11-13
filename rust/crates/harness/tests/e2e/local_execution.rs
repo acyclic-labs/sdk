@@ -374,7 +374,7 @@ fn verify_outcome(
 
 /// The first request ran the production default toolset on the staged prompt.
 async fn verify_prompt(
-    harness: &LocalHarness,
+    harness: &Arc<LocalHarness>,
     requests: &[ModelRequest],
     entry: Option<ConversationEntry>,
     prompt: &str,
@@ -390,20 +390,24 @@ async fn verify_prompt(
     {
         return Err("local scenario did not use the production default toolset".into());
     }
-    let TurnInput::Message { body, .. } = entry.input else {
+    let TurnInput::Message { body, .. } = &entry.input else {
         return Err("local scenario turn did not start from its prompt".into());
     };
-    let staged = harness
-        .client_reader()?
-        .read(&body, 1 << 20, None, None)?
-        .await?;
+    let conversation =
+        acyclic_harness::local::agent_conversation::Conversation::open(harness.connect().await?);
+    // This case sends one prompt. Its exact committed record supplies the
+    // authority for its immutable input, independently of task-file grants.
+    if conversation.settled().await? != 1 {
+        return Err("local scenario did not retain its single prompt record".into());
+    }
+    let staged = conversation.turn_at(0, &entry).await?.prompt;
     let dispatched = first
         .messages
         .iter()
         .filter(|message| message.role == ModelRole::User)
         .flat_map(|message| message.content.parts())
-        .any(|part| matches!(part, ModelContentPart::File { file, .. } if *file == *body));
-    if staged.as_ref() != prompt.as_bytes() || !dispatched {
+        .any(|part| matches!(part, ModelContentPart::File { file, .. } if file == body.as_ref()));
+    if staged.as_deref() != Some(prompt) || !dispatched {
         return Err("local scenario prompt was lost before model dispatch".into());
     }
     Ok(())
