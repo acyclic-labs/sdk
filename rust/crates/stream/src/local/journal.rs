@@ -146,6 +146,7 @@ impl Journal {
                 acyclic_native_runtime::recover_log_tail(
                     file,
                     frame_start,
+                    frame_start,
                     maximum_frame_bytes,
                     native_durability(durability),
                     frame_is_valid,
