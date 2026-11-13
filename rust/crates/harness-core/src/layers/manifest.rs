@@ -54,8 +54,8 @@ impl<'a, A, O> Manifest<'a, A, O> {
     }
 
     /// Resolves evaluator imports against this exact cut, using the caller's
-    /// original operation and byte bound. Evaluation, including cached result
-    /// copies, spends that same operation's allocation allowance. This creates no
+    /// original operation and byte bound. Native evaluation, including cached
+    /// result copies, spends that operation's allocation allowance. This creates no
     /// reader, follower or work root; source reads retain their original byte owners.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn tree<'m, 'io>(
