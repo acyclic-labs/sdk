@@ -39,18 +39,19 @@ for (const entry of packageEntries) {
   }
 }
 
+/** @type {Record<string, [string, string]>} */
 export const representativeExports = {
-  "@acyclic-labs/auth": "credentialProvider",
-  "@acyclic-labs/core": "deadlineSignal",
-  "@acyclic-labs/actors": "ActorsClient",
-  "@acyclic-labs/fs": "openBrowserFs",
-  "@acyclic-labs/harness": "PreparedAgentCommand",
-  "@acyclic-labs/inference": "InferenceClient",
-  "@acyclic-labs/machines": "machineId",
-  "@acyclic-labs/objects": "MemoryObjectsV1",
-  "@acyclic-labs/sdk": "harness",
-  "@acyclic-labs/stream": "MemoryStreamProvider",
-  "@acyclic-labs/workers": "WorkersDeploymentClient",
+  "@acyclic-labs/auth": ["", "credentialProvider"],
+  "@acyclic-labs/core": ["", "deadlineSignal"],
+  "@acyclic-labs/actors": ["", "ActorsClient"],
+  "@acyclic-labs/fs": ["", "openBrowserFs"],
+  "@acyclic-labs/harness": ["", "PreparedAgentCommand"],
+  "@acyclic-labs/inference": ["", "InferenceClient"],
+  "@acyclic-labs/machines": ["", "machineId"],
+  "@acyclic-labs/objects": ["", "MemoryObjectsV1"],
+  "@acyclic-labs/sdk": ["/process", "commandProcess"],
+  "@acyclic-labs/stream": ["", "MemoryStreamProvider"],
+  "@acyclic-labs/workers": ["", "WorkersDeploymentClient"],
 };
 const expectedExports = assembledDirectory
   ? Object.fromEntries(packageEntries.map(entry => [entry.name, representativeExports[entry.name]]))
@@ -98,10 +99,10 @@ const hasExportedFiles = (manifest, packageDirectory) => {
 
 export const probeSource = (runtime, names) => `
 const expected = ${JSON.stringify(names)};
-for (const [name, exportName] of Object.entries(expected)) {
-  const module = await import(name);
+for (const [name, [subpath, exportName]] of Object.entries(expected)) {
+  const module = await import(name + subpath);
   if (!(exportName in module)) throw new Error(name + " is missing representative export " + exportName);
-  if (typeof module[exportName] !== "function" && name !== "@acyclic-labs/sdk") {
+  if (typeof module[exportName] !== "function") {
     throw new Error(name + " representative export " + exportName + " is not callable");
   }
 }
@@ -155,7 +156,7 @@ const checks = {
     const fetched = digest && await provider.get({ digest, maximumBytes: 1n });
     return fetched?.body.length === 1 && fetched.body[0] === 7 && typeof m.HttpObjectsV1 === "function";
   },
-  "@acyclic-labs/sdk": (m) => typeof m.harness === "object" && typeof m.machines === "object",
+  "@acyclic-labs/sdk": (m) => ["commandProcess", "commandCapture", "withProcessSignals"].every(name => typeof m[name] === "function"),
   "@acyclic-labs/workers": (m) => typeof m.WorkersDeploymentClient === "function",
   "@acyclic-labs/stream": async (m) => {
     const provider = new m.MemoryStreamProvider();
@@ -165,7 +166,7 @@ const checks = {
 };
 for (const [name, check] of Object.entries(checks)) {
   if (!(name in expected)) continue;
-  const module = await import(name);
+  const module = await import(name + expected[name][0]);
   if (!(await check(module))) throw new Error(name + " representative API check failed");
 }
 console.log(${JSON.stringify(runtime)} + " import and representative API checks passed for " + Object.keys(expected).length + " packages");
@@ -279,8 +280,8 @@ const main = async () => {
     await writeFile(join(tempRoot, "inference-widths.mjs"), await readFile(join(packagesRoot, "inference/test/widths-installed.mjs")));
     run("node", ["inference-widths.mjs"], { cwd: tempRoot });
     run("bun", ["inference-widths.mjs"], { cwd: tempRoot });
-    const typeImports = Object.entries(expectedExports).map(([name, exportName], index) =>
-      `import { ${exportName} as package${index} } from ${JSON.stringify(name)};`);
+    const typeImports = Object.entries(expectedExports).map(([name, [subpath, exportName]], index) =>
+      `import { ${exportName} as package${index} } from ${JSON.stringify(name + subpath)};`);
     const grpcTypeImports = ['import { GrpcStreamProvider } from "@acyclic-labs/stream/grpc";', 'import { createObjectsV1GrpcClients } from "@acyclic-labs/objects/grpc";', 'import { ActorsClient } from "@acyclic-labs/actors";'];
     await writeFile(join(tempRoot, "probe-types.ts"), `${typeImports.join("\n")}\n${grpcTypeImports.join("\n")}\nvoid [${typeImports.map((_, index) => `package${index}`).join(", ")}];\nvoid [GrpcStreamProvider, createObjectsV1GrpcClients];\nconst actors = new ActorsClient({ endpoint: "https://actors.example.test", token: "tarball-smoke" });\nvoid actors;\n`);
     await writeFile(join(tempRoot, "tsconfig.types.json"), JSON.stringify({

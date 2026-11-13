@@ -6,15 +6,7 @@
     "outDir": "dist"
   },
   "references": [
-    { "path": "../auth" },
-    { "path": "../actors" },
-    { "path": "../workers" },
-    { "path": "../harness" },
-    { "path": "../filesystem" },
-    { "path": "../stream" },
-    { "path": "../objects" },
-    { "path": "../machines" },
-    { "path": "../inference" }
+    { "path": "../auth" }
   ],
   "include": ["src/**/*.ts"]
 }

@@ -85,10 +85,10 @@ for (const [path, locked] of Object.entries(lock.workspaces)) {
   }
 }
 if (sdkPackage.version !== compatibility.umbrellaVersion) {
-  throw new Error("TypeScript SDK version must match umbrella compatibility metadata");
+  throw new Error("TypeScript SDK version must match compatibility metadata");
 }
-if (harnessPackage.version !== harnessVersion || sdkPackage.dependencies["@acyclic-labs/harness"] !== harnessVersion) {
-  throw new Error("Harness npm and umbrella dependency versions must match compatibility metadata");
+if (harnessPackage.version !== harnessVersion) {
+  throw new Error("Harness npm version must match compatibility metadata");
 }
 const workspaceManifest = await readFile(new URL("Cargo.toml", root), "utf8");
 const workspaceVersion = workspaceManifest.match(/\[workspace\.package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
@@ -99,8 +99,7 @@ const typescriptStreamPackage = await load("typescript/packages/stream/package.j
 if (
   workspaceVersion !== harnessVersion || !harnessManifest.includes("version.workspace = true") ||
   rustStreamVersion !== streamCrateVersion ||
-  typescriptStreamPackage.version !== streamVersion ||
-  sdkPackage.dependencies["@acyclic-labs/stream"] !== streamVersion
+  typescriptStreamPackage.version !== streamVersion
 ) {
   throw new Error("Harness or Stream package versions do not match compatibility metadata");
 }
@@ -121,8 +120,7 @@ const rustMachinesVersion = machinesManifest.match(/\[package\][\s\S]*?\nversion
 const typescriptMachinesPackage = await load("typescript/packages/machines/package.json");
 if (
   rustMachinesVersion !== machinesVersion ||
-  typescriptMachinesPackage.version !== machinesVersion ||
-  sdkPackage.dependencies["@acyclic-labs/machines"] !== machinesVersion
+  typescriptMachinesPackage.version !== machinesVersion
 ) {
   throw new Error("Machines package versions do not match compatibility metadata");
 }
@@ -151,18 +149,14 @@ if (inferenceWasmManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1]
 if (inferenceWasmManifest.match(/acyclic-inference = \{ version = "([^"]+)"/)?.[1] !== `=${inferenceVersion}`) {
   throw new Error("Rust inference WASM dependency version mismatch");
 }
-if ((await load("typescript/packages/sdk/package.json")).dependencies["@acyclic-labs/inference"] !== inferenceVersion) {
-  throw new Error("TypeScript SDK inference dependency version mismatch");
-}
 const objectsVersion = compatibility.families.objects.version;
 const objectsCrateVersion = compatibility.families.objects.crateVersion ?? objectsVersion;
 const objectsManifest = await readFile(new URL("rust/crates/objects/Cargo.toml", root), "utf8");
 if (
   (await load("typescript/packages/objects/package.json")).version !== objectsVersion ||
-  sdkPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion ||
   harnessPackage.dependencies["@acyclic-labs/objects"] !== objectsVersion
 ) {
-  throw new Error("Objects npm and umbrella dependency versions must match compatibility metadata");
+  throw new Error("Objects npm and Harness dependency versions must match compatibility metadata");
 }
 if (objectsManifest.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1] !== objectsCrateVersion) {
   throw new Error("Objects crate version mismatch");

@@ -1,6 +1,6 @@
 # @acyclic-labs/sdk
 
-The umbrella SDK exports Objects, Streams, Actors, Workers and filesystem namespaces, alongside Harness, Machines and Inference. The examples below use standalone public package imports; Swarm is installed separately.
+This package provides native process integration and shared resource identities through `@acyclic-labs/sdk/process` and `@acyclic-labs/sdk/addressing`. Service clients are imported directly from their family packages, as the examples below show. Installing these host utilities does not install every service family.
 
 ```sh
 npm install @acyclic-labs/objects @acyclic-labs/stream @acyclic-labs/actors @acyclic-labs/workers @acyclic-labs/fs @bufbuild/protobuf @connectrpc/connect @connectrpc/connect-node

@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { harness as harnessApi, objects as objectsApi, stream as streamApi } from "@acyclic-labs/sdk";
+import * as harnessApi from "@acyclic-labs/harness";
+import * as objectsApi from "@acyclic-labs/objects";
+import * as streamApi from "@acyclic-labs/stream";
 import { openMemoryFs } from "@acyclic-labs/fs/memory";
 
 test("one consumer can use the public stream, objects, filesystem, and WASM APIs", async () => {

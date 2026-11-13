@@ -2,7 +2,7 @@
 
 ## 0.2.0 - Unreleased
 
-- Align the unified SDK candidate with the breaking Objects v2 public package transition.
+- Import service clients directly from their family packages. Remove the umbrella namespace entry point and its production family dependencies; retain the process and addressing subpaths.
 
 ## 0.1.5 - 2026-09-25
 

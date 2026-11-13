@@ -169,8 +169,10 @@
       "name": "@acyclic-labs/sdk",
       "version": "0.2.0",
       "dependencies": {
+        "@acyclic-labs/auth": "0.2.0"
+      },
+      "devDependencies": {
         "@acyclic-labs/actors": "0.2.0",
-        "@acyclic-labs/auth": "0.2.0",
         "@acyclic-labs/fs": "0.2.0",
         "@acyclic-labs/harness": "0.2.0",
         "@acyclic-labs/inference": "0.2.0",
@@ -178,11 +180,9 @@
         "@acyclic-labs/objects": "0.2.0",
         "@acyclic-labs/stream": "0.2.0",
         "@acyclic-labs/workers": "0.2.0",
-      },
-      "devDependencies": {
         "@bufbuild/protobuf": "2.17.0",
-        "typescript": "7.0.2",
-      },
+        "typescript": "7.0.2"
+      }
     },
     "typescript/packages/stream": {
       "name": "@acyclic-labs/stream",

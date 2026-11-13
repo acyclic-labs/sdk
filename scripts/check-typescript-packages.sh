@@ -98,18 +98,25 @@ for (const item of inventory) {
 if (!overrides["@acyclic-labs/sdk"]) throw new Error("SDK tarball is absent from the release inventory");
 writeFileSync(join(consumer, "package.json"), JSON.stringify({
   private: true, type: "module", workspaces: [],
-  dependencies: { "@acyclic-labs/sdk": overrides["@acyclic-labs/sdk"] }, overrides,
+  dependencies: { ...overrides }, overrides,
 }, null, 2));
 EOF
 cat >"$work/consumer/smoke.mjs" <<'EOF'
-import * as sdk from "@acyclic-labs/sdk";
+import * as actors from "@acyclic-labs/actors";
+import * as filesystem from "@acyclic-labs/fs";
+import * as harness from "@acyclic-labs/harness";
+import * as inference from "@acyclic-labs/inference";
+import * as machines from "@acyclic-labs/machines";
+import * as objects from "@acyclic-labs/objects";
+import * as stream from "@acyclic-labs/stream";
+import * as workers from "@acyclic-labs/workers";
+import { commandProcess } from "@acyclic-labs/sdk/process";
 import { PreparedAgentCommand } from "@acyclic-labs/harness/client";
-const { actors, filesystem, harness, inference, machines, objects, stream, workers } = sdk;
 if (typeof filesystem.openBrowserFs !== "function" || typeof inference.InferenceClient !== "function" ||
     typeof harness.PreparedAgentCommand !== "function" || typeof machines.SimulatedMachines !== "function" || typeof stream.StreamClient !== "function" ||
     typeof objects !== "object" || typeof actors.ActorsClient !== "function" ||
-    typeof workers.WorkersDeploymentClient !== "function" || "harnessObjects" in sdk ||
-    harness.PreparedAgentCommand !== PreparedAgentCommand) throw new Error("SDK exports are incomplete");
+    typeof workers.WorkersDeploymentClient !== "function" || typeof commandProcess !== "function" ||
+    harness.PreparedAgentCommand !== PreparedAgentCommand) throw new Error("public package exports are incomplete");
 await harness.initializeClientQueries();
 const command = new PreparedAgentCommand(harness.encodeCanonicalJson({ kind: "root" }));
 try { if (command.value().kind !== "root") throw new Error("SDK client command admission failed"); }

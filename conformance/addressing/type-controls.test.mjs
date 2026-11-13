@@ -32,7 +32,7 @@ test("package-local build graphs schedule Auth before dependent packages", () =>
 });
 
 test("all public identity bindings accept byte fields and reject text and mutable field shapes", () => {
-  // The umbrella SDK declares these dependencies. Put its temporary consumer
+  // The SDK test package declares these fixture dependencies. Put its temporary consumer
   // inside that package so isolated installs resolve the declared graph; the
   // repository root deliberately has no SDK runtime dependencies to hoist.
   const directory = mkdtempSync(fileURLToPath(new URL(

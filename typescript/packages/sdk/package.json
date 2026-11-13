@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "Umbrella TypeScript SDK for Acyclic runtime and infrastructure services",
+  "description": "Native process integration and shared resource identity for Acyclic applications",
   "keywords": [
     "sdk",
     "agents",
@@ -16,7 +16,6 @@
   },
   "type": "module",
   "exports": {
-    ".": "./dist/index.js",
     "./process": {
       "types": "./native/process.d.mts",
       "default": "./native/process.mjs"
@@ -26,9 +25,8 @@
       "default": "./dist/addressing.js"
     }
   },
-  "types": "./dist/index.d.ts",
   "files": [
-    "dist",
+    "dist/addressing.*",
     "native",
     "CHANGELOG.md"
   ],
@@ -43,17 +41,17 @@
     "prepack": "bun run generate"
   },
   "dependencies": {
-    "@acyclic-labs/harness": "0.2.0",
-    "@acyclic-labs/fs": "0.2.0",
-    "@acyclic-labs/stream": "0.2.0",
-    "@acyclic-labs/objects": "0.2.0",
-    "@acyclic-labs/machines": "0.2.0",
-    "@acyclic-labs/inference": "0.2.0",
-    "@acyclic-labs/actors": "0.2.0",
-    "@acyclic-labs/workers": "0.2.0",
     "@acyclic-labs/auth": "0.2.0"
   },
   "devDependencies": {
+    "@acyclic-labs/actors": "0.2.0",
+    "@acyclic-labs/fs": "0.2.0",
+    "@acyclic-labs/harness": "0.2.0",
+    "@acyclic-labs/inference": "0.2.0",
+    "@acyclic-labs/machines": "0.2.0",
+    "@acyclic-labs/objects": "0.2.0",
+    "@acyclic-labs/stream": "0.2.0",
+    "@acyclic-labs/workers": "0.2.0",
     "@bufbuild/protobuf": "2.17.0",
     "typescript": "7.0.2"
   }
