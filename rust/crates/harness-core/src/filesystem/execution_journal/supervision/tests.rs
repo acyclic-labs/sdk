@@ -247,11 +247,11 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
 async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_recovery()
 -> Result<()> {
     use crate::supervision::{RunAdmission, RunAdmissionSource};
-    for native in [false, true] {
+    async fn attempt(native: bool, progress: bool) -> Result<[u64; 3]> {
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let operation = OperationId::from_bytes([122; 16]);
         let policy = Policy {
-            no_progress_turns: Some(1),
+            no_progress_turns: progress.then_some(1),
             ..Default::default()
         };
         let bytes =
@@ -293,23 +293,25 @@ async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_
         } else {
             PreparationIo::from_budget(budget, &cancellation)?
         };
-        let baseline = io.owned_bytes()?;
-        let error = context
+        let staged = context
             .stage_file_at(operation, &source, b"after", Some(&io))
-            .await
-            .expect_err("missing agent authority accepted progress");
-        assert!(
-            error
-                .to_string()
-                .contains("original progress has no agent binding"),
-            "{error:?}"
-        );
-        drop(error);
-        assert_eq!(
-            io.owned_bytes()?,
-            baseline,
-            "failed progress leaked the accepted receipt"
-        );
+            .await;
+        if progress {
+            let error = staged.expect_err("missing agent authority accepted progress");
+            assert!(
+                error
+                    .to_string()
+                    .contains("original progress has no agent binding"),
+                "{error:?}"
+            );
+            drop(error);
+        } else {
+            let (file, retained) = staged?;
+            let hold = io.guard_owned(retained)?;
+            drop(file);
+            drop(hold);
+        }
+        let after_stage = io.owned_bytes()?;
         let (receipt, retained) = context
             .observe_tool_changes(operation, source.volume(), Some(&io))
             .await?;
@@ -321,27 +323,42 @@ async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_
         );
         drop(receipt);
         drop(hold);
-        assert_eq!(io.owned_bytes()?, baseline);
-        let error = context
+        let after_observation = io.owned_bytes()?;
+        let recovered = context
             .observe_tool_source_file_once(
                 operation,
                 Some(source.volume()),
                 Some(source.path()),
                 Some(&io),
             )
-            .await
-            .expect_err("recovery accepted progress without agent authority");
-        assert!(
-            error
-                .to_string()
-                .contains("original progress has no agent binding"),
-            "{error:?}"
-        );
-        drop(error);
+            .await;
+        if progress {
+            let error = recovered.expect_err("recovery accepted progress without agent authority");
+            assert!(
+                error
+                    .to_string()
+                    .contains("original progress has no agent binding"),
+                "{error:?}"
+            );
+            drop(error);
+        } else {
+            let (file, retained) = recovered?;
+            assert!(file.is_some(), "original conditional receipt disappeared");
+            let hold = io.guard_owned(retained)?;
+            drop(file);
+            drop(hold);
+        }
+        Ok([after_stage, after_observation, io.owned_bytes()?])
+    }
+    for native in [false, true] {
+        // Legacy preparation also retains scratch allocations until its owner
+        // ends. Compare identical real publications with progress disabled,
+        // after dropping the successful result's own receipt/file custody.
+        // A failed progress await must retain no additional receipt allocation.
         assert_eq!(
-            io.owned_bytes()?,
-            baseline,
-            "failed recovery leaked the original receipt"
+            attempt(native, true).await?,
+            attempt(native, false).await?,
+            "failed progress retained receipt custody (native={native})"
         );
     }
     Ok(())
