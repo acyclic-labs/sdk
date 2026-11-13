@@ -65,7 +65,14 @@ impl std::fmt::Display for WireSessionError {
     }
 }
 
-impl std::error::Error for WireSessionError {}
+impl std::error::Error for WireSessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Stream(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl WireSessionError {
     /// Stable classification, including the original provider refusal code.

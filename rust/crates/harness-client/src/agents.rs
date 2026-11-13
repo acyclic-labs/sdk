@@ -444,7 +444,17 @@ impl AgentClient {
             Poll::Ready(Ok(Some(event))) => event,
         };
         let frame = match outcome {
-            Err(error) => return Poll::Ready(Err(error.into())),
+            Err(cause) => {
+                return Poll::Ready(Err(AgentClientError::Subscription {
+                    resource: match &interest {
+                        Interest::Stream(path) => {
+                            wire_codec::session::stream_resource(path.as_str())
+                        }
+                        Interest::Resource(resource) => resource.to_string(),
+                    },
+                    cause,
+                }));
+            }
             Ok(Some(frame)) => frame,
             Ok(None) => {
                 return Poll::Ready(Err(match interest {
