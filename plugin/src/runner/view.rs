@@ -765,6 +765,10 @@ impl View {
 
     /// Find the preceding hit, wrapping to the newest after the oldest.
     fn find(&mut self, query: &str, page: usize) {
+        if query.is_empty() {
+            self.finding = None;
+            return;
+        }
         let before = self
             .search
             .as_ref()
@@ -2393,6 +2397,11 @@ mod tests {
                 },
                 1,
             );
+            if from == 1 {
+                unseen.find("", 1);
+                assert_eq!(unseen.older_page(1), None);
+                unseen.find("buried", 1);
+            }
         }
         let row = unseen
             .search
