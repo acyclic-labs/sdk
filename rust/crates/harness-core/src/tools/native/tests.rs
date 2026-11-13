@@ -184,6 +184,63 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
             assert!(registry.get(retired, None, None)?.is_none());
         }
     }
+    // A running turn can replace a family repeatedly. Each replacement must
+    // adapt directly to the original shell, without applying an older family's
+    // template to the already canonical arguments.
+    let mut registry = crate::tools::registry(&["shell".into()], |_| true, Vec::new())?;
+    let original = Arc::clone(registry.get_shared("shell", None, None)?.unwrap());
+    for profile in [
+        NativeToolProfile::Anthropic,
+        NativeToolProfile::Google,
+        NativeToolProfile::Openai,
+        NativeToolProfile::Anthropic,
+    ] {
+        NativeTools::from_definitions(shell_entries(profile)?)?.bind(&mut registry)?;
+        let selected = registry.get("shell", None, None)?.unwrap();
+        let arguments = match profile {
+            NativeToolProfile::Anthropic => serde_json::json!({
+                "command": "echo example", "timeout": 137, "run_in_background": true
+            }),
+            NativeToolProfile::Google => serde_json::json!({
+                "command": "echo example", "dir_path": "workspace", "is_background": true
+            }),
+            NativeToolProfile::Openai => serde_json::json!({
+                "command": "echo example", "workdir": "workspace", "timeout": 137,
+                "background": true
+            }),
+        };
+        let invocation = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::from_bytes([19; 16]),
+            call_id: "family-switch".into(),
+            name: "shell".into(),
+            arguments,
+        };
+        let canonical = selected.executor.canonical(&invocation, None)?.unwrap();
+        assert_eq!(canonical.invocation.arguments["command"], "echo example");
+        assert_eq!(canonical.invocation.arguments["background"], true);
+        if profile != NativeToolProfile::Anthropic {
+            assert_eq!(canonical.invocation.arguments["cwd"], "workspace");
+        }
+        if profile != NativeToolProfile::Google {
+            assert_eq!(canonical.invocation.arguments["timeout_ms"], 137);
+        }
+        let owner = selected.executor.capability_owner().unwrap();
+        assert!(
+            Arc::ptr_eq(owner, &original),
+            "family change replaced original authority"
+        );
+        assert!(
+            owner
+                .executor
+                .canonical(&canonical.invocation, None)?
+                .is_none(),
+            "canonical arguments would pass through another family adapter"
+        );
+        assert_eq!(
+            selected.definition.output_schema,
+            original.definition.output_schema
+        );
+    }
     let model = crate::model::Model::new("test".into(), "absent".into(), "1".into())?;
     let calls = Arc::new(AtomicUsize::new(0));
     let absent = crate::model::ResolvedModel::new((
