@@ -902,11 +902,16 @@ mod tests {
             "independent input inherited another run's admission",
         );
         finish.send(()).unwrap();
-        bound
-            .agents()
-            .drain(conversation.agent())
-            .await
-            .map_err(failed)?;
+        // A local drain need not join a turn owned by the serving dispatcher.
+        // Await A's actual committed conversation record instead.
+        let entries = conversation.entries(0, 3).await?;
+        assert!(
+            matches!(&entries[2].input,
+            crate::agent::TurnInput::Message { from: crate::agent::Sender::Agent { path }, re: Some(owner), .. }
+            if path == conversation.agent() && owner.as_str() == operation.to_string()),
+            "third dispatch was not A's original continuation: {:?}",
+            entries[2].input
+        );
         let outcome = (&mut run).await;
         assert!(matches!(outcome?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
         // B has no continuation. A's completed transition is now the durable

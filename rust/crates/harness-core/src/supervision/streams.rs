@@ -48,16 +48,58 @@ pub async fn active_run<P: StreamProvider + ?Sized>(
 }
 
 const PAUSED_RUN_KEY: &[u8] = b"paused-run";
+pub(crate) const CURRENT_RUN_KEY: &[u8] = b"current-run";
 
 /// Retain the run whose original lifecycle publication closed admission.
 /// Owner file events have no run and never replace this source identity.
 pub(crate) fn lifecycle_record(event: &Event) -> Result<AppendRecord> {
     let bytes = serde_json::to_vec(event).map_err(invalid)?;
-    if event.run.is_some() && matches!(event.event, Lifecycle::Paused { .. }) {
-        AppendRecord::latest(bytes, PAUSED_RUN_KEY, false).map_err(Error::from)
-    } else {
-        Ok(bytes.into())
+    let mut keys = Vec::new();
+    if event.run.is_some() {
+        keys.push(Bytes::from_static(CURRENT_RUN_KEY).into());
+        if matches!(event.event, Lifecycle::Paused { .. }) {
+            keys.push(Bytes::from_static(PAUSED_RUN_KEY).into());
+        }
     }
+    Ok(AppendRecord {
+        value: bytes.into(),
+        headers: acyclic_stream::RecordHeaders::new(keys, Vec::new())?,
+    })
+}
+
+/// Run owning the most recent run-bearing lifecycle or signal at this cut.
+/// An independent start takes ownership; a continuing run's original signal,
+/// pause or completion takes it back without inventing another Started event.
+pub(crate) async fn current_run_before<P: StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &AgentPath,
+    before: u64,
+    at_least: acyclic_stream::RevisionCut,
+) -> Result<Option<OperationId>> {
+    let record = match provider
+        .latest_before(
+            path(agent)?,
+            Some(Bytes::from_static(CURRENT_RUN_KEY).into()),
+            before,
+            at_least,
+        )
+        .await
+    {
+        Ok(record) => record,
+        Err(StreamError::NotFound) => None,
+        Err(error) => return Err(error.into()),
+    };
+    record
+        .map(|record| {
+            let event: Event = serde_json::from_slice(&record.value).map_err(invalid)?;
+            if event.version != 1 || event.agent != *agent {
+                return Err(invalid("invalid indexed current run"));
+            }
+            event
+                .run
+                .ok_or_else(|| invalid("indexed current activity has no run"))
+        })
+        .transpose()
 }
 
 /// Point-select the run owning the latest pause, with its atomic action fence.
@@ -448,12 +490,19 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
                             action: policy.action(signal),
                         },
                     };
-                    AppendRecord::latest(
-                        serde_json::to_vec(&event).map_err(invalid)?,
-                        signal_key(run, signal.kind),
-                        true,
-                    )
-                    .map_err(Error::from)
+                    Ok(AppendRecord {
+                        value: serde_json::to_vec(&event).map_err(invalid)?.into(),
+                        headers: acyclic_stream::RecordHeaders::new(
+                            vec![
+                                Bytes::from_static(CURRENT_RUN_KEY).into(),
+                                signal_key(run, signal.kind).into(),
+                            ],
+                            vec![acyclic_stream::Attribute {
+                                name: "attention".into(),
+                                value: Bytes::from_static(b"true").into(),
+                            }],
+                        )?,
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?;
             mutations.push(CommitMutation::Append { path, records });
