@@ -1100,7 +1100,12 @@ async fn steering_expands_peer_files_with_exact_grants_inside_the_original_admis
         assert_eq!(messages.len(), 1);
         let files: Vec<_> = messages[0].content.file_refs().collect();
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].volume(), &own);
+        assert_eq!(files[0].volume(), &journal_of(&own)?);
+        assert!(
+            files[0]
+                .path()
+                .starts_with(&format!("inputs/turns/{operation}/"))
+        );
         assert_ne!(files[0], &file);
         let reader = FilesystemContentVerifier::new(
             filesystem.clone(),

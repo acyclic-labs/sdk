@@ -4,7 +4,7 @@
 use super::{
     FilesystemContentVerifier, FilesystemHost,
     agent_internal::AgentInternalFiles,
-    agent_turns::{AdmittedAgent, NoticeBlocks, TurnAdmission},
+    agent_turns::{AdmittedAgent, NoticeBlocks, TURN_INPUTS, TurnAdmission},
 };
 use crate::{
     Error, OperationId, Result,
@@ -219,7 +219,7 @@ where
                     .await?
                     .1
             } else {
-                admitted.authority(&external).await?
+                admitted.authority(&external, None).await?
             };
             let mut reader = FilesystemContentVerifier::new(
                 Arc::clone(&self.host),
@@ -240,7 +240,7 @@ where
                     &self.agent.path,
                     &self.agent.volumes,
                 )?
-                .authority(&expanded)
+                .authority(&expanded, None)
                 .await?;
                 reader = FilesystemContentVerifier::new(
                     Arc::clone(&self.host),
@@ -255,8 +255,9 @@ where
                 ModelContent::Part(part) => std::slice::from_mut(part),
                 ModelContent::Parts(parts) => parts.as_mut_slice(),
             };
-            // Pin newly authorized content into the private volume. The running
-            // executor keeps its original scope; no live grant is widened.
+            // Pin newly authorized content into this turn's journal input
+            // directory. The running reader already holds its read-only route;
+            // ordinary workspace authority and the original scope stay fixed.
             for part in parts {
                 if let ModelContentPart::File { file, .. } = part {
                     let bytes = reader
@@ -264,8 +265,7 @@ where
                         .await?;
                     let operation = self.operation;
                     let id = identity(operation, step, item);
-                    let destination =
-                        format!("messages/.steering/{operation}/{step:010}/{item:020}");
+                    let destination = format!("{TURN_INPUTS}/{operation}/{step:010}/{item:020}");
                     let (published, _) = self
                         .writer
                         .stage_once(

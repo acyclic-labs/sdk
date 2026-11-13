@@ -30,6 +30,13 @@
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/messages/**"},
     "conditions": {}
   }, {
+    "id": "published-turn-input",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/turns/**"},
+    "conditions": {}
+  }, {
     "id": "published-context",
     "effect": "allow",
     "principal": {"attributes": {}},
