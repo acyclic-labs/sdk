@@ -75,7 +75,7 @@ async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -
                     barrier.wait().await;
                     let started = std::time::Instant::now();
                     let (file, _) = publisher
-                        .stage(
+                        .stage_once(
                             OperationId::new(),
                             &path,
                             bytes.as_bytes(),
