@@ -17,7 +17,7 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
     let phase = Phase::WaitingUser {
         path: "private-input-fence".into(),
     };
-    let profile = SessionProfile::project(&phase, "Review".into(), &table, "é中 tail", 4);
+    let profile = SessionProfile::project(&phase, "Review".into(), table.entries(), "é中 tail", 4);
     let provider = MemoryStream::default();
     let path = StreamPath::new("registry/account/sessions/root")?;
     let mut row = SessionRow::new(NodeId::new(b"owner")?, profile.clone());
@@ -51,22 +51,28 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
             path: "another-private-fence".into(),
         },
         "Review".into(),
-        &table,
+        table.entries(),
         "é中 changed after the preview",
         4,
     );
     assert!(row.changed(Some(internal_change))?.is_none());
     for changed in [
-        SessionProfile::project(&Phase::Running, "Review".into(), &table, "é中 tail", 4),
-        SessionProfile::project(&phase, "Updated".into(), &table, "é中 tail", 4),
-        SessionProfile::project(&phase, "Review".into(), &table, "new goal", 4),
+        SessionProfile::project(
+            &Phase::Running,
+            "Review".into(),
+            table.entries(),
+            "é中 tail",
+            4,
+        ),
+        SessionProfile::project(&phase, "Updated".into(), table.entries(), "é中 tail", 4),
+        SessionProfile::project(&phase, "Review".into(), table.entries(), "new goal", 4),
         {
             let mut rerooted = project.clone();
             rerooted.root = "subdirectory".into();
             SessionProfile::project(
                 &phase,
                 "Review".into(),
-                &WorkspaceTable::new(vec![rerooted])?,
+                WorkspaceTable::new(vec![rerooted])?.entries(),
                 "é中 tail",
                 4,
             )
@@ -77,7 +83,7 @@ async fn session_profiles_publish_only_public_metadata_changes() -> Result {
             SessionProfile::project(
                 &phase,
                 "Review".into(),
-                &WorkspaceTable::new(vec![renamed])?,
+                WorkspaceTable::new(vec![renamed])?.entries(),
                 "é中 tail",
                 4,
             )
@@ -546,6 +552,9 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
             &routing.paths,
             &routing.node,
             async |actual| {
+                let route::Publication::Placement(actual) = actual else {
+                    return Err(route::Error::InvalidRecord);
+                };
                 assert_eq!(actual, registration);
                 let outcome = account
                     .commit(CommitRequest {

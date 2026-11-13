@@ -1,5 +1,5 @@
 //! Public session metadata, projected without private control or file authority.
-use super::{Error, Phase, WorkspaceEntry, WorkspaceRole, WorkspaceTable};
+use super::{Error, Phase, WorkspaceEntry, WorkspaceRole};
 use acyclic_actors::route::NodeId;
 use serde::{Deserialize, Serialize};
 
@@ -62,7 +62,7 @@ impl SessionProfile {
     pub fn project(
         phase: &Phase,
         title: String,
-        workspaces: &WorkspaceTable,
+        workspaces: &[WorkspaceEntry],
         goal: &str,
         preview_bytes: usize,
     ) -> Self {
@@ -74,7 +74,6 @@ impl SessionProfile {
             phase: phase.into(),
             title,
             workspaces: workspaces
-                .entries()
                 .iter()
                 .filter(|entry| entry.role == WorkspaceRole::User)
                 .cloned()

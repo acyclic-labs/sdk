@@ -127,6 +127,20 @@ impl SessionPublication {
         .into())
     }
 
+    /// The row and its account publication share the source's original commit.
+    /// Root registration joins first, so forwarding cannot overtake placement.
+    pub fn effects(&self, paths: &Paths) -> Result<[CommitEffect; 2], Error> {
+        let call = route::CallPublication {
+            node: self.row.node.clone(),
+            invocation: self.invocation()?,
+            reply: Bytes::copy_from_slice(self.key()?.as_bytes()),
+        };
+        Ok([
+            self.effect()?,
+            call.effect(paths).map_err(super::super::routing::error)?,
+        ])
+    }
+
     /// Use the account's existing authenticated session and caller reply budget.
     /// The host retains this same value across uncertain completion.
     pub async fn publish(

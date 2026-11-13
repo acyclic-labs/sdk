@@ -330,9 +330,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         adopted: ForkAdopted,
         peer: bool,
     ) -> Result<Spawn, Error> {
+        let presence = self.initial_profile(&adopted, peer);
         let volumes = adopted.volumes.clone();
         let created = super::create_root_with_peer(intent, adopted, peer)?;
-        self.root_actor(within, created, false, &volumes)
+        self.root_actor(within, created, false, &volumes, presence)
     }
 
     pub(super) fn prepare_root_history(
@@ -344,10 +345,23 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         history: &super::HistorySelection,
         peer: bool,
     ) -> Result<Spawn, Error> {
+        let presence = self.initial_profile(&adopted, peer);
         let volumes = adopted.volumes.clone();
         let created =
             super::commit::create_root_at(intent, adopted, Some((source, history)), peer)?;
-        self.root_actor(within, created, true, &volumes)
+        self.root_actor(within, created, true, &volumes, presence)
+    }
+
+    fn initial_profile(&self, adopted: &ForkAdopted, peer: bool) -> Option<super::SessionProfile> {
+        (self.routing.is_some() && peer).then(|| {
+            super::SessionProfile::project(
+                &super::Phase::Idle,
+                String::new(),
+                &adopted.volumes,
+                "",
+                0,
+            )
+        })
     }
 
     fn root_actor(
@@ -356,6 +370,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         created: Spawn,
         paused: bool,
         volumes: &[super::WorkspaceEntry],
+        presence: Option<super::SessionProfile>,
     ) -> Result<Spawn, Error> {
         let actor = Self::actor(within, &created.child.id())?;
         let mut publish = PreparedPublish::foreign(created.request.idempotency_key.clone());
@@ -376,7 +391,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         if let Some(routing) = &self.routing {
             let registration = acyclic_actors::route::Registration {
                 placement: acyclic_actors::route::Placement {
-                    actor,
+                    actor: actor.clone(),
                     node: routing.node.clone(),
                 },
                 intent: created.request.idempotency_key.clone(),
@@ -388,6 +403,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
                 publish
                     .join(effect)
                     .map_err(|_| Error::Record("root placement does not compose"))?;
+            }
+            if let Some(profile) = presence {
+                let row = super::SessionPublication {
+                    actor,
+                    row: super::SessionRow::new(routing.node.clone(), profile),
+                    intent: created.request.idempotency_key.clone(),
+                };
+                for effect in row.effects(&routing.paths)? {
+                    publish
+                        .join(effect)
+                        .map_err(|_| Error::Record("root presence does not compose"))?;
+                }
             }
         }
         Ok(Spawn {

@@ -311,22 +311,75 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 source.clone(),
                 crate::agent::SessionProfile::project(
                     &crate::agent::Phase::Idle,
-                    "A session".into(),
-                    &crate::agent::WorkspaceTable::new(Vec::new())?,
-                    "A bounded public goal preview",
-                    16,
+                    String::new(),
+                    &[],
+                    "",
+                    0,
                 ),
             ),
-            intent: IdempotencyKey::new(b"original-profile-publication".to_vec())?,
+            intent: root_registration.intent.clone(),
         };
+        let disabled_id = AgentId::from_bytes([2; 16]);
+        let disabled = server
+            .bound()
+            .prepare_root(
+                &IntentId::try_from("nonparticipating-root")?,
+                RootRequest {
+                    peer: false,
+                    agent: disabled_id.clone(),
+                    fresh: vec![WorkspaceEntry::initial_volume(
+                        crate::agent::WorkspaceRole::Private,
+                        PRIVATE_VOLUME.into(),
+                        VolumeRef::new(
+                            provider()?,
+                            "private".into(),
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(crate::AgentId::from_bytes(disabled_id.to_bytes())),
+                            &mut None,
+                        )?,
+                    )],
+                    retained: Vec::new(),
+                    brief: None,
+                    policy: None,
+                },
+            )
+            .await?;
+        let mut disabled_row = publication.clone();
+        disabled_row.actor = server
+            .bound()
+            .agents()
+            .actor(&AgentPath::root(&disabled_id))?;
+        let disabled_path = disabled_row.path()?;
+        assert!(
+            !disabled
+                .request()
+                .mutations()
+                .any(|mutation| mutation.path() == &disabled_path)
+        );
+        let outbox = paths.outbox(&source)?;
+        let metadata: Vec<_> = disabled
+            .request()
+            .mutations()
+            .filter_map(|mutation| match mutation {
+                CommitMutation::Append { path, records } if path == &outbox => Some(records),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(
+            metadata.len(),
+            1,
+            "opted-out root published directory metadata"
+        );
+        assert!(matches!(
+            route::Publication::decode(&metadata[0].value)?,
+            route::Publication::Placement(_)
+        ));
         assert!(
             publication.publish(&client, 1, 4096).await.is_err(),
             "peer append authority published directory metadata"
         );
-        assert!(matches!(
-            stream.tail(publication.path()?).await,
-            Err(StreamError::NotFound)
-        ));
+        assert_eq!(stream.tail(publication.path()?).await?, 1);
         let mut foreign = publication.clone();
         foreign.actor = message.to.clone();
         assert!(
@@ -337,18 +390,22 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             stream.tail(foreign.path()?).await,
             Err(StreamError::NotFound)
         ));
-        // Source and account may share the same provider. Recover the original
-        // joined row rather than trying a different commit under its key.
-        assert!(matches!(
-            stream
-                .commit(CommitRequest {
-                    deadline_unix_millis: None,
-                    idempotency_key: publication.intent.clone(),
-                    effects: vec![publication.effect()?],
-                })
-                .await?,
-            CommitOutcome::Committed(_)
-        ));
+        // The original root commit contains placement, row and ordered outbox
+        // records. Source/account replay never publishes a second root row.
+        let row_record = stream
+            .head(publication.path()?)
+            .await?
+            .last
+            .ok_or("root row missing")?;
+        assert_eq!(row_record.commit_id, root_record.commit_id);
+        let call_record = stream
+            .record_at(paths.outbox(&source)?, 1)
+            .await?
+            .ok_or("root row call missing")?;
+        assert_eq!(call_record.commit_id, root_record.commit_id);
+        let row_call = route::Publication::decode(&call_record.value)?;
+        assert!(matches!(&row_call, route::Publication::Call(_)));
+        row_call.publish(&client, 4, &paths, 4096).await?;
         publication.publish(&client, 4, 4096).await?;
         publication.publish(&client, 4, 4096).await?;
         assert_eq!(stream.tail(publication.path()?).await?, 1);
@@ -409,14 +466,32 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             "account router hosted a remote root"
         );
         let local = acyclic_stream::MemoryStream::default();
+        let source_row = crate::agent::SessionPublication {
+            actor: message.sender.clone(),
+            row: crate::agent::SessionRow::new(
+                source.clone(),
+                crate::agent::SessionProfile::project(
+                    &crate::agent::Phase::Idle,
+                    "Source session".into(),
+                    &[],
+                    "Public task preview",
+                    16,
+                ),
+            ),
+            intent: registration.intent.clone(),
+        };
+        let source_row_path = source_row.path()?;
+        let mut root_publication =
+            acyclic_actors::local::PreparedPublish::foreign(registration.intent.clone());
+        for effect in registration
+            .effects(&paths)?
+            .into_iter()
+            .chain(source_row.effects(&paths)?)
+        {
+            root_publication.join(effect)?;
+        }
         assert!(matches!(
-            local
-                .commit(CommitRequest {
-                    deadline_unix_millis: None,
-                    idempotency_key: registration.intent.clone(),
-                    effects: registration.effects(&paths)?.into(),
-                })
-                .await?,
+            local.commit(root_publication.into_request()?).await?,
             CommitOutcome::Committed(_)
         ));
         assert!(matches!(
@@ -440,8 +515,20 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             stream.as_ref(),
             &paths,
             &source,
-            async |registration| route::register(&client, 4, &paths, &registration, 4096).await,
+            async |publication: route::Publication| {
+                publication.publish(&client, 4, &paths, 4096).await
+            },
             async |envelope| {
+                let row = stream
+                    .head(source_row_path.clone())
+                    .await?
+                    .last
+                    .ok_or(StreamError::InvalidResponse)?;
+                assert_eq!(
+                    crate::agent::SessionRow::decode(&row.value)
+                        .map_err(|_| route::Error::InvalidRecord)?,
+                    source_row.row
+                );
                 assert_eq!(route::admit(&client, 1, &envelope, 4096).await?, expected);
                 admitted
                     .take()
@@ -474,12 +561,21 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         assert!(
             !NodePresence::decode(&presence.try_next().await?.ok_or("no Close")?.value)?.online
         );
-        assert_eq!(local.tail(paths.outbox_cursor(&source)?).await?, 1);
-        assert!(
-            route::receipt(&local, &paths, &source, 0, &message.request.idempotency_key)
+        assert_eq!(local.tail(paths.outbox_cursor(&source)?).await?, 2);
+        for sequence in 0..2 {
+            assert!(
+                route::receipt(
+                    &local,
+                    &paths,
+                    &source,
+                    sequence,
+                    &message.request.idempotency_key
+                )
                 .await
                 .is_err()
-        );
+            );
+        }
+        assert_eq!(stream.tail(source_row.path()?).await?, 1);
         route::register(&client, 4, &paths, &registration, 4096).await?;
         assert_eq!(
             RoutePlacement::read(stream.as_ref(), &paths, &message.sender).await?,
@@ -507,7 +603,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             local
                 .follow(FollowRequest {
                     when_absent: acyclic_stream::WhenAbsent::Wait,
-                    ..FollowRequest::new(paths.outbox_cursor(&source)?, 1)
+                    ..FollowRequest::new(paths.outbox_cursor(&source)?, 2)
                 })
                 .await?,
         );
@@ -526,7 +622,9 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 stream.as_ref(),
                 &paths,
                 &source,
-                async |registration| route::register(&client, 4, &paths, &registration, 4096).await,
+                async |publication: route::Publication| {
+                    publication.publish(&client, 4, &paths, 4096).await
+                },
                 async |envelope| route::admit(&client, 1, &envelope, 4096).await,
                 async |_| Err(route::Error::InvalidRecord),
             );
@@ -551,7 +649,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                     .ok_or("no source acknowledgment")?;
                 drained.try_next().await?.ok_or("no drain acknowledgment")?;
                 assert_eq!(
-                    route::receipt(&local, &paths, &source, 1, &message.request.idempotency_key)
+                    route::receipt(&local, &paths, &source, 2, &message.request.idempotency_key)
                         .await?,
                     Some(expected)
                 );

@@ -195,7 +195,7 @@ pub async fn register(
 struct PublicationWire {
     #[prost(uint32, tag = "1")]
     version: u32,
-    #[prost(oneof = "Body", tags = "2, 3")]
+    #[prost(oneof = "Body", tags = "2, 3, 4")]
     body: Option<Body>,
 }
 #[derive(Clone, PartialEq, prost::Oneof)]
@@ -204,6 +204,46 @@ enum Body {
     Delivery(super::EnvelopeWire),
     #[prost(message, tag = "3")]
     Placement(RegistrationWire),
+    #[prost(message, tag = "4")]
+    Call(CallWire),
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct CallWire {
+    #[prost(bytes = "bytes", tag = "1")]
+    node: Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    invocation: Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    reply: Bytes,
+}
+
+/// One durable finite application call on the same node-to-account session.
+/// The application's original intent and authorization stay in its own format;
+/// this record contains neither a credential nor permission to invoke a product.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallPublication {
+    /// Source bound to the node outbox; the application checks its inner target.
+    pub node: NodeId,
+    /// Original product invocation, without re-encoding during forwarding.
+    pub invocation: Bytes,
+    /// Exact successful reply selected by the original publication.
+    pub reply: Bytes,
+}
+
+impl CallPublication {
+    fn wire(&self) -> CallWire {
+        CallWire {
+            node: Bytes::copy_from_slice(self.node.as_bytes()),
+            invocation: self.invocation.clone(),
+            reply: self.reply.clone(),
+        }
+    }
+
+    /// Join this original call to the same source commit as its metadata.
+    pub fn effect(&self, paths: &Paths) -> Result<CommitEffect, Error> {
+        Publication::effect(paths, &self.node, Body::Call(self.wire()))
+    }
 }
 
 /// One versioned node outbox record. Metadata and messages use the same follow
@@ -214,6 +254,8 @@ pub enum Publication {
     Delivery(Envelope),
     /// The original immutable root registration.
     Placement(Registration),
+    /// Original application metadata call, acknowledged without a send receipt.
+    Call(CallPublication),
 }
 impl Publication {
     /// Decode one bounded original outbox record.
@@ -225,13 +267,45 @@ impl Publication {
         match wire.body.ok_or(Error::InvalidRecord)? {
             Body::Delivery(wire) => Ok(Self::Delivery(Envelope::from_wire(wire, "")?)),
             Body::Placement(wire) => Ok(Self::Placement(Registration::from_wire(wire, "")?)),
+            Body::Call(wire) => Ok(Self::Call(CallPublication {
+                node: NodeId::new(&wire.node)?,
+                invocation: wire.invocation,
+                reply: wire.reply,
+            })),
         }
     }
     /// Original message; placement records cannot be used as send receipts.
     pub fn delivery(self) -> Result<Envelope, Error> {
         match self {
             Self::Delivery(envelope) => Ok(envelope),
-            Self::Placement(_) => Err(Error::InvalidRecord),
+            Self::Placement(_) | Self::Call(_) => Err(Error::InvalidRecord),
+        }
+    }
+
+    /// Publish metadata on the original authenticated account session. The
+    /// caller selects its existing node credential; no authority is persisted.
+    /// Message admission uses `admit` and cannot be completed through this API.
+    pub async fn publish(
+        &self,
+        client: &Client,
+        credential: u32,
+        paths: &Paths,
+        maximum_reply_bytes: usize,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Placement(registration) => {
+                register(client, credential, paths, registration, maximum_reply_bytes).await
+            }
+            Self::Call(call) => {
+                let reply = client
+                    .actor_call(&call.invocation, credential, maximum_reply_bytes)
+                    .await?;
+                if reply != call.reply {
+                    return Err(StreamError::InvalidResponse.into());
+                }
+                Ok(())
+            }
+            Self::Delivery(_) => Err(Error::InvalidRecord),
         }
     }
     pub(super) fn delivery_effect(

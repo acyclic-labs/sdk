@@ -1,5 +1,5 @@
 //! One follow per destination, with acknowledgement after ordinary delivery.
-use super::{Envelope, Error, NodeId, Paths, Publication, Registration, Routed, account::Reply};
+use super::{Envelope, Error, NodeId, Paths, Publication, Routed, account::Reply};
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
     IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
@@ -89,12 +89,12 @@ pub async fn forward<P, R, D>(
     local: &P,
     paths: &Paths,
     node: &NodeId,
-    mut register: R,
+    mut publish: R,
     mut admit: D,
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    R: AsyncFnMut(Registration) -> Result<(), Error>,
+    R: AsyncFnMut(Publication) -> Result<(), Error>,
     D: AsyncFnMut(Envelope) -> Result<Routed, Error>,
 {
     consume(
@@ -113,7 +113,14 @@ where
                 if registration.placement.node != *node {
                     return Err(Error::InvalidRecord);
                 }
-                register(registration).await?;
+                publish(Publication::Placement(registration)).await?;
+                Ok(None)
+            }
+            Publication::Call(call) => {
+                if call.node != *node {
+                    return Err(Error::InvalidRecord);
+                }
+                publish(Publication::Call(call)).await?;
                 Ok(None)
             }
         },

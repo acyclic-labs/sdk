@@ -39,18 +39,18 @@ pub async fn run_link<P, A, R, F, D>(
     account: &A,
     paths: &Paths,
     node: &NodeId,
-    register: R,
+    publish: R,
     admit: F,
     deliver: D,
 ) -> Result<std::convert::Infallible, Error>
 where
     P: StreamProvider + ?Sized,
     A: StreamProvider + ?Sized,
-    R: AsyncFnMut(super::Registration) -> Result<(), Error>,
+    R: AsyncFnMut(super::Publication) -> Result<(), Error>,
     F: AsyncFnMut(super::Envelope) -> Result<super::Routed, Error>,
     D: AsyncFnMut(super::Envelope) -> Result<(), Error>,
 {
-    let outgoing = super::forward(local, paths, node, register, admit);
+    let outgoing = super::forward(local, paths, node, publish, admit);
     let incoming = super::drain(account, paths, node, deliver);
     let closed = async {
         match link.next().await? {

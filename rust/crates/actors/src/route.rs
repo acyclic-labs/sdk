@@ -21,7 +21,7 @@ pub use account::{AccountService, Admission, AdmissionPolicy, admit, relay_resou
 mod serving;
 pub use serving::AccountNode;
 mod registration;
-pub use registration::{Publication, Registration, placement_resource, register};
+pub use registration::{CallPublication, Publication, Registration, placement_resource, register};
 
 const CALL_PROTOCOL: &str = "acyclic.actors.route.account.v1";
 
