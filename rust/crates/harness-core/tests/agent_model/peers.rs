@@ -202,7 +202,12 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             .then_some(u64::MAX)
         }
     }
-    struct Recipient(Arc<AtomicUsize>);
+    struct Recipient {
+        calls: Arc<AtomicUsize>,
+        answer: bool,
+        goal: Option<acyclic_harness_core::OperationId>,
+        output: acyclic_harness_core::conversation::FileRef,
+    }
     impl TurnDriver for Recipient {
         fn step<'a>(
             &'a self,
@@ -211,24 +216,46 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             input: Option<Queued>,
             _: acyclic_actors::guest::CancellationToken,
         ) -> TurnFuture<'a> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
+                let outs = match input {
+                    Some(input) if self.answer => vec![Out::Conversation(
+                        ConversationEntry {
+                            observed_through: input.inbox + 1,
+                            steering: None,
+                            inbox: input.inbox,
+                            input: input.input,
+                            output: self.output.clone(),
+                            outcome: TurnOutcome::Completed,
+                            goal: self.goal,
+                            announcements: Vec::new(),
+                            tool_results: None,
+                            notices: None,
+                        }
+                        .encode()?,
+                    )],
+                    Some(input) => vec![Out::InputCancelled {
+                        input: input.inbox,
+                        conversation: state.conversation_tail,
+                    }],
+                    None => Vec::new(),
+                };
                 Ok(TurnStep {
                     checkpoint: None,
-                    outs: input
-                        .into_iter()
-                        .map(|input| Out::InputCancelled {
-                            input: input.inbox,
-                            conversation: state.conversation_tail,
-                        })
-                        .collect(),
+                    outs,
                     wait: Wait::Input,
                     drops: None,
                 })
             })
         }
     }
-    for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+    for (delivery, answer, continuing) in [MessageDelivery::Steer, MessageDelivery::FollowUp]
+        .into_iter()
+        .flat_map(|delivery| {
+            [(false, false), (true, false), (true, true)]
+                .map(|(answer, continuing)| (delivery, answer, continuing))
+        })
+    {
         for opt_out_before_delivery in [false, true] {
             let source = MemoryStream::default();
             let destination = Arc::new(MemoryStream::default());
@@ -242,7 +269,13 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             };
             let handler = AgentHandler::new(
                 actor_store(&destination)?,
-                Recipient(calls.clone()),
+                Recipient {
+                    calls: calls.clone(),
+                    answer,
+                    goal: continuing
+                        .then(|| acyclic_harness_core::OperationId::from_bytes([4; 16])),
+                    output: super::driver::file("answer.md")?,
+                },
                 ActorLimits::default(),
             )?
             .with_routing(receiving.clone());
@@ -409,6 +442,30 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 calls.load(Ordering::SeqCst),
                 usize::from(!opt_out_before_delivery)
             );
+            if continuing && !opt_out_before_delivery {
+                assert!(matches!(
+                    host.reply(&recipient, &intent("request"), 1).await?,
+                    Reply::Continuing { .. }
+                ));
+                assert!(
+                    matches!(
+                        destination
+                            .tail(receiving.paths.outbox(&receiving.node)?)
+                            .await,
+                        Err(StreamError::NotFound)
+                    ),
+                    "a continuing goal must not publish an early Answered result"
+                );
+                assert_eq!(peer.deliver(&host, &receiving, &receipt).await?, expected);
+                host.drain(&recipient).await?;
+                assert!(matches!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await,
+                    Err(StreamError::NotFound)
+                ));
+                continue;
+            }
             assert_eq!(
                 destination
                     .tail(receiving.paths.outbox(&receiving.node)?)
@@ -421,7 +478,15 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 .ok_or("terminal Notice missing")?;
             assert_eq!(
                 route::Publication::decode(&terminal.value)?.delivery()?,
-                peer.result(receiving.node.clone(), &receipt, SentReplyStatus::Dropped)?,
+                peer.result(
+                    receiving.node.clone(),
+                    &receipt,
+                    if answer && !opt_out_before_delivery {
+                        SentReplyStatus::Answered { sequence: 0 }
+                    } else {
+                        SentReplyStatus::Dropped
+                    }
+                )?,
             );
             if !opt_out_before_delivery {
                 let cancelled = destination
@@ -432,7 +497,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 assert_eq!(
                     cancelled.last.ok_or("cancellation fact missing")?.commit_id,
                     terminal.commit_id,
-                    "the terminal Notice must join the original input cancellation"
+                    "the terminal Notice must join the original input settlement"
                 );
                 host.drain(&recipient).await?;
                 assert_eq!(

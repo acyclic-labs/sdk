@@ -86,6 +86,13 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     let mut ranges = Vec::new();
     let mut fence = None;
     let mut results = Vec::new();
+    let mut sequence = conversation
+        .checked_sub(
+            outs.iter()
+                .filter(|out| matches!(out, super::Out::Conversation(_)))
+                .count() as u64,
+        )
+        .ok_or(Error::Record("conversation tail precedes its appends"))?;
     if let Some(retired) = retired {
         ranges.push(retired);
     }
@@ -100,8 +107,14 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 .ok_or(Error::Record("cancelled input is unavailable"))?;
             let source = super::InboxRecord::decode(&record.value)?;
             if let Some((routing, within)) = routing
-                && let Some(result) =
-                    super::routing::notices::cancelled(routing, within, agent, &source, &record)?
+                && let Some(result) = super::routing::notices::terminal(
+                    routing,
+                    within,
+                    agent,
+                    &source,
+                    &record,
+                    super::SentReplyStatus::Dropped,
+                )?
             {
                 results.push(result);
             }
@@ -118,6 +131,39 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             continue;
         };
         let entry = super::ConversationEntry::decode(record)?;
+        let settled_at = sequence;
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(Error::Record("agent conversation tail overflow"))?;
+        // An initial goal entry can commit while its run still continues. It
+        // is not an answer until the goal's terminal publication commits.
+        if entry.goal.is_none()
+            && agent.depth() == 0
+            && matches!(&entry.input, super::TurnInput::Message {
+                from: super::Sender::Agent { path }, ..
+            } if path.depth() == 0 && path != agent)
+            && let Some((routing, within)) = routing
+        {
+            let record = super::reply::source_record(provider, agent.inbox()?, entry.inbox)
+                .await?
+                .ok_or(Error::Record("answered peer input is unavailable"))?;
+            let source = super::InboxRecord::decode(&record.value)?;
+            if entry.admitted_message(entry.inbox, &source).is_none() {
+                return Err(Error::Record("conversation answered another peer input"));
+            }
+            if let Some(result) = super::routing::notices::terminal(
+                routing,
+                within,
+                agent,
+                &source,
+                &record,
+                super::SentReplyStatus::Answered {
+                    sequence: settled_at,
+                },
+            )? {
+                results.push(result);
+            }
+        }
         completed.insert(entry.inbox);
         let Some(cut) = entry.steering else { continue };
         // Settlement carries its complete admitted interval. A parked turn's

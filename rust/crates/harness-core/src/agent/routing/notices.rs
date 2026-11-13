@@ -135,14 +135,15 @@ impl PeerRoute<'_> {
     }
 }
 
-/// A cancelled accepted input already has its immutable source in hand. Return
+/// A settled accepted input already has its immutable source in hand. Return
 /// only a routed peer's terminal, never traffic for ordinary local inputs.
-pub(in crate::agent) fn cancelled(
+pub(in crate::agent) fn terminal(
     routing: &super::Routing,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
     source: &InboxRecord,
     record: &acyclic_stream::Record,
+    status: SentReplyStatus,
 ) -> Result<Option<AppendRecord>, Error> {
     let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = source else {
         return Ok(None);
@@ -172,7 +173,7 @@ pub(in crate::agent) fn cancelled(
             version: 1,
             id: message.id.clone(),
             peer: agent.clone(),
-            status: SentReplyStatus::Dropped,
+            status,
         }
         .envelope(
             routing.node.clone(),
