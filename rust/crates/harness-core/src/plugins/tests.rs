@@ -179,3 +179,78 @@ async fn an_unrunnable_or_unsatisfied_plugin_makes_plugins_ts_invalid() {
         assert!(error.contains(reason), "{reason}: {error}");
     }
 }
+
+#[tokio::test]
+async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> Result<()> {
+    struct Metered<'a> {
+        files: Files,
+        io: &'a crate::filesystem::PreparationIo,
+    }
+    impl Tree for Metered<'_> {
+        fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+            Some(self.io)
+        }
+        fn read<'a>(
+            &'a self,
+            path: &'a str,
+        ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+            self.files.read(path)
+        }
+    }
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let tree = Metered {
+        io: &io,
+        files: Files(BTreeMap::from([
+            (
+                "plugins/helper/plugin.ts",
+                "export default {name:'helper', description:'d'.repeat(65536), after:{done:{path:'live/agents/self/status.json',from:'now'}}};",
+            ),
+            (
+                "plugins/helper/hooks/after-done.ts",
+                "export default [{notice:{text:'n'.repeat(65536),wake:true}}];",
+            ),
+        ])),
+    };
+    fn layers(bytes: &[u8]) -> [Layer<'_>; 1] {
+        [Layer {
+            name: "home",
+            generation: "one",
+            bytes: Some(bytes),
+        }]
+    }
+    let empty = load(&tree, &layers(b"export default {};"), "owner").await?;
+    assert!(empty.names.is_empty());
+    drop(empty);
+    let admitted = load_decision(
+        &tree,
+        &layers(b"export default {helper:{enabled:true}};"),
+        "owner",
+    )
+    .await?
+    .into_result()?;
+    assert_eq!(admitted.descriptions[0].len(), 65536);
+    let after = admitted.after[0].clone();
+    assert_eq!(after.settlement().next().unwrap().len(), 65536);
+    // Replace the evaluator's single cache entry. Admission owns its data independently.
+    config::evaluate(
+        "other.ts",
+        b"export default 0;",
+        &Files(BTreeMap::new()),
+        &Value::Null,
+        Surface::Data,
+    )
+    .await?;
+    assert!(work.live_allocation_bytes() >= baseline + 131072);
+    drop(admitted);
+    assert!(work.live_allocation_bytes() >= baseline + 65536);
+    drop(after);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}

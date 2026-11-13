@@ -179,7 +179,13 @@ pub(super) async fn fold(
     mut evidence: Option<&mut Evidence>,
     cache: &Cache,
 ) -> Result<Result<(super::super::ConfigValue, Vec<Link>)>> {
-    let mut value = super::super::ConfigValue::new(base, None, None);
+    let mut value = super::super::ConfigValue::new(
+        base,
+        None,
+        tree.preparation_io()
+            .and_then(crate::filesystem::PreparationIo::original_native_work)
+            .cloned(),
+    );
     let mut chain = Vec::new();
     // `held` remains the single implementation of precedence and off cuts.
     for (index, layer) in crate::layers::held_indexed(layers) {
