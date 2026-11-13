@@ -26,6 +26,13 @@ impl TurnExecutors for NoTurns {
 }
 
 async fn binding() -> TestResult<(Binding, AgentPath)> {
+    binding_with(Arc::new(NoTurns), Default::default()).await
+}
+
+pub(in crate::filesystem) async fn binding_with(
+    executors: Arc<dyn TurnExecutors>,
+    approval_policy: crate::approvals::ApprovalPolicy,
+) -> TestResult<(Binding, AgentPath)> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -50,14 +57,14 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
-            executors: Arc::new(NoTurns),
+            executors,
             limits: TurnLimits {
                 maximum_bytes: Some(65_536),
                 history_turns: 8,
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(acyclic_actors::local::SystemClock),
-            approval_policy: Default::default(),
+            approval_policy,
         },
     )?;
     let id = AgentId::from_bytes([1; 16]);
