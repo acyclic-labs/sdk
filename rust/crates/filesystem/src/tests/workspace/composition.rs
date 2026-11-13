@@ -1041,6 +1041,12 @@ async fn transaction_policy_sources(pinned: bool) -> Result<(), Box<dyn Error>> 
                 allow::<WorkspaceError>,
             ))
             .await;
+        if changed.is_some() {
+            assert!(
+                committed.is_err(),
+                "an unchanged target must refuse stale sources without requesting rebase"
+            );
+        }
         let accepted = matches!(committed, Ok(receipt) if matches!(receipt.value, crate::TransactionCommit::Committed(_) | crate::TransactionCommit::AlreadyCommitted(_)));
         assert_eq!(accepted, changed.is_none());
         let after = unbounded!(target, head())?.id();

@@ -363,6 +363,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     member,
                     conflicts,
                     actual,
+                    anchor.head,
                     recovered,
                     work,
                     guard.as_deref_mut(),
