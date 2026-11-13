@@ -255,6 +255,13 @@ fn main() {
             std::process::exit(2);
         }
     }
+    let numeric_seed = std::env::var_os("ACYCLIC_QUAL_SEED")
+        .map_or(Some(0), |seed| {
+            seed.to_str().and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or_else(|| {
+            refuse_configuration("ACYCLIC_QUAL_SEED must be a non-negative u64 integer")
+        });
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -265,17 +272,17 @@ fn main() {
             std::process::exit(2);
         }
     };
-    qualify_main(&runtime);
+    qualify_main(&runtime, numeric_seed);
 }
 
-fn refuse_deadline(reason: &str) -> ! {
+fn refuse_configuration(reason: &str) -> ! {
     eprintln!(
-        "step=qualification-deadline {reason}; recovery command: cargo run -p acyclic-conformance --features local-runner --bin qualify --"
+        "step=qualification-configuration {reason}; recovery command: cargo run -p acyclic-conformance --features local-runner --bin qualify --"
     );
     std::process::exit(2);
 }
 
-fn qualify_main(runtime: &tokio::runtime::Runtime) {
+fn qualify_main(runtime: &tokio::runtime::Runtime, numeric_seed: u64) {
     let mut arguments = std::env::args_os();
     let child_mode = arguments.nth(1);
     if child_mode.as_deref() == Some(std::ffi::OsStr::new("--sqlite-wal-child"))
@@ -299,22 +306,22 @@ fn qualify_main(runtime: &tokio::runtime::Runtime) {
     }
     let budget_seconds = child_mode.map(|argument| {
         if arguments.next().is_some() {
-            refuse_deadline("expected at most one --max-seconds=<integer> argument");
+            refuse_configuration("expected at most one --max-seconds=<integer> argument");
         }
         argument
             .to_str()
             .and_then(|value| value.strip_prefix("--max-seconds="))
             .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or_else(|| refuse_deadline("expected --max-seconds=<non-negative integer>"))
+            .unwrap_or_else(|| {
+                refuse_configuration("expected --max-seconds=<non-negative integer>")
+            })
     });
-    let seed = std::env::var("ACYCLIC_QUAL_SEED").unwrap_or_else(|_| "0".into());
-    let numeric_seed = seed.parse::<u64>().unwrap_or(0);
     let started = Instant::now();
     let deadline = budget_seconds.map(|seconds| {
         started
             .checked_add(Duration::from_secs(seconds))
             .unwrap_or_else(|| {
-                refuse_deadline("--max-seconds cannot be represented by the monotonic clock")
+                refuse_configuration("--max-seconds cannot be represented by the monotonic clock")
             })
     });
     let mut cases = Vec::new();
@@ -337,7 +344,7 @@ fn qualify_main(runtime: &tokio::runtime::Runtime) {
         schema: 1,
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
-        seed,
+        seed: numeric_seed.to_string(),
         budget_seconds,
         elapsed_ms: started.elapsed().as_millis(),
         passed: cases.iter().all(|case| case.passed),
