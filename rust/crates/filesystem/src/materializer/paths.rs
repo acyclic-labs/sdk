@@ -7,6 +7,9 @@ pub(super) use crate::native_host::host_path;
 mod linux;
 
 /// Validates a recovery location against the held checkout allocation.
+/// Linux admission also requires the same mount identity and refuses any
+/// mounted entry below the checkout, including same-device read-only bind
+/// mounts. This proof precedes native preparation and authored publication.
 pub fn validate_native_preparation_location(
     root: &Path,
     operation: &Path,
