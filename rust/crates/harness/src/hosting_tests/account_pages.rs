@@ -17,7 +17,7 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
     let requester = bound.agents().actor(&root)?;
     let node = NodeId::new(b"device")?;
     let profile = crate::agent::SessionProfile::project(
-        &crate::agent::Phase::Idle,
+        &crate::agent::Phase::Running,
         "Public title ".repeat(128),
         &[],
         "Public goal",
@@ -108,6 +108,54 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
     let requests = account.requests().since(before);
     assert_eq!(requests.control(), 2);
     assert_eq!(requests.data(), 0);
+    assert_eq!(local.requests().since(local_before).control(), 0);
+    assert_eq!(local.requests().since(local_before).data(), 0);
+    let projected = crate::local::sessions::peer_page(
+        items.clone(),
+        None,
+        None,
+        &crate::local::sessions::Filter {
+            title: Some("PUBLIC TITLE".into()),
+            states: vec![crate::local::sessions::State::Running],
+            ..Default::default()
+        },
+    );
+    assert_eq!(projected.items.len(), 2);
+    assert!(projected.items.iter().all(|item| {
+        item.title.as_ref() == Some(&profile.title)
+            && item
+                .peer
+                .as_ref()
+                .is_some_and(|peer| peer.profile == profile)
+    }));
+    assert!(
+        crate::local::sessions::peer_page(
+            items.clone(),
+            None,
+            None,
+            &crate::local::sessions::Filter {
+                states: vec![crate::local::sessions::State::Idle],
+                ..Default::default()
+            },
+        )
+        .items
+        .is_empty(),
+        "missing private status must not turn a running peer into idle"
+    );
+    assert!(
+        crate::local::sessions::peer_page(
+            items.clone(),
+            None,
+            None,
+            &crate::local::sessions::Filter {
+                title: Some("absent title".into()),
+                ..Default::default()
+            },
+        )
+        .items
+        .is_empty()
+    );
+    assert_eq!(account.requests().since(before), requests);
     assert_eq!(local.requests().since(local_before).control(), 0);
     assert_eq!(local.requests().since(local_before).data(), 0);
 
@@ -268,6 +316,15 @@ async fn account_peer_command_preserves_qualified_identity_credit_and_authority(
         partial,
         Some(acyclic_harness_client::PeerPagePartial::AccountUnreachable)
     );
+    let projected = crate::local::sessions::peer_page(
+        filtered,
+        next.clone(),
+        partial,
+        &crate::local::sessions::Filter::default(),
+    );
+    assert!(projected.items.is_empty());
+    assert_eq!(projected.next, next);
+    assert_eq!(projected.partial, partial);
     let cursor = next.ok_or("filtered local page lost continuation")?;
     let before = account.requests();
     let changed = cursor.replacen(peers::LOCAL_CURSOR, "account.", 1);

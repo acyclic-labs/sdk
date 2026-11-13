@@ -101,19 +101,20 @@ pub struct Filter {
 
 impl Filter {
     fn metadata(&self, item: &acyclic_harness_client::ChildAgent) -> bool {
-        let state = item.peer.as_ref().map_or_else(
-            || State::of(item.status.as_ref()),
-            |peer| match peer.profile.phase {
-                crate::agent::SessionPhase::Idle => State::Idle,
-                crate::agent::SessionPhase::Running => State::Running,
-                crate::agent::SessionPhase::WaitingApproval => State::WaitingApproval,
-                crate::agent::SessionPhase::Done => State::Done,
-                crate::agent::SessionPhase::WaitingUser
-                | crate::agent::SessionPhase::WaitingHost
-                | crate::agent::SessionPhase::Waiting => State::Waiting,
-            },
-        );
-        (self.states.is_empty() || self.states.contains(&state))
+        let matches_state = self.states.is_empty()
+            || self.states.contains(&item.peer.as_ref().map_or_else(
+                || State::of(item.status.as_ref()),
+                |peer| match peer.profile.phase {
+                    crate::agent::SessionPhase::Idle => State::Idle,
+                    crate::agent::SessionPhase::Running => State::Running,
+                    crate::agent::SessionPhase::WaitingApproval => State::WaitingApproval,
+                    crate::agent::SessionPhase::Done => State::Done,
+                    crate::agent::SessionPhase::WaitingUser
+                    | crate::agent::SessionPhase::WaitingHost
+                    | crate::agent::SessionPhase::Waiting => State::Waiting,
+                },
+            ));
+        matches_state
             && self
                 .created_after
                 .is_none_or(|after| item.created_at_micros.is_some_and(|time| time >= after))
@@ -153,6 +154,33 @@ pub struct Page {
 
 fn unexpected() -> Error {
     Error::Invalid("session command returned another reply".into())
+}
+
+/// Project only the authenticated public rows already selected by discovery.
+/// This branch has no connection and cannot read peer files or actor state.
+pub(crate) fn peer_page(
+    items: Vec<acyclic_harness_client::ChildAgent>,
+    next: Option<String>,
+    partial: Option<acyclic_harness_client::PeerPagePartial>,
+    filter: &Filter,
+) -> Page {
+    Page {
+        items: items
+            .into_iter()
+            .filter(|item| filter.metadata(item))
+            .map(|item| Session {
+                agent: item.agent,
+                title: item.peer.as_ref().map(|peer| peer.profile.title.clone()),
+                status: item.status,
+                created_at_micros: item.created_at_micros,
+                updated_at_micros: item.updated_at_micros,
+                peer: item.peer,
+            })
+            .filter(|item| filter.title(item))
+            .collect(),
+        next,
+        partial,
+    }
 }
 
 /// User-only membership change through the selected session's connection.
@@ -315,19 +343,12 @@ pub async fn page_scoped(
     else {
         return Err(unexpected());
     };
+    if scope == acyclic_harness_client::SessionsScope::Peers {
+        return Ok(peer_page(items, next, partial, filter));
+    }
     let items =
         futures::future::try_join_all(items.into_iter().filter(|item| filter.metadata(item)).map(
             |item| async move {
-                if scope == acyclic_harness_client::SessionsScope::Peers {
-                    return Ok(Session {
-                        agent: item.agent,
-                        title: item.peer.as_ref().map(|peer| peer.profile.title.clone()),
-                        status: item.status,
-                        created_at_micros: item.created_at_micros,
-                        updated_at_micros: item.updated_at_micros,
-                        peer: item.peer,
-                    });
-                }
                 let AgentReply::FilePreviews { snapshot } = connection
                     .execute(&AgentCommand::AgentFilePreviews {
                         agent: item.agent.clone(),
