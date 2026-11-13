@@ -4,6 +4,119 @@ use acyclic_harness_core::Capabilities;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn session_profiles_publish_only_public_metadata_changes() -> Result {
+    use acyclic_actors::route::NodeId;
+    let volume = super::driver::file("body.md")?.volume().clone();
+    let private = WorkspaceEntry::initial_volume(
+        WorkspaceRole::Private,
+        "private-state".into(),
+        volume.clone(),
+    );
+    let project = WorkspaceEntry::initial_volume(WorkspaceRole::User, "project".into(), volume);
+    let table = WorkspaceTable::new(vec![private, project.clone()])?;
+    let phase = Phase::WaitingUser {
+        path: "private-input-fence".into(),
+    };
+    let profile = SessionProfile::project(&phase, "Review".into(), &table, "é中 tail", 4);
+    let provider = MemoryStream::default();
+    let path = StreamPath::new("registry/account/sessions/root")?;
+    let mut row = SessionRow::new(NodeId::new(b"owner")?, profile.clone());
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        idempotency_key: intent_key("initial-session-row", &[])?,
+        effects: vec![row.effect(path.clone())?],
+    };
+    assert!(matches!(
+        provider.commit(request.clone()).await?,
+        CommitOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        provider.commit(request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    assert_eq!(provider.tail(path.clone()).await?, 1);
+    assert_eq!(profile.goal_preview, "é");
+    let encoded = serde_json::to_string(&profile)?;
+    // Negative controls: the original admitted values contain the data that
+    // discovery must omit. This is not an empty-input redaction assertion.
+    assert!(serde_json::to_string(&phase)?.contains("private-input-fence"));
+    assert!(serde_json::to_string(&table)?.contains("private-state"));
+    assert!(!encoded.contains("private-input-fence"));
+    assert!(!encoded.contains("private-state"));
+    assert_eq!(profile.workspaces.len(), 1);
+    assert_eq!(profile.workspaces[0].id, project.id);
+
+    let internal_change = SessionProfile::project(
+        &Phase::WaitingUser {
+            path: "another-private-fence".into(),
+        },
+        "Review".into(),
+        &table,
+        "é中 changed after the preview",
+        4,
+    );
+    assert!(row.changed(internal_change)?.is_none());
+    for changed in [
+        SessionProfile::project(&Phase::Running, "Review".into(), &table, "é中 tail", 4),
+        SessionProfile::project(&phase, "Updated".into(), &table, "é中 tail", 4),
+        SessionProfile::project(&phase, "Review".into(), &table, "new goal", 4),
+        {
+            let mut rerooted = project.clone();
+            rerooted.root = "subdirectory".into();
+            SessionProfile::project(
+                &phase,
+                "Review".into(),
+                &WorkspaceTable::new(vec![rerooted])?,
+                "é中 tail",
+                4,
+            )
+        },
+        {
+            let mut renamed = project;
+            renamed.name = "renamed".into();
+            SessionProfile::project(
+                &phase,
+                "Review".into(),
+                &WorkspaceTable::new(vec![renamed])?,
+                "é中 tail",
+                4,
+            )
+        },
+    ] {
+        let next = row.changed(changed.clone())?.ok_or("missing change")?;
+        assert_eq!(next.rev, row.rev + 1);
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: intent_key("session-row", &[&next.rev.to_string()])?,
+                    effects: vec![next.effect(path.clone())?],
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        let mut stale = row.changed(changed)?.ok_or("missing stale change")?;
+        stale.profile.title = "stale producer".into();
+        assert!(matches!(
+            provider
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: intent_key("stale-session-row", &[&next.rev.to_string()])?,
+                    effects: vec![stale.effect(path.clone())?],
+                })
+                .await?,
+            CommitOutcome::Conflict(_)
+        ));
+        let head = provider.head(path.clone()).await?;
+        let record = head.last.ok_or("session row missing")?;
+        assert_eq!(SessionRow::decode(&record.value)?, next);
+        assert_eq!(head.tail, next.rev);
+        row = next;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refusal() -> Result {
     use acyclic_actors::{
         addressing::ActorReference,
