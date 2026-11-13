@@ -60,6 +60,21 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                     )
                     .await?;
                     original.descriptor().verify(&bytes, &mut None)?;
+                    // Private execution payloads require the original record proof;
+                    // the session's published conversation exception does not cover them.
+                    if !matches!(
+                        call(endpoint, &AgentCommand::Read {
+                            agent: agent.clone(),
+                            target: ReadTarget::File { file: original.clone() },
+                            offset: 0,
+                        }).await?,
+                        Err(acyclic_harness_client::AgentControlFailure::Refused { code, .. })
+                            if code == "agent_turn_error"
+                    ) {
+                        return Err(
+                            "an ordinary file read acquired private execution authority".into()
+                        );
+                    }
                     let recorded: RecordedInvocation = serde_json::from_slice(&bytes)?;
                     if recorded.metadata != super::invocation_metadata()
                         || recorded.target.is_some()

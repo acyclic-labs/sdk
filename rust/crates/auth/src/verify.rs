@@ -568,8 +568,9 @@ impl VerifiedCapability {
         let message = block_transcript(self.blocks.len() as u64, previous, &payload);
         let signature = signer.sign(&message).to_bytes();
         let mut seal = [0; SEAL_DOMAIN.len() + 32];
-        seal[..SEAL_DOMAIN.len()].copy_from_slice(SEAL_DOMAIN);
-        seal[SEAL_DOMAIN.len()..].copy_from_slice(&block_id(&message, &signature));
+        let (domain, id) = seal.split_at_mut(SEAL_DOMAIN.len());
+        domain.copy_from_slice(SEAL_DOMAIN);
+        id.copy_from_slice(&block_id(&message, &signature));
         let sealed = next.sign(&seal).to_bytes();
         let mut signed = self.signed.clone();
         signed.push(SignedBlockProto {
@@ -595,9 +596,9 @@ impl VerifiedCapability {
             Proof::Sealed(signature) => Ok(*signature),
             Proof::Append(signer) => {
                 let mut message = [0; SEAL_DOMAIN.len() + 32];
-                message[..SEAL_DOMAIN.len()].copy_from_slice(SEAL_DOMAIN);
-                message[SEAL_DOMAIN.len()..]
-                    .copy_from_slice(self.ids.last().ok_or(VerifyError::Malformed)?);
+                let (domain, id) = message.split_at_mut(SEAL_DOMAIN.len());
+                domain.copy_from_slice(SEAL_DOMAIN);
+                id.copy_from_slice(self.ids.last().ok_or(VerifyError::Malformed)?);
                 Ok(signer.sign(&message).to_bytes())
             }
         }

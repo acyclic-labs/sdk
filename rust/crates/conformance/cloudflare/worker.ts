@@ -161,7 +161,17 @@ export class Agent extends DurableObject {
   failNextAlarmClear() { this.failAlarmClear = true; }
   alarmFailureRetainedRecovery() { return this.retainedRecoveryAlarm; }
   binding() { return this.host().binding(); }
-  call(invocation: Uint8Array) { return this.host().call(invocation, hostFixtureCredential()); }
+  async call(invocation: Uint8Array): Promise<{ reply: Uint8Array } | { failure: { code: string; message: string } }> {
+    try { return { reply: await this.host().call(invocation, hostFixtureCredential()) }; }
+    catch (error) {
+      // RPC does not preserve custom Error fields. Carry the original code as
+      // data until the caller can restore the canonical Stream error.
+      if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
+        return { failure: { code: error.code, message: error instanceof Error ? error.message : String(error) } };
+      }
+      throw error;
+    }
+  }
   effects() { return BigInt(this.executions); }
   create(intent: string, brief?: string) { return this.host().create(intent, brief); }
   placementStage() {
@@ -192,7 +202,11 @@ async function endpoint(env: Env, policy: Preset["approval_policy"], name = `pro
   await agent.configureProtocol(policy);
   await agent.create("protocol-root");
   const ledger = env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite");
-  return { binding: () => agent.binding(), call: (invocation: Uint8Array) => agent.call(invocation),
+  return { binding: () => agent.binding(), call: async (invocation: Uint8Array) => {
+    const result = await agent.call(invocation);
+    if ("failure" in result) throw Object.assign(new Error(result.failure.message), { code: result.failure.code });
+    return result.reply;
+  },
     provider: () => streamLedgerPort(ledger, ""), drain: () => agent.wake(), effects: () => agent.effects() };
 }
 

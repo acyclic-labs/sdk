@@ -125,7 +125,7 @@ pub fn valid_chain(blocks: &[Block]) -> bool {
             && b.caveats.iter().all(
                 |c| !matches!(c.kind, CaveatKind::MaxDepth(max) if blocks.len() - 1 > max as usize),
             )
-            && (i == 0 || narrows(&blocks[..i], b))
+            && (i == 0 || blocks.get(..i).is_some_and(|ancestors| narrows(ancestors, b)))
         })
 }
 
@@ -303,8 +303,11 @@ fn generation_open<'a>(pattern: &str, name: &'a str) -> std::borrow::Cow<'a, str
     ) && !open.contains('~')
         && let Some((base, _generation)) = pinned.split_once('~')
         && base == open
+        && let Some(suffix) = name
+            .strip_prefix("fs:/")
+            .and_then(|rest| rest.strip_prefix(pinned))
     {
-        return format!("fs:/{base}{}", &name["fs:/".len() + pinned.len()..]).into();
+        return format!("fs:/{base}{suffix}").into();
     }
     name.into()
 }

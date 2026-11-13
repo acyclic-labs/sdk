@@ -22,23 +22,20 @@ fn resolve(value: &str) -> Result<ResolvedCredential, CredentialError> {
     let result = provider
         .resolve()
         .now_or_never()
-        .expect("ready credential producer completes");
+        .ok_or_else(|| CredentialError::Provider("credential producer did not complete".into()))?;
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     result
 }
 
-fn capability_format(bytes: &[u8]) {
+fn capability_format(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let text = capability_text(bytes);
-    assert_eq!(
-        capability_from_text(&text).expect("canonical capability text must decode original bytes"),
-        bytes
-    );
+    assert_eq!(capability_from_text(&text)?, bytes);
     let mut json = Vec::new();
-    capability_serde::serialize(bytes, &mut serde_json::Serializer::new(&mut json)).unwrap();
-    assert_eq!(serde_json::from_slice::<String>(&json).unwrap(), text);
+    capability_serde::serialize(bytes, &mut serde_json::Serializer::new(&mut json))?;
+    assert_eq!(serde_json::from_slice::<String>(&json)?, text);
     let mut input = serde_json::Deserializer::from_slice(&json);
     assert_eq!(
-        capability_serde::deserialize(&mut input).unwrap(),
+        capability_serde::deserialize(&mut input)?,
         bytes,
         "capability JSON must retain original bytes"
     );
@@ -46,7 +43,7 @@ fn capability_format(bytes: &[u8]) {
         let mut invalid = text.clone();
         invalid.push(suffix);
         assert!(capability_from_text(&invalid).is_err());
-        let invalid_json = serde_json::to_vec(&invalid).unwrap();
+        let invalid_json = serde_json::to_vec(&invalid)?;
         let mut input = serde_json::Deserializer::from_slice(&invalid_json);
         assert!(capability_serde::deserialize(&mut input).is_err());
     }
@@ -60,16 +57,22 @@ fn capability_format(bytes: &[u8]) {
     let mut input = serde_json::Deserializer::from_slice(bytes);
     if let Ok(decoded) = capability_serde::deserialize(&mut input) {
         let mut original = serde_json::Deserializer::from_slice(bytes);
-        let text: String = serde::Deserialize::deserialize(&mut original).unwrap();
+        let text: String = serde::Deserialize::deserialize(&mut original)?;
         assert_eq!(capability_text(&decoded), text);
     }
+    Ok(())
 }
 
 /// Check real text codecs, provider admission, progress and exact bearer bytes.
 pub fn check(bytes: &[u8]) {
-    capability_format(bytes);
+    let result = checked(bytes);
+    assert!(result.is_ok(), "credential oracle failed: {result:?}");
+}
+
+fn checked(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    capability_format(bytes)?;
     let Ok(value) = std::str::from_utf8(bytes) else {
-        return;
+        return Ok(());
     };
     // Independent header-contract oracle, checked through the real provider.
     let expected = value.chars().any(|character| !character.is_whitespace())
@@ -78,21 +81,20 @@ pub fn check(bytes: &[u8]) {
     let resolved = resolve(value);
     if !expected {
         assert!(matches!(resolved, Err(CredentialError::Invalid)));
-        return;
+        return Ok(());
     }
-    let request = resolved.expect("admitted opaque credential resolves");
+    let request = resolved?;
     assert_eq!(request.as_str().as_bytes(), bytes);
     request
         .check()
         .now_or_never()
-        .expect("raw custody check completes")
-        .unwrap();
+        .ok_or("raw custody check did not complete")??;
     let encoded = bearer_bytes(request.as_str());
     let rest = encoded
         .strip_prefix(b"Bearer ")
-        .expect("bearer transport prefix");
+        .ok_or("missing bearer transport prefix")?;
     assert_eq!(rest, bytes);
-    assert_eq!(std::str::from_utf8(rest).unwrap(), value);
+    assert_eq!(std::str::from_utf8(rest)?, value);
     // No trimming, normalization or token decoding may hide an injected
     // transport delimiter, including one after an otherwise admitted token.
     for delimiter in ['\r', '\n', '\0'] {
@@ -104,4 +106,5 @@ pub fn check(bytes: &[u8]) {
         );
     }
     assert_eq!(request.as_str().as_bytes(), bytes);
+    Ok(())
 }

@@ -261,7 +261,8 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         if conversation.len() != 1 {
             return Err("a prompt retry produced another turn".into());
         }
-        let entry = ConversationEntry::decode(&conversation.first().ok_or("missing turn")?.value)?;
+        let record = conversation.first().ok_or("missing turn")?;
+        let entry = ConversationEntry::decode(&record.value)?;
         let request_reply = AgentCommand::Reply {
             agent: root.clone(),
             id: IntentId::try_from("prompt")?,
@@ -279,7 +280,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         else {
             return Err("the settled prompt has no correlated reply".into());
         };
-        if *sequence != conversation[0].sequence
+        if *sequence != record.sequence
             || settled != &entry
             || serde_json::to_value(&answered)?
                 != serde_json::to_value(call(endpoint, &request_reply).await??)?
@@ -299,7 +300,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             endpoint,
             &root,
             ReadTarget::Conversation {
-                sequence: conversation[0].sequence,
+                sequence: record.sequence,
                 file: entry.output.clone(),
             },
         )
@@ -312,7 +313,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         let uncommitted_output = AgentCommand::Read {
             agent: root.clone(),
             target: ReadTarget::Conversation {
-                sequence: conversation[0]
+                sequence: record
                     .sequence
                     .checked_add(1)
                     .ok_or("conversation cursor overflow")?,
@@ -331,6 +332,19 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             return Err(
                 "an uncommitted conversation did not report its committed-prefix refusal".into(),
             );
+        }
+        // The owning session can also read its published conversation files.
+        if read(
+            endpoint,
+            &root,
+            ReadTarget::File {
+                file: entry.output.clone(),
+            },
+        )
+        .await?
+            != output_bytes
+        {
+            return Err("the owning session read changed its published conversation output".into());
         }
         observations::verify(endpoint, &root, entry.inbox).await?;
         let AgentReply::Approvals { items, next } = call(endpoint, &approvals).await?? else {
@@ -504,6 +518,27 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         if !matches!(refused, Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent")
         {
             return Err("a missing descendant did not report no_such_agent".into());
+        }
+        let outside = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([255; 16]));
+        // This credential names only the served tree. An outside-tree request
+        // requires independent session-directory authority before dispatch.
+        let refused = call(
+            endpoint,
+            &AgentCommand::Cancel {
+                conversation: 0,
+                input: 1,
+                agent: outside,
+                id: IntentId::try_from("outside")?,
+            },
+        )
+        .await;
+        if !matches!(refused, Err(ref error)
+            if error.downcast_ref::<StreamError>() == Some(&StreamError::AccessDenied))
+        {
+            return Err("an outside-tree command did not return typed AccessDenied".into());
+        }
+        if endpoint.effects().await? != 1 {
+            return Err("an outside-tree command caused a tool effect".into());
         }
     }
     Ok(())

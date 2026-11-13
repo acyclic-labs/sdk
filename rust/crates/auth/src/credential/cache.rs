@@ -378,7 +378,9 @@ impl CredentialCache {
             .is_some_and(|snapshot| valid(snapshot, &validity).is_ok())
         {
             drop(state);
-            return Ok(Resolution::Ready(current.unwrap()));
+            return current
+                .map(Resolution::Ready)
+                .ok_or(CredentialCacheError::Unavailable);
         }
         // A published flight whose snapshot is no longer valid must not be
         // joined: a paused waiter can keep it stored past expiry. Its waiters

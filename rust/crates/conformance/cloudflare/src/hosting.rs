@@ -2,7 +2,7 @@
 mod authority;
 use acyclic_agent_host_conformance::{Result as SuiteResult, protocol::Endpoint};
 use acyclic_harness_core::agent::AgentPath;
-use acyclic_stream::{BoxProviderFuture, StreamProvider};
+use acyclic_stream::{BoxProviderFuture, StreamError, StreamProvider};
 use std::sync::Arc;
 use wasm_bindgen::JsCast as _;
 use wasm_bindgen::prelude::*;
@@ -27,6 +27,16 @@ struct Hosted {
     provider: Arc<dyn StreamProvider>,
 }
 
+fn failure(method: &str, error: JsValue) -> acyclic_agent_host_conformance::Failure {
+    if let Ok(code) = js_sys::Reflect::get(&error, &JsValue::from_str("code"))
+        && let Some(code) = code.as_string()
+        && let Some(error) = StreamError::from_code(&code)
+    {
+        return error.into();
+    }
+    format!("hosted {method}: {error:?}").into()
+}
+
 async fn invoke(port: &JsValue, method: &str, args: &[JsValue]) -> SuiteResult<JsValue> {
     let function = js_sys::Reflect::get(port, &method.into())
         .map_err(|error| format!("hosted {method}: {error:?}"))?
@@ -35,10 +45,10 @@ async fn invoke(port: &JsValue, method: &str, args: &[JsValue]) -> SuiteResult<J
     let array: js_sys::Array = args.iter().collect();
     let pending = function
         .apply(port, &array)
-        .map_err(|error| format!("hosted {method}: {error:?}"))?;
+        .map_err(|error| failure(method, error))?;
     wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&pending))
         .await
-        .map_err(|error| format!("hosted {method}: {error:?}").into())
+        .map_err(|error| failure(method, error))
 }
 
 pub async fn open(

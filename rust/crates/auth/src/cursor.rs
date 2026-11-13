@@ -55,16 +55,16 @@ impl CursorKey {
     /// # Errors
     /// Returns an error when the token or its query binding is invalid.
     pub fn open(&self, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, crate::Error> {
-        if sealed.len() < Self::sealed_len(0) || sealed[0] != 1 {
+        if sealed.len() < Self::sealed_len(0) || sealed.first() != Some(&1) {
             return Err(crate::Error::Invalid);
         }
         let mut nonce = [0; 24];
-        nonce.copy_from_slice(&sealed[1..25]);
+        nonce.copy_from_slice(sealed.get(1..25).ok_or(crate::Error::Invalid)?);
         self.0
             .decrypt(
                 &XNonce::from(nonce),
                 Payload {
-                    msg: &sealed[25..],
+                    msg: sealed.get(25..).ok_or(crate::Error::Invalid)?,
                     aad: context,
                 },
             )

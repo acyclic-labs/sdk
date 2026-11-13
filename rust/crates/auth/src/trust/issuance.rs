@@ -269,7 +269,8 @@ impl<P: Provider> Client<P> {
             match reply.decision {
                 Decision::Accepted(certificates) => {
                     if certificates.keys.len() != 1
-                        || certificates.keys[0].key.as_ref() != Some(&request.claims)
+                        || certificates.keys.first().and_then(|key| key.key.as_ref())
+                            != Some(&request.claims)
                         || !certificates
                             .birth
                             .as_ref()

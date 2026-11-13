@@ -22,8 +22,7 @@ pub fn transcript(publication: &RevocationPublication) -> Vec<u8> {
     .into();
     let mut bytes = Vec::with_capacity(REVOCATION_DOMAIN.len() + wire.encoded_len());
     bytes.extend_from_slice(REVOCATION_DOMAIN);
-    wire.encode(&mut bytes)
-        .expect("Vec accepts encoded message");
+    wire.encode_raw(&mut bytes);
     bytes
 }
 
