@@ -44,10 +44,31 @@ impl ResourceAuthorization {
     }
     /// The channel's current credential; `renew` replaces it in place.
     pub(super) fn current(&self) -> Result<Arc<VerifiedCapability>, StreamError> {
-        self.capability
-            .lock()
-            .map(|capability| Arc::clone(&capability))
-            .map_err(|_| StreamError::AccessDenied)
+        let work = || {
+            self.capability
+                .lock()
+                .map(|capability| Arc::clone(&capability))
+                .map_err(|_| StreamError::AccessDenied)
+        };
+        #[cfg(feature = "serde")]
+        {
+            crate::trace::observe_sync(
+                crate::trace::Request {
+                    name: "stream.credential_snapshot",
+                    mechanism: crate::trace::Mechanism::Lock,
+                    parent: None,
+                    guarantee: Some("atomic_credential_snapshot_against_renewal"),
+                },
+                work,
+                |result| {
+                    result
+                        .is_ok()
+                        .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                },
+            )
+        }
+        #[cfg(not(feature = "serde"))]
+        work()
     }
     /// Issuer-attested structured identity, including delegation lineage.
     pub fn principal(&self) -> Result<Principal, StreamError> {

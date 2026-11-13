@@ -1113,7 +1113,8 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     let mut settled = 0;
     let mut succeeded = 0;
     let mut unsettled = 0;
-    while settled != 4 {
+    let mut locks = 0;
+    while settled != 6 {
         let Some(event) = query.next().await? else {
             return Err("diagnostic source ended".into());
         };
@@ -1126,14 +1127,27 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
         {
             assert!(matches!(
                 start.name.as_str(),
-                "stream.session_authorize" | "stream.resource_authorize"
+                "stream.session_authorize"
+                    | "stream.resource_authorize"
+                    | "stream.credential_snapshot"
             ));
             assert_eq!(start.parent, Some(parent));
-            assert_eq!(start.mechanism, Mechanism::AuthCheck);
+            let credential = start.name == "stream.credential_snapshot";
+            assert_eq!(
+                start.mechanism,
+                if credential {
+                    Mechanism::Lock
+                } else {
+                    Mechanism::AuthCheck
+                }
+            );
+            locks += usize::from(credential);
             assert_eq!(
                 start.guarantee.as_deref(),
                 Some(if start.name == "stream.session_authorize" {
                     "current_trust_credential_and_resource_admission"
+                } else if credential {
+                    "atomic_credential_snapshot_against_renewal"
                 } else {
                     "current_trust_entry_facts_and_owner_policy"
                 })
@@ -1152,7 +1166,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
             settled += 1;
         }
     }
-    assert_eq!((succeeded, unsettled), (2, 2));
+    assert_eq!((succeeded, unsettled, locks), (4, 2, 2));
     root.finish_submitted(None, Outcome::Succeeded)?;
     Ok(())
 }
