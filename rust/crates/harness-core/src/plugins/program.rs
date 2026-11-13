@@ -32,8 +32,29 @@ impl LoadedProgram {
     /// Refuses a non-shell capability or an unsupported command form.
     pub fn bind(self, shell: std::sync::Arc<crate::tool::Tool>) -> Result<crate::tool::Tool> {
         let mut custody = self.custody;
+        let io = custody
+            .as_ref()
+            .map(|custody| crate::filesystem::PreparationIo::from_native_work(custody.work()))
+            .transpose()?;
         let shell = match shell.executor.capability() {
-            Some(capability) => std::sync::Arc::new(capability.clone()),
+            Some(capability) => {
+                if let Some(io) = &io {
+                    let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<
+                        crate::tool::Tool,
+                    >()?;
+                    io.retain_owned(bytes)?;
+                    io.allocation_attempt(bytes)?;
+                }
+                std::sync::Arc::new(crate::tool::Tool {
+                    definition: crate::model::clone_tool_definition(
+                        &capability.definition,
+                        io.as_ref(),
+                    )?,
+                    executor: std::sync::Arc::clone(&capability.executor),
+                    projection: std::sync::Arc::clone(&capability.projection),
+                    hook_names: capability.hook_names,
+                })
+            }
             None => shell,
         };
         if shell.definition.name != crate::tools::shell::PLATFORM.name {
@@ -76,11 +97,11 @@ impl LoadedProgram {
                 rendered
             }
         };
-        let (executable, arguments) = match selected {
+        let (executable, arguments) = match &selected {
             Some(selected) => {
                 let arguments = acyclic_host_platform::shell::arguments(&selected)
                     .ok_or_else(|| Error::Unsupported("program shell is unavailable".into()))?;
-                (selected, arguments)
+                (selected.as_str(), arguments)
             }
             None => {
                 let executable =
@@ -88,29 +109,67 @@ impl LoadedProgram {
                 let executable = executable.to_str().ok_or_else(|| {
                     Error::Unsupported("program shell path is not Unicode".into())
                 })?;
-                (
-                    executable.to_owned(),
-                    crate::tools::shell::PLATFORM.arguments,
-                )
+                (executable, crate::tools::shell::PLATFORM.arguments)
             }
         };
-        use serde_json::{Map, Value};
-        let mut argv = vec![Value::String(executable)];
-        argv.extend(
-            arguments
-                .iter()
-                .map(|argument| Value::String((*argument).to_owned())),
-        );
-        argv.push(Value::String(command));
-        let stdin = Value::Object(Map::from_iter([(
-            "$json".into(),
-            Value::String("@arguments".into()),
-        )]));
-        let command = Value::Object(Map::from_iter([
-            ("argv".into(), Value::Array(argv)),
-            ("stdin".into(), stdin),
-        ]));
-        let template = Value::Object(Map::from_iter([("command".into(), command)]));
+        #[derive(serde::Serialize)]
+        struct Template<'a> {
+            command: Command<'a>,
+        }
+        #[derive(serde::Serialize)]
+        struct Command<'a> {
+            argv: Argv<'a>,
+            stdin: Stdin,
+        }
+        #[derive(serde::Serialize)]
+        struct Stdin {
+            #[serde(rename = "$json")]
+            json: &'static str,
+        }
+        struct Argv<'a>(&'a str, &'a [&'a str], &'a str);
+        impl serde::Serialize for Argv<'_> {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq;
+                let mut sequence = serializer.serialize_seq(Some(self.1.len() + 2))?;
+                sequence.serialize_element(self.0)?;
+                for argument in self.1 {
+                    sequence.serialize_element(argument)?;
+                }
+                sequence.serialize_element(self.2)?;
+                sequence.end()
+            }
+        }
+        let (template, template_custody) = crate::tool::value(
+            &Template {
+                command: Command {
+                    argv: Argv(executable, arguments, &command),
+                    stdin: Stdin { json: "@arguments" },
+                },
+            },
+            None,
+            custody.as_ref().map(acyclic_fs::NativeAllocation::work),
+        )?;
+        let temporary_bytes = crate::core::owned_sum([
+            command.capacity() as u64,
+            selected
+                .as_ref()
+                .map_or(0, |selected| selected.capacity() as u64),
+        ])?;
+        drop(command);
+        drop(selected);
+        if let Some(custody) = &mut custody {
+            custody.release(temporary_bytes)?;
+            if let Some(mut incoming) = template_custody {
+                custody.absorb(&mut incoming)?;
+            }
+            if let Some(io) = io {
+                let bytes = io.owned_bytes()?;
+                custody.absorb(&mut io.into_native_custody(bytes)?)?;
+            }
+        }
         crate::tools::native::alias(self.definition, shell, template, custody)
     }
 }
