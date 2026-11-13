@@ -299,7 +299,7 @@ impl World {
                             None,
                         )
                         .ok_or("decorated publication refusal lost its original status")?;
-                        for error in [error, StreamError::Refused(retained)] {
+                        for error in [error.clone(), error.with_refusal(retained)] {
                             if self.settles(&Error::Stream(error)) {
                                 return Err(
                                     "replaced an uncertain or backpressured publication".into()

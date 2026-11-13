@@ -268,6 +268,7 @@ where
         observed_children: Option<u64>,
     ) -> Result<(u64, u64, Option<Q::Page>, bool, u64), Error> {
         self.admit_path(agent)?;
+        let mut failure = None;
         loop {
             let state = self.agents.state(agent).await?;
             let (input, tail, journal, closed, open_children) = self
@@ -301,6 +302,18 @@ where
             if !wait || settled || Q::end(&page) > after || metadata_changed {
                 return Ok((input, tail, Some(page), settled, open_children));
             }
+            if let Some(cause) = failure {
+                return Err(Error::Stream(
+                    acyclic_stream::StreamError::unavailable_with_cause(&cause),
+                ));
+            }
+            let failed = self
+                .agents
+                .runtime()
+                .delivery_failure(&self.agents.actor(agent)?)
+                .map_err(|error| {
+                    Error::Stream(acyclic_stream::StreamError::unavailable_with_cause(&error))
+                })?;
             // Both continuations start at their original observations, so an
             // append between the page and this wait remains visible. No task,
             // timer or status recheck produces readiness.
@@ -311,9 +324,13 @@ where
                 tokio::select! {
                     result = journal_changed => result?,
                     result = actor_changed => result?,
+                    cause = failed => failure = Some(cause),
                 };
             } else {
-                actor_changed.await?;
+                tokio::select! {
+                    result = actor_changed => result?,
+                    cause = failed => failure = Some(cause),
+                };
             }
         }
     }
@@ -400,6 +417,7 @@ where
             }
             let mut request = acyclic_stream::FollowRequest::new(agent.inbox()?, input);
             request.when_absent = acyclic_stream::WhenAbsent::Wait;
+            let mut failure = None;
             loop {
                 let progress = self.agents.input_progress(agent, input).await?;
                 if progress.closed {
@@ -414,9 +432,28 @@ where
                 if Q::metadata_changed(observed_children, progress.open_children) {
                     return Ok((input, tail, None, false, progress.open_children));
                 }
+                if let Some(cause) = failure {
+                    // Failure can follow an inbox append whose publication has
+                    // not reached this reader yet. Serve that retained input.
+                    tail = crate::agent::inbox_tail(&**provider, agent).await?;
+                    if input < tail {
+                        break Some(self.journal_record(request.clone()).await?);
+                    }
+                    return Err(Error::Stream(
+                        acyclic_stream::StreamError::unavailable_with_cause(&cause),
+                    ));
+                }
+                let failed = self
+                    .agents
+                    .runtime()
+                    .delivery_failure(&self.agents.actor(agent)?)
+                    .map_err(|error| {
+                        Error::Stream(acyclic_stream::StreamError::unavailable_with_cause(&error))
+                    })?;
                 tokio::select! {
                     record = self.journal_record(request.clone()) => break Some(record?),
                     changed = self.journal_record(progress.follow) => { changed?; }
+                    cause = failed => failure = Some(cause),
                 }
             }
         } else {

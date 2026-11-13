@@ -678,7 +678,7 @@ pub(super) fn missing_refusal() -> StreamError {
         "acyclic-request-id",
         "missing-record".parse().expect("header"),
     );
-    StreamError::Refused(
+    StreamError::NotFound.with_refusal(
         acyclic_auth::refusal::Refusal::capture(
             5,
             "not published yet",
