@@ -8,6 +8,10 @@ use acyclic_fs::access::*;
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf};
 
 fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
+    table_with_home(root, false)
+}
+
+fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile::TempDir>>> {
     let native = Arc::new(tempfile::tempdir().map_err(Error::process_io)?);
     let resource = ResourcePattern {
         lineage_root: None,
@@ -68,6 +72,10 @@ fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
             source: Arc::clone(&native),
         })
     };
+    let mut volumes = vec![volume("data")?, volume("shared")?];
+    if home {
+        volumes.push(volume("home")?);
+    }
     let mut mounts = compose(
         root,
         &principal,
@@ -77,7 +85,7 @@ fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
             approvals: 0,
         },
         volume("project")?,
-        [volume("data")?, volume("shared")?],
+        volumes,
     )?;
     for (relative, mount) in mounts.mounts_mut() {
         if relative == "volume:///shared" {
@@ -102,6 +110,58 @@ fn invocation(root: &Path) -> Invocation {
         process_custody: None,
         standard_input: None,
     }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> Result<()> {
+    let project = tempfile::tempdir().map_err(Error::process_io)?;
+    let mounts = table_with_home(
+        project.path().canonicalize().map_err(Error::process_io)?,
+        true,
+    )?;
+    let home = mounts
+        .native_mounts()
+        .find(|(name, _, _)| *name == "volume:///home")
+        .expect("private home")
+        .1;
+    for explicit in [false, true] {
+        let mut native = invocation(&mounts.root);
+        if explicit {
+            native.execution_grant = workspace_grant(&mounts, &mut native.environment)?;
+            // Grant selection must not be responsible for environment setup.
+            native.environment.clear();
+        }
+        let result = run(
+            ShellInput {
+                command: r#"test "$TMPDIR" = "$ACYCLIC_VOLUME_HOME/tmp" && printf scratch > "$TMPDIR/receipt""#.into(),
+                cwd: None,
+                timeout_ms: None,
+                background: false,
+                target: None,
+            },
+            &mounts,
+            native,
+            1,
+            None,
+            || Ok(()),
+        )
+        .await?
+        .expect("completed shell");
+        assert!(result.success, "{result:?}");
+        assert_eq!(
+            std::fs::read(home.join("tmp/receipt")).map_err(Error::process_io)?,
+            b"scratch"
+        );
+        assert!(!project.path().join("tmp").exists());
+    }
+    // Scratch creation must not follow an authored link outside the volume.
+    std::fs::remove_file(home.join("tmp/receipt")).map_err(Error::process_io)?;
+    std::fs::remove_dir(home.join("tmp")).map_err(Error::process_io)?;
+    std::os::unix::fs::symlink(project.path(), home.join("tmp")).map_err(Error::process_io)?;
+    assert!(workspace_environment(&mounts, &mut BTreeMap::new()).is_err());
+    assert!(!project.path().join("receipt").exists());
+    Ok(())
 }
 
 // Admission failures must preserve their original error class.
