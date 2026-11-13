@@ -92,11 +92,10 @@ pub(super) enum Received {
 
 impl HostIo {
     pub(super) fn host(
-        device: File,
+        device: PacketDevice,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
-        let capacity = super::packet_session::MAXIMUM_WRITE + 4096;
-        let (stream, retirement) = PacketDevice::host(device, capacity)?.into_parts();
+        let (stream, retirement) = device.into_parts();
         Self::from_stream(stream, Some(retirement), work)
     }
 

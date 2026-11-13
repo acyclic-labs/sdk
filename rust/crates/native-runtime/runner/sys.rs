@@ -58,6 +58,7 @@ mod number {
     pub const CLOSE: usize = 3;
     pub const FSTAT: usize = 5;
     pub const MMAP: usize = 9;
+    pub const MOUNT: usize = 165;
     pub const MUNMAP: usize = 11;
     pub const FCNTL: usize = 72;
     pub const GETSOCKOPT: usize = 55;
@@ -135,6 +136,7 @@ mod number {
     pub const CLONE: usize = 220;
     pub const EXECVE: usize = 221;
     pub const MMAP: usize = 222;
+    pub const MOUNT: usize = 40;
     pub const MUNMAP: usize = 215;
     pub const FCNTL: usize = 25;
     pub const GETSOCKOPT: usize = 209;
@@ -911,4 +913,23 @@ pub fn events(queue: Fd, events: &mut [EpollEvent]) -> Result<usize, Errno> {
 pub fn effective_user() -> u32 {
     // SAFETY: geteuid has no arguments or failure case.
     unsafe { raw(number::GETEUID, [0; 6]) as u32 }
+}
+
+pub fn mount_fuse(target: &CStr, options: &CStr, writable: bool) -> Result<(), Errno> {
+    let flags = 2 | 4 | 1024 | usize::from(!writable);
+    // SAFETY: all strings are NUL terminated and live through mount(2).
+    unsafe {
+        call(
+            number::MOUNT,
+            [
+                c"acyclic-fs".as_ptr().addr(),
+                target.as_ptr().addr(),
+                c"fuse".as_ptr().addr(),
+                flags,
+                options.as_ptr().addr(),
+                0,
+            ],
+        )
+    }?;
+    Ok(())
 }
