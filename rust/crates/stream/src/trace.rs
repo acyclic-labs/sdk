@@ -7,6 +7,11 @@
 use crate::RetainedRecord;
 
 #[cfg(feature = "serde")]
+mod recorder;
+#[cfg(feature = "serde")]
+pub use recorder::{Recorder, Recording};
+
+#[cfg(feature = "serde")]
 mod query;
 #[cfg(feature = "serde")]
 pub use query::{
@@ -142,7 +147,7 @@ mod tests {
     #[tokio::test]
     async fn span_deltas_page_and_retain_original_failure_evidence()
     -> Result<(), Box<dyn std::error::Error>> {
-        let provider = MemoryStream::default();
+        let provider = std::sync::Arc::new(MemoryStream::default());
         let path = StreamPath::new("agents/worker/trace")?;
         let evidence = StreamPath::new("agents/worker/errors")?;
         let AppendOutcome::Committed(publication) = provider
@@ -161,55 +166,66 @@ mod tests {
             path: evidence,
             sequence: 0,
         };
-        let id = SpanId {
-            process: [1; 16],
-            sequence: 0,
-        };
-        let events = [
-            TraceRecord::V1(SpanEvent::Started {
-                id,
-                parent: None,
-                name: "stream.read".into(),
-                mechanism: Mechanism::Io,
-                at_ns: 10,
-                guarantee: Some("read_committed_prefix".into()),
-            }),
-            TraceRecord::V1(SpanEvent::Finished {
-                id,
-                at_ns: 20,
-                bytes: Some(64),
-                result: Outcome::Failed {
+        let recorder = std::sync::Arc::new(Recorder::new(
+            crate::Stream::new(provider.clone(), path.as_str())?,
+            [1; 16],
+        ));
+        let admitted = recorder
+            .start(
+                "stream.read",
+                Mechanism::Io,
+                None,
+                Some("read_committed_prefix"),
+            )
+            .await?;
+        let id = admitted.id();
+        let mut events = Vec::new();
+        // The real producer publishes its admission before any settlement exists.
+        let mut page = provider
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: 0,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        let record = page.next().await.ok_or("missing original start")??;
+        assert_eq!(record.commit_id, admitted.start().commit_id);
+        events.push(serde_json::from_slice::<TraceRecord>(
+            record.value.as_slice(),
+        )?);
+        assert!(matches!(&events[0], TraceRecord::V1(SpanEvent::Started {
+            id: observed, parent: None, mechanism: Mechanism::Io, guarantee: Some(guarantee), ..
+        }) if *observed == id && guarantee == "read_committed_prefix"));
+        assert!(page.next().await.is_none());
+        let terminal = admitted
+            .finish(
+                Some(64),
+                Outcome::Failed {
                     cause: cause.clone(),
                 },
-            }),
-        ];
-        for (at, event) in events.iter().enumerate() {
-            // An unfinished start is independently readable before its finish exists.
-            let outcome = provider
-                .append(AppendRequest {
-                    path: path.clone(),
-                    records: vec![crate::OwnedBytes::from(serde_json::to_vec(event)?).into()],
-                    if_tail: Some(at as u64),
-                    idempotency_key: IdempotencyKey::unique(),
-                })
-                .await?;
-            assert!(matches!(outcome, AppendOutcome::Committed(_)));
-            let mut page = provider
-                .read(ReadRequest {
-                    key: None,
-                    path: path.clone(),
-                    from: at as u64,
-                    limit: 1,
-                    at_least: Default::default(),
-                })
-                .await?;
-            let record = page.next().await.ok_or("missing span delta")??;
-            assert_eq!(
-                serde_json::from_slice::<TraceRecord>(record.value.as_slice())?,
-                *event
-            );
-            assert!(page.next().await.is_none());
-        }
+            )
+            .await?;
+        let mut page = provider
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: 1,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?;
+        let record = page.next().await.ok_or("missing original finish")??;
+        assert_eq!(record.commit_id, terminal.commit_id);
+        events.push(serde_json::from_slice::<TraceRecord>(
+            record.value.as_slice(),
+        )?);
+        assert!(matches!(&events[1], TraceRecord::V1(SpanEvent::Finished {
+            id: observed, bytes: Some(64), result: Outcome::Failed { cause: original }, ..
+        }) if *observed == id && original == &cause));
+        assert!(page.next().await.is_none());
+
         let mut original = provider
             .read(ReadRequest {
                 key: None,
