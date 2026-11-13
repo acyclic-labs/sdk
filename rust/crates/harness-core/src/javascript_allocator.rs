@@ -31,6 +31,16 @@ pub(crate) struct EngineResult<T = serde_json::Value> {
     pub(crate) custody: acyclic_fs::NativeCustody,
 }
 
+pub(crate) fn transfer<T>(
+    custody: &mut acyclic_fs::NativeCustody,
+    bytes: u64,
+    target: &mut EngineResult<T>,
+) -> crate::Result<()> {
+    if let Some(custody) = custody {
+        target.absorb(Some(custody.split_off(bytes)?))?;
+    }
+    Ok(())
+}
 impl<T> EngineResult<T> {
     pub(crate) fn absorb(&mut self, mut other: acyclic_fs::NativeCustody) -> crate::Result<()> {
         if let (Some(custody), Some(other)) = (&mut self.custody, &mut other) {
