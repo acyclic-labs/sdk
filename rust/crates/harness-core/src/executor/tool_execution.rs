@@ -157,7 +157,7 @@ impl<'io> StockExecution<'io> {
         invocation: &ToolInvocation,
         pinned: Option<&Arc<crate::tool::Tool>>,
     ) -> Result<()> {
-        self.verify_task_context_binding(operation_id)?;
+        self.verify_task_authority_binding(operation_id)?;
         if pinned.is_some_and(|tool| tool.definition.name != invocation.name) {
             return Err(stock_boundary(
                 self.io,

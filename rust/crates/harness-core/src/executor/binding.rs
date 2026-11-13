@@ -8,6 +8,12 @@ fn slice_is_empty<T>(slice: &&[T]) -> bool {
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         self.verify_summary_destination()?;
+        self.verify_task_authority_binding(operation)
+    }
+
+    // Tool calls retain their issued authority without admitting a model or
+    // acquiring a summary destination. Model entry checks both guarantees.
+    pub(super) fn verify_task_authority_binding(&self, operation: OperationId) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.native_work().is_some()
             && let Some((context, expected_operation)) = self.context

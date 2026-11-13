@@ -36,8 +36,11 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
             Limits::default(),
         )?;
         let parent = OperationId::new();
+        let mut summaries = content.clone();
+        summaries.writer = None;
         let task = Bindings {
             scope,
+            artifacts: Some(summaries),
             content: Some(content.clone()),
             ..Bindings::local()
         }
@@ -48,14 +51,22 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
         let policy = Arc::new(crate::test_support::FixedToolPolicy::new(decision.clone())?);
         let mut tools = ToolRegistry::default();
         tools.register((crate::tool::files::write()?, None), &mut None, None)?;
-        let executor = uncompacted_executor(
+        let executor = StockExecutor::new(
             Model::new("fixture".into(), "unused".into(), "1".into())?,
             model.clone(),
             ContextPipeline::default(),
             tools,
         )
+        .with_compaction_policy(crate::context::CompactionPolicy::default())
         .with_tool_authority(task.scope().clone(), policy.clone())?
         .with_task_context(&task, parent)?;
+        // Tool publication has an original writer; model compaction deliberately
+        // does not. A direct call must not inherit model-summary admission.
+        assert!(
+            StockExecution::ordinary(&executor)
+                .verify_task_context_binding(parent)
+                .is_err()
+        );
         let binding = executor
             .tool_binding("write")?
             .ok_or(Error::NotFound("write".into()))?;
