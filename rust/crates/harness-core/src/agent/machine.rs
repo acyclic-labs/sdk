@@ -706,7 +706,6 @@ pub enum ReviewStep {
     Reviewed(super::OpenTriage),
 }
 
-/// Native or browser-owned future for independent review.
 /// Independent review future with the same platform ownership as turn execution.
 pub type ReviewFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<ReviewStep, Error>>;
 
