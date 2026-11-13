@@ -3,6 +3,64 @@ use crate::workspace::ForkOptions;
 use crate::{Generation, IdempotencyKey, TransactionCommit, WorkspaceDelete};
 use std::error::Error;
 
+#[tokio::test]
+async fn settled_ephemeral_forks_retire_their_proof_cache_without_retiring_the_source()
+-> Result<(), Box<dyn Error>> {
+    for settled in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let cancel = CancellationToken::new();
+        let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+        let source = fs.create_workspace("proof-owner", B, &cancel).await?.value;
+        source.write_text("/base", "base").await?;
+        let head = source.head(B, &cancel).await?.value;
+        let (fork, custody) = source
+            .fork_ephemeral(
+                "proof-fork",
+                ForkOptions::from_generation(head, IdempotencyKey::new()),
+                B,
+                &cancel,
+            )
+            .await?
+            .value;
+        fork.write_text("/private", "private").await?;
+        if settled {
+            custody.settle().await?;
+        } else {
+            // Negative control: a live fork really does retain its proof slot.
+            assert!(
+                fs.inner
+                    .publication_proof
+                    .inner
+                    .lock()
+                    .unwrap()
+                    .retire(fork.id().volume_id())
+            );
+            custody.settle().await?;
+        }
+        assert!(
+            !fs.inner
+                .publication_proof
+                .inner
+                .lock()
+                .unwrap()
+                .retire(fork.id().volume_id())
+        );
+        assert!(
+            fs.inner
+                .publication_proof
+                .inner
+                .lock()
+                .unwrap()
+                .retire(source.id().volume_id())
+        );
+        assert_eq!(
+            source.read("/base", 64, B, &cancel).await?.value.as_ref(),
+            b"base"
+        );
+    }
+    Ok(())
+}
+
 async fn retained_source_fork_work(
     fs: &crate::LocalFs,
     source: &Generation<crate::LocalAuthorityBackend, crate::LocalObjectBackend>,

@@ -32,14 +32,12 @@ impl<A, O> ForkOptions<A, O> {
 #[must_use = "dropping the custody ends the fork"]
 pub struct EphemeralFork {
     pub(crate) lease: acyclic_stream::EphemeralLease,
-    // Last: the base stays pinned until the fork is gone.
-    pub(crate) _base: Option<crate::collection::Hold>,
 }
 
 impl EphemeralFork {
     /// Ends the fork and waits until its authority is gone.
     pub async fn settle(self) -> Result<(), WorkspaceError> {
-        let Self { lease, _base } = self;
+        let Self { lease } = self;
         lease
             .settle()
             .await

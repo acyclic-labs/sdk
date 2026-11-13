@@ -352,6 +352,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if let Some(pending) = pending {
             pending.created();
         }
+        // Retire disposable proof custody at the same terminal as authority,
+        // including when the caller drops its fork instead of awaiting settle.
+        // The base remains pinned until that terminal, not just until Drop
+        // schedules the stream release.
+        let fs = self.clone();
+        let lease = acyclic_stream::EphemeralLease::new(
+            lease.root().clone(),
+            Box::pin(async move {
+                let result = lease.settle().await;
+                fs.inner
+                    .publication_proof
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .retire(volume_id);
+                drop(base);
+                result
+            }),
+        );
         Ok((
             crate::Workspace {
                 name: destination,
@@ -365,7 +384,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 source: None,
                 access: None,
             },
-            crate::EphemeralFork { lease, _base: base },
+            crate::EphemeralFork { lease },
         ))
     }
 
