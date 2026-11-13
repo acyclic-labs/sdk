@@ -295,7 +295,8 @@ async fn native_capture_receipts_keep_original_identity_and_refuse_unavailable_p
             .agent_context(&crate::Capabilities::new(Vec::<String>::new()), content)?
             .with_execution_journal(journal.clone(), execution)?,
     );
-    let context = ToolContext::new(task.clone(), effect, "shell")?;
+    let mut context = ToolContext::new(task.clone(), effect, "shell")?;
+    context.model_turn = (execution, 0);
     let evidence = NativeCaptureEvidence::Unavailable {
         operation: acyclic_fs::OperationId::new(),
     };
@@ -314,7 +315,8 @@ async fn native_capture_receipts_keep_original_identity_and_refuse_unavailable_p
     );
     context.record_native_progress(evidence, None).await?;
     assert!(context.recover_native_progress().await?);
-    let other = ToolContext::new(task, OperationId::from_bytes([179; 16]), "shell")?;
+    let mut other = ToolContext::new(task, OperationId::from_bytes([179; 16]), "shell")?;
+    other.model_turn = (execution, 0);
     assert!(
         !other.recover_native_progress().await?,
         "another call borrowed native content evidence"
