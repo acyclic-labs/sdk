@@ -83,6 +83,7 @@ async fn external_message_case(owned_descendant: bool) -> Result<()> {
         ),
     )?
     .state_directory(state.path())
+    .workspace_mounting(crate::local::WorkspaceMounting::Physical)
     .without_default_tools();
     let directory = Directory::for_config(&config)?;
     let owner = directory.own()?;
