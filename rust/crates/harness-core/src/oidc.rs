@@ -20,7 +20,8 @@ pub use http::HttpSource;
 pub use keys::{Config, Limits, SigningAlgorithm};
 
 /// A single GET of the pinned URI, without redirects, retries or discovery.
-/// The shared refresher bounds the streamed body and its total duration.
+/// The shared refresher applies host-selected body bounds. Its caller owns
+/// cancellation and any deadline for the complete refresh.
 pub trait JwksSource: ProviderPlatform {
     /// Return a lazy body only for a successful response from this exact URI.
     fn fetch<'a>(
@@ -88,6 +89,9 @@ impl Verifier {
 
     /// Fetch a bounded replacement. Failed attempts consume the refresh interval
     /// and preserve the last-good set, whose original age continues to increase.
+    /// No implicit deadline is added. Run this future under the caller's
+    /// [`acyclic_auth::operation::Context::run`] to select a deadline or cancellation event.
+    /// Dropping it drops the in-flight fetch or body and preserves the last-good set.
     pub async fn refresh(&mut self, source: &dyn JwksSource, now: u64) -> Result<()> {
         if self.attempted_at.is_some_and(|last| {
             now.checked_sub(last)
@@ -96,16 +100,7 @@ impl Verifier {
             return Err(refused("OIDC key refresh is rate limited"));
         }
         self.attempted_at = Some(now);
-        use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
-        use futures::future::{Either, select};
-        let fetch = keys::fetch(source, &self.config);
-        let timeout = PlatformExecutor.sleep(10_000);
-        let fetch = core::pin::pin!(fetch);
-        let timeout = core::pin::pin!(timeout);
-        let replacement = match select(fetch, timeout).await {
-            Either::Left((result, _)) => result?,
-            Either::Right(_) => return Err(refused("OIDC key refresh timed out")),
-        };
+        let replacement = keys::fetch(source, &self.config).await?;
         self.keys = replacement;
         self.fetched_at = Some(now);
         Ok(())

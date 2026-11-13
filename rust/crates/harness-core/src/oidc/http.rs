@@ -5,7 +5,8 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 
 /// Native HTTPS/explicit loopback source. Redirects and transport retries are
-/// disabled; the shared refresher owns all bounds, timing and key replacement.
+/// disabled; the shared refresher owns body bounds and key replacement. The
+/// caller owns the refresh lifetime.
 pub struct HttpSource(reqwest::Client);
 
 impl HttpSource {
