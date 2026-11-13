@@ -29,7 +29,7 @@ impl CheckoutTools {
                     format!("invalid option or operands near {flag}; ")
                 });
             return Err(Error::Invalid(format!(
-                "{flag}fs accepts: status; diff [--stat] CHILD (also diff CHILD --stat); show CHILD:PATH or HEAD:PATH [--offset N] (read-only 64 KiB pages, follow nextOffset); merge CHILD; discard CHILD; add PATH...; merge --continue; merge --abort. CHILD is agents/<name> or a direct child's AgentPath. Use shell for other git commands"
+                "{flag}fs accepts: status; diff [--stat] CHILD (also diff CHILD --stat); show CHILD:PATH or HEAD:PATH [--offset N] (read-only 64 KiB pages, follow nextOffset); merge CHILD; discard CHILD; add PATH...; merge --continue; merge --abort. CHILD is agents/<name> or a direct child's AgentPath; show also accepts the spawn name. Use shell for other git commands"
             )));
         }
         Ok(parsed)
@@ -47,7 +47,7 @@ impl CheckoutTools {
         if let Some((agent, volumes)) = context.task().agent()
             && let Some(resolver) = context.task().agent_children()
         {
-            self.workspace
+            workspace
                 .register_named_children(agent, resolver, volumes, &mut parsed.arguments)
                 .await?;
         }
@@ -109,6 +109,241 @@ fn child_lifecycle(arguments: &[String]) -> bool {
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+    use acyclic_fs::facade::FsWork as _;
+
+    struct SelectedChild {
+        parent: crate::agent::AgentPath,
+        child: crate::agent::AgentPath,
+    }
+
+    impl crate::agent::TurnChildren for SelectedChild {
+        fn agent(&self) -> &crate::agent::AgentPath {
+            &self.parent
+        }
+        fn resolve<'a>(
+            &'a self,
+            parent: &'a crate::agent::AgentPath,
+            name: &'a str,
+        ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::agent::SpawnResolution>> {
+            Box::pin(async move {
+                if parent != &self.parent || name != "review/worker" {
+                    return Err(Error::NotFound(name.into()));
+                }
+                Ok(crate::agent::SpawnResolution::Live(0, self.child.clone()))
+            })
+        }
+        fn select<'a>(
+            &'a self,
+            _: OperationId,
+            _: &'a [String],
+        ) -> acyclic_stream::BoxProviderFuture<'a, Result<Vec<(String, crate::agent::AgentPath)>>>
+        {
+            unreachable!("filesystem reads do not select a wait")
+        }
+        fn settled<'a>(
+            &'a self,
+            _: &'a crate::agent::AgentPath,
+        ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::agent::Settlement>> {
+            unreachable!("filesystem reads do not observe settlement")
+        }
+        fn answer<'a>(
+            &'a self,
+            _: &'a crate::agent::AgentPath,
+            _: u64,
+        ) -> acyclic_stream::BoxProviderFuture<'a, Result<(String, crate::agent::TurnOutcome)>>
+        {
+            unreachable!("filesystem reads do not read conversation answers")
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_parent_reads_child_from_selected_workspace_with_shared_tools() -> Result<()> {
+        use crate::agent::{AgentId, AgentPath, WorkspaceEntry, WorkspaceRole};
+        use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let state_directory = tempfile::tempdir().map_err(storage)?;
+        let model =
+            crate::model::Model::new("scripted".into(), "nested-inspection".into(), "1".into())?;
+        let harness = LocalHarness::open(
+            crate::test_support::local_harness_config(
+                directory.path(),
+                (
+                    model,
+                    Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+                ),
+            )?
+            .state_directory(state_directory.path())
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical),
+        )
+        .await?;
+        let root = harness
+            .workspace()
+            .ok_or_else(|| Error::NotFound("root workspace".into()))?;
+        let root_agent = AgentPath::root(&AgentId::from_bytes([11; 16]));
+        let parent_agent = root_agent
+            .child(&AgentId::from_bytes([12; 16]))
+            .map_err(storage)?;
+        let child_agent = crate::tools::spawned_child(&parent_agent, "review/worker")?;
+        let project = VolumeRef::new(
+            harness.project.provider().clone(),
+            "nested-project".into(),
+            VolumeClass::Project,
+            VolumeOwner::Project("nested-inspection".into()),
+            &mut None,
+        )?;
+        let binding =
+            WorkspaceEntry::initial_volume(WorkspaceRole::User, "project".into(), project.clone());
+        let child_volume =
+            crate::filesystem::spawned_binding(&child_agent, &binding).map_err(storage)?;
+        let grants = Capabilities::new(
+            harness
+                .signed
+                .capabilities()
+                .iter()
+                .map(str::to_owned)
+                .chain(
+                    [&project, &child_volume]
+                        .into_iter()
+                        .flat_map(|volume| {
+                            [
+                                VolumeOperation::Read,
+                                VolumeOperation::Write,
+                                VolumeOperation::Delete,
+                            ]
+                            .into_iter()
+                            .map(move |operation| volume.capability(operation, &mut None))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+        );
+        let signed = harness
+            .root_authority
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("signing custody".into()))?
+            .bootstrap_scope("nested-inspection", &grants, None, &mut None)?;
+        let authority = crate::filesystem::NativeMountAuthority::admitted(
+            harness.verifier.clone(),
+            signed.copy(&mut None)?,
+        );
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let mut work = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        root.view()
+            .fork(
+                &project.storage_name(&mut None)?,
+                acyclic_fs::IdempotencyKey::new(),
+                acyclic_fs::PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await
+            .map_err(storage)?;
+        let fork = root.spawned_project_view(&project).await?;
+        let parent = root
+            .bound_task_view(
+                fork,
+                &project,
+                &[],
+                &workspace::owner::AgentOwner,
+                &authority,
+            )
+            .await?;
+        let (child, _) = parent
+            .view()
+            .fork(
+                &child_volume.storage_name(&mut None)?,
+                acyclic_fs::IdempotencyKey::new(),
+                acyclic_fs::PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await
+            .map_err(storage)?;
+        child
+            .workspace()
+            .write_text("/review.md", "review complete\n")
+            .await
+            .map_err(storage)?;
+        let tools = CheckoutTools::new(
+            root.clone(),
+            &harness.project,
+            harness.clock.clone(),
+            &signed,
+            &harness.verifier,
+            None,
+        )
+        .await?;
+        let scope = RuntimeScope::new(grants, Default::default())?;
+        let task = Arc::new(
+            crate::runtime::test_context::agent_context(scope.clone(), None)?
+                .for_agent(parent_agent.clone(), vec![binding])
+                .with_agent_children(Some(Arc::new(SelectedChild {
+                    parent: parent_agent,
+                    child: child_agent.clone(),
+                }))),
+        );
+        let mut state = parent.state.lock().await;
+        for reference in [
+            "review/worker".to_owned(),
+            "agents/review/worker".to_owned(),
+            child_agent.to_string(),
+        ] {
+            let context = ToolContext::new(task.clone(), OperationId::new(), "inspect-review")?;
+            let result = tools
+                .fs(
+                    tools.fs_arguments(&format!("show {reference}:review.md"), &scope)?,
+                    &context,
+                    &mut state,
+                    &parent,
+                )
+                .await?;
+            let output: acyclic_fs::GitCommandOutput =
+                serde_json::from_value(result.value["result"].clone()).map_err(storage)?;
+            let acyclic_fs::GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+                value,
+                ..
+            }) = output
+            else {
+                return Err(Error::Invalid("child file result missing".into()));
+            };
+            assert_eq!(value["text"], "review complete\n");
+        }
+        let context = ToolContext::new(task, OperationId::new(), "diff-review")?;
+        let result = tools
+            .fs(
+                tools.fs_arguments("diff agents/review/worker --stat", &scope)?,
+                &context,
+                &mut state,
+                &parent,
+            )
+            .await?;
+        let output: acyclic_fs::GitCommandOutput =
+            serde_json::from_value(result.value["result"].clone()).map_err(storage)?;
+        let acyclic_fs::GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+            value,
+            ..
+        }) = output
+        else {
+            return Err(Error::Invalid("child diff result missing".into()));
+        };
+        assert_eq!(value["fileChanges"], 1);
+        let repository = acyclic_fs::GitCompatRepository::new(
+            parent.view().workspace().id(),
+            parent.store.clone(),
+        );
+        assert_eq!(
+            repository.load().await.map_err(storage)?.branches[child_agent.as_str()].workspace_id,
+            child.workspace().id()
+        );
+        let root_repository =
+            acyclic_fs::GitCompatRepository::new(root.view().workspace().id(), root.store.clone());
+        assert!(
+            !root_repository
+                .load()
+                .await
+                .map_err(storage)?
+                .branches
+                .contains_key(child_agent.as_str())
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn child_lifecycle_admission_preserves_selected_volume_authority() -> Result<()> {
@@ -160,6 +395,8 @@ mod tests {
                 "diff agents/child",
                 "diff agents/child --stat",
                 "diff --stat agents/child",
+                "show child:findings/report.md",
+                "show child:findings/report.md --offset 65536",
                 "show agents/child:findings/report.md",
                 "show agents/child:findings/report.md --offset 65536",
                 "show HEAD:findings/report.md",
