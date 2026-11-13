@@ -244,11 +244,10 @@ where
     }
 
     /// Mounts the workspace as a task view: the one public way to mount a
-    /// per-agent view. On Linux and Windows the view is a namespace of the
+    /// per-agent view. On Linux, macOS and Windows the view is a namespace of the
     /// process's one shared native instance, at a fresh path that no other
     /// view of the process has had or will have, so it costs no mount,
-    /// thread or descriptor of its own; [`Mount::path`] names it. macOS uses
-    /// the existing native mount backend until it supports shared instances.
+    /// thread or descriptor of its own; [`Mount::path`] names it.
     pub async fn mount_view(
         &self,
         options: MountOptions,
