@@ -1,5 +1,6 @@
 use super::*;
 use crate::{AppendOutcome, IdempotencyKey, MemoryStream, OwnedBytes};
+use futures::TryStreamExt as _;
 use std::sync::Arc;
 
 async fn append(
@@ -104,7 +105,6 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
             at_ns: 30,
             bytes: None,
             result: Outcome::Unsettled,
-            outlier: Some(false),
         },
     )
     .await?;
@@ -113,6 +113,7 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
         Some(Observation::Completed {
             elapsed_ns: 20,
             result: Outcome::Unsettled,
+            outlier: Some(false),
             ..
         })
     ));
@@ -131,6 +132,23 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
     assert_eq!((waits.unsettled, waits.unknown_bytes), (1, 1));
     assert_eq!(waits.outliers, Some(0));
     assert_eq!(live.missing_guarantees(), 1);
+    let pages = futures::stream::iter([0, 1, 2, 3])
+        .then(|from| stream.read(from, 1))
+        .try_flatten();
+    let mut finite = TraceQuery::new(
+        Box::pin(pages),
+        BTreeMap::from([(Mechanism::Io, 10), (Mechanism::Wait, 100)]),
+    );
+    let mut observations = 0;
+    while finite.next().await?.is_some() {
+        observations += 1;
+    }
+    assert_eq!(observations, 4);
+    assert_eq!(finite.active_waits(), 0);
+    assert_eq!(
+        serde_json::to_value(finite.totals())?,
+        serde_json::to_value(live.totals())?
+    );
     let mut unclassified = TraceQuery::new(stream.read(1, 2).await?, Default::default());
     unclassified.next().await?;
     assert!(matches!(
