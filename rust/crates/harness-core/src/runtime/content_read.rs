@@ -544,8 +544,11 @@ impl TaskContext {
         }
         if let Some(file) = &file {
             crate::executor::with_history_io(io, |work| scope.limits.validate_file(file, work))?;
+            // Validate the receipt through the publisher that observed it. A
+            // read-only journal route may name the same volume without owning
+            // this publication.
             super::content_write::publication_destination(
-                self.content_binding(Some(file.volume())),
+                binding,
                 scope,
                 Some(file),
                 file.path(),

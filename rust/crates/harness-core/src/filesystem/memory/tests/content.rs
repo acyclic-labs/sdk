@@ -2,6 +2,85 @@ use super::*;
 use crate::IdempotencyKey;
 
 #[tokio::test]
+async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> {
+    let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+    // Exercise a valid host whose journal and private publisher share a volume.
+    let journal: Arc<dyn crate::executor::ExecutionJournal> =
+        Arc::new(crate::filesystem::FilesystemExecutionJournal::new(
+            Arc::clone(&storage.stream),
+            Arc::clone(&storage.host),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &storage.volume,
+                verifier: &storage.verifier(),
+                scope: &storage.scope,
+                io: None,
+            },
+        )?);
+    let turn = OperationId::new();
+    let effect = OperationId::new();
+    run_admitted_file_case(&storage, Limits::default(), move |task| {
+        let journal = Arc::clone(&journal);
+        async move {
+            let context = crate::runtime::ToolContext::new(
+                Arc::new(task.with_execution_journal(journal, turn)?),
+                turn,
+                "publish",
+            )?;
+            let original = context
+                .stage_file_once(
+                    effect,
+                    "receipts/one",
+                    b"once",
+                    "text/plain",
+                    "receipt",
+                    None,
+                )
+                .await?
+                .0;
+            let observed = context
+                .observe_staged_file_once(effect, None)
+                .await?
+                .0
+                .ok_or_else(|| Error::NotFound("original publication receipt".into()))?;
+            assert_eq!(observed, original);
+            assert_eq!(
+                context
+                    .stage_file_once(
+                        effect,
+                        "receipts/one",
+                        b"once",
+                        "text/plain",
+                        "receipt",
+                        None
+                    )
+                    .await?
+                    .0,
+                original
+            );
+            assert_eq!(
+                context.task().read_file(&original, None).await?.as_ref(),
+                b"once"
+            );
+            let denied = context
+                .task()
+                .stage_file(
+                    Some(original.volume()),
+                    OperationId::new(),
+                    "receipts/forged",
+                    b"forged",
+                    "text/plain",
+                    "forged",
+                )
+                .await
+                .expect_err("receipt replay delegated the read-only journal writer");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+            Ok(())
+        }
+    })
+    .await
+}
+
+#[tokio::test]
 async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
     // Hosted agents admit the portable file ceiling, which exceeds the
     // volume's staging capacity even when the actual artifact is small.

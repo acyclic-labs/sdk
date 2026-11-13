@@ -475,6 +475,8 @@ impl ToolContext {
 
 impl ToolContext {
     /// Observes the original private publication under the effective tool scope.
+    /// Its original publisher validates the receipt; a read-only volume alias
+    /// neither replaces that owner nor grants its writer to the caller.
     pub async fn observe_staged_file_once(
         &self,
         operation_id: OperationId,
