@@ -1,8 +1,6 @@
 use crate::OperationId;
 use serde::Deserialize;
 
-pub(crate) const SUMMARY_PREFIX: &str = ".system/summaries/";
-
 pub(crate) fn is_output_key(key: &str) -> bool {
     let mut parts = key.split(':');
     matches!(
@@ -42,7 +40,7 @@ mod tests {
         #[test]
         fn operation_addressed_summary_paths_round_trip(operation in any::<[u8;16]>(), digest in "[a-f0-9]{64}", extra in "[a-z]{1,16}") {
             let operation = OperationId::from_bytes(operation);
-            for namespace in [SUMMARY_PREFIX, ".system/execution/", ".system/other/nested/"] {
+            for namespace in [".system/summaries/", ".system/execution/", ".system/other/nested/"] {
                 let path = format!("{namespace}{operation}/{digest}.json");
                 prop_assert_eq!(summary_operation(&path), Some(operation));
                 for invalid in [format!("{extra}{path}"), format!("{path}/{extra}"), format!("{path}{extra}"), path.replace(".json", ".json/../secret")] {
