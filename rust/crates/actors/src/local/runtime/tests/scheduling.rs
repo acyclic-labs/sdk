@@ -704,6 +704,7 @@ async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
     let resident = spawn_with(&store, "resident", &[b"emit"]).await?;
     let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -728,6 +729,7 @@ async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
     drop(runtime);
     let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -769,6 +771,7 @@ async fn an_unplaced_alarm_retains_its_window_across_restart() -> TestResult {
     for attempt in 0..2 {
         let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(Package::new()?),
             Arc::clone(&clock) as Arc<dyn Clock>,

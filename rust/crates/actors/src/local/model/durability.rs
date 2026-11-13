@@ -112,6 +112,7 @@ async fn acknowledged_cuts(
             },
             Some(ticket.record()),
             Transition {
+                pause: false,
                 response: Some(Bytes::from_static(b"completed")),
                 participant: None,
                 checkpoint: checkpoint(1),
