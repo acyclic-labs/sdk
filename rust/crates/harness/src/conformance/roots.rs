@@ -42,6 +42,7 @@ impl TurnExecutors for Never {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Case {
     Covering,
+    DelegatedCovering,
     ReadOnlyPrivate,
     ReadOnlyShared,
     ReadOnlyJournal,
@@ -59,6 +60,7 @@ enum Case {
 pub async fn verify(backend: &dyn Backend) -> Result {
     for case in [
         Case::Covering,
+        Case::DelegatedCovering,
         Case::ReadOnlyPrivate,
         Case::ReadOnlyShared,
         Case::ReadOnlyJournal,
@@ -197,7 +199,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         approval_policy: Default::default(),
     };
     let (_running, stopped) = futures::channel::oneshot::channel::<()>();
-    let bound = if case == Case::ReadOnlyJournal {
+    let bound = if matches!(case, Case::DelegatedCovering | Case::ReadOnlyJournal) {
         // The same native issuer stays behind its admitted operation port.
         // This is not native enrollment: only the original caller's grant
         // can authorize journal creation, even though it has the host role.
@@ -248,7 +250,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         return Err(format!("{case:?}: root preparation performed provider IO").into());
     }
     match (case, prepared) {
-        (Case::Covering | Case::NativeJournalCustody, Ok(first)) => {
+        (Case::Covering | Case::DelegatedCovering | Case::NativeJournalCustody, Ok(first)) => {
             let again = bound.prepare_root(&intent, request()).await?;
             if again.request() != first.request() {
                 return Err("root preparation is not exact".into());
@@ -274,7 +276,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
             }
             Ok(())
         }
-        (Case::Covering | Case::NativeJournalCustody, Err(error)) => {
+        (Case::Covering | Case::DelegatedCovering | Case::NativeJournalCustody, Err(error)) => {
             Err(format!("covering admission was refused: {error}").into())
         }
         (_, Ok(_)) => Err(format!("{case:?}: admission prepared a root it does not cover").into()),
