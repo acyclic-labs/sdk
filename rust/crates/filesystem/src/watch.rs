@@ -3945,17 +3945,20 @@ impl NativeWatch {
             ));
         }
         let maximum = u64::from(maximum_changes).min(cut.end_sequence - self.next_sequence) as u32;
-        self.poll_limit(maximum, budget, cancellation)
+        self.poll_limit(Some(maximum), budget, cancellation)
     }
 
-    /// Moves at most `maximum_changes` contiguous hints from the native queue.
+    /// Moves a finite interval of contiguous hints from the native queue.
+    /// `None` takes every hint queued at admission; later arrivals remain queued.
+    /// An explicit maximum bounds the returned interval without losing its suffix.
     pub fn poll(
         &mut self,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
-        if maximum_changes == 0 {
+        let maximum_changes = maximum_changes.into();
+        if maximum_changes == Some(0) {
             return Err(OperationFailure::new(
                 NativeWatchError::ZeroPollLimit,
                 WorkCounters::UNCHARGED,
@@ -3966,7 +3969,7 @@ impl NativeWatch {
 
     fn poll_limit(
         &mut self,
-        maximum_changes: u32,
+        maximum_changes: Option<u32>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<OperationReceipt<WatchBatch>, NativeWatchError> {
@@ -3991,14 +3994,15 @@ impl NativeWatch {
     /// Runs the consumer's guarded publication before committing watch progress.
     pub fn poll_with_native_work_guarded<F>(
         &mut self,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         original: &crate::NativeMaterializationWork,
         before_publish: F,
     ) -> Result<(WatchBatch, crate::NativeAllocation), NativeWatchError>
     where
         F: FnMut(&WatchBatch) -> Result<(), crate::demand::DemandError>,
     {
-        if maximum_changes == 0 {
+        let maximum_changes = maximum_changes.into();
+        if maximum_changes == Some(0) {
             return Err(NativeWatchError::ZeroPollLimit);
         }
         let mut work = crate::NativeMaterializationWork::clone(original);
@@ -4018,7 +4022,7 @@ impl NativeWatch {
     )]
     fn poll_with_work<W, F>(
         &mut self,
-        maximum_changes: u32,
+        maximum_changes: Option<u32>,
         work: &mut W,
         original: Option<&crate::NativeMaterializationWork>,
         mut before_publish: F,
@@ -4060,10 +4064,9 @@ impl NativeWatch {
                     reason,
                 }
             } else {
-                let capacity = self
-                    .queued
-                    .load(Ordering::Acquire)
-                    .min(maximum_changes as usize);
+                let queued = self.queued.load(Ordering::Acquire);
+                let capacity =
+                    maximum_changes.map_or(queued, |maximum| queued.min(maximum as usize));
                 let next = self
                     .next_sequence
                     .checked_add(capacity as u64)

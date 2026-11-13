@@ -35,6 +35,7 @@ pub struct SourceOptions {
     /// Source advancement behavior.
     pub mode: SourceMode,
     /// Maximum paths in one authenticated baseline or reconciliation batch.
+    /// `None` captures the complete baseline or queued watcher interval.
     pub maximum_paths: Option<u32>,
     /// Optional caller policy for sparse data spans per regular file.
     pub maximum_extent_spans: Option<u32>,
@@ -188,7 +189,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         .await
     }
 
-    /// Captures one bounded contiguous watcher interval and publishes it.
+    /// Captures one contiguous watcher interval and publishes it. An omitted
+    /// path limit captures the complete interval queued at admission.
     pub async fn reconcile(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
         self.reconcile_with_key(IdempotencyKey::new()).await
     }
@@ -211,7 +213,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
             return Err(SourceError::Pinned);
         }
         begin_source_operation(&mut session, key, SourceOperation::Reconcile).await?;
-        let maximum_paths = session.capture.maximum_paths.unwrap_or(1024);
+        let maximum_paths = session.capture.maximum_paths;
         let batch = session
             .watcher
             .poll(
@@ -1439,6 +1441,50 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::sync::atomic::{AtomicU8, Ordering};
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn unbounded_reconcile_captures_the_complete_queued_interval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let workspace = Box::pin(Fs::memory().attach_directory(
+            "tracking",
+            root.path(),
+            SourceOptions::default(),
+        ))
+        .await?;
+        let source = workspace.source().ok_or("source missing")?;
+        for index in 0..1025 {
+            std::fs::write(root.path().join(format!("file-{index}")), b"x")?;
+            if index % 32 == 31 {
+                // Drain native delivery into the retained queue in small bursts;
+                // this is an event fence, not a wait for a guessed quiet period.
+                source.inner.lock().await.watcher.fence()?;
+            }
+        }
+        source.inner.lock().await.watcher.fence()?;
+        let key = IdempotencyKey::from_bytes([83; 16]);
+        let generation = clean_generation(Box::pin(source.reconcile_with_key(key)).await?)?;
+        for index in 0..1025 {
+            assert_eq!(
+                generation
+                    .read(
+                        &format!("/file-{index}"),
+                        1,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await?
+                    .value,
+                acyclic_stream::OwnedBytes::from_static(b"x")
+            );
+        }
+        assert_eq!(
+            clean_generation(Box::pin(source.reconcile_with_key(key)).await?)?.id(),
+            generation.id()
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn cancelled_observer_settles_while_the_source_session_is_locked()

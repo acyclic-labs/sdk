@@ -833,7 +833,9 @@ fn ready_interval_pages_exclude_later_events_and_revalidate_continuity()
         pages >= 3,
         "the real prefix must span multiple one-hint pages"
     );
-    let later = watch.poll(32, WorkBudget::UNBOUNDED, &cancellation)?.value;
+    let later = watch
+        .poll(None, WorkBudget::UNBOUNDED, &cancellation)?
+        .value;
     assert!(matches!(&later, WatchBatch::Changes { changes, .. }
         if changes.iter().any(|change| matches!(change,
             WatchChange::Created(p) | WatchChange::Modified(p) | WatchChange::Arrived(p)
