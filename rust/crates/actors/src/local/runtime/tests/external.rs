@@ -328,6 +328,7 @@ async fn ordered_source_backlog_yields_to_an_unrelated_ready_input() -> TestResu
             &crate::guest::wire::encode_manifest(package.manifest()),
         )?;
         manifest.subscriptions = ["a", "b", "z"].into_iter().map(str::to_owned).collect();
+        manifest.interrupts[0].subscription = "a".into();
         let runtime = Runtime::new(
             Store::new(provider.clone(), store.root().clone()),
             Arc::new(OrderedPackage {
