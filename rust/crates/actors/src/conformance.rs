@@ -777,7 +777,7 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         });
     }
     let foreign = Store::new(
-        Arc::clone(store.provider()),
+        std::sync::Arc::clone(store.provider()),
         StreamPath::new(format!("{}/other-node", store.root())).map_err(Error::from)?,
     );
     if foreign.contains(&created).await? {

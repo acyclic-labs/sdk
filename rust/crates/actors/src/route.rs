@@ -222,8 +222,8 @@ impl Envelope {
     }
 
     /// Decode the exact shared CommitRequest format; this never admits a grant.
-    pub fn decode(bytes: Bytes) -> Result<Self, Error> {
-        let value = EnvelopeWire::decode(bytes).map_err(|_| Error::InvalidRecord)?;
+    pub fn decode(bytes: impl AsRef<[u8]>) -> Result<Self, Error> {
+        let value = EnvelopeWire::decode(bytes.as_ref()).map_err(|_| Error::InvalidRecord)?;
         if value.version != 1 {
             return Err(Error::InvalidRecord);
         }
