@@ -23,6 +23,9 @@ fn directory_resolves_unknown_file_lengths_before_publishing_attributes()
         .ok_or("file disappeared")?;
     assert_eq!(entry.node.logical_bytes, lookup.node.logical_bytes);
     assert_eq!(entry.node.file_id, lookup.node.file_id);
+    // A directory continuation owns capture custody until its page retires.
+    drop(page);
+    drop(lookup);
     view.cancel_cleanup(None)?;
     Ok(())
 }
