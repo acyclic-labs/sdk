@@ -299,8 +299,7 @@ impl McpCatalog {
             ));
         }
         let prefix = format!("mcp.{}.", self.server);
-        let mut selected = registry.definitions(None)?;
-        selected.retain(|tool| tool.name.starts_with(&prefix));
+        let selected = registry.definitions_in_namespace(&prefix, None)?;
         let mut expected = Vec::new();
         if let Some(old) = previous {
             for tool in &old.tools {

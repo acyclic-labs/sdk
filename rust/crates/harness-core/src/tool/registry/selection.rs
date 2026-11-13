@@ -269,13 +269,31 @@ impl ToolRegistry {
         &self,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Vec<ToolDefinition>> {
+        self.definitions_in_namespace("", io)
+    }
+
+    /// Returns only the selected namespace, without resolving unrelated tools.
+    pub fn definitions_in_namespace(
+        &self,
+        prefix: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
         let mut definitions = self.definitions_for_names(
-            || self.data.selected.keys().map(String::as_str),
+            || {
+                self.data
+                    .selected
+                    .range::<str, _>((
+                        std::ops::Bound::Included(prefix),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .map(|(name, _)| name.as_str())
+                    .take_while(move |name| name.starts_with(prefix))
+            },
             false,
             io,
         )?;
         for source in &self.sources {
-            for definition in source.snapshot()?.definitions(io)? {
+            for definition in source.snapshot()?.definitions_in_namespace(prefix, io)? {
                 if self.source_allowed(&definition.name) {
                     crate::executor::stock_vec_push(&mut definitions, definition, io)?;
                 }
