@@ -8,38 +8,41 @@ use futures::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn future_deadline() -> u64 {
-    (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        + Duration::from_secs(120))
-    .as_millis()
-    .try_into()
-    .unwrap()
+struct OriginalClock(Mutex<Result<u64, Stopped>>);
+
+impl acyclic_auth::operation::Clock for OriginalClock {
+    fn now_unix_millis(&self) -> Result<u64, Stopped> {
+        *self.0.lock().unwrap()
+    }
+    fn expires_at(&self, _: u64) -> Result<acyclic_auth::operation::StopFuture, Stopped> {
+        panic!("transport projection must not register a new timer")
+    }
 }
 
+fn hold_credentials(objects: &mut GrpcObjects) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    let (entered, started) = oneshot::channel();
+    let (release, released) = oneshot::channel::<()>();
+    let held = Arc::new(Mutex::new(Some((entered, released))));
+    objects.credential = CredentialProvider::new(move || {
+        let (entered, released) = held.lock().unwrap().take().unwrap();
+        async move {
+            entered.send(()).unwrap();
+            let _ = released.await;
+            Ok("fixture".into())
+        }
+    });
+    (started, release)
+}
 #[tokio::test]
 async fn original_context_stops_refresh_and_remains_stopped_across_clones() -> TestResult {
     for completion in ["deadline", "cancel", "producer-loss"] {
         let replica = Replica::new().await?;
         let mut objects = client(&replica);
-        let (entered, started) = oneshot::channel();
-        let entered = Arc::new(Mutex::new(Some(entered)));
-        let (release, released) = oneshot::channel::<()>();
-        let released = Arc::new(Mutex::new(Some(released)));
-        objects.credential = CredentialProvider::new(move || {
-            let entered = entered.lock().unwrap().take().unwrap();
-            let released = released.lock().unwrap().take().unwrap();
-            async move {
-                entered.send(()).unwrap();
-                let _ = released.await;
-                Ok("fixture".into())
-            }
-        });
+        let (started, release) = hold_credentials(&mut objects);
         let (expire, expired) = oneshot::channel();
         let (cancel, cancelled) = oneshot::channel();
         let bound = objects.clone().with_context(Context::new(
-            future_deadline(),
+            u64::MAX,
             async {
                 let _ = expired.await;
             },
@@ -93,51 +96,37 @@ async fn original_context_stops_refresh_and_remains_stopped_across_clones() -> T
 #[tokio::test]
 async fn original_budget_covers_rpc_wait_and_has_no_hidden_relative_ceiling() -> TestResult {
     let replica = Replica::new().await?;
-    let mut objects = client(&replica);
+    let mut objects = client(&replica).with_transfer_timeout(Duration::from_secs(30))?;
     let (digest, committed) = written(&objects, b"not applied").await?;
-    let (entered, started) = oneshot::channel();
-    let entered = Arc::new(Mutex::new(Some(entered)));
-    let resolve: AccountResolver = {
-        let replica = Arc::clone(&replica);
-        Arc::new(move |metadata| {
-            let remaining =
-                grpc_timeout(metadata.get("grpc-timeout").unwrap().to_str().unwrap()).unwrap();
-            assert!(
-                remaining > Duration::from_secs(60),
-                "the 30-second default cannot cap an explicit budget"
-            );
-            entered.lock().unwrap().take().unwrap().send(()).unwrap();
-            Ok(Arc::clone(&replica) as Arc<dyn Blobs>)
-        })
-    };
-    objects.channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-        tower::service_fn(move |_| {
-            let resolve = Arc::clone(&resolve);
-            async move {
-                let (client, server) = tokio::io::duplex(64 * 1024);
-                tokio::spawn(async move {
-                    let incoming = futures::stream::once(async { Ok::<_, std::io::Error>(server) });
-                    tonic::transport::Server::builder()
-                        .add_service(BlobsServer::new(resolve).into_service())
-                        .serve_with_incoming(incoming)
-                        .await
-                        .unwrap();
-                });
-                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
-            }
-        }),
-    );
+    let requested = replica.next_request();
+    let (started, release) = hold_credentials(&mut objects);
+    let clock = Arc::new(OriginalClock(Mutex::new(Ok(1_000))));
     let (cancel, cancelled) = oneshot::channel::<()>();
-    let bound = objects
-        .clone()
-        .with_context(Context::new(future_deadline(), pending(), async {
+    let bound = objects.clone().with_context(Context::from_clock(
+        121_000,
+        async {
             let _ = cancelled.await;
-        }));
+            Stopped::Cancelled
+        },
+        clock.clone(),
+    ));
     let mut read = Box::pin(bound.get(digest, ByteRange::FULL, 64));
     futures::select! {
-        result = read.as_mut().fuse() => panic!("replica has not applied: {result:?}"),
+        result = read.as_mut().fuse() => panic!("credentials still held: {result:?}"),
         _ = started.fuse() => {},
     }
+    *clock.0.lock().unwrap() = Ok(11_000);
+    release.send(()).unwrap();
+    let metadata = futures::select! {
+        result = read.as_mut().fuse() => panic!("replica has not applied: {result:?}"),
+        metadata = requested.fuse() => metadata?,
+    };
+    let remaining = grpc_timeout(metadata.get("grpc-timeout").unwrap().to_str().unwrap()).unwrap();
+    assert_eq!(
+        remaining,
+        Duration::from_secs(110),
+        "use the original clock after credentials, without the relative transfer ceiling"
+    );
     assert!(read.as_mut().now_or_never().is_none());
     drop(cancel);
     assert_eq!(
@@ -160,6 +149,48 @@ async fn original_budget_covers_rpc_wait_and_has_no_hidden_relative_ceiling() ->
     Ok(())
 }
 
+#[tokio::test]
+async fn original_clock_refuses_expired_lost_and_unrepresentable_dispatch() -> TestResult {
+    for mode in ["expired", "lost", "wire-range"] {
+        let replica = Replica::new().await?;
+        let mut objects = client(&replica);
+        let requested = replica.next_request();
+        let (started, release) = hold_credentials(&mut objects);
+        let clock = Arc::new(OriginalClock(Mutex::new(Ok(1_000))));
+        let deadline = if mode == "wire-range" {
+            u64::MAX
+        } else {
+            121_000
+        };
+        let bound = objects.with_context(Context::from_clock(deadline, pending(), clock.clone()));
+        let mut put = Box::pin(bound.put(b"not dispatched".as_slice().into(), Vec::new()));
+        futures::select! {
+            result = put.as_mut().fuse() => panic!("credentials still held: {result:?}"),
+            _ = started.fuse() => {},
+        }
+        *clock.0.lock().unwrap() = match mode {
+            "expired" => Ok(deadline),
+            "lost" => Err(Stopped::Cancelled),
+            _ => Ok(1_000),
+        };
+        release.send(()).unwrap();
+        let error = put.await.unwrap_err();
+        match mode {
+            "expired" => assert_eq!(error.stopped, Some(Stopped::Deadline)),
+            "lost" => assert_eq!(error.stopped, Some(Stopped::Cancelled)),
+            _ => assert_eq!(error.code, wire::ErrorCode::InvalidArgument),
+        }
+        assert!(
+            requested.now_or_never().is_none(),
+            "no server request before original-clock admission"
+        );
+        assert!(
+            replica.pending.lock().unwrap().is_empty(),
+            "refused dispatch published no mutation"
+        );
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> TestResult {
     let replica = Replica::new().await?;
@@ -209,20 +240,12 @@ async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> Te
         assert_eq!(acyclic_stream::hashed_on_this_thread(), before);
         assert_eq!(callbacks.load(Ordering::SeqCst), 0);
     }
-    // A deadline beyond the wire's eight-digit-hours range refuses before
-    // callbacks rather than panicking in metadata encoding or silently capping.
-    assert_eq!(
-        objects
-            .clone()
-            .with_context(Context::new(u64::MAX, pending(), pending()))
-            .usage()
-            .await
-            .unwrap_err()
-            .code,
-        wire::ErrorCode::InvalidArgument
-    );
-    assert_eq!(callbacks.load(Ordering::SeqCst), 0);
-    objects.usage().await?;
+    let requested = replica.next_request();
+    objects
+        .with_context(Context::new(u64::MAX, pending(), pending()))
+        .usage()
+        .await?;
+    assert!(!requested.await?.contains_key("grpc-timeout"));
     assert_eq!(callbacks.load(Ordering::SeqCst), 1);
     Ok(())
 }

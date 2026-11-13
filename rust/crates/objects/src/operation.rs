@@ -2,10 +2,7 @@
 use crate::Error;
 use acyclic_auth::operation::Context;
 use std::future::Future;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-/// The largest timeout the gRPC wire format can carry: eight digits of hours.
-pub(super) const MAX_DEADLINE: Duration = Duration::from_secs(99_999_999 * 3600);
+use std::time::Duration;
 
 pub(crate) async fn run<T>(
     context: Option<&Context>,
@@ -33,32 +30,14 @@ pub(crate) async fn admit<T>(
     result
 }
 
-/// Project the original absolute deadline once; resolution consumes this same
-/// budget. The host's Context event remains the local authority for stopping.
-pub(crate) fn deadline(
-    context: Option<&Context>,
-    fallback: Option<Duration>,
-) -> Result<Option<tokio::time::Instant>, Error> {
-    let remaining = match context {
-        Some(context) => {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| Error::from(crate::wire::ErrorCode::Unavailable))?;
-            Duration::from_millis(context.deadline_unix_millis())
-                .checked_sub(now)
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or(acyclic_auth::operation::Stopped::Deadline)?
-        }
-        None => match fallback {
-            Some(fallback) => fallback,
-            None => return Ok(None),
-        },
-    };
-    if remaining > MAX_DEADLINE {
-        return Err(crate::wire::ErrorCode::InvalidArgument.into());
-    }
-    tokio::time::Instant::now()
-        .checked_add(remaining)
-        .map(Some)
-        .ok_or_else(|| crate::wire::ErrorCode::InvalidArgument.into())
+/// Anchor a caller-selected relative timeout before credential resolution.
+/// Context-bound requests use their original clock in the shared channel.
+pub(crate) fn deadline(timeout: Option<Duration>) -> Result<Option<tokio::time::Instant>, Error> {
+    timeout
+        .map(|timeout| {
+            tokio::time::Instant::now()
+                .checked_add(timeout)
+                .ok_or_else(|| crate::wire::ErrorCode::InvalidArgument.into())
+        })
+        .transpose()
 }
