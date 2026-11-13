@@ -511,6 +511,53 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
+async fn abandoned_envelope_publications_release_only_their_own_flush_tracking()
+-> Result<(), Box<dyn std::error::Error>> {
+    for outcome in ["unknown", "cancelled", "adopted", "payload-cancelled"] {
+        let medium = Shared::over(Counting::default(), false);
+        let store = Store::new(Counting::new(medium.clone()));
+        let account = store.account(b"account")?;
+        account.flush(None).await?;
+        store.medium().take();
+        let body = OwnedBytes::from_static(b"abandoned publication");
+        if outcome == "unknown" {
+            *medium.ambiguous.lock().unwrap() = Some("/e/");
+            assert_eq!(account.put(body.clone(), Vec::new()).await?, Put::Unknown);
+            *medium.ambiguous.lock().unwrap() = None;
+        } else {
+            // Hold the real write after it applies but before its caller
+            // observes completion, at either the envelope or payload.
+            let fragment = if outcome == "payload-cancelled" {
+                "/p/"
+            } else {
+                "/e/"
+            };
+            let (mut reached, release) = medium.park("create", fragment);
+            let mut publishing = Box::pin(account.put(body.clone(), Vec::new()));
+            drive_to_park(publishing.as_mut(), &mut reached).await;
+            if matches!(outcome, "adopted" | "payload-cancelled") {
+                assert!(matches!(
+                    account.put(body.clone(), Vec::new()).await?,
+                    Put::AlreadyExists { .. }
+                ));
+            }
+            drop(publishing);
+            drop(release);
+        }
+        account.flush(None).await?;
+        assert_eq!(
+            store.medium().take().get("flush").copied(),
+            matches!(outcome, "adopted" | "payload-cancelled").then_some(1),
+            "{outcome}"
+        );
+        // The adopter's payload is durable; abandoned envelope-only work
+        // must not keep adding phantom keys to later flushes.
+        account.flush(None).await?;
+        assert_eq!(store.medium().take().get("flush"), None, "{outcome}");
+    }
+    Ok(())
+}
+#[tokio::test]
 async fn ambiguous_revival_stops_at_its_original_conditional_write()
 -> Result<(), Box<dyn std::error::Error>> {
     for applied in [false, true] {
@@ -2237,40 +2284,93 @@ fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wir
 }
 
 #[tokio::test]
-async fn a_remote_put_excludes_collection_until_its_flush_finishes()
+async fn flush_excludes_collection_through_acknowledgement()
 -> Result<(), Box<dyn std::error::Error>> {
-    let medium = Shared::over(Counting::default(), false);
-    let account = Store::new(medium.clone()).account(b"account")?;
-    account.flush(None).await?;
-    // Each request gets its own medium wrapper, preserving the account's
-    // shared state rather than constructing an independent Store.
-    let request = account.over(std::sync::Arc::new(medium.clone()));
-    let (mut flushed, release) = medium.park("flush", "");
-    let putting = crate::route::put_blob(&request, wire_member(b"body", b"body", &[]));
-    tokio::pin!(putting);
-    // The put has published its payload. Stop its flush before the final
-    // existence check, then drive a concurrent collector on the same account.
-    drive_to_park(putting.as_mut(), &mut flushed).await;
-    let (started, collecting) = tokio::sync::oneshot::channel();
-    let collector = async {
-        started.send(()).unwrap();
-        let mut swept = 0;
-        for _ in 0..3 {
-            swept += account.collect().await?.swept;
+    for (kind, before_flush) in [
+        ("flush", false),
+        ("blob", false),
+        ("blob", true),
+        ("manifest", true),
+        ("batch", true),
+    ] {
+        let medium = Shared::over(Counting::default(), false);
+        let account = Store::new(medium.clone()).account(b"account")?;
+        account.flush(None).await?;
+        let selected = [Digest::of(b"body")];
+        if matches!(kind, "flush" | "manifest") {
+            account
+                .put(OwnedBytes::from_static(b"body"), Vec::new())
+                .await?;
         }
-        Ok::<_, crate::Error>(swept)
-    };
-    let finish = async {
-        collecting.await.unwrap();
-        release.send(()).unwrap();
-        putting.await
-    };
-    // These futures share one task. The collector runs until its lock wait
-    // before `finish` can receive the event and release the flush. Without
-    // exclusion all three passes complete and flush returns MissingReference.
-    let (collected, put) = tokio::join!(biased; collector, finish);
-    assert!(put.is_ok(), "put lost its blob before flush: {put:?}");
-    assert_eq!(collected?, 1);
+        if kind == "manifest" {
+            account
+                .retain(&RootId::new(*b"retained")?, selected.to_vec())
+                .await?;
+        }
+        // Request wrappers retain the same account exclusion as their owner.
+        let request = account.over(std::sync::Arc::new(medium.clone()));
+        let (mut reached, release) = if before_flush {
+            medium.park("create", "/p/")
+        } else {
+            medium.park("flush", "")
+        };
+        let flushing = async {
+            match kind {
+                "flush" => request.flush(Some(&selected)).await,
+                "blob" => crate::route::put_blob(&request, wire_member(b"body", b"body", &[]))
+                    .await
+                    .map(|_| ()),
+                "manifest" => request
+                    .put_manifest_durable(crate::Manifest {
+                        parts: vec![crate::Part {
+                            digest: selected[0],
+                            length: 4,
+                        }],
+                        edges: Vec::new(),
+                    })
+                    .await
+                    .map(|_| ()),
+                "batch" => request
+                    .put_batch_durable(vec![(
+                        crate::Sealed::new(OwnedBytes::from_static(b"body")),
+                        Vec::new(),
+                    )])
+                    .await
+                    .into_iter()
+                    .try_for_each(|put| put.map(|_| ())),
+                _ => unreachable!(),
+            }
+        };
+        tokio::pin!(flushing);
+        drive_to_park(flushing.as_mut(), &mut reached).await;
+        let (started, collecting) = tokio::sync::oneshot::channel();
+        let collector = async {
+            started.send(()).unwrap();
+            let mut swept = 0;
+            for _ in 0..3 {
+                swept += account.collect().await?.swept;
+            }
+            Ok::<_, crate::Error>(swept)
+        };
+        let finish = async {
+            collecting.await.unwrap();
+            release.send(()).unwrap();
+            // This in-memory medium completes inline after its explicit release.
+            // Exclude scheduler credit from this lock-progress assertion.
+            futures::FutureExt::now_or_never(tokio::task::unconstrained(flushing.as_mut()))
+                .expect("flush waited behind the collector while holding its original guard")
+        };
+        // Biased join queues collection before releasing the medium. The
+        // acknowledgement must finish first, even with a queued writer: a
+        // durable put must reuse its guard rather than acquire a second read.
+        let (collected, flushed) =
+            tokio::join!(biased; tokio::task::unconstrained(collector), finish);
+        assert!(
+            flushed.is_ok(),
+            "flush lost its blob before acknowledgement: {flushed:?}"
+        );
+        assert_eq!(collected?, 1);
+    }
     Ok(())
 }
 

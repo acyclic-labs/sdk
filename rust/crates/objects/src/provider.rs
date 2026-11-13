@@ -304,14 +304,22 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     /// collector must exclude collection for the whole operation.
     async fn put_durable(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         let put = self.put_sealed(body, references).await?;
-        flush_put(self, &put).await?;
+        flush_put(
+            &put,
+            |digest| async move { self.flush(Some(&[digest])).await },
+        )
+        .await?;
         Ok(put)
     }
 
     /// Publishes and flushes a manifest under the same collection exclusion.
     async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
         let put = self.put_manifest(manifest).await?;
-        flush_put(self, &put).await?;
+        flush_put(
+            &put,
+            |digest| async move { self.flush(Some(&[digest])).await },
+        )
+        .await?;
         Ok(put)
     }
 
@@ -323,7 +331,10 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
         requests: Vec<(Sealed, Vec<Digest>)>,
     ) -> Vec<Result<Put, Error>> {
         let mut outcomes = self.put_batch_sealed(requests).await;
-        flush_puts(self, &mut outcomes).await;
+        flush_puts(&mut outcomes, |digests| async move {
+            self.flush(Some(&digests)).await
+        })
+        .await;
         outcomes
     }
 
@@ -510,21 +521,29 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     }
 }
 
-pub(crate) async fn flush_put<B: Blobs + ?Sized>(blobs: &B, put: &Put) -> Result<(), Error> {
+pub(crate) async fn flush_put<F, Fut>(put: &Put, flush: F) -> Result<(), Error>
+where
+    F: FnOnce(Digest) -> Fut,
+    Fut: std::future::Future<Output = Result<(), Error>>,
+{
     match put.verified() {
-        Some(verified) => blobs.flush(Some(&[verified.digest])).await,
+        Some(verified) => flush(verified.digest).await,
         None => Ok(()),
     }
 }
 
-pub(crate) async fn flush_puts<B: Blobs + ?Sized>(blobs: &B, outcomes: &mut [Result<Put, Error>]) {
+pub(crate) async fn flush_puts<F, Fut>(outcomes: &mut [Result<Put, Error>], flush: F)
+where
+    F: FnOnce(Vec<Digest>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), Error>>,
+{
     let durable: Vec<Digest> = outcomes
         .iter()
         .flatten()
         .filter_map(|put| put.verified().map(|verified| verified.digest))
         .collect();
     if !durable.is_empty()
-        && let Err(error) = blobs.flush(Some(&durable)).await
+        && let Err(error) = flush(durable).await
     {
         for outcome in outcomes {
             if outcome.as_ref().is_ok_and(|put| put.verified().is_some()) {

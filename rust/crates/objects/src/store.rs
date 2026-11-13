@@ -329,10 +329,56 @@ struct Written {
     references: Vec<Digest>,
     /// Whether its payload was complete, so a flush leaves it durable.
     complete: bool,
-    /// The puts through it still in flight.
-    puts: usize,
+    /// The map and every in-flight put own this exact tracking incarnation.
+    holds: Arc<()>,
     /// Whether any put wrote through it.
     wrote: bool,
+}
+
+/// One put's claim, released on completion, refusal or future cancellation.
+#[must_use]
+struct PutTracking<'a> {
+    tracked: Option<(&'a Mutex<HashMap<Digest, Vec<Written>>>, Arc<()>)>,
+    digest: Digest,
+    version: [u8; 16],
+    complete: bool,
+    wrote: bool,
+}
+
+impl PutTracking<'_> {
+    fn completed(mut self, wrote: bool) {
+        self.complete = true;
+        self.wrote = wrote;
+    }
+}
+
+impl Drop for PutTracking<'_> {
+    fn drop(&mut self) {
+        let Some((written, hold)) = self.tracked.take() else {
+            return;
+        };
+        let mut written = written.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(versions) = written.get_mut(&self.digest) else {
+            return;
+        };
+        let identity = Arc::as_ptr(&hold);
+        for blob in versions
+            .iter_mut()
+            .filter(|blob| blob.version == self.version && Arc::as_ptr(&blob.holds) == identity)
+        {
+            blob.complete |= self.complete;
+            blob.wrote |= self.wrote;
+        }
+        // Release under the map lock: concurrent drops must not mistake an
+        // already-retired claim for another live writer and leave an orphan.
+        drop(hold);
+        versions.retain(|blob| {
+            Arc::as_ptr(&blob.holds) != identity || Arc::strong_count(&blob.holds) > 1 || blob.wrote
+        });
+        if versions.is_empty() {
+            written.remove(&self.digest);
+        }
+    }
 }
 
 /// One run's revisions of an account: every mutation commits the next index
@@ -971,9 +1017,16 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 
     /// Holds `envelope`'s version of `digest` in the unflushed set for one
     /// put, before any of its keys becomes visible.
-    fn track(&self, digest: &Digest, envelope: &Envelope) {
+    fn track(&self, digest: &Digest, envelope: &Envelope) -> PutTracking<'_> {
+        let mut tracking = PutTracking {
+            tracked: None,
+            digest: *digest,
+            version: envelope.version,
+            complete: false,
+            wrote: false,
+        };
         if !self.medium.volatile() {
-            return;
+            return tracking;
         }
         let mut written = self
             .state
@@ -981,60 +1034,67 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let versions = written.entry(*digest).or_default();
-        match versions
+        let hold = match versions
             .iter_mut()
             .find(|blob| blob.version == envelope.version)
         {
-            Some(blob) => blob.puts += 1,
-            None => versions.push(Written {
-                version: envelope.version,
-                references: envelope.references.clone(),
-                complete: false,
-                puts: 1,
-                wrote: false,
-            }),
-        }
+            Some(blob) => Arc::clone(&blob.holds),
+            None => {
+                let holds = Arc::new(());
+                versions.push(Written {
+                    version: envelope.version,
+                    references: envelope.references.clone(),
+                    complete: false,
+                    holds: Arc::clone(&holds),
+                    wrote: false,
+                });
+                holds
+            }
+        };
+        tracking.tracked = Some((&self.state.written, hold));
+        tracking
     }
 
-    /// Drops `version` of `digest` from the unflushed set: removed, or
-    /// flushed complete.
-    fn untrack(&self, digest: &Digest, version: &[u8; 16]) {
+    /// Retires a removed version, or a flushed version without an active writer.
+    fn untrack(&self, digest: &Digest, version: &[u8; 16], flushed: bool) {
         let mut written = self
             .state
             .written
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(versions) = written.get_mut(digest) {
-            versions.retain(|blob| blob.version != *version);
+            versions.retain(|blob| {
+                blob.version != *version || (flushed && Arc::strong_count(&blob.holds) > 1)
+            });
             if versions.is_empty() {
                 written.remove(digest);
             }
         }
     }
 
-    /// Ends one put's hold on `version` of `digest`, its payload complete.
-    /// A version no put wrote through is as durable as it was, and leaves
-    /// the set with its last hold; one any put wrote stays until flushed.
-    fn completed(&self, digest: &Digest, version: &[u8; 16], wrote: bool) {
-        let mut written = self
-            .state
-            .written
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let Some(versions) = written.get_mut(digest) else {
-            return;
-        };
-        for blob in versions.iter_mut() {
-            if blob.version == *version {
-                blob.complete = true;
-                blob.wrote |= wrote;
-                blob.puts = blob.puts.saturating_sub(1);
+    /// Flushes and verifies while the original collection exclusion remains held.
+    async fn flush_locked(
+        &self,
+        only: Option<&[Digest]>,
+        _gate: &tokio::sync::RwLockReadGuard<'_, ()>,
+    ) -> Result<(), Error> {
+        acyclic_observability::async_operation!(
+            "acyclic.objects.flush",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.issued().await?;
+                self.flush_blobs(only, Vec::new()).await?;
+                // A blob collected since its put is not durable however flushed.
+                for digest in only.into_iter().flatten() {
+                    match self.blob(digest).await? {
+                        Some(envelope) if envelope.dying.is_none() => {}
+                        _ => return Err(ErrorCode::MissingReference.into()),
+                    }
+                }
+                Ok(())
             }
-        }
-        versions.retain(|blob| blob.puts > 0 || blob.wrote);
-        if versions.is_empty() {
-            written.remove(digest);
-        }
+        )
     }
 
     /// Makes durable, in one batch with `keys`, every unflushed blob version
@@ -1095,7 +1155,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             self.medium.flush(&keys).await.map_err(medium)?;
         }
         for (digest, version) in covered {
-            self.untrack(&digest, &version);
+            self.untrack(&digest, &version, true);
         }
         Ok(())
     }
@@ -1169,7 +1229,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         if !self.medium.remove_if(marked).await.map_err(moved)? {
             return Err(changed());
         }
-        self.untrack(&digest, &envelope.version);
+        self.untrack(&digest, &envelope.version, false);
         // This blob's own keys: no later blob of the digest shares them.
         self.medium
             .remove(&self.payload_key(&digest, &envelope.version))
@@ -1319,15 +1379,18 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // A lost conditional write is the event that re-runs the cut: the
         // winner committed, so the cut runs again once, against what it left.
         let mut rerun = true;
-        let (envelope, created) = loop {
+        let (envelope, created, mut tracking) = loop {
             let fresh = Envelope {
                 version: version()?,
                 ..wanted.clone()
             };
-            self.track(&digest, &fresh);
+            let mut tracking = self.track(&digest, &fresh);
             match self.medium.create(&key, fresh.encode().into()).await {
-                Ok(true) => break (fresh, true),
-                Ok(false) => self.untrack(&digest, &fresh.version),
+                Ok(true) => {
+                    tracking.wrote = true;
+                    break (fresh, true, tracking);
+                }
+                Ok(false) => drop(tracking),
                 Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
                 Err(error) => return Err(medium(error)),
             }
@@ -1336,8 +1399,8 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     // A version outside the unflushed set is durable, unless
                     // this put writes to it; tracked first, so its writes are
                     // never invisible to a commit.
-                    self.track(&digest, &live);
-                    break (live, false);
+                    let tracking = self.track(&digest, &live);
+                    break (live, false, tracking);
                 }
                 Adopted::Unknown => return Ok(Put::Unknown),
                 // A collector moved the envelope since; recovery owns torn
@@ -1354,21 +1417,25 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         // A complete version was indexed before its payload was written, so
         // a put adopting one writes nothing.
         if !created && self.complete(&digest, &envelope).await? {
-            self.completed(&digest, &envelope.version, false);
+            tracking.completed(false);
             return Ok(Put::AlreadyExists { verified });
         }
         // Any writer of the payload first holds every child; an index key
         // outlives a refusal, pinning its child until this version's removal.
         let tag = Self::envelope_tag(&digest, &envelope.version);
+        tracking.wrote = created || !envelope.references.is_empty();
         let indexed = match self.reference(&envelope.references, &tag).await {
             Ok(indexed) => indexed,
             Err(error) if error.code == ErrorCode::OutcomeUnknown => return Ok(Put::Unknown),
             Err(error) => return Err(error),
         };
+        // A dropped or indeterminate payload write may have applied. Retain
+        // its dirty keys; only a completed write can narrow that outcome.
+        tracking.wrote = true;
         let Some(wrote) = self.write_payload(&digest, &envelope, payload).await? else {
             return Ok(Put::Unknown);
         };
-        self.completed(&digest, &envelope.version, created || indexed || wrote);
+        tracking.completed(created || indexed || wrote);
         Ok(if created {
             Put::Created { verified }
         } else {
@@ -1729,17 +1796,23 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         references: Vec<Digest>,
     ) -> Result<Put, Error> {
         self.issued().await?;
-        let _gate = self.state.gate.read().await;
+        let gate = &self.state.gate.read().await;
         let put = self.publish_blob(body, references).await?;
-        crate::provider::flush_put(self, &put).await?;
+        crate::provider::flush_put(&put, |digest| async move {
+            self.flush_locked(Some(&[digest]), gate).await
+        })
+        .await?;
         Ok(put)
     }
 
     async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
         self.issued().await?;
-        let _gate = self.state.gate.read().await;
+        let gate = &self.state.gate.read().await;
         let put = self.publish_manifest(manifest).await?;
-        crate::provider::flush_put(self, &put).await?;
+        crate::provider::flush_put(&put, |digest| async move {
+            self.flush_locked(Some(&[digest]), gate).await
+        })
+        .await?;
         Ok(put)
     }
 
@@ -1753,7 +1826,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         if let Err(error) = self.issued().await {
             return requests.into_iter().map(|_| Err(error.clone())).collect();
         }
-        let _gate = self.state.gate.read().await;
+        let gate = &self.state.gate.read().await;
         let mut outcomes = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
             requests.into_iter(),
@@ -1764,28 +1837,16 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         )
         .await;
         let Ok(()) = driven;
-        crate::provider::flush_puts(self, &mut outcomes).await;
+        crate::provider::flush_puts(&mut outcomes, |digests| async move {
+            self.flush_locked(Some(&digests), gate).await
+        })
+        .await;
         outcomes
     }
 
     async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.flush",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                self.issued().await?;
-                self.flush_blobs(only, Vec::new()).await?;
-                // A blob collected since its put is not durable however flushed.
-                for digest in only.into_iter().flatten() {
-                    match self.blob(digest).await? {
-                        Some(envelope) if envelope.dying.is_none() => {}
-                        _ => return Err(ErrorCode::MissingReference.into()),
-                    }
-                }
-                Ok(())
-            }
-        )
+        let gate = self.state.gate.read().await;
+        self.flush_locked(only, &gate).await
     }
 
     async fn get(
@@ -2224,17 +2285,27 @@ mod written_tests {
         };
         // Two equal puts hold the version; the one that finishes last wrote
         // nothing, but the other wrote its payload.
-        account.track(&digest, &envelope);
-        account.track(&digest, &envelope);
-        account.completed(&digest, &envelope.version, true);
-        account.completed(&digest, &envelope.version, false);
+        let first = account.track(&digest, &envelope);
+        let second = account.track(&digest, &envelope);
+        first.completed(true);
+        account.untrack(&digest, &envelope.version, true);
+        assert!(tracked(), "a flush cannot retire an active writer's claim");
+        drop(second);
         assert!(tracked());
-        account.untrack(&digest, &envelope.version);
+        account.untrack(&digest, &envelope.version, false);
         // Control: a version no put wrote through leaves with its last hold.
-        account.track(&digest, &envelope);
-        account.track(&digest, &envelope);
-        account.completed(&digest, &envelope.version, false);
-        account.completed(&digest, &envelope.version, false);
+        let first = account.track(&digest, &envelope);
+        let second = account.track(&digest, &envelope);
+        drop(first);
+        second.completed(false);
         assert!(!tracked());
+        // Retiring a namespace can replace its tracking incarnation while
+        // the old writer is unwinding. Its claim cannot retire the new one.
+        let stale = account.track(&digest, &envelope);
+        account.untrack(&digest, &envelope.version, false);
+        let current = account.track(&digest, &envelope);
+        drop(stale);
+        current.completed(true);
+        assert!(tracked());
     }
 }
