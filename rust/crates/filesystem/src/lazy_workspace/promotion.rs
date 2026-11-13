@@ -181,7 +181,7 @@ impl<
                         .read_metadata_with_accounting(expected, ctx, cancellation(ctx))
                         .await?;
                     self.retain_source_before_image(
-                        *source,
+                        source.clone(),
                         node.version,
                         record,
                         crate::WorkspaceMetadata::from_engine(metadata),

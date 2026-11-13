@@ -561,7 +561,9 @@ impl PreparationIo {
                     .1
                     .as_ref()
                     .map_err(|error| acyclic_fs::FsError::from(*error))?;
-                custody.record(0, bytes)?;
+                custody
+                    .record(0, bytes)
+                    .map_err(acyclic_fs::FsError::from)?;
                 Ok(())
             }
             KernelOwnedAllocation::NativeOriginal(allocation) => {
