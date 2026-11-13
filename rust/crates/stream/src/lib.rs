@@ -41,7 +41,7 @@ pub mod postgres;
 pub mod preparation;
 #[cfg(not(target_arch = "wasm32"))]
 pub use pending::NativePending;
-pub use pending::Pending;
+pub use pending::{AppendPending, Pending};
 pub mod pull;
 pub mod request;
 pub mod runtime;
