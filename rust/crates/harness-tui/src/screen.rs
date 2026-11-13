@@ -35,7 +35,7 @@ pub struct Screen<'a> {
     pub plans: &'a [Line<'a>],
     /// Visible rows of the shared lazy agent explorer.
     pub tree: &'a [Line<'a>],
-    /// Notification/feedback rows from the followed attention files.
+    /// Attention and feedback rows, including the active command's notice.
     pub notifications: &'a [Line<'a>],
     /// Optional panel, docked over the top of the transcript region. The
     /// transcript's tail stays visible beneath it, next to the prompt.

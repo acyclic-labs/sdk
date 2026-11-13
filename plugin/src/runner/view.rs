@@ -305,7 +305,8 @@ struct View {
     /// took, so a second never opens over the first.
     prompt: Option<Prompt>,
     feedback_scroll: usize,
-    /// A command's result or refusal, until the next prompt.
+    /// The latest action's result, dismissed by the next deliberate input or
+    /// replaced by the next completed layout action, independently of status.
     notice: Option<String>,
     /// Original waiting-status identity of the action displayed by the pager.
     approval_status: Option<u64>,
@@ -798,15 +799,29 @@ impl View {
         Line::from(spans)
     }
 
+    fn begin_input(&mut self, event: &InputEvent) {
+        use acyclic_harness::tui::key_event::{KeyEventKind, MouseEventKind};
+        let deliberate = match event {
+            InputEvent::Key(key) => key.kind != KeyEventKind::Release,
+            InputEvent::Paste(_) | InputEvent::CommittedText(_) => true,
+            InputEvent::Mouse(mouse) => {
+                !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Up(_))
+            }
+            InputEvent::SettlementQuery(_) | InputEvent::Focus(_) | InputEvent::Resize(_, _) => {
+                false
+            }
+        };
+        if deliberate {
+            self.notice = None;
+        }
+    }
+
     fn status(&self) -> String {
         if matches!(self.prompt, Some(Prompt::StopOrDetach)) {
             return "Stop or detach? s stops this turn; d or Ctrl+D detaches; Esc stays.".into();
         }
         if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
-        }
-        if let Some(notice) = &self.notice {
-            return notice.clone();
         }
         if let Some(Prompt::Restore { at, mode, .. }) = &self.prompt {
             let target = match mode {
@@ -1172,6 +1187,7 @@ async fn run_current(
                 .spans
                 .push(Span::raw(format!(" · {}", conversation.agent().id())));
             view.rows(transcript_width.saturating_sub(1));
+            let notice = view.notice.as_deref().map(Line::raw);
             let (transcript, links, code) = view.transcript.presentation();
             let mut screen = Screen {
                 header,
@@ -1181,6 +1197,7 @@ async fn run_current(
                 tree: &tree_rows,
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
+                notifications: notice.as_slice(),
                 usage: if usage_stopped.is_some() {
                     &usage_unavailable[..]
                 } else {
@@ -1438,6 +1455,9 @@ async fn run_current(
                         let root = Arc::clone(&root);
                         settlement_queries.push(async move { (id, root.wait_current_input().await) });
                         continue;
+                    }
+                    if let Ok(event) = &event {
+                        view.begin_input(event);
                     }
                     let intent = match &event {
                         Err(agent) => Some(tree::Intent::Attach(agent.clone())),
@@ -1878,7 +1898,7 @@ async fn run_current(
                             &input,
                         )
                     {
-                        view.notice = notice.or(view.notice.take());
+                        view.notice = notice;
                         overlay_top = 0;
                     }
                 }
@@ -1908,7 +1928,7 @@ async fn run_current(
                 query_future.as_mut(),
                 &input,
             ) {
-                view.notice = notice.or(view.notice.take());
+                view.notice = notice;
                 overlay_top = 0;
             }
             // A command can reopen past an in-flight follow. Apply the whole
@@ -1924,6 +1944,99 @@ async fn run_current(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_notices_dismiss_on_input_without_replacing_live_or_prompt_status()
+    -> Result<(), Failure> {
+        use acyclic_harness::tui::{
+            key_event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+            ratatui::{Terminal, backend::TestBackend},
+        };
+
+        fn paint(view: &View, input: &PromptInput) -> Result<String, Failure> {
+            let notice = view.notice.as_deref().map(Line::raw);
+            let screen = Screen {
+                status: Line::raw(view.status()),
+                notifications: notice.as_slice(),
+                ..Screen::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(140, 12))?;
+            terminal.draw(|frame| {
+                let areas = screen.render(frame, input, &mut Viewport::default(), 0, 0);
+                assert!(areas.notifications.bottom() <= areas.status.y);
+            })?;
+            Ok(terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect())
+        }
+
+        // Use the original command catalog and capability refusal, then the
+        // same composed screen and decoded input path as the attached client.
+        let catalog = CommandCatalog::builtins()?;
+        let reason = capabilities::selected(&catalog, "/goal").ok_or("expected refusal")?;
+        let mut view = View {
+            phase: Some(Phase::Running),
+            notice: refusal(reason),
+            ..View::default()
+        };
+        let input = PromptInput::default();
+        let initial = paint(&view, &input)?;
+        assert!(initial.contains(reason));
+        assert!(initial.contains("working · Esc or Ctrl+C interrupts"));
+
+        // A release belongs to the gesture that produced the notice. Focus,
+        // resize and private settlement fences must not dismiss it either.
+        let mut release = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        for event in [
+            InputEvent::Key(release),
+            InputEvent::Resize(140, 12),
+            InputEvent::Focus(false),
+            InputEvent::SettlementQuery(9),
+        ] {
+            view.begin_input(&event);
+            assert!(paint(&view, &input)?.contains(reason));
+        }
+        view.prompt = Some(Prompt::History { at: 0 });
+        let confirming = paint(&view, &input)?;
+        assert!(confirming.contains(reason));
+        assert!(confirming.contains("Cut 1 selected. Enter files, context, both, or fork."));
+        view.prompt = None;
+
+        for event in [
+            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+            InputEvent::Paste("next draft".into()),
+            InputEvent::CommittedText("committed text".into()),
+        ] {
+            view.notice = refusal(reason);
+            let mut input = PromptInput::default();
+            input.busy = true;
+            let areas = Screen::default().areas(Rect::new(0, 0, 140, 12), &input);
+            view.begin_input(&event);
+            let effects = areas
+                .event(&mut input, event, &mut Viewport::default(), 0, &mut |_| {
+                    None
+                })
+                .collect::<Vec<_>>();
+            assert!(effects.iter().all(|effect| !matches!(
+                effect,
+                InputEffect::Submit { .. } | InputEffect::Interrupt
+            )));
+            assert!(!input.editor.text().is_empty());
+            let shown = paint(&view, &input)?;
+            assert!(
+                !shown.contains(reason),
+                "a draft edit retained the old refusal"
+            );
+            assert!(shown.contains("working · Esc or Ctrl+C interrupts"));
+            assert!(view.busy());
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn stop_targets_the_active_input_while_a_later_prompt_is_pending() -> Result<(), Failure>
