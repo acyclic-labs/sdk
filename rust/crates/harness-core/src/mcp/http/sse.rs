@@ -25,6 +25,7 @@ pub(super) async fn notifications(
     operation: OperationId,
     maximum: Option<u32>,
     generation: &std::sync::atomic::AtomicU64,
+    progressed: &mut bool,
 ) -> Result<()> {
     // The watch lives for the connection, so the protective bound applies to
     // each frame rather than the total number of notifications in its life.
@@ -38,6 +39,7 @@ pub(super) async fn notifications(
         if let Some(value) = decode(frame, operation)? {
             notification(&value, None)?;
             tools_changed(&value, generation);
+            *progressed = true;
         }
     }
     Ok(())
@@ -157,4 +159,43 @@ fn decode(event: Result<crate::sse::Frame>, operation: OperationId) -> Result<Op
     crate::contract::json_from_slice(event.data().as_bytes())
         .map(Some)
         .map_err(|error| Error::Invalid(error.to_string()))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn only_complete_valid_notifications_reset_recovery(
+            width in 1_usize..128,
+            valid in any::<bool>(),
+            interrupted in any::<bool>(),
+        ) {
+            let message: &[u8] = if valid {
+                b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{}}\n\n"
+            } else {
+                b": keepalive\n\ndata: {\"jsonrpc\":\"2.0\",\"method\":7}\n\n"
+            };
+            let mut chunks: Vec<Result<Bytes>> = message.chunks(width)
+                .map(|chunk| Ok(Bytes::copy_from_slice(chunk))).collect();
+            if interrupted {
+                chunks.push(Err(Error::Storage("connection ended".into())));
+            }
+            let generation = std::sync::atomic::AtomicU64::new(0);
+            let mut progressed = false;
+            let result = futures::executor::block_on(notifications(
+                Box::pin(futures::stream::iter(chunks)),
+                OperationId::new(),
+                Some(8192),
+                &generation,
+                &mut progressed,
+            ));
+            prop_assert_eq!(progressed, valid);
+            prop_assert_eq!(result.is_ok(), valid && !interrupted);
+            prop_assert_eq!(generation.load(std::sync::atomic::Ordering::Acquire), u64::from(valid));
+        }
+    }
 }
