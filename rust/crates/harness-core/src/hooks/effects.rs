@@ -84,7 +84,8 @@ where
             &file,
             limits.file_bytes,
             None,
-        )?
+            None,
+        )
         .await?;
         let output = serde_json::from_slice(&bytes)
             .map(Some)

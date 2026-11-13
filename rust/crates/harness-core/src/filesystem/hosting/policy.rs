@@ -35,7 +35,7 @@ impl RootPolicySeed {
         let policy = FileRef::new(
             journal.clone(),
             self.files[0].0.trim_start_matches('/').to_owned(),
-            hex::encode(generation.to_bytes()),
+            hex::encode(generation.to_bytes().as_slice()),
             self.descriptor.clone(),
             "policy".to_owned(),
             &mut None,

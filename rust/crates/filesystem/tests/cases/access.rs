@@ -891,7 +891,8 @@ proptest! {
             old.layers[0][0].resource.path = format!("{root}/**");
             if old.validate().is_ok() {
                 prop_assert!(decide(&policy, &caller, Action::Read,
-                    Resource {path: &unsafe_path, ..res}, context, &old).allowed);
+                    Resource {path: &unsafe_path, ..res}, context, &old).allowed,
+                    "unescaped source glob must reproduce the peer disclosure");
             }
             prop_assert!(!view.decide(Action::Read, &unsafe_path, 100).allowed);
         }
