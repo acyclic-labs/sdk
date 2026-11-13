@@ -96,7 +96,7 @@ where
                                 Some(match content {
                                     crate::model::ModelContent::Text(text) => text,
                                     content => content.parts().iter().filter_map(|part| match part {
-                                        crate::model::ModelContentPart::Text { text } => Some(text.as_str()),
+                                        crate::model::ModelContentPart::Text { text, .. } => Some(text.as_str()),
                                         _ => None,
                                     }).collect::<String>(),
                                 })
