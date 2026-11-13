@@ -690,20 +690,27 @@ mod tests {
         let (release, released) = oneshot::channel();
         let (continued, continuing) = oneshot::channel();
         let (finish, finishing) = oneshot::channel();
+        let (intervened, intervening) = oneshot::channel();
+        let (release_input, input_released) = oneshot::channel();
         let gate = Mutex::new(std::collections::VecDeque::from([
             (entered, released),
+            (intervened, input_released),
             (continued, finishing),
         ]));
         let provider = Arc::new(
             ScriptedModelProvider::new([
                 ScriptedTurn::Text("first".into()),
+                ScriptedTurn::Text("independent input".into()),
                 ScriptedTurn::Text("done".into()),
+                ScriptedTurn::Text("independent goal completed".into()),
             ])
             .with_dispatch_observer(move |_| {
-                let (entered, released) = gate.lock().unwrap().pop_front().unwrap();
+                let selected = gate.lock().unwrap().pop_front();
                 Box::pin(async move {
-                    let _ = entered.send(());
-                    released.await.map_err(failed)?;
+                    if let Some((entered, released)) = selected {
+                        let _ = entered.send(());
+                        released.await.map_err(failed)?;
+                    }
                     Ok(())
                 })
             }),
@@ -715,7 +722,14 @@ mod tests {
         );
         let conversation = Conversation::open(harness.connect().await?);
         let operation = crate::OperationId::new();
-        let policy = Policy::default();
+        let policy = Policy {
+            no_progress_turns: Some(7),
+            reservation: crate::supervision::Reservation {
+                tokens: Some(1000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let run = conversation.run_until_goal(operation, "Finish the objective.", &policy);
         tokio::pin!(run);
         tokio::select! {
@@ -807,7 +821,25 @@ mod tests {
                 .is_none(),
             "a writable lookalike declaration bypassed the original publication"
         );
+        conversation
+            .send("interleaved-user", "Independent user input")
+            .await?;
         release.send(()).unwrap();
+        tokio::select! {
+            result = &mut run => panic!("run ended before the independent input: {result:?}"),
+            result = intervening => result.map_err(failed)?,
+        }
+        assert!(
+            bound
+                .agents()
+                .state(conversation.agent())
+                .await
+                .map_err(failed)?
+                .run_admission
+                .is_none(),
+            "independent input inherited another run's admission"
+        );
+        release_input.send(()).unwrap();
         tokio::select! {
             result = &mut run => panic!("run ended before the continued model admission: {result:?}"),
             result = continuing => result.map_err(failed)?,
