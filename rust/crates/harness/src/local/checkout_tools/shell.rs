@@ -117,10 +117,7 @@ impl CheckoutTools {
             },
             move || {
                 output_health.check()?;
-                if acyclic_fs::capture_root_identity(&workspace.path)
-                    .map_err(std::io::Error::other)?
-                    != workspace.identity
-                {
+                if workspace.root_identity().map_err(std::io::Error::other)? != workspace.identity {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
                         "checkout root was replaced",
