@@ -5,19 +5,24 @@ use serde::Serialize;
 fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
     use acyclic_fs::{
         Digest, GenerationId, LazyOverlayId, LazyShadowId, LazySnapshotRef, ObjectId, ObjectKind,
-        WorkspaceId, demand::SourceReference,
+        WorkspaceId,
+        demand::{DemandSource, Empty, Routed},
+        kernel::{KernelAccounting, LogicalName, NameEncoding},
     };
     let cancel = acyclic_fs::CancellationToken::new();
-    let mut accounting = acyclic_fs::kernel::KernelAccounting::standalone(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancel,
-    );
-    let scalar = |identity| SourceReference {
-        identity: [identity; 16],
-        epoch: 7,
-        components: Default::default(),
+    let mut accounting = KernelAccounting::Standalone {
+        allocations: Default::default(),
+        work: acyclic_fs::WorkCounters::UNCHARGED,
+        budget: acyclic_fs::WorkBudget::UNBOUNDED,
+        cancellation: &cancel,
     };
-    let source = SourceReference::pair([3; 16], &scalar(1), &scalar(2), &mut accounting).unwrap();
+    let routed = Routed::new(
+        Empty,
+        LogicalName::new(NameEncoding::Utf8, b"view".to_vec()).unwrap(),
+        Empty,
+        acyclic_fs::VolumeLimits::default(),
+    );
+    let source = futures::executor::block_on(routed.reference(&mut accounting)).unwrap();
     let snapshot = LazySnapshotRef::new(
         WorkspaceId::from_bytes([4; 16]),
         GenerationId::from_root(ObjectId {
@@ -27,7 +32,7 @@ fn lazy_snapshot_layout_funds_object_and_sequence_source_components() {
         }),
         source,
         LazyOverlayId::from_bytes([6; 32]),
-        LazyShadowId::from_bytes([7; 32]),
+        serde_json::from_value::<LazyShadowId>(serde_json::to_value([7_u8; 32]).unwrap()).unwrap(),
     );
     assert_layout_covers_decode(&snapshot);
     let object = serde_json::to_value(&snapshot).unwrap();
