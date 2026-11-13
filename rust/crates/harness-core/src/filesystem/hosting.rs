@@ -263,7 +263,6 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     controls: Arc<dyn crate::agent::Companions>,
     composer: Arc<crate::agent::AgentComposer<P>>,
     file_views: Vec<Arc<dyn crate::client_files::FileView<P>>>,
-    directory_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -282,7 +281,6 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             controls: self.controls.clone(),
             composer: self.composer.clone(),
             file_views: self.file_views.clone(),
-            directory_enabled: self.directory_enabled.clone(),
         }
     }
 }
@@ -508,10 +506,8 @@ where
             Some(templates) => agents.with_templates(templates),
             None => agents,
         });
-        let directory_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let directory_file = sessions::DirectoryFile {
             path: sessions::directory_path(&within)?,
-            enabled: directory_enabled.clone(),
         };
         Ok(Self {
             issuer,
@@ -526,7 +522,6 @@ where
             handler,
             controls,
             composer,
-            directory_enabled,
             file_views: vec![
                 Arc::new(crate::supervision::files::SignalFiles),
                 Arc::new(directory_file),

@@ -26,7 +26,6 @@ pub(super) fn directory_path(within: &ActorReference) -> Result<acyclic_stream::
 
 pub(super) struct DirectoryFile {
     pub(super) path: acyclic_stream::StreamPath,
-    pub(super) enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<P: acyclic_stream::StreamProvider + ?Sized> crate::client_files::FileView<P>
@@ -42,8 +41,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> crate::client_files::FileView<P
         root: crate::client_files::FileRoot,
         path: &str,
     ) -> crate::Result<Option<acyclic_stream::StreamPath>> {
-        Ok((self.enabled.load(std::sync::atomic::Ordering::Acquire)
-            && matches!(root, crate::client_files::FileRoot::Private {})
+        Ok((matches!(root, crate::client_files::FileRoot::Private {})
             && path == "status/session-directory.json")
             .then(|| self.path.clone()))
     }
@@ -272,11 +270,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             .await
             .map_err(Error::Stream)?;
         match outcome {
-            AppendOutcome::Committed(_) => {
-                self.directory_enabled
-                    .store(true, std::sync::atomic::Ordering::Release);
-                Ok(())
-            }
+            AppendOutcome::Committed(_) => Ok(()),
             AppendOutcome::TailConflict { .. } => Err(Error::Record(
                 "unconditional directory creation was refused",
             )),
