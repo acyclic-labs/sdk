@@ -584,7 +584,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
         let reopened = Runtime::new(
             crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
-            handler,
+            handler.clone(),
             Arc::new(SystemClock),
         );
         let mut serving =
