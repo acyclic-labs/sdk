@@ -99,11 +99,7 @@ impl Journal {
                         details: Default::default(),
                         metadata: {
                             let mut metadata = http::HeaderMap::new();
-                            let value = error
-                                .code()
-                                .as_str_name()
-                                .parse()
-                                .expect("error code is ASCII");
+                            let value = http::HeaderValue::from_static(error.code().as_str_name());
                             metadata.insert("acyclic-owner-error-code", value);
                             metadata
                         },
@@ -153,7 +149,7 @@ impl Observation {
                 "unsettled",
             ),
         };
-        Ok(Refusal::capture_owned(
+        Refusal::capture_owned(
             status,
             Canonical {
                 code: 14,
@@ -163,7 +159,7 @@ impl Observation {
             },
             Some(Cause::new("service.owner", reason)),
         )
-        .expect("owner attribution is present"))
+        .ok_or_else(|| Error::Invalid("owner record has no attribution".into()))
     }
 }
 

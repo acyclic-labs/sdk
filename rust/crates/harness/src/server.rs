@@ -339,7 +339,10 @@ pub async fn serve<C: Composition>(
         .map_err(failed)
     };
     let serving = serving.await;
-    let result = result.try_recv().unwrap_or(serving);
+    let result = match result.try_recv() {
+        Ok(outcome) => Error::after_cleanup(outcome, serving),
+        Err(_) => serving,
+    };
     drop(host);
     result.map_err(Into::into)
 }
