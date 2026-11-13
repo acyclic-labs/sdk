@@ -709,7 +709,8 @@ impl PromptInput {
 
     fn search_previous(&mut self, effects: &mut Vec<InputEffect>) {
         if self.history_query {
-            if let Some(search) = &self.search {
+            if let Some(search) = &mut self.search {
+                search.matched = false;
                 self.history_epoch = self.history_epoch.wrapping_add(1);
                 effects.push(InputEffect::History {
                     request: self.history_epoch,
