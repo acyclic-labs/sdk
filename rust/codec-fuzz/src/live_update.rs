@@ -164,15 +164,15 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     let envelope_text = String::from_utf8(live::encode(&envelope)?)?;
     for (name, bytes) in [
         (
-            "live-update-unknown-envelope-field",
+            "live-update-v1-unknown-envelope-field",
             envelope_text.replacen("\"epoch\":", "\"future\":1,\"epoch\":", 1),
         ),
         (
-            "live-update-duplicate-envelope-field",
+            "live-update-v1-duplicate-envelope-field",
             envelope_text.replacen("\"epoch\":", "\"epoch\":\"1\",\"epoch\":", 1),
         ),
         (
-            "live-update-noncanonical-decimal",
+            "live-update-v1-noncanonical-decimal",
             envelope_text.replace("18446744073709551615", "018446744073709551615"),
         ),
     ] {
@@ -214,7 +214,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     };
     save!("deployment", deployment, live::DeploymentId);
     save!("version", version, live::Version);
-    save!("artifact", artifact, live::Artifact);
+    save!("v1-artifact", artifact, live::Artifact);
     save!("actor-pin", pin, live::Pin);
     save!("cohort-pin", live::Pin::Cohort("cohort".into()), live::Pin);
     save!("fraction", wave, live::Fraction);
@@ -236,8 +236,8 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
         selection.rollback(rollback)?,
         live::SelectionChange
     );
-    save!("schema", schema, live::Schema);
-    save!("rpc", rpc, live::RpcSchema);
+    save!("v1-schema", schema, live::Schema);
+    save!("v1-rpc", rpc, live::RpcSchema);
     save!("peer-unbounded", peer.clone(), live::PeerRange);
     save!(
         "peer-bounded",
@@ -249,8 +249,12 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     );
     save!("handoff", handoff, live::HandoffRequirements);
     save!("adapter", adapter, live::Adapter);
-    save!("compatibility", compatibility, live::CompatibilityManifest);
-    save!("publication", publication, live::Publication);
+    save!(
+        "v1-compatibility",
+        compatibility,
+        live::CompatibilityManifest
+    );
+    save!("v1-publication", publication, live::Publication);
     save!("envelope", envelope, live::CallEnvelope);
     save!("journal", position, live::JournalPosition);
     save!("durable-await", pending, live::DurableAwait);

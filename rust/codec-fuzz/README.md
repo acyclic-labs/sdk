@@ -76,11 +76,23 @@ expanded oracle to reject both mutations, then captures and replays the original
 writers. Captures include zero, ordinary and maximum unsigned deadlines through
 the shared transition encoder. Refresh only these Actors captures with
 `cargo run --locked --example capture -- --only-actors --extend-goldens`.
-Use `python3 actor-negative-control.py --capture` to capture and replay without
-repeating source mutations already qualified on unchanged decoder/oracle paths.
+On a POSIX host, run `node capture-actors.mjs` to refresh the actual Runtime socket deliveries,
+capture current Actors writers and replay the retained corpus. The temporary
+socket observer is restored before codec capture, including on SIGINT and SIGTERM
+after the owned Cargo process stops. Run `node --test capture-actors-interruption.mjs`
+to check interruption and exact source restoration. Windows capture is refused
+before any source mutation; the same regression checks that refusal there without
+sending a force-termination signal. Runtime packets are addressed
+by their full SHA-256, preserving original clock and commit context across refreshes.
+Deterministic writers still compare exact bytes against their named goldens.
 Full and Actors-only capture retain every historical Actors input and its provenance.
 Versioned invocation and State writer captures retain the earlier corpus and
 provenance, including transitions that contain the earlier State version.
+
+Run `node capture-controls.mjs` on the same POSIX host after capture. It removes
+source restoration and separately corrupts a real State writer's first byte;
+the original signal regression and golden checker must reject those mutations.
+The controller waits for its child and restores each original source before exit.
 
 `python3 actor-negative-control.py --persisted-alarms` covers the deployed
 State codec after actual Store publications: a committed input sets an alarm,

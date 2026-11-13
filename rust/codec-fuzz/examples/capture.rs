@@ -1147,7 +1147,14 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
 fn capture_actors(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     std::fs::write("corpus/actor-guest.ts", acyclic_actors::guest::typescript())?;
     for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
-        save("actor_codecs", name, &bytes, producer, manifest)?;
+        // Runtime clocks and commit identities are original captured context,
+        // not fields to normalize. A fresh packet extends the retained corpus.
+        let name = if name.starts_with("socket-input-") {
+            format!("{name}-{}", hex::encode(Sha256::digest(&bytes)))
+        } else {
+            name.to_owned()
+        };
+        save("actor_codecs", &name, &bytes, producer, manifest)?;
     }
     Ok(())
 }
