@@ -192,13 +192,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         }
         let mut retired = subscription == CLOSED;
         if !retired {
+            let source = self.source(state.private.volume()?).map_err(turn)?;
+            if record.origin != source {
+                return Err(Error::Record("control record origin differs"));
+            }
             let context = acyclic_stream::changes_context(&record.value, &record.headers)
                 .map_err(Error::Stream)?;
             let publication = acyclic_fs::PublicationContext::from_bytes(
                 context.ok_or(Error::Record("control source is not a publication"))?,
             )
             .map_err(Error::Stream)?;
-            let source = self.source(state.private.volume()?).map_err(turn)?;
             if delivery
                 .subscriptions
                 .get(subscription)
