@@ -557,7 +557,7 @@ impl Pool {
             }
             Some(Body::Closed(closed)) => {
                 let error =
-                    original_error.unwrap_or_else(|| StreamError::from_session_close(&closed.code));
+                    original_error.unwrap_or_else(|| wire_codec::session::closed_error(&closed));
                 if let Some(input) = &route.input {
                     input.0.close(error.clone());
                 }

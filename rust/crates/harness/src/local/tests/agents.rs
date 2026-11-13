@@ -5249,6 +5249,17 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
             // It must remain unconsumed, without stopping the serving loop.
             let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
             let actor = agents.actor(&child).map_err(agent)?;
+            let selected = connection.select(child.clone()).await?;
+            let status_tail = agents
+                .provider()
+                .tail(child.status().map_err(agent)?)
+                .await
+                .map_err(agent)?;
+            let mut events =
+                crate::local::Observer::open(&selected, entries.len() as u64, status_tail)?;
+            let lost = events.next();
+            tokio::pin!(lost);
+            assert!(futures::poll!(&mut lost).is_pending());
             let inbox = child.inbox().map_err(agent)?;
             let input = crate::agent::inbox_tail(&**agents.provider(), &child)
                 .await
@@ -5291,6 +5302,24 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
                     .map_err(agent)?
                     .settled
             );
+            let cause = agents
+                .runtime()
+                .delivery_failure(&actor)
+                .map_err(agent)?
+                .await
+                .to_string();
+            let original = format!("{cause:?}");
+            let lost = lost
+                .await
+                .err()
+                .ok_or_else(|| Error::Invalid("failed child kept a live follow".into()))?;
+            assert!(lost.to_string().contains(&original), "{lost}");
+            let child = Conversation::open(selected);
+            let fenced =
+                child.wait_current_input().await.err().ok_or_else(|| {
+                    Error::Invalid("failed child settled its original input".into())
+                })?;
+            assert!(fenced.to_string().contains(&original), "{fenced}");
         }
         let runtime = &harness.agents.get().unwrap().runtime;
         assert!(runtime.failure().is_none());
@@ -5311,5 +5340,240 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
         entry.outcome,
         crate::agent::TurnOutcome::Completed
     ));
+    Ok(())
+}
+
+/// A lost model producer must fail its original actor waiters, preserving the
+/// queued input and the shared serving loop for unrelated work.
+#[tokio::test]
+async fn lost_model_producer_fails_actor_waiters_without_settling_input() -> Result<()> {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::sync::oneshot;
+
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let (entered, entering) = oneshot::channel();
+    let (producer, result) = oneshot::channel::<()>();
+    let gate = Mutex::new(Some((entered, result)));
+    let warming = AtomicBool::new(true);
+    let provider = ScriptedModelProvider::new([
+        super::ScriptedTurn::Text("ready".into()),
+        super::ScriptedTurn::Events(Vec::new()),
+    ])
+    .with_context_capacity(super::capacity())
+    .with_dispatch_observer(move |_| {
+        let warming = warming.swap(false, Ordering::SeqCst);
+        let gate = (!warming).then(|| gate.lock().unwrap().take()).flatten();
+        Box::pin(async move {
+            if warming {
+                return Ok(());
+            }
+            let (entered, result) = gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
+            let _ = entered.send(());
+            result
+                .await
+                .map_err(|_| Error::Storage("model producer closed".into()))?;
+            Err(Error::Invalid("model gate unexpectedly released".into()))
+        })
+    });
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(directory.path(), project, Arc::new(provider))?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let client = Conversation::open(connection.clone());
+    // Create the conversation through its actual first turn before testing
+    // out-of-range follows: an absent stream intentionally waits for creation.
+    let mut warmup_events = client.observe(None).await?;
+    let warmup = client.send("warmup", "hello").await?;
+    assert!(matches!(
+        client.settle("warmup", warmup, &mut warmup_events).await?,
+        crate::local::agent_conversation::Settlement::Reply(crate::agent::Reply::Answered { .. })
+    ));
+    let mut events = client.observe(Some(0)).await?;
+    let inbox = client.send("lost-producer", "hello").await?;
+    model_dispatch_before_settlement(&harness, connection.root(), async {
+        entering.await.map_err(agent)
+    })
+    .await?;
+    // Same canonical agent, different original authenticated Session. Refusal
+    // must precede even the reply query, without consuming the other follow.
+    let other = conversation(&harness).await?;
+    let mut unrelated = other.observe(Some(0)).await?;
+    {
+        let invalid = client.settle("lost-producer", inbox, &mut unrelated);
+        tokio::pin!(invalid);
+        let observed = futures::poll!(&mut invalid);
+        assert!(
+            matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(reason))) if reason.contains("observer from the original connection")),
+            "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
+        );
+    }
+    // Retain another observer on the original connection. Its first failed
+    // opening retires only that follow; the other selected follows remain.
+    // A future live cursor is valid and waits, so it cannot provoke retirement.
+    let mut retired = client.replay(&acyclic_harness_client::EventProjection::new(
+        "retired-source".into(),
+    ))?;
+    let root = connection.root().clone();
+    let settling = settled(&harness, &root);
+    tokio::pin!(settling);
+    assert!(
+        futures::poll!(&mut settling).is_pending(),
+        "live runtime must retain settlement"
+    );
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().calls, 2);
+    assert_eq!(usage.totals().completed, 1);
+    let before = usage.totals().clone();
+    let fenced = client.wait_current_input();
+    tokio::pin!(fenced);
+    assert!(
+        futures::poll!(&mut fenced).is_pending(),
+        "captured input must remain pending while its producer is live"
+    );
+    let waiting = client.settle("lost-producer", inbox, &mut events);
+    tokio::pin!(waiting);
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "live producer must retain the wait"
+    );
+    let runtime = &harness.agents.get().unwrap().runtime;
+    let admission = runtime.admit(std::future::pending::<Result<()>>());
+    tokio::pin!(admission);
+    assert!(
+        futures::poll!(&mut admission).is_pending(),
+        "live runtime must retain in-flight admission"
+    );
+    let usage_result = {
+        let advancing = usage.advance();
+        tokio::pin!(advancing);
+        assert!(
+            futures::poll!(&mut advancing).is_pending(),
+            "quiet live usage must wait at its retained frontier"
+        );
+        drop(producer);
+        advancing.await
+    };
+    assert!(
+        matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "usage lost the runtime cause: {usage_result:?}"
+    );
+    let fenced = fenced.await;
+    assert!(
+        matches!(&fenced, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "input fence lost the runtime cause: {fenced:?}"
+    );
+    let admitted = futures::poll!(&mut admission);
+    assert!(
+        admitted.is_pending(),
+        "actor failure closed unrelated runtime admission: {admitted:?}"
+    );
+    assert_eq!(
+        usage.totals(),
+        &before,
+        "source loss changed the admitted projection"
+    );
+    // Only the failed actor's live subscriptions report its original failure.
+    let observed = futures::poll!(&mut waiting);
+    assert!(
+        matches!(&observed, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
+        "public settlement retained its lost model producer: {observed:?}"
+    );
+    let hosted = harness.agents.get().unwrap();
+    assert!(futures::poll!(core::pin::pin!(hosted.runtime.completion())).is_pending());
+    loop {
+        match retired.next_projected().await {
+            Err(Error::Storage(reason)) => {
+                assert!(
+                    reason.contains("model producer closed"),
+                    "retired follow lost the runtime cause: {reason}"
+                );
+                break;
+            }
+            Err(error) => return Err(error),
+            Ok((event, _)) => {
+                event?;
+            }
+        }
+    }
+    let invalid = client.settle("lost-producer", inbox, &mut retired);
+    tokio::pin!(invalid);
+    assert!(
+        matches!(
+            futures::poll!(&mut invalid),
+            std::task::Poll::Ready(Err(Error::Invalid(_)))
+        ),
+        "settlement admitted a retired original follow or performed I/O before refusal"
+    );
+    let settled = futures::poll!(&mut settling);
+    assert!(
+        matches!(&settled, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
+        "settlement bypassed the original runtime terminal event: {settled:?}"
+    );
+    assert!(
+        harness.agent_stream.as_ref().unwrap().failure().is_none(),
+        "the Session's runtime failure must not be invented as a provider failure"
+    );
+    assert!(
+        matches!(
+            connection
+                .execute(&acyclic_harness_client::AgentCommand::Root {})
+                .await?,
+            acyclic_harness_client::AgentReply::Root { .. }
+        ),
+        "actor failure closed the shared command session"
+    );
+    assert_eq!(
+        hosted
+            .agents()
+            .reply(
+                hosted.root(),
+                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                inbox
+            )
+            .await
+            .map_err(agent)?,
+        crate::agent::Reply::Pending,
+        "failed input stays recoverable"
+    );
+    assert_eq!(
+        records(
+            hosted.agents().provider(),
+            hosted.root().conversation().map_err(agent)?
+        )
+        .await?
+        .len(),
+        1,
+        "failed input appended another conversation entry"
+    );
+    assert!(
+        harness.connect().await.is_ok(),
+        "actor failure refused a new command session"
+    );
+    // Both admitted calls outlive the failed delivery. Only the warm-up completed;
+    // losing the second producer must preserve its distinct unfinished call.
+    let mut exported = Vec::new();
+    client
+        .observation()
+        .await?
+        .write_usage_jsonl(&mut exported)
+        .await?;
+    let rows = serde_json::Deserializer::from_slice(&exported)
+        .into_iter::<crate::executor::ModelUsageProjection<'_>>()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(agent)?;
+    assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
+    assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
+    assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
     Ok(())
 }
