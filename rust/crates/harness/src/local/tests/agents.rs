@@ -5250,13 +5250,16 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
     let mut client = ObservedConversation::open(&harness).await?;
+    eprintln!("instruction frontier: first input");
     assert_eq!(
         client.send("one", "FIRST_PROMPT").await?.outcome,
         crate::agent::TurnOutcome::Completed,
         "the instruction proof must reach model dispatch"
     );
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
+    eprintln!("instruction frontier: second input");
     client.send("two", "SECOND_PROMPT").await?;
+    eprintln!("instruction frontier: inspect committed delivery");
     let (agents, root) = harness.agents().await?;
     let root = root.clone();
     let state = agents.state(&root).await.map_err(agent)?;
@@ -5319,20 +5322,27 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
 
     // Return to the frozen value while closed, then repeat the same transition.
     // The durable frontier must correct B -> A and give A -> B a new intent.
+    eprintln!("instruction frontier: await input checkpoint");
     settled(&harness, &root).await?;
     drop(client);
+    eprintln!("instruction frontier: disconnect original owner");
     Arc::try_unwrap(harness)
         .map_err(|_| Error::Conflict("instruction owner is still borrowed".into()))?
         .disconnect()
         .await?;
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_ONE\n").map_err(agent)?;
+    eprintln!("instruction frontier: reopen owner");
     let harness = Arc::new(open()?.await?);
     let mut client = ObservedConversation::open(&harness).await?;
+    eprintln!("instruction frontier: third input");
     client.send("three", "AFTER_REOPEN").await?;
     let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
+    eprintln!("instruction frontier: fourth input");
     client.send("four", "REPEAT_EDIT").await?;
+    eprintln!("instruction frontier: fifth input");
     client.send("five", "UNCHANGED").await?;
+    eprintln!("instruction frontier: verify all transitions");
     for (index, expected) in [
         (2, vec!["RULE_TWO\n", "RULE_ONE\n"]),
         (3, vec!["RULE_TWO\n", "RULE_ONE\n", "RULE_TWO\n"]),
