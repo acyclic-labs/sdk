@@ -79,6 +79,11 @@ pub trait Matcher: crate::ProviderPlatform {
     type Error: From<StreamError> + crate::ProviderTask;
     /// Versioned matching semantics, bound into every continuation.
     fn identity(&self) -> [u8; 32];
+    /// Converts an original provider failure without requiring diagnostic
+    /// formatting. Native adapters retain their original error and custody.
+    fn stream_error(&self, error: StreamError) -> Self::Error {
+        error.into()
+    }
     /// One bounded step. A continuation must advance; a match ends this record.
     fn step<'a>(
         &'a self,
@@ -300,13 +305,14 @@ impl Cursor {
         matcher: &M,
         owner: &mut Owner,
     ) -> Result<Page<M::Source>, M::Error> {
+        let failure = |error| matcher.stream_error(error);
         if self
             .matcher
             .is_some_and(|identity| identity != matcher.identity())
         {
-            return Err(StreamError::InvalidArgument.into());
+            return Err(failure(StreamError::InvalidArgument));
         }
-        let mut cursor = access.cursor(self, owner)?;
+        let mut cursor = access.cursor(self, owner).map_err(failure)?;
         cursor.matcher = Some(matcher.identity());
         let mut matches = Vec::new();
         let mut work = 0;
@@ -315,9 +321,10 @@ impl Cursor {
                 break;
             };
             if frame.tail.is_none() {
-                let observed =
-                    observe(access, cursor.at.clone(), Some(frame.path.clone()), None).await?;
-                owner.absorb(observed.owner)?;
+                let observed = observe(access, cursor.at.clone(), Some(frame.path.clone()), None)
+                    .await
+                    .map_err(failure)?;
+                owner.absorb(observed.owner).map_err(failure)?;
                 let observed = observed.value;
                 cursor.at = Some(observed.snapshot);
                 frame.tail = Some(
@@ -330,10 +337,17 @@ impl Cursor {
                 work += 1;
                 continue;
             }
-            let tail = frame.tail.ok_or(StreamError::InvalidResponse)?;
+            let tail = frame
+                .tail
+                .ok_or(StreamError::InvalidResponse)
+                .map_err(failure)?;
             if frame.sequence < tail {
                 let count = (budget.get() - work).min(crate::MAX_ITEMS as u32);
-                let at = cursor.at.clone().ok_or(StreamError::InvalidResponse)?;
+                let at = cursor
+                    .at
+                    .clone()
+                    .ok_or(StreamError::InvalidResponse)
+                    .map_err(failure)?;
                 work += scan(
                     access,
                     frame,
@@ -360,24 +374,30 @@ impl Cursor {
                     limit: 1,
                 }),
             )
-            .await?;
-            owner.absorb(observed.owner)?;
+            .await
+            .map_err(failure)?;
+            owner.absorb(observed.owner).map_err(failure)?;
             let observed = observed.value;
-            let children = observed.children.ok_or(StreamError::InvalidResponse)?;
+            let children = observed
+                .children
+                .ok_or(StreamError::InvalidResponse)
+                .map_err(failure)?;
             work += 1;
             if let Some(child) = children.children.into_iter().next() {
                 frame.after = Some(child.path.clone());
-                access.push(
-                    &mut cursor.frontier,
-                    Frame {
-                        path: child.path,
-                        sequence: 0,
-                        tail: None,
-                        after: None,
-                        content: None,
-                    },
-                    owner,
-                )?;
+                access
+                    .push(
+                        &mut cursor.frontier,
+                        Frame {
+                            path: child.path,
+                            sequence: 0,
+                            tail: None,
+                            after: None,
+                            content: None,
+                        },
+                        owner,
+                    )
+                    .map_err(failure)?;
             } else if let Some(after) = children.next_after {
                 // Authorization can hide every child in a provider page.
                 frame.after = Some(after);
@@ -394,11 +414,13 @@ impl Cursor {
                         .frontier
                         .capacity()
                         .checked_mul(std::mem::size_of::<Frame>())
-                        .ok_or(StreamError::InvalidResponse)?,
+                        .ok_or(StreamError::InvalidResponse)
+                        .map_err(failure)?,
                 )
-                .ok_or(StreamError::InvalidResponse)?;
+                .ok_or(StreamError::InvalidResponse)
+                .map_err(failure)?;
             drop(cursor);
-            owner.release(retired)?;
+            owner.release(retired).map_err(failure)?;
             None
         } else {
             Some(cursor)
@@ -421,7 +443,11 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
     matches: &mut Vec<Match<M::Source>>,
     owner: &mut Owner,
 ) -> Result<u32, M::Error> {
-    let tail = frame.tail.ok_or(StreamError::InvalidResponse)?;
+    let failure = |error| matcher.stream_error(error);
+    let tail = frame
+        .tail
+        .ok_or(StreamError::InvalidResponse)
+        .map_err(failure)?;
     let mut records = access
         .read(ReadRequest {
             key: None,
@@ -430,48 +456,53 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
             limit: u64::from(count).min(tail - frame.sequence) as u32,
             at_least: RevisionCut::of(at),
         })
-        .await?;
+        .await
+        .map_err(failure)?;
     let mut work = 0;
     while work < count && frame.sequence < tail {
         let record = access
             .next(&mut records)
-            .await?
-            .ok_or(StreamError::Unavailable)?;
+            .await
+            .map_err(failure)?
+            .ok_or(StreamError::Unavailable)
+            .map_err(failure)?;
         let record_owner = record.owner;
         let record = record.value;
         if record.sequence != frame.sequence {
-            return Err(StreamError::InvalidResponse.into());
+            return Err(failure(StreamError::InvalidResponse));
         }
         loop {
             let step = access
                 .step(matcher, &record, pattern, frame.content.as_deref())
                 .await?;
-            owner.absorb(step.owner)?;
+            owner.absorb(step.owner).map_err(failure)?;
             let step = step.value;
             work += 1;
             if step.matched {
-                owner.absorb(record_owner)?;
-                access.push(
-                    matches,
-                    Match {
-                        path: frame.path.clone(),
-                        record,
-                        source: step.source,
-                    },
-                    owner,
-                )?;
+                owner.absorb(record_owner).map_err(failure)?;
+                access
+                    .push(
+                        matches,
+                        Match {
+                            path: frame.path.clone(),
+                            record,
+                            source: step.source,
+                        },
+                        owner,
+                    )
+                    .map_err(failure)?;
                 frame.sequence += 1;
                 let retired = frame.content.as_ref().map_or(0, Vec::capacity);
                 frame.content = None;
-                owner.release(retired)?;
+                owner.release(retired).map_err(failure)?;
                 break;
             }
             if step.next.is_some() && step.next == frame.content {
-                return Err(StreamError::InvalidResponse.into());
+                return Err(failure(StreamError::InvalidResponse));
             }
             let retired = frame.content.as_ref().map_or(0, Vec::capacity);
             frame.content = step.next;
-            owner.release(retired)?;
+            owner.release(retired).map_err(failure)?;
             if frame.content.is_none() {
                 frame.sequence += 1;
                 break;

@@ -234,9 +234,11 @@ impl<'a, P: StreamProvider + ?Sized> Access<'a, P> {
     ) -> Result<Held<Step<M::Source>>, M::Error> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = &self.native {
-            let output = self.io(matcher
-                .native_step(record, pattern, after, &native.work.meter)
-                .await)??;
+            let output = self
+                .io(matcher
+                    .native_step(record, pattern, after, &native.work.meter)
+                    .await)
+                .map_err(|error| matcher.stream_error(error))??;
             let (value, allocation) = output.into_parts();
             return Ok(Held {
                 value,

@@ -314,6 +314,24 @@ impl<'a> ContentMatcher<'a> {
 impl Matcher for ContentMatcher<'_> {
     type Source = Retained<FileRef>;
     type Error = Error;
+    fn stream_error(&self, source: acyclic_stream::StreamError) -> Error {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.io.is_some() {
+            let code = match source.category() {
+                acyclic_stream::StreamError::AccessDenied => crate::wire::ErrorCode::Unauthorized,
+                acyclic_stream::StreamError::InvalidArgument
+                | acyclic_stream::StreamError::InvalidPath => crate::wire::ErrorCode::Invalid,
+                acyclic_stream::StreamError::Unsupported => crate::wire::ErrorCode::Unsupported,
+                _ => crate::wire::ErrorCode::Storage,
+            };
+            return Error::NativeStream {
+                code,
+                source,
+                custody: None,
+            };
+        }
+        source.into()
+    }
     fn identity(&self) -> [u8; 32] {
         *b"acyclic:search:linked-content:v2"
     }

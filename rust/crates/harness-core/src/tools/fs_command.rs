@@ -1,6 +1,6 @@
 use super::command::parse_command_with_io;
+use crate::Result;
 use crate::executor::{PreparationIo, stock_boundary, stock_retire_text};
-use crate::{Error, Result};
 
 #[derive(Debug, PartialEq, Eq)]
 #[doc(hidden)]
@@ -22,9 +22,17 @@ pub(crate) struct Grep<'a> {
 
 impl FsCommand {
     pub(crate) fn grep(&self) -> Result<Grep<'_>> {
+        self.grep_with_io(None)
+    }
+
+    pub(crate) fn grep_with_io(&self, io: Option<&PreparationIo>) -> Result<Grep<'_>> {
         let mut arguments = self.arguments.iter();
         if arguments.next().is_none_or(|command| command != "grep") {
-            return Err(Error::Invalid("search requires grep".into()));
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "search requires grep",
+            ));
         }
         let mut scope = None;
         let mut path = None;
@@ -34,18 +42,30 @@ impl FsCommand {
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--" => {
-                    let literal = arguments
-                        .next()
-                        .ok_or_else(|| Error::Invalid("grep requires a literal after --".into()))?;
+                    let literal = arguments.next().ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "grep requires a literal after --",
+                        )
+                    })?;
                     if pattern.replace(literal.as_str()).is_some() || arguments.next().is_some() {
-                        return Err(Error::Invalid("grep requires exactly one literal".into()));
+                        return Err(stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "grep requires exactly one literal",
+                        ));
                     }
                     break;
                 }
                 "--scope" | "--file" | "--directory" | "--page-size" | "--cursor" => {
-                    let value = arguments
-                        .next()
-                        .ok_or_else(|| Error::Invalid("grep option requires a value".into()))?;
+                    let value = arguments.next().ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "grep option requires a value",
+                        )
+                    })?;
                     match argument.as_str() {
                         "--scope" if scope.is_none() => scope = Some(value.as_str()),
                         "--file" if path.is_none() => {
@@ -56,30 +76,53 @@ impl FsCommand {
                         }
                         "--page-size" if size.is_none() => {
                             size = Some(value.parse().map_err(|_| {
-                                Error::Invalid("search page size must be nonzero".into())
+                                stock_boundary(
+                                    io,
+                                    crate::wire::ErrorCode::Invalid,
+                                    "search page size must be nonzero",
+                                )
                             })?)
                         }
                         "--cursor" if cursor.is_none() => cursor = Some(value.as_str()),
-                        _ => return Err(Error::Invalid("duplicate grep option".into())),
+                        _ => {
+                            return Err(stock_boundary(
+                                io,
+                                crate::wire::ErrorCode::Invalid,
+                                "duplicate grep option",
+                            ));
+                        }
                     }
                 }
                 literal if pattern.is_none() => pattern = Some(literal),
-                _ => return Err(Error::Invalid("grep requires exactly one literal".into())),
+                _ => {
+                    return Err(stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "grep requires exactly one literal",
+                    ));
+                }
             }
         }
         if scope.is_some() && (path.is_some() || self.volume.is_some()) {
-            return Err(Error::Invalid(
-                "grep selects one agent scope or one mounted volume".into(),
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "grep selects one agent scope or one mounted volume",
             ));
         }
         Ok(Grep {
             scope,
             path,
-            pattern: pattern.ok_or_else(|| Error::Invalid("grep requires a literal".into()))?,
-            size: size.unwrap_or(
-                std::num::NonZeroU32::new(64)
-                    .ok_or_else(|| Error::Invalid("invalid search chunk".into()))?,
-            ),
+            pattern: pattern.ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "grep requires a literal",
+                )
+            })?,
+            size: size.unwrap_or(std::num::NonZeroU32::new(64).ok_or_else(|| {
+                stock_boundary(io, crate::wire::ErrorCode::Invalid, "invalid search chunk")
+            })?),
             cursor,
         })
     }
@@ -204,6 +247,7 @@ pub(crate) fn parse_fs_command_with_io(
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    use crate::Error;
     use proptest::prelude::*;
 
     #[test]

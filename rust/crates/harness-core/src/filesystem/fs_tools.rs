@@ -379,11 +379,29 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         invocation: &ToolInvocation,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<()> {
-        if work.is_some() {
-            return Err(Error::Unsupported(
-                "filesystem command requires its ordinary provider context".into(),
-            ));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            let io = PreparationIo::from_native_work(work)?;
+            let refused = || {
+                crate::executor::stock_boundary(
+                    Some(&io),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "filesystem command identity or grant changed",
+                )
+            };
+            let context = context.ok_or_else(refused)?;
+            if invocation.name != "fs"
+                || invocation.operation_id != context.operation_id()
+                || invocation.call_id != context.call_id()
+                || !context.effective_scope().grants().contains("tool:call:fs")
+            {
+                return Err(refused());
+            }
+            return crate::executor::with_history_io(Some(&io), |history| {
+                self.verifier.verify(&self.scope, history)
+            });
         }
+        let _ = work;
         let context = context
             .ok_or_else(|| Error::Unauthorized("filesystem command has no task context".into()))?;
         if invocation.name != "fs"
@@ -399,6 +417,45 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
             ));
         }
         self.verifier.verify(&self.scope, &mut None)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native_execution(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        work.remaining()?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn execute_with_native_context<'a>(
+        &'a self,
+        context: &'a ToolContext,
+        invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation), Error>>
+    {
+        acyclic_fs::NativeFutureBundle::new(work, || self.search_native(invocation, context, work))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reconcile_with_native_context<'a>(
+        &'a self,
+        context: &'a ToolContext,
+        invocation: &'a ToolInvocation,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<
+        acyclic_fs::NativeFutureBundle<
+            'a,
+            (Option<ToolResult>, acyclic_fs::NativeAllocation),
+            Error,
+        >,
+    > {
+        acyclic_fs::NativeFutureBundle::new(work, || async move {
+            let (result, custody) = self.search_native(invocation, context, work).await?;
+            Ok((Some(result), custody))
+        })
     }
 
     fn execute<'a>(

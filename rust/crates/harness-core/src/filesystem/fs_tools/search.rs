@@ -2,6 +2,9 @@
 use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::num::NonZeroU32;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+mod response;
 
 pub(super) fn selected(command: &crate::tools::FsCommand) -> bool {
     command
@@ -170,26 +173,22 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         })
         .await?;
         self.verifier.verify(&self.scope, &mut None)?;
-        let matches = page
-            .matches
-            .into_iter()
-            .map(|found| {
-                serde_json::json!({
-                    "path": found.path.as_str(),
-                    "sequence": found.record.sequence,
-                    "commit": hex::encode(found.record.commit_id.as_bytes()),
-                    "origin": found.record.origin.as_str(),
-                    "file": found.source.as_deref(),
-                })
-            })
-            .collect::<Vec<_>>();
         let next = page
             .next
+            .as_ref()
             .map(|cursor| serde_json::to_vec(&cursor).map(|bytes| STANDARD.encode(bytes)))
             .transpose()
             .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(ToolResult {
-            value: serde_json::json!({"result": {"kind": "grep", "matches": matches, "work": page.work, "next": next}}),
+            value: serde_json::to_value(response::Reply {
+                result: response::SearchResult {
+                    kind: "grep",
+                    matches: response::Rows(&page.matches),
+                    work: page.work,
+                    next: next.as_deref(),
+                },
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?,
         })
     }
 }

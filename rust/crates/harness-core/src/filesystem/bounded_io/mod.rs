@@ -668,3 +668,18 @@ impl PreparationIo {
     }
 }
 use crate::executor::stock_boundary;
+
+impl PreparationIo {
+    /// Admits initialized temporary byte storage on the original ledger.
+    pub(crate) fn buffer(&self, length: usize) -> Result<(Vec<u8>, DecodeReservation<'_>)> {
+        let mut bytes = Vec::new();
+        crate::store::history::reserve(&mut bytes, length, &mut self.history_io())?;
+        let hold = self.guard_owned(bytes.capacity() as u64)?;
+        self.charged(WorkCounters {
+            bytes_copied: length as u64,
+            ..Default::default()
+        })?;
+        bytes.resize(length, 0);
+        Ok((bytes, hold))
+    }
+}

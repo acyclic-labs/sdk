@@ -24,18 +24,6 @@ fn context(volume: &VolumeRef, path: &str, io: &PreparationIo) -> Result<[u8; 32
     Ok(*hash.finalize().as_bytes())
 }
 
-fn buffer(length: usize, io: &PreparationIo) -> Result<(Vec<u8>, DecodeReservation<'_>)> {
-    let mut bytes = Vec::new();
-    crate::store::history::reserve(&mut bytes, length, &mut io.history_io())?;
-    let hold = io.guard_owned(bytes.capacity() as u64)?;
-    io.charged(WorkCounters {
-        bytes_copied: length as u64,
-        ..Default::default()
-    })?;
-    bytes.resize(length, 0);
-    Ok((bytes, hold))
-}
-
 pub(in crate::filesystem) fn encoded_len(
     generation_bytes: usize,
     name_bytes: usize,
@@ -59,7 +47,7 @@ pub(in crate::filesystem) fn seal<'io>(
         .checked_add(generation.len())
         .and_then(|length| length.checked_add(after.as_bytes().len()))
         .ok_or_else(|| io.invalid("directory cursor size overflow"))?;
-    let mut plain = buffer(length, io)?;
+    let mut plain = io.buffer(length)?;
     plain.0[..4].copy_from_slice(&(generation.len() as u32).to_be_bytes());
     plain.0[4..4 + generation.len()].copy_from_slice(&generation);
     plain.0[4 + generation.len()] = match after.encoding() {
@@ -68,7 +56,7 @@ pub(in crate::filesystem) fn seal<'io>(
         NameEncoding::WindowsUtf16Le => 2,
     };
     plain.0[5 + generation.len()..].copy_from_slice(after.as_bytes());
-    let mut sealed = buffer(CursorKey::sealed_len(length), io)?;
+    let mut sealed = io.buffer(CursorKey::sealed_len(length))?;
     key(io)?
         .seal_into(&context(volume, path, io)?, &plain.0, &mut sealed.0)
         .map_err(|_| io.invalid("directory cursor could not be sealed"))?;
@@ -78,7 +66,7 @@ pub(in crate::filesystem) fn seal<'io>(
         .div_ceil(3)
         .checked_mul(4)
         .ok_or_else(|| io.invalid("directory cursor size overflow"))?;
-    let mut encoded = buffer(encoded_length, io)?;
+    let mut encoded = io.buffer(encoded_length)?;
     let written = STANDARD
         .encode_slice(&sealed.0, &mut encoded.0)
         .map_err(|_| io.invalid("directory cursor encoding failed"))?;
@@ -95,7 +83,7 @@ pub(super) fn open<'io>(
     token: &str,
     io: &'io PreparationIo,
 ) -> Result<(GenerationRef, LogicalName, DecodeReservation<'io>)> {
-    let mut sealed = buffer(token.len(), io)?;
+    let mut sealed = io.buffer(token.len())?;
     let written = STANDARD
         .decode_slice(token, &mut sealed.0)
         .map_err(|_| io.invalid("invalid directory cursor"))?;
@@ -103,7 +91,7 @@ pub(super) fn open<'io>(
     let length = written
         .checked_sub(CursorKey::sealed_len(0))
         .ok_or_else(|| io.invalid("invalid directory cursor"))?;
-    let mut plain = buffer(length, io)?;
+    let mut plain = io.buffer(length)?;
     key(io)?
         .open_into(&context(volume, path, io)?, &sealed.0, &mut plain.0)
         .map_err(|_| io.invalid("invalid directory cursor"))?;
@@ -131,7 +119,7 @@ pub(super) fn open<'io>(
         .0
         .get(generation_end + 1..)
         .ok_or_else(|| io.invalid("invalid directory cursor name"))?;
-    let mut owned = buffer(name.len(), io)?;
+    let mut owned = io.buffer(name.len())?;
     owned.0.copy_from_slice(name);
     let after = LogicalName::new(encoding, owned.0)
         .map_err(|_| io.invalid("invalid directory cursor name"))?;
