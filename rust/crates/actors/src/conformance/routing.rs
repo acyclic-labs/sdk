@@ -320,44 +320,13 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             .is_empty(),
         "lost account receipt advanced local outbox progress",
     )?;
-    let completion = |relay_seq: u64| -> Result<Vec<CommitEffect>, crate::route::Error> {
-        Ok(vec![
-            call.settle(
-                None,
-                &crate::call::Outcome::Ok(relay_seq.to_le_bytes().to_vec().into()),
-            )
-            .map_err(|_| crate::route::Error::InvalidRecord)?
-            .into(),
-        ])
+    let completion = |relay_seq: u64| -> Result<_, crate::route::Error> {
+        call.complete(&crate::call::Outcome::Ok(
+            relay_seq.to_le_bytes().to_vec().into(),
+        ))
+        .map(Some)
+        .map_err(|_| crate::route::Error::InvalidRecord)
     };
-    for soft in [false, true] {
-        let blocked_completion = crate::route::forward(provider, &paths, &source, async |_| {
-            let mut effects = completion(0)?;
-            effects[0].conditions.push(CommitCondition::Present {
-                path: StreamPath::new(format!("{root}/missing-completion-guard"))?,
-            });
-            effects[0].soft = soft;
-            Ok(effects)
-        })
-        .await;
-        require(
-            matches!(
-                (&blocked_completion, soft),
-                (
-                    Err(crate::route::Error::Actor(crate::local::Error::Conflict)),
-                    false
-                ) | (Err(crate::route::Error::InvalidRecord), true)
-            ),
-            "outbox acknowledgement ignored a completion guard",
-        )?;
-        require(
-            values(provider, paths.outbox_cursor(&source).map_err(Error::from)?)
-                .await?
-                .is_empty()
-                && values(provider, call.settled().clone()).await?.is_empty(),
-            "failed completion partially published its receipt or outbox acknowledgement",
-        )?;
-    }
     let forward = crate::route::forward(provider, &paths, &source, async |record| {
         if record != envelope {
             return Err(crate::route::Error::InvalidRecord);
@@ -764,6 +733,163 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         received[0].value.as_ref() == b"closed recipient"
             && received[1].value.as_ref() == b"unknown recipient",
         "rejection recovery replaced the original Notice bytes",
+    )?;
+    cancelled_forwarding(provider, &root, &envelope, &placement.node).await?;
+    Ok(())
+}
+
+async fn cancelled_forwarding<P: StreamProvider + ?Sized>(
+    provider: &P,
+    root: &StreamPath,
+    original: &Envelope,
+    destination: &NodeId,
+) -> Result<(), Failure> {
+    use crate::call::{Accepted, CallPath, Entry, Outcome};
+    let root = StreamPath::new(format!("{root}/cancelled-forwarding")).map_err(Error::from)?;
+    let paths = Paths::new(root.clone());
+    let cancelled = CallPath::new(&root, "cancelled").map_err(violation)?;
+    let active = CallPath::new(&root, "active").map_err(violation)?;
+    let mut first = original.clone();
+    first.request.idempotency_key = key(&root, "first-message")?;
+    let mut second = first.clone();
+    second.request.idempotency_key = key(&root, "second-message")?;
+    let created = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: key(&root, "sender-publication")?,
+            effects: vec![
+                Placement {
+                    actor: first.to.clone(),
+                    node: destination.clone(),
+                }
+                .effect(&paths)
+                .map_err(violation)?,
+                CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: paths.outbox(&first.source).map_err(Error::from)?,
+                        records: vec![first.encode().into(), second.encode().into()],
+                    }],
+                ),
+                cancelled
+                    .request("first message".into(), crate::escrow::Escrow::new(None))
+                    .map_err(violation)?
+                    .into(),
+                active
+                    .request("second message".into(), crate::escrow::Escrow::new(None))
+                    .map_err(violation)?
+                    .into(),
+            ],
+        })
+        .await
+        .map_err(Error::from)?;
+    require(
+        matches!(created, CommitOutcome::Committed(_)),
+        "cancelled forwarding fixture did not commit",
+    )?;
+    // Prepare completion before cancellation: its eventual soft condition must
+    // retain the terminal that wins, rather than blocking the ordered outbox.
+    let mut prepared = Some(
+        cancelled
+            .complete(&Outcome::Ok(0u64.to_le_bytes().to_vec().into()))
+            .map_err(violation)?,
+    );
+    let cancellation = provider
+        .commit(
+            cancelled
+                .cancel("caller stopped")
+                .map_err(violation)?
+                .request(key(&root, "cancel-call")?),
+        )
+        .await
+        .map_err(Error::from)?;
+    require(
+        matches!(cancellation, CommitOutcome::Committed(_)),
+        "caller cancellation did not commit",
+    )?;
+    let claimed = provider
+        .commit(
+            active
+                .accept(
+                    &Accepted {
+                        executor: "account-router".into(),
+                        fence: None,
+                    },
+                    true,
+                )
+                .map_err(violation)?
+                .request(key(&root, "claim-next-call")?),
+        )
+        .await
+        .map_err(Error::from)?;
+    require(
+        matches!(claimed, CommitOutcome::Committed(_)),
+        "next call was not claimed",
+    )?;
+    let forward = crate::route::forward(provider, &paths, &first.source, async |record| {
+        let destination = Placement::read(provider, &paths, &record.to)
+            .await?
+            .ok_or(crate::route::Error::InvalidRecord)?;
+        let routed = record
+            .publish_relay(provider, &paths, &destination.node, Vec::new())
+            .await?;
+        let Routed::Relayed { relay_seq, .. } = routed else {
+            return Err(crate::route::Error::InvalidRecord);
+        };
+        if record == first && relay_seq == 0 {
+            Ok(Some(
+                prepared.take().ok_or(crate::route::Error::InvalidRecord)?,
+            ))
+        } else if record == second && relay_seq == 1 {
+            active
+                .complete(&Outcome::Ok(relay_seq.to_le_bytes().to_vec().into()))
+                .map(Some)
+                .map_err(|_| crate::route::Error::InvalidRecord)
+        } else {
+            Err(crate::route::Error::InvalidRecord)
+        }
+    });
+    until_ack(
+        provider,
+        paths.outbox_cursor(&first.source).map_err(Error::from)?,
+        1,
+        forward,
+    )
+    .await?;
+    let cancelled_head = provider
+        .head(cancelled.log().clone())
+        .await
+        .map_err(Error::from)?;
+    let active_head = provider
+        .head(active.log().clone())
+        .await
+        .map_err(Error::from)?;
+    let ack = provider
+        .head(paths.outbox_cursor(&first.source).map_err(Error::from)?)
+        .await
+        .map_err(Error::from)?;
+    require(
+        cancelled_head.tail == 3
+            && matches!(Entry::decode(&cancelled_head.last.ok_or_else(|| violation("missing cancellation"))?)
+                .map_err(violation)?, Entry::Terminal(Outcome::Cancelled(reason)) if reason == "caller stopped")
+            && active_head.tail == 4
+            && active_head
+                .last
+                .as_ref()
+                .ok_or_else(|| violation("missing next call completion"))?
+                .commit_id
+                == ack
+                    .last
+                    .ok_or_else(|| violation("missing next outbox ack"))?
+                    .commit_id
+            && matches!(Entry::decode(active_head.last.as_ref().ok_or_else(|| violation("missing next receipt"))?)
+                .map_err(violation)?, Entry::Terminal(Outcome::Ok(value)) if value.as_ref() == 1u64.to_le_bytes())
+            && provider
+                .tail(paths.relay(destination).map_err(Error::from)?)
+                .await
+                .map_err(Error::from)?
+                == 2,
+        "caller cancellation lost a durable message, replaced its terminal, or blocked the next outbox record",
     )?;
     Ok(())
 }

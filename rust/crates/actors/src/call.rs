@@ -145,6 +145,17 @@ impl From<Commit> for CommitEffect {
     }
 }
 
+/// Publish a call terminal or retain the terminal that already won. Its only
+/// skip condition is the existing terminal marker, so composing it with a
+/// publisher's progress cannot acknowledge an unsettled call.
+pub struct Completion(CommitEffect);
+
+impl From<Completion> for CommitEffect {
+    fn from(completion: Completion) -> Self {
+        completion.0
+    }
+}
+
 /// The paths of one call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallPath {
@@ -269,6 +280,19 @@ impl CallPath {
     /// When the record cannot be built.
     pub fn settle(&self, fence: Option<&StreamPath>, outcome: &Outcome) -> Result<Commit, Error> {
         self.settle_with_attributes(fence, outcome, std::iter::empty())
+    }
+
+    /// Complete externally owned work while publishing its owner's progress.
+    /// A concurrent cancellation or recovery terminal is retained, without a
+    /// preliminary read or a retry. This is an unfenced host completion; an
+    /// executor publishing under its acceptance fence must use [`Self::settle`].
+    ///
+    /// # Errors
+    /// When the terminal record cannot be built.
+    pub fn complete(&self, outcome: &Outcome) -> Result<Completion, Error> {
+        let mut effect = CommitEffect::from(self.settle(None, outcome)?);
+        effect.soft = true;
+        Ok(Completion(effect))
     }
 
     /// Settle with executor-defined receipt metadata while retaining the result

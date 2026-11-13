@@ -42,7 +42,7 @@ where
         paths.relay_cursor(node)?,
         async |envelope| {
             deliver(envelope).await?;
-            Ok(Vec::new())
+            Ok(None)
         },
     )
     .await
@@ -53,12 +53,12 @@ where
 /// the committed relay receipt (or durable rejection Notice). No local cursor
 /// advances while admission waits for credit or a transport is unavailable.
 /// A reopened forwarder resubmits the identical envelope after a lost receipt.
-/// The callback returns sender-local completion effects, such as the original
-/// call journal's terminal receipt. They commit with the outbox cursor, so an
+/// The callback returns the original sender-local call completion, when present.
+/// It commits with the outbox cursor, so an
 /// acknowledged publication cannot lose its caller's result on restart. Their
 /// conditions retain the ordinary call cancellation and settlement rules.
-/// Completion effects must be hard: a skipped receipt must not acknowledge
-/// the outbox. They must not mutate the forwarder's cursor subtree.
+/// A call that cancellation has already settled keeps that terminal and does
+/// not block later outbox records. Arbitrary soft effects cannot be supplied.
 pub async fn forward<P, D>(
     local: &P,
     paths: &Paths,
@@ -67,7 +67,7 @@ pub async fn forward<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<Vec<CommitEffect>, Error>,
+    D: AsyncFnMut(Envelope) -> Result<Option<crate::call::Completion>, Error>,
 {
     consume(
         local,
@@ -91,7 +91,7 @@ async fn consume<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<Vec<CommitEffect>, Error>,
+    D: AsyncFnMut(Envelope) -> Result<Option<crate::call::Completion>, Error>,
 {
     let (mut next, mut cursor_tail) = match account.head(cursor_path.clone()).await {
         Ok(head) => {
@@ -118,9 +118,6 @@ where
             return Err(Error::InvalidRecord);
         }
         let completion = deliver(Envelope::decode(&record.value)?).await?;
-        if completion.iter().any(|effect| effect.soft) {
-            return Err(Error::InvalidRecord);
-        }
         let following = next.checked_add(1).ok_or(Error::InvalidRecord)?;
         let mut key = Sha256::new();
         key.update(b"acyclic.actors.route.ack.v1\0");
@@ -150,7 +147,7 @@ where
                 }],
             )],
         };
-        request.effects.extend(completion);
+        request.effects.extend(completion.map(CommitEffect::from));
         match account.commit(request).await? {
             CommitOutcome::Committed(_) => {
                 next = following;
