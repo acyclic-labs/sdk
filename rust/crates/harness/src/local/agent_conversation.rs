@@ -105,6 +105,11 @@ pub struct PreparedPeerMessage {
 /// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
 /// closed conversation, is a refusal; any other failure after the request
 /// left may have committed it.
+/// A sent message whose commit the session could not decide.
+#[derive(Debug, thiserror::Error)]
+#[error("the message's commit outcome is unknown; resend it")]
+struct UnknownOutcome;
+
 fn sent(exchange: super::endpoint::Exchange) -> Result<Sent> {
     // A command that never left, such as one over the command limit,
     // committed nothing: it is refused.
@@ -533,9 +538,7 @@ impl Conversation {
             Sent::Refused(reason) => Err(Error::Refused(reason)),
             // The session retains the terminal cause that left the outcome
             // undecided; report it with the outcome instead of dropping it.
-            Sent::Unknown => Err(self
-                .connection
-                .stream_failure("the message's commit outcome is unknown; resend it")),
+            Sent::Unknown => Err(self.connection.stream_failure(UnknownOutcome)),
         }
     }
 
