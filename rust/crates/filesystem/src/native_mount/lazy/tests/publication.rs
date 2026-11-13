@@ -190,10 +190,17 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
     let later_path = mounted(&["later"]);
     view.create_file(&later_path, FileMetadata::default(), None, &work)?;
     view.write_range(&later_path, 0, Bytes::from_static(b"later native edit"))?;
-    for published_later in [false, true] {
+    for (published_later, retain_later) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
         if published_later {
             let later = capture(crate::OperationId::new()).await?;
             assert_ne!(later.generation(), clean.generation());
+        }
+        let pending = retain_later.then(crate::OperationId::new);
+        if let Some(pending) = pending {
+            let mut checkout = view.authored.shared_checkout().lock().await;
+            checkout.retain_operation_id(pending)?;
         }
         let appended = work.receipt().authority_records_appended;
         let mut acknowledged = None;
@@ -214,6 +221,15 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
         assert_eq!(replay, clean);
         assert_eq!(acknowledged, Some(clean));
         assert_eq!(work.receipt().authority_records_appended, appended);
+        if let Some(pending) = pending {
+            let mut checkout = view.authored.shared_checkout().lock().await;
+            assert_eq!(
+                checkout.retained_operation_id(),
+                pending,
+                "completed replay replaced later recovery custody"
+            );
+            checkout.clear_retained_operation(pending);
+        }
         assert!(
             view.lazy
                 .stat_at_snapshot(after, "/later", &mut accounting)
