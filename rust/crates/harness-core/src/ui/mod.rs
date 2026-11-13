@@ -6,7 +6,7 @@ mod project;
 mod stream;
 use crate::command_request::CommandFileRoot;
 pub use filesystem::{FilesystemCut, FilesystemView};
-pub use project::{Affected, AgentRow, Children, Cut, Node, NodeRef, Page, View};
+pub use project::{Affected, AgentRow, Children, Cut, Node, NodeRef, Page, TurnText, View};
 
 /// Case-insensitive subsequence matching over an already selected title.
 #[must_use]

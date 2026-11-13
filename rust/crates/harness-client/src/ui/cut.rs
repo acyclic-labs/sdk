@@ -1,6 +1,6 @@
 use super::{Children, Cut, Error, Result};
 use crate::{AgentPath, AgentRecord, ConversationEntry, Reader, StatusRecord};
-use acyclic_harness_core::{conversation::FileRef, executor::TurnOutput};
+use acyclic_harness_core::{conversation::FileRef, ui::TurnText};
 use std::borrow::Cow;
 
 /// Reader-backed cut plus a lookup of immutable conversation file bytes. The
@@ -46,7 +46,7 @@ impl Cut for ReaderCut<'_> {
             .ok_or(Error::Pending)?;
         let entry = ConversationEntry::decode(bytes)?;
         let output = (self.file)(&entry.output).ok_or(Error::Pending)?;
-        let output: TurnOutput = serde_json::from_str(&output)?;
+        let output: TurnText = serde_json::from_str(&output)?;
         Ok(Cow::Owned(output.text))
     }
     fn diagnostic(
@@ -56,6 +56,13 @@ impl Cut for ReaderCut<'_> {
     ) -> Result<Cow<'_, acyclic_harness_core::agent::DiagnosticRead>> {
         if source.agent != *self.agent {
             return Err(Error::Invalid("diagnostic belongs to another cut"));
+        }
+        if !matches!(&self.status()?.phase,
+            acyclic_harness_core::agent::Phase::Done {
+                outcome: acyclic_harness_core::agent::AgentOutcome::FailedDiagnostic { diagnostic }
+            } if diagnostic == source)
+        {
+            return Err(Error::Invalid("diagnostic differs from the selected cut"));
         }
         let stream = source.path()?;
         let mut range = source.range(from, acyclic_stream::MAX_RECORD_BYTES as u64);

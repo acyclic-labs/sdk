@@ -26,8 +26,15 @@ impl MemoryStream {
         let signals = registration.value();
         let changed = signals.changed.subscribe()?;
         drop(state);
-        let mut cursor =
-            HistoryCursor::initial(snapshot.as_ref(), from, anchor, when_absent).await?;
+        let mut cursor = HistoryCursor::initial(
+            snapshot.as_ref(),
+            from,
+            anchor,
+            when_absent,
+            #[cfg(not(target_arch = "wasm32"))]
+            self.work.clone(),
+        )
+        .await?;
         cursor.registration = Some(registration);
         // Capture under the same state lock as interest registration. Even an
         // absent waiting stream has an empty opening cut, without a tail probe.

@@ -948,6 +948,11 @@ impl Reader {
                     id,
                     stream: stream.clone(),
                 },
+                // One cold page establishes the hierarchy cut. Every subsequent
+                // offset request is fenced to it, without fetching page zero.
+                OpKey::Children(..) if self.hierarchy.is_none() && self.inflight.has_children() => {
+                    continue;
+                }
                 OpKey::Children(parent, index, tail) => Op::Children {
                     id,
                     parent: parent.clone(),
@@ -1091,6 +1096,13 @@ impl Reader {
                         .array_windows::<2>()
                         .all(|[left, right]| left.path.as_str() < right.path.as_str());
                 if valid {
+                    if self.hierarchy.is_some_and(|selected| selected != version) {
+                        self.cache.clear_listings();
+                        self.demand.clear_children();
+                        while let Some(id) = self.inflight.pop_children() {
+                            self.cancelled.push(id);
+                        }
+                    }
                     self.hierarchy = Some(version);
                     self.listed(
                         parent,

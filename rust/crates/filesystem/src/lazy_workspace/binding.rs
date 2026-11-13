@@ -519,8 +519,8 @@ impl<
             ..WorkCounters::UNCHARGED
         })?;
         if cut.workspace_id != self.workspace.id()
-            || cut.clone().source.identity != self.source.identity()
-            || cut.clone()
+            || cut.source.identity != self.source.identity()
+            || *cut
                 != LazySnapshotRef::new(
                     cut.workspace_id,
                     cut.authored_generation,

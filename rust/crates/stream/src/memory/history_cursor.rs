@@ -14,14 +14,28 @@ impl HistoryCursor {
         from: u64,
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
+        #[cfg(not(target_arch = "wasm32"))] work: Option<Arc<crate::native::Work>>,
     ) -> Result<Self, StreamError> {
         match path {
-            Some(path) => Self::prepare(path, from, anchor).await,
+            Some(path) => {
+                Self::prepare(
+                    path,
+                    from,
+                    anchor,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    work,
+                )
+                .await
+            }
             None if anchor.is_some() && when_absent == crate::WhenAbsent::Wait => {
                 Err(StreamError::PrefixNotRetained)
             }
             None if when_absent == crate::WhenAbsent::Wait => {
                 let mut cursor = Self::at(from);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    cursor.work = work;
+                }
                 cursor.awaiting_creation = true;
                 Ok(cursor)
             }
@@ -37,11 +51,14 @@ impl HistoryCursor {
             let Some(path) = path else {
                 return Ok(false);
             };
-            let mut cursor = Self::prepare(path, self.position(), anchor).await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                cursor.work = self.work.clone();
-            }
+            let mut cursor = Self::prepare(
+                path,
+                self.position(),
+                anchor,
+                #[cfg(not(target_arch = "wasm32"))]
+                self.work.clone(),
+            )
+            .await?;
             cursor.registration = self.registration.take();
             cursor.opening_tail = self.opening_tail.take();
             *self = cursor;
@@ -52,6 +69,7 @@ impl HistoryCursor {
         path: &PathState,
         from: u64,
         anchor: Option<CommitId>,
+        #[cfg(not(target_arch = "wasm32"))] work: Option<Arc<crate::native::Work>>,
     ) -> Result<Self, StreamError> {
         // A start beyond the tail waits there: its first delivery is `from`.
         // An anchor at `from - 1` must already exist, so it never waits.
@@ -64,6 +82,10 @@ impl HistoryCursor {
             from
         };
         let mut cursor = Self::new(path, path.tail, start);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            cursor.work = work;
+        }
         if let Some(anchor) = anchor {
             let record = cursor
                 .next_record()
@@ -360,7 +382,6 @@ impl FiniteRead {
         )?;
         let copied = std::mem::size_of::<Record>() as u64;
         meter.admit_examination(1, copied)?;
-        let record = self.take_record().ok_or(std::io::ErrorKind::InvalidData)?;
         #[cfg(test)]
         let read = crate::test_meter::trace::recordings_reordered().then(|| bytes.record(length));
         let examined = meter.record_examination(1, copied);
@@ -370,7 +391,8 @@ impl FiniteRead {
         let read = bytes.record(length);
         examined?;
         read?;
-        Ok(record)
+        self.take_record()
+            .ok_or(std::io::ErrorKind::InvalidData.into())
     }
 }
 

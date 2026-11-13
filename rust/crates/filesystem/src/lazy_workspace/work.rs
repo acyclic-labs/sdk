@@ -85,7 +85,7 @@ pub(super) fn record_logical_bytes(record: FileRecord) -> Option<u64> {
     }
 }
 
-pub(super) fn source_file_metadata(source: crate::demand::SourceMetadata) -> FileMetadata {
+pub(crate) fn source_file_metadata(source: crate::demand::SourceMetadata) -> FileMetadata {
     let time = |value: Option<i128>| {
         value
             .and_then(|value| i64::try_from(value).ok())

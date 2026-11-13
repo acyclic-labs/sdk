@@ -119,11 +119,9 @@ async fn terminal_diagnostic_is_discoverable_and_lazily_readable_without_losing_
         digest: *blake3::hash(original.as_bytes()).as_bytes(),
         bytes: original.len() as u64,
     };
-    let output = serde_json::to_string(&TurnOutput::new(
-        "saved reply".into(),
-        serde_json::Value::Null,
-        1,
-    ))?;
+    let output = serde_json::to_string(&serde_json::json!({
+        "text": "saved reply", "transcript": [{"unneeded": [1, 2, 3]}]
+    }))?;
     let reference = file(
         &selected,
         "turns/0.json",
@@ -204,6 +202,12 @@ async fn terminal_diagnostic_is_discoverable_and_lazily_readable_without_losing_
             file: &lookup,
         };
         let page = cut.diagnostic(&diagnostic, from)?;
+        let mut wrong = diagnostic.clone();
+        wrong.bytes += 1;
+        assert!(matches!(
+            cut.diagnostic(&wrong, from),
+            Err(Error::Invalid(_))
+        ));
         assert!(!page.text.is_empty());
         assert!(page.text.len() <= acyclic_stream::MAX_RECORD_BYTES);
         complete.push_str(&page.text);

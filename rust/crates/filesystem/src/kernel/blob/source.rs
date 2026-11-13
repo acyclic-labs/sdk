@@ -36,7 +36,8 @@ impl OwnedSourceChunk {
     }
 
     /// Transfers a read's original backing into independently shared custody.
-    /// Native bytes already own their claim. Ordinary bytes retain the producer's
+    /// Intrinsic bytes already hold their claim on the original ledger on every
+    /// target. Other bytes retain the producer's
     /// exact capacity and one shared owner header on the original ledger.
     pub(crate) fn retain_bytes(
         self,

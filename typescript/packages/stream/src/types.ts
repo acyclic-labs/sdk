@@ -81,7 +81,11 @@ export type PathHead = PublicWire<WirePathHead, { readonly last?: EncodedRecord;
 export type HeadProjection = "history" | "watermarks" | "tail";
 /** Original publication destination and sequence; independent of current ancestry. */
 export interface RetainedRecord { readonly commitId: Uint8Array; readonly path: string; readonly sequence: bigint }
-export interface HeadsRequest { readonly at?: Revision; readonly retained?: readonly RetainedRecord[]; readonly durableThrough?: bigint; readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection }
+export interface HeadsRequest {
+  /** Exact retained authority cut; distinct from the minimum applied floor in atLeast. */
+  readonly at?: Revision;
+  readonly retained?: readonly RetainedRecord[]; readonly durableThrough?: bigint; readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection
+}
 export interface RetainedRecordObservation { readonly path: string; readonly record?: Record }
 export interface Heads { readonly applied: Revision; readonly retained: readonly RetainedRecordObservation[]; readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
 export type AppendResult =

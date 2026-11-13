@@ -16,6 +16,14 @@ pub(super) const ROOT_NODES: [(&str, bool); 10] = [
     ("glyph", false),
 ];
 
+/// The selected rendering field of an original turn output. Other fields are
+/// parsed without constructing a duplicate transcript.
+#[derive(serde::Deserialize)]
+pub struct TurnText {
+    /// Original turn response text.
+    pub text: String,
+}
+
 /// The borrowed page data needed by the projection, independent of cache ownership.
 #[derive(Clone, Copy)]
 pub struct Children<'a> {
@@ -265,7 +273,11 @@ impl View {
             return Err(Error::Invalid("zero page size").into());
         }
         if dir.as_ref() == "diagnostics" || dir.as_ref().starts_with("diagnostics/") {
-            let source = diagnostic_source(cut)?;
+            let source = match diagnostic_source(cut) {
+                Ok(source) => source,
+                Err(Error::Invalid(_)) if dir.as_ref() == "diagnostics" => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
             let digest = blake3::Hash::from_bytes(source.digest).to_hex();
             let (name, directory) = if dir.as_ref() == "diagnostics" {
                 (digest.as_str(), true)

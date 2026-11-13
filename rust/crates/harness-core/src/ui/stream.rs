@@ -73,10 +73,7 @@ impl<P: ?Sized, F: ?Sized, L> StreamUiProvider<P, F, L> {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct TurnText {
-    text: String,
-}
+use super::TurnText;
 struct PreparedTurn {
     sequence: u64,
     text: Retained<TurnText>,

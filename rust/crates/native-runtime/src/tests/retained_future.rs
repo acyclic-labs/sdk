@@ -13,16 +13,44 @@ struct Pending {
     probe: Arc<Probe>,
     meter: Arc<ReadBudgetMeter>,
 }
+
+#[test]
+fn retained_future_self_wakes_yield_the_calling_thread() -> io::Result<()> {
+    crate::initialize_native_io_services()?;
+    let caller = std::thread::current().id();
+    let reentered = Arc::new(AtomicBool::new(false));
+    let observed = reentered.clone();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let mut polls = 0;
+    let future = std::future::poll_fn(move |cx| {
+        polls += 1;
+        if polls > 1 && std::thread::current().id() == caller {
+            observed.store(true, Ordering::Release);
+        }
+        if polls == 4 {
+            completed.send(()).unwrap();
+            Poll::Ready(())
+        } else {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    });
+    let meter: Arc<dyn NativeReadMeter> = Arc::new(ReadBudgetMeter::new(0, 0));
+    let owner = crate::retain_future(future, &meter)?;
+    completion.recv().map_err(io::Error::other)?;
+    owner.stop()?;
+    assert!(
+        !reentered.load(Ordering::Acquire),
+        "self-wakes monopolized the caller"
+    );
+    assert!(owner.is_stopped());
+    Ok(())
+}
 impl Future for Pending {
     type Output = ();
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let poll = self.probe.polls.fetch_add(1, Ordering::SeqCst);
+        self.probe.polls.fetch_add(1, Ordering::SeqCst);
         *self.probe.wake.lock().unwrap() = Some(cx.waker().clone());
-        // Two finite queued wakes exercise the in-poll handoff without any
-        // runtime, readiness retry, timer or concurrent task.
-        if poll < 2 {
-            cx.waker().wake_by_ref();
-        }
         if self.probe.ready.load(Ordering::Acquire) {
             Poll::Ready(())
         } else {
@@ -43,6 +71,7 @@ impl Drop for Pending {
 
 #[test]
 fn retained_future_wakes_and_stop_preserve_exact_original_backing() -> io::Result<()> {
+    crate::initialize_native_io_services().unwrap();
     for complete in [false, true] {
         let observed = Arc::new(ReadBudgetMeter::new(0, 0));
         let meter: Arc<dyn NativeReadMeter> = observed.clone();
@@ -56,14 +85,14 @@ fn retained_future_wakes_and_stop_preserve_exact_original_backing() -> io::Resul
             admitted = Some(crate::retain_future(future, &meter));
         });
         let owner = admitted.ok_or(io::ErrorKind::InvalidData)??;
-        assert_eq!(created.count_current, 2);
+        assert_eq!(created.count_current, 3);
         let funded = observed.memory.load(Ordering::Acquire);
         assert_eq!(
             funded,
             u64::try_from(created.bytes_current).map_err(|_| io::ErrorKind::InvalidData)?
         );
         probe.funded.store(funded, Ordering::Release);
-        assert_eq!(probe.polls.load(Ordering::Acquire), 3);
+        assert_eq!(probe.polls.load(Ordering::Acquire), 1);
         assert!(!owner.is_stopped());
         if complete {
             probe.ready.store(true, Ordering::Release);
@@ -74,7 +103,7 @@ fn retained_future_wakes_and_stop_preserve_exact_original_backing() -> io::Resul
                 .take()
                 .ok_or(io::ErrorKind::InvalidData)?;
             wake.wake();
-            assert_eq!(probe.polls.load(Ordering::Acquire), 4);
+            assert_eq!(probe.polls.load(Ordering::Acquire), 2);
         } else {
             observed.cancelled.store(true, Ordering::Release);
         }
@@ -94,6 +123,7 @@ fn retained_future_wakes_and_stop_preserve_exact_original_backing() -> io::Resul
 
 #[test]
 fn retained_future_refuses_before_poll_and_returns_partial_reservations() {
+    crate::initialize_native_io_services().unwrap();
     for limit in [0, 1] {
         let observed = Arc::new(ReadBudgetMeter {
             allocation_limit: limit,
@@ -120,6 +150,7 @@ fn retained_future_refuses_before_poll_and_returns_partial_reservations() {
 
 #[test]
 fn retained_future_panic_retires_the_frame_before_reporting_failure() -> io::Result<()> {
+    crate::initialize_native_io_services().unwrap();
     struct Released(Arc<AtomicBool>);
     impl Drop for Released {
         fn drop(&mut self) {
@@ -150,6 +181,7 @@ fn retained_future_panic_retires_the_frame_before_reporting_failure() -> io::Res
 
 #[test]
 fn retained_future_self_stop_never_claims_callback_quiescence() -> io::Result<()> {
+    crate::initialize_native_io_services().unwrap();
     struct SelfStop {
         owner: Arc<Mutex<Option<crate::OwnedFuture>>>,
         wake: Arc<Mutex<Option<Waker>>>,
@@ -203,6 +235,7 @@ fn retained_future_self_stop_never_claims_callback_quiescence() -> io::Result<()
 #[cfg(feature = "test-support")]
 #[test]
 fn retained_future_foreign_wake_keeps_original_scope_and_restores_the_caller() -> io::Result<()> {
+    crate::initialize_native_io_services().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
