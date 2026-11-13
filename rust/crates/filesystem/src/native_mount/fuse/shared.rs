@@ -103,8 +103,8 @@ impl Drop for SharedWake {
 }
 
 /// A view's place in the shared session. Dropping it removes the view's
-/// name, stops its core, waits for its in-flight requests and drops the
-/// kernel's entry for the name.
+/// name, stops its core, waits for its in-flight requests and queues the
+/// kernel's entry invalidation on the shared notifier.
 pub(super) struct SharedViewEntry {
     views: Arc<SharedViews>,
     view: NamedView<Vec<u8>, FuseProjection>,
