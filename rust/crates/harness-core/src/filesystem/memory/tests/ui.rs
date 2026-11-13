@@ -113,5 +113,56 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
         storage.read(&ask).await?.as_ref(),
         b"```input choose id=pick\n- a\n- b\n```"
     );
+    let output = storage
+        .turn_outputs()
+        .stage(turn, b"settled output")
+        .await?;
+    assert_eq!(output.volume(), &control_volume);
+    assert_eq!(storage.read(&output).await?.as_ref(), b"settled output");
+    assert!(
+        ContentGrant::verify(
+            &storage.verifier(),
+            &storage.scope,
+            &control_volume,
+            VolumeOperation::Write,
+            &mut None,
+        )
+        .is_err()
+    );
+    // Even an independently signed whole-volume writer lacks host custody.
+    let guest = storage.issuer.bootstrap_scope(
+        "guest-output-writer",
+        &Capabilities::new([control_volume.capability(VolumeOperation::Write, &mut None)?]),
+        Some(agent),
+        &mut None,
+    )?;
+    let guest = ContentGrant::verify(
+        &storage.verifier(),
+        &guest,
+        &control_volume,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    assert_eq!(
+        storage
+            .host
+            .put_internal_content(
+                &control_volume,
+                &guest,
+                output.path(),
+                b"forged output",
+                "application/json",
+                "output.json",
+                1024,
+                &crate::IdempotencyKey::new("guest-output-forgery")?,
+                super::super::super::InternalContentClass::Conversation,
+                None,
+            )
+            .await
+            .expect_err("guest replaced a settled output")
+            .code(),
+        crate::wire::ErrorCode::Unauthorized,
+    );
+    assert_eq!(storage.read(&output).await?.as_ref(), b"settled output");
     Ok(())
 }

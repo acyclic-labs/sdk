@@ -3,7 +3,8 @@
 use crate::contract::capability;
 use crate::filesystem::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost, agent_internal::AgentInternalFiles,
+    FilesystemHost,
+    agent_internal::{AgentInternalFiles, AgentTurnOutputs},
 };
 use crate::{
     AgentId, Capabilities, ConversationId, Error, InteractionId, OperationId, Result,
@@ -118,6 +119,7 @@ pub struct MemoryHarnessStorage<
 > {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     internal_files: Arc<AgentInternalFiles<A, O>>,
+    outputs: AgentTurnOutputs<A, O>,
     approvals: Arc<AgentApprovals>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,
     publisher: Arc<FilesystemContentPublisher<A, O>>,
@@ -245,6 +247,11 @@ impl<
             let issuer = AuthorityRoot::new("local-harness", key, conversation.clone());
             let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
             let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
+            let control_volume = crate::conversation::journal_volume(
+                host.provider.clone(),
+                &crate::agent::AgentId::from_bytes(agent.into_bytes()),
+            )?;
+            host.create_volume(&control_volume).await?;
             let scope = issuer.bootstrap_scope(
                 "owner",
                 &Capabilities::new([
@@ -254,6 +261,7 @@ impl<
                     capability::INTERACTION_OPEN.to_owned(),
                     read_capability.clone(),
                     write_capability.clone(),
+                    control_volume.capability(VolumeOperation::Read, &mut None)?,
                 ]),
                 Some(agent),
                 &mut None,
@@ -266,27 +274,23 @@ impl<
                 maximum_file_bytes,
                 None,
             )?;
-            let control_volume = crate::conversation::journal_volume(
-                host.provider.clone(),
-                &crate::agent::AgentId::from_bytes(agent.into_bytes()),
-            )?;
-            host.create_volume(&control_volume).await?;
             let control_scope = issuer.bootstrap_scope(
                 "host-journal",
                 &super::agent_turns::journal_grants(&control_volume, &Capabilities::default())?,
                 Some(agent),
                 &mut None,
             )?;
+            let output_grant = crate::conversation::ContentGrant::verify(
+                &verifier,
+                &control_scope,
+                &control_volume,
+                VolumeOperation::Write,
+                &mut None,
+            )?;
             let internal_files = Arc::new(AgentInternalFiles::new(
                 Arc::clone(&host),
                 control_volume.clone(),
-                crate::conversation::ContentGrant::verify(
-                    &verifier,
-                    &control_scope,
-                    &control_volume,
-                    VolumeOperation::Write,
-                    &mut None,
-                )?,
+                output_grant.clone(),
                 volume.clone(),
                 crate::conversation::ContentGrant::verify(
                     &verifier,
@@ -296,6 +300,16 @@ impl<
                     &mut None,
                 )?,
             ));
+            let outputs = AgentTurnOutputs {
+                ui: internal_files.clone(),
+                journal: Arc::new(AgentInternalFiles::new(
+                    host.clone(),
+                    control_volume.clone(),
+                    output_grant.clone(),
+                    control_volume.clone(),
+                    output_grant,
+                )),
+            };
             let approvals = agent_approvals(
                 &volume,
                 internal_files.clone(),
@@ -327,6 +341,7 @@ impl<
             Ok(Self {
                 journal,
                 internal_files,
+                outputs,
                 approvals,
                 content_verifier: input,
                 publisher,
@@ -388,10 +403,10 @@ impl<
         self.journal.clone()
     }
 
-    /// Borrows the same host files used for approvals and settled turn outputs.
+    /// Keeps authored UI separate from journal-owned settled and streamed outputs.
     #[must_use]
     pub fn turn_outputs(&self) -> &dyn crate::agent::TurnOutputs {
-        self.internal_files.as_ref()
+        &self.outputs
     }
 
     /// Globally distinct identity of this local agent-private volume.
