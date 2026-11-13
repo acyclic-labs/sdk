@@ -154,7 +154,7 @@ impl Hooks {
     pub(crate) fn has_execution_hooks(&self) -> bool {
         self.bindings.iter().any(|binding| {
             let execution = match binding.event.site() {
-                HookSite::Prompt => false,
+                HookSite::Prompt | HookSite::File | HookSite::Stream => false,
                 HookSite::BeforeTool | HookSite::AfterTool | HookSite::TurnEnd => true,
             };
             execution && !binding.commands.is_empty()

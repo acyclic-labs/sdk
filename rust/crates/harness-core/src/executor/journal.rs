@@ -172,6 +172,24 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         self.acquire_execution(operation, io)?.into_owner(io)
     }
 
+    /// Acquires a child effect under this journal's original execution. The
+    /// parent must be the execution this journal authenticates; an effect ID
+    /// alone cannot select another execution's authority. This shares the
+    /// execution ownership registry and excludes live attempts before reading
+    /// durable start/outcome records. Dropping an owner does not undo effects.
+    fn acquire_effect<'a>(
+        &'a self,
+        _parent: OperationId,
+        _effect: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<ExecutionAttempt<'a>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal has no child-effect custody",
+        ))
+    }
+
     /// Follows an authorized cancellation while awaiting a model, approval or
     /// tool invocation whose executor guarantees cancellation on future drop.
     /// The default journal has no filesystem cancellation binding.

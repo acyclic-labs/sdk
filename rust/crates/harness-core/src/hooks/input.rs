@@ -36,6 +36,8 @@ impl<'a> HookInput<'a> {
             Self::Fields(fields) => match event {
                 HookEvent::SessionStart => fields.get("source"),
                 HookEvent::PreToolUse | HookEvent::PostToolUse => fields.get("tool_name"),
+                HookEvent::FileChanged => fields.get("path"),
+                HookEvent::StreamRecord => fields.get("stream_path"),
                 HookEvent::UserPromptSubmit | HookEvent::Stop => None,
             }
             .and_then(Value::as_str)
