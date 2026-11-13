@@ -989,25 +989,42 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| "corpus name")?;
         let data = std::fs::read(entry.path())?;
-        assert_eq!(
-            Some(&data),
-            generated.get(name.as_str()),
-            "stale corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
-        );
+        let canonical = generated.get(name.as_str());
+        if let Some(expected) = canonical {
+            assert_eq!(
+                &data, expected,
+                "stale corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
+            );
+            seen += 1;
+        }
         let Some((selector, bytes)) = data.split_first() else {
             continue;
         };
         let accepted = match selector % 4 {
             0 => InboxRecord::decode(bytes)
-                .map(|record| record.encode().map(drop))
+                .and_then(|record| record.encode().map(drop))
                 .is_ok(),
             1 => StatusRecord::decode(bytes).is_ok(),
             2 => Closed::decode(bytes).is_ok(),
             _ => AgentPath::try_from(String::from_utf8(bytes.to_vec())?).is_ok(),
         };
-        let expected = !matches!(name.as_str(), "unknown-field" | "path-bad-id");
+        if canonical.is_none() {
+            // Retain historical-version refusal inputs without making them
+            // outputs of the current encoder or adding a compatibility reader.
+            let version = u32::from_be_bytes(
+                bytes
+                    .get(..4)
+                    .ok_or("unlabelled corpus seed has no version")?
+                    .try_into()?,
+            );
+            assert!(
+                selector % 4 < 3 && version != RECORD_VERSION,
+                "unlabelled current-version corpus seed {name}"
+            );
+        }
+        let expected =
+            canonical.is_some() && !matches!(name.as_str(), "unknown-field" | "path-bad-id");
         assert_eq!(accepted, expected, "corpus seed {name}");
-        seen += 1;
     }
     assert_eq!(seen, generated.len());
     Ok(())

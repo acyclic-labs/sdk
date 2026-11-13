@@ -916,12 +916,34 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
     let mut sent = Vec::new();
     for sequence in 1..=3 {
         let record = next.take().expect("a continuation woke the agent");
-        let settled = step(
+        let opened = acyclic_harness_core::agent::step(
             &driver,
             &path,
             Some(state.clone()),
             (sequence, 0),
             Wake::Inbox { sequence, record },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert!(opened.outs.is_empty());
+        assert_eq!(opened.alarm, Alarm::At(CONTINUE_NOW));
+        let opening = lower(
+            &opened,
+            sequence + 1,
+            delivery_key(&opened.state, &format!("goal-open-{sequence}"))?,
+        )?;
+        for stream in [&provider, &missing_completion, &wrong_completion] {
+            assert!(matches!(
+                stream.commit(opening.clone()).await?,
+                CommitOutcome::Committed(_)
+            ));
+        }
+        let settled = acyclic_harness_core::agent::step(
+            &driver,
+            &path,
+            Some(opened.state),
+            (sequence, 0),
+            Wake::Alarm,
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
