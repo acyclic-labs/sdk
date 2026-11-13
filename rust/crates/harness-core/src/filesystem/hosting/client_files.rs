@@ -108,6 +108,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             return Err(Error::Record("client file cut version"));
         }
         let mut minimum = after.map(|cut| cut.revision.clone()).unwrap_or_default();
+        let mut interests = None;
         loop {
             let (snapshot, sources) = self
                 .files_snapshot(agent, root, paths, minimum, after.is_some())
@@ -115,13 +116,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             if after.is_none_or(|cut| !cut.same_inputs(&snapshot.cut)) {
                 return Ok(snapshot);
             }
-            let mut interests = Vec::new();
-            for source in snapshot.cut.queries.keys() {
-                for view in &self.file_views {
-                    if let Some(interest) = view.interest(agent, source).map_err(turn)? {
-                        interests.push(interest);
+            if interests.is_none() {
+                let mut admitted = Vec::new();
+                for source in snapshot.cut.queries.keys() {
+                    for view in &self.file_views {
+                        if let Some(interest) = view.interest(agent, source).map_err(turn)? {
+                            admitted.push(interest);
+                        }
                     }
                 }
+                interests = Some(admitted);
             }
             let provider = self.agents.provider();
             let wait_minimum = snapshot.cut.revision.clone();

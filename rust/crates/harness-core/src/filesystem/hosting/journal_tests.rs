@@ -913,6 +913,39 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     let recorder = bound
         .trace_recorder(&agent)?
         .ok_or("live wait did not admit trace interest")?;
+    // An original filesystem event can require another snapshot without
+    // changing this view. Demand must survive that entire continuation.
+    let mut transaction = workspace
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::from_bytes([76; 16]),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    transaction
+        .commit(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
+            },
+        )
+        .await?;
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    assert!(Arc::ptr_eq(
+        &recorder,
+        &bound
+            .trace_recorder(&agent)?
+            .ok_or("continuation lost trace demand")?
+    ));
     let mut other = Box::pin(bound.files(&agent, root, &paths, Some(&before.cut)));
     assert!(futures::poll!(other.as_mut()).is_pending());
     assert!(Arc::ptr_eq(
