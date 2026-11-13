@@ -92,8 +92,9 @@ ordinary input capacity. Rejection never replaces the admitted prefix. Clearing
 a pause retains spending totals, and every new dispatch checks that retained
 reservation before paid work. A stop also closes every child admitted in that
 same turn in the original subtree commit. Model and tool dispatches condition
-their original journal publication on the agent remaining open, even before its
-actor consumes the archive control. Accepted dispatches retain their exact replay.
+their original journal publication on the agent and every ancestor remaining
+open, even before archive delivery reaches a descendant. A stop of another
+branch leaves admission open. Accepted dispatches retain their exact replay.
 
 The first request of a new turn captures one original inbox cut and includes
 steering already committed there. A request whose input was already frozen

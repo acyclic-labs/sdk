@@ -18,4 +18,4 @@ pub use authority::JournalWrite;
 pub(crate) use commit::{NativeCommit, native_call_result};
 pub(crate) use commit::{add_condition, commit, commit_request};
 pub(crate) use serializer::digest_key;
-pub(crate) use serializer::execution_path;
+pub(crate) use serializer::{execution_path, stream_path};
