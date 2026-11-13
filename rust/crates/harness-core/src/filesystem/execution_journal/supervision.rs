@@ -343,7 +343,7 @@ where
                 )
                 .await?;
             if let Some(quiet_ms) = policy.quiet_ms {
-                let at_ms = self.clock.now_unix_ms();
+                let at_ms = self.host_clock()?.now_unix_ms();
                 self.tool_job_projection(
                     &mut projection,
                     crate::supervision::tool_jobs::Record {

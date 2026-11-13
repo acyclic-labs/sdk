@@ -17,8 +17,14 @@ where
     /// Use the original host alarm clock for tool quiet and preparation deadlines.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
-        self.clock = clock;
+        self.clock = Some(clock);
         self
+    }
+
+    fn host_clock(&self) -> Result<&dyn acyclic_actors::local::Clock> {
+        self.clock
+            .as_deref()
+            .ok_or_else(|| Error::Unsupported("execution journal has no host clock".into()))
     }
 
     pub(crate) fn with_run_admission(
@@ -183,7 +189,7 @@ where
             agent_approvals: None,
             execution: None,
             agent_events: None,
-            clock: Arc::new(acyclic_actors::local::SystemClock),
+            clock: None,
             actor_admission: None,
             run_admission: None,
             verified: tokio::sync::Mutex::new(SummaryCache::default()),

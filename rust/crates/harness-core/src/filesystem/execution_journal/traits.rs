@@ -754,11 +754,7 @@ where
         &self,
         deadline_unix_ms: u64,
     ) -> Result<acyclic_stream::BoxProviderFuture<'static, Result<()>>> {
-        let deadline = self
-            .clock
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("execution journal has no host clock".into()))?
-            .sleep_until(deadline_unix_ms);
+        let deadline = self.host_clock()?.sleep_until(deadline_unix_ms);
         Ok(Box::pin(async move {
             deadline
                 .await
