@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { BinaryReader } from "@bufbuild/protobuf/wire";
+import { SessionFrameSchema } from "../../../stream/generated/proto/stream/v1/session_pb.js";
 import { WasmStream, decodeReadResponse } from "../../generated/wasm/acyclic_harness_wasm.js";
 import { AppendRequestSchema, CommitRequestSchema, CommitResponseSchema, CommitMutationSchema, FollowRequestSchema,
   ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, WaitAppliedRequestSchema, type Revision,
 } from "../../../stream/generated/proto/stream/v1/stream_pb.js";
-import type { OwnedStreamProviderPort } from "../../src/stream-provider.js";
+import type { StreamProviderCursor, OwnedStreamProviderPort } from "../../src/stream-provider.js";
 
 /** The same original provider must be visible through independently opened
  * root/child bindings. Supply an actual disposable provider, never responses. */
@@ -20,12 +22,29 @@ export async function sharedProviderTree(port: OwnedStreamProviderPort): Promise
   const encode = new TextEncoder();
   const record = (text: string) => ({ value: encode.encode(text) });
   const read = async (stream: WasmStream, path: string, atLeast: Revision[] = []) => {
-    const chunks = await stream.read(toBinary(ReadRequestSchema,
+    // A finite read is one request owning one cursor of ReadResponse frames.
+    const request = stream.read(toBinary(ReadRequestSchema,
       create(ReadRequestSchema, { path, from: 0n, limit: 8, atLeast })));
+    const chunks: Uint8Array[] = [];
+    try {
+      const cursor = await request.next();
+      if (cursor === null || cursor instanceof Uint8Array) throw new Error("read omitted its cursor");
+      try {
+        for (let chunk = await cursor.next(); chunk !== null; chunk = await cursor.next()) chunks.push(chunk);
+      } finally { cursor.close(); cursor.free(); }
+    } finally { request.close(); request.free(); }
     return chunks.flatMap((bytes: Uint8Array) => {
       const page = fromBinary(ReadResponseSchema, bytes);
       return fromBinary(RecordBatchSchema, decodeReadResponse(page.codec, page.data, page.decodedLength)).records;
     });
+  };
+  const frame = async (cursor: StreamProviderCursor) => {
+    const reply = await cursor.next();
+    if ("code" in reply || reply.value === null) throw new Error("provider cursor ended before its handshake");
+    const reader = new BinaryReader(reply.value);
+    const size = reader.uint32();
+    assert.equal(reader.pos + size, reader.len);
+    return fromBinary(SessionFrameSchema, reply.value.subarray(reader.pos));
   };
   try {
     await root.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, {
@@ -73,7 +92,12 @@ export async function sharedProviderTree(port: OwnedStreamProviderPort): Promise
     const opened = await port.open("follow", toBinary(FollowRequestSchema,
       create(FollowRequestSchema, { path: "tree/child", from: 2n })), new Uint8Array());
     if ("code" in opened) throw new Error(`follow refused: ${opened.code}`);
-    const pending = opened.value.next();
+    // The initial selected receipt is not a parked record pull. Verify it
+    // before requesting the next record at the observed tail.
+    const selection = await frame(opened.value);
+    assert.equal(selection.body.case, "opened");
+    let settled = false;
+    const pending = opened.value.next().then(reply => { settled = true; return reply; });
     const waiting = port.dispatch("wait_applied", toBinary(WaitAppliedRequestSchema,
       create(WaitAppliedRequestSchema, { atLeast: [{ ...revision, index: revision.index + 100n }] })));
     const created = port.open("follow", toBinary(FollowRequestSchema,
@@ -92,8 +116,10 @@ export async function sharedProviderTree(port: OwnedStreamProviderPort): Promise
     // A completed real read proves ordinary work progresses while the earlier
     // minimum and missing-path requests are parked on the same executor.
     assert.equal((await read(root, "tree/child")).length, 2);
+    assert.equal(settled, false, "follow must be parked before binding closure");
     port.close();
     assert.deepEqual(await pending, { code: "unavailable" });
+    assert.deepEqual(await opened.value.next(), { code: "unavailable" }, "closed binding admitted another cursor pull");
     assert.deepEqual(await waiting, { code: "unavailable" });
     assert.deepEqual(await registering, { code: "unavailable" });
     assert.deepEqual(await port.dispatch("commit", request), { code: "unavailable" });

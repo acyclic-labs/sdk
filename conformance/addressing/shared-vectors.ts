@@ -86,10 +86,10 @@ export async function resourceIdentityConformance(binding: typeof Binding, name:
       const pair = new ResourceIdentity(account, id).encode();
       const actor = new ActorReference(account, namespace, id).encode();
       const controls = [
-        { encoded: pair, offset: pair.length - 16 - account.length - id.length - 1, decode: ResourceIdentity.decode },
-        { encoded: actor, offset: actor.length - 24 - account.length - namespace.length - id.length - 1, decode: ActorReference.decode },
+        { encoded: pair, offset: pair.length - 16 - account.length - id.length - 1, decode: ResourceIdentity.decode, truncated: "unsupported_identity_version" },
+        { encoded: actor, offset: actor.length - 24 - account.length - namespace.length - id.length - 1, decode: ActorReference.decode, truncated: "malformed_identity" },
       ];
-      for (const { encoded, offset, decode } of controls) {
+      for (const { encoded, offset, decode, truncated } of controls) {
         expect(encoded[offset]).toBe(1);
         const refusesVersion = (header: Uint8Array) => {
           try {
@@ -104,7 +104,16 @@ export async function resourceIdentityConformance(binding: typeof Binding, name:
           header[offset] = version;
           refusesVersion(header);
         }
-        refusesVersion(encoded.slice(0, offset));
+        // A missing Actor header is malformed; a complete unsupported version
+        // must still refuse before any field is read. Match the Rust codecs.
+        try {
+          decode(encoded.slice(0, offset));
+          throw new Error("truncated identity header was accepted");
+        } catch (error) { expect((error as Binding.IdentityError).code).toBe(truncated); }
+        try {
+          decode(encoded.slice(0, offset + 1));
+          throw new Error("missing identity payload was accepted");
+        } catch (error) { expect((error as Binding.IdentityError).code).toBe("malformed_identity"); }
       }
     });
 

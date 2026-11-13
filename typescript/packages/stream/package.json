@@ -54,7 +54,7 @@
     "build:native": "node ../../../scripts/build-stream-native.mjs build",
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",
-    "test": "bun run build && bun test test",
+    "test": "bun run build && node ../../../scripts/build-stream-native.mjs build-host && bun test test",
     "test:session-errors": "bun run build && bun test test/session-errors.test.ts",
     "test:grpc:node": "node test/grpc-provider-conformance.mjs --node-only",
     "test:grpc:bun": "node test/grpc-provider-conformance.mjs --bun-only",

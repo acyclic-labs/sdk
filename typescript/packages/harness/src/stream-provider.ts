@@ -80,6 +80,7 @@ export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort 
       owners.add(close);
       return { value: {
         async next() {
+          if (closed) return { code: "unavailable" };
           if (ended) return { value: null };
           ++pulls;
           try {

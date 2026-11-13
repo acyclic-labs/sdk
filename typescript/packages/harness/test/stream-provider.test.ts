@@ -1,5 +1,7 @@
 import { beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import "fake-indexeddb/auto";
 import { materializeBindings } from "../../workers/src/bindings.js";
 import { WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -40,7 +42,16 @@ async function ledgerBinding(port: OwnedStreamProviderPort): Promise<OwnedStream
 }
 
 test("hosted provider bindings share the original fork and activation cut", async () => {
+  await sharedProviderTree(streamProviderPort(new WasmStream()));
   await sharedProviderTree(await ledgerBinding(streamProviderPort(new WasmStream())));
   await sharedProviderTree(await ledgerBinding(streamProviderPort(await WasmStream.openBrowser(
     `shared-provider-${crypto.randomUUID()}`, 64, 1048576n))));
+});
+
+test("closed provider negative control rejects a cursor pull after closure", () => {
+  const driver = fileURLToPath(new URL("./stream-provider-close-driver.ts", import.meta.url));
+  const result = spawnSync(process.execPath, [driver], { encoding: "utf8" });
+  assert.equal(result.error, undefined);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /closed binding admitted another cursor pull/);
 });

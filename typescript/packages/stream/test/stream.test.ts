@@ -170,9 +170,16 @@ describe("website Stream contract", () => {
 
   test("enforces the Rust Stream path, batch, and read bounds before mutation", async () => {
     const client = StreamClient.memory();
-    for (const path of ["space in/path", "bad\\path", "emoji/ðŸš€", "control/\u000b", "a".repeat(65_536), Array(1_025).fill("a").join("/")]) {
+    for (const path of ["space in/path", "bad\\path", "emoji/ðŸš€", "control/\u000b", "a".repeat(65_536)]) {
       expect(() => client.bytes(path)).toThrow();
     }
+    // Segment count is not a request limit. The Rust byte/grammar contract
+    // admits deep paths, and the same handle must work through append/read.
+    const deep = client.bytes(Array(1_025).fill("a").join("/"));
+    await deep.append(new Uint8Array([7]), { idempotencyKey: key("deep-path") });
+    const selected = deep.read({ from: 0n, limit: 1 });
+    try { expect((await selected.next()).value?.value).toEqual(new Uint8Array([7])); }
+    finally { await selected.close(); }
     const stream = client.bytes("bounded");
     await expect(stream.appendBatch([], { idempotencyKey: key("stream.test-110") })).rejects.toMatchObject({ code: "limit_exceeded" });
     await expect(stream.appendBatch([new Uint8Array(65_537)], { idempotencyKey: key("stream.test-111") })).rejects.toMatchObject({ code: "limit_exceeded" });
