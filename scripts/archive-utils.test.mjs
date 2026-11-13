@@ -351,6 +351,24 @@ async function* chunks(bytes, size) {
   for (let offset = 0; offset < bytes.length; offset += size) yield bytes.subarray(offset, offset + size);
 }
 
+test("an outstanding body read cannot escape its visitor", async () => {
+  const started = Promise.withResolvers(), release = Promise.withResolvers();
+  let next;
+  const reading = visitTar((async function* () {
+    yield header("file", 1);
+    yield await release.promise;
+    yield Buffer.alloc(511 + 1024);
+  })(), entry => {
+    next = entry.body.next();
+    next.catch(() => {});
+    started.resolve();
+  });
+  await started.promise;
+  release.resolve(Buffer.from("x"));
+  await reading;
+  await assert.rejects(next, /body must be read during its visit/);
+});
+
 test("tar parsing tolerates every header split and drains unread or partly read bodies", async () => {
   const bytes = tar([["first", "one"], ["ignored", Buffer.alloc(32769, 7)], ["last", "three"]]);
   for (const size of [1, 511, 512, 513, 65536]) {

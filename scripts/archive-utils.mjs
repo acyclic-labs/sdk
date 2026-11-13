@@ -93,6 +93,7 @@ export async function visitTar(chunks, visit) {
         while (reader.position < bodyEnd) {
           if (!active) throw new Error("archive body must be read during its visit");
           const chunk = await reader.piece(bodyEnd - reader.position);
+          if (!active) throw new Error("archive body must be read during its visit");
           if (!chunk) throw new Error("archive member is truncated");
           yield chunk;
         }
