@@ -43,7 +43,7 @@ where
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(Error::from)?;
+                    .map_err(super::errors::inspection_error)?;
                 // Retain each distinct returned value through the source
                 // workspace's lifetime. Repeated inspections of unchanged
                 // content share an immutable pin, never a mutable scratch view.

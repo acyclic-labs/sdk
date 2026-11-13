@@ -134,7 +134,7 @@ impl<
                 .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation))
                 .await
                 .map(GitTreeRef::Lazy)
-                .map_err(Error::from),
+                .map_err(super::errors::inspection_error),
             Self::Volume(view) => {
                 let generation = view
                     .head(WorkBudget::UNBOUNDED, &cancellation)

@@ -45,7 +45,11 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let OwnedView::Checkout(witness) = &target_view {
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-            if let Some(origin) = witness.inspect_state(&mut accounting).await?.fork_origin
+            if let Some(origin) = witness
+                .inspect_state(&mut accounting)
+                .await
+                .map_err(super::errors::inspection_error)?
+                .fork_origin
                 && origin.snapshot.authored_generation == plan.common_ancestor()
             {
                 let owner = self
@@ -64,7 +68,8 @@ where
                     .collect::<Vec<_>>();
                 base = owner
                     .exactify_observed_base(origin.snapshot, &paths, witness, &mut accounting)
-                    .await?;
+                    .await
+                    .map_err(super::errors::inspection_error)?;
             }
         }
         self.validate_lease().await?;
@@ -166,7 +171,10 @@ where
             OwnedView::Checkout(view) => {
                 let cancellation = CancellationToken::new();
                 let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-                let cut = view.snapshot(&mut accounting).await?;
+                let cut = view
+                    .snapshot(&mut accounting)
+                    .await
+                    .map_err(super::errors::inspection_error)?;
                 let (bytes, total) = view
                     .read_page_at_snapshot(
                         cut,
@@ -175,7 +183,8 @@ where
                         super::actions::SHOW_PAGE_BYTES,
                         &mut accounting,
                     )
-                    .await?;
+                    .await
+                    .map_err(super::errors::inspection_error)?;
                 super::actions::shown_file(
                     path.trim_start_matches('/'),
                     bytes.bytes.as_ref(),

@@ -359,12 +359,12 @@ where
                 Ok(lazy) => lazy,
                 // A workspace without a lazy binding has no unresolved source.
                 Err(acyclic_fs::LazyWorkspaceError::NotFound) => continue,
-                Err(error) => return Err(Error::from(error)),
+                Err(error) => return Err(super::errors::inspection_error(error)),
             };
             let Some(origin) = lazy
                 .inspect_state(&mut accounting)
                 .await
-                .map_err(Error::from)?
+                .map_err(super::errors::inspection_error)?
                 .fork_origin
             else {
                 continue;
@@ -376,13 +376,13 @@ where
             let owner = current
                 .inspect_related(self.workspace(cut.workspace_id).await?, &mut accounting)
                 .await
-                .map_err(Error::from)?;
+                .map_err(super::errors::inspection_error)?;
             // The forked side's own observations pin the base; without them
             // the live source would stand in for content it no longer has.
             return owner
                 .exactify_cut(cut, &paths, &lazy, &mut accounting)
                 .await
-                .map_err(Error::from);
+                .map_err(super::errors::inspection_error);
         }
         Ok(None)
     }

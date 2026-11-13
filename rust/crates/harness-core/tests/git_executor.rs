@@ -908,6 +908,49 @@ async fn agent_diff_reads_a_frozen_cut_without_writing_the_inspected_agent() -> 
             .as_ref(),
         b"native origin\n"
     );
+    // The original owner can prepare work after an earlier successful read.
+    // A later inspection must refuse as an ordinary call and leave it intact.
+    let mut pending = child
+        .inspect_state(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
+        .await?;
+    let revision = pending.revision;
+    pending.revision += 1;
+    pending.pending_remove = Some(acyclic_fs::lazy_workspace::PendingLazyRemove {
+        prior_overlay: pending.overlay,
+        prior_shadows: pending.shadows,
+        prepared_overlay: pending.overlay,
+        kind: acyclic_fs::lazy_workspace::PendingLazyRemoveKind::Exactify {
+            idempotency_key: IdempotencyKey::new(),
+        },
+    });
+    assert!(
+        acyclic_fs::LazyWorkspaceStore::compare_and_swap_lazy_workspace(
+            &store,
+            child.workspace().id(),
+            revision,
+            pending.clone(),
+            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+        )
+        .await?
+    );
+    for arguments in [
+        arguments(),
+        vec!["show".into(), "agents/child:native.txt".into()],
+    ] {
+        assert!(
+            matches!(inspect(OperationId::new(), arguments).await, Err(Error::Refused(reason))
+            if reason == "inspection target has an unfinished publication")
+        );
+    }
+    assert_eq!(
+        acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+            &store,
+            child.workspace().id(),
+            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+        )
+        .await?,
+        Some(pending)
+    );
     coordinator
         .finish_workspace(
             main.workspace(),
