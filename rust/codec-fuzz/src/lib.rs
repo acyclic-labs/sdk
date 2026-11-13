@@ -285,9 +285,12 @@ fn framed(
 
 pub fn session_frames(bytes: &[u8]) {
     for grpc in [false, true] {
-        let whole = framed(bytes, grpc, bytes.len().max(1));
+        let whole = framed(bytes, grpc, bytes.len().max(1)).map_err(|error| error.category());
         for chunk in [1, 2, 5, 10, 127] {
-            assert_eq!(framed(bytes, grpc, chunk), whole);
+            assert_eq!(
+                framed(bytes, grpc, chunk).map_err(|error| error.category()),
+                whole
+            );
         }
     }
 }
@@ -1395,5 +1398,14 @@ pub fn filesystem_codecs(bytes: &[u8]) {
         control!(decode_multi_root_plan, encode_multi_root_plan);
         control!(decode_multi_root_candidate, encode_multi_root_candidate);
         control!(decode_publication, encode_publication);
+    }
+}
+
+#[cfg(test)]
+mod session_frame_tests {
+    #[test]
+    fn malformed_frames_have_chunk_independent_failure_categories() {
+        super::session_frames(&[1, 255]);
+        super::session_frames(&[255; 11]);
     }
 }
