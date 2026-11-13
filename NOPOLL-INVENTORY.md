@@ -1,5 +1,24 @@
 # Polling and timed-wait inventory
 
+Generate the current inventory from source, choosing a new output path:
+
+```sh
+node scripts/check-no-polling.mjs --inventory polling-inventory.json
+```
+
+The versioned report records the source revision and candidate sites with their
+locations and fingerprints. Maintained classifications and their producer,
+terminal and proof evidence live in
+[scripts/no-polling-dispositions.json](scripts/no-polling-dispositions.json).
+Check new source against an explicit baseline with
+`node scripts/check-no-polling.mjs BASE_REVISION`.
+
+## Historical audits
+
+The records below preserve earlier source snapshots, classifications and
+execution proofs. Paths, line numbers and pending statuses refer to those
+snapshots; use the source inventory above to inspect current code.
+
 Terminal signal child-exit successor:
 
 | Source on preceding milestone | Kind | Replacement and terminal | Status |
