@@ -54,6 +54,29 @@ struct Binding {
     rejection: Option<i32>,
 }
 
+/// One decoder for the original admission proof, whether recovering the
+/// account commit or consuming its rejection on the sender's node.
+pub(super) fn rejection_binding(
+    headers: &RecordHeaders,
+    original: impl FnOnce() -> Bytes,
+) -> Result<Option<Rejection>, Error> {
+    let attributes = headers.attributes();
+    let Some(header) = attributes.iter().find(|value| value.name == ADMISSION) else {
+        return Ok(None);
+    };
+    let binding = Binding::decode(header.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
+    if binding.version != 1 {
+        return Err(Error::InvalidRecord);
+    }
+    if binding.intent_digest.as_ref() != &Sha256::digest(original())[..] {
+        return Err(StreamError::IdempotencyMismatch.into());
+    }
+    Ok(Some(
+        Rejection::try_from(binding.rejection.ok_or(Error::InvalidRecord)?)
+            .map_err(|_| Error::InvalidRecord)?,
+    ))
+}
+
 fn outcome(rejection: Option<Rejection>, key: IdempotencyKey, relay_seq: u64) -> Routed {
     match rejection {
         Some(reason) => Routed::Rejected(reason),
@@ -177,25 +200,7 @@ impl Envelope {
             if original.is_some() {
                 return Err(Error::InvalidRecord);
             }
-            let attributes = record.headers.attributes();
-            let header = attributes.iter().find(|value| value.name == ADMISSION);
-            let reason = match header {
-                None => None,
-                Some(header) => {
-                    let binding =
-                        Binding::decode(header.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
-                    if binding.version != 1 {
-                        return Err(Error::InvalidRecord);
-                    }
-                    if binding.intent_digest.as_ref() != &Sha256::digest(&original_bytes)[..] {
-                        return Err(StreamError::IdempotencyMismatch.into());
-                    }
-                    Some(
-                        Rejection::try_from(binding.rejection.ok_or(Error::InvalidRecord)?)
-                            .map_err(|_| Error::InvalidRecord)?,
-                    )
-                }
-            };
+            let reason = rejection_binding(&record.headers, || original_bytes.clone())?;
             if reason.is_none() && record.value.as_ref() != original_bytes.as_ref() {
                 return Err(StreamError::IdempotencyMismatch.into());
             }

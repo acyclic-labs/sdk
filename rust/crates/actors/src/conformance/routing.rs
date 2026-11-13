@@ -16,8 +16,26 @@ async fn drain_one<P: StreamProvider + ?Sized>(
     node: &NodeId,
     expected: &IdempotencyKey,
     acknowledged: u64,
+    rejected: Option<(&Envelope, Rejection)>,
 ) -> Result<(), Failure> {
     let drain = crate::route::drain(provider, paths, node, async |record| {
+        if let Some((original, reason)) = rejected {
+            if record.rejection(original)? != Some(reason) {
+                return Err(crate::route::Error::InvalidRecord);
+            }
+            let mut changed = original.clone();
+            changed.request.idempotency_key = expected.clone();
+            if record.rejection(&changed).is_ok() {
+                return Err(crate::route::Error::InvalidRecord);
+            }
+            let mut wrong_target = record.clone();
+            wrong_target.envelope.to = original.to.clone();
+            if wrong_target.rejection(original).is_ok() {
+                return Err(crate::route::Error::InvalidRecord);
+            }
+        } else if record.rejection(&record.envelope)?.is_some() {
+            return Err(crate::route::Error::InvalidRecord);
+        }
         if record.receipt.read(provider, paths, node).await? != record.envelope {
             return Err(crate::route::Error::InvalidRecord);
         }
@@ -594,6 +612,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         &placement.node,
         &restored.request.idempotency_key,
         0,
+        None,
     )
     .await?;
     let inbox = StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?;
@@ -696,6 +715,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         &placement.node,
         &following.request.idempotency_key,
         1,
+        None,
     )
     .await?;
     let inputs = values(provider, inbox).await?;
@@ -890,6 +910,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             &source,
             &notice.request.idempotency_key,
             index as u64,
+            Some((&rejected, reason)),
         )
         .await?;
     }

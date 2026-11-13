@@ -106,6 +106,25 @@ pub struct RelayRecord {
     pub envelope: Envelope,
     /// Original relay position, retained across drain restarts and lost acks.
     pub receipt: RelayReceipt,
+    /// Original account admission metadata, including a rejection's binding
+    /// to its sender-owned request. It conveys no credential or extra grant.
+    pub headers: acyclic_stream::RecordHeaders,
+}
+
+impl RelayRecord {
+    /// Validate an account rejection against the original sender publication.
+    /// The caller must authenticate the account relay and validate the Notice
+    /// itself; this proof does not grant an arbitrary inbox or control write.
+    pub fn rejection(&self, original: &Envelope) -> Result<Option<super::Rejection>, Error> {
+        let reason = super::admission::rejection_binding(&self.headers, || original.encode())?;
+        if reason.is_some() && self.envelope.to != original.sender {
+            return Err(Error::InvalidRecord);
+        }
+        if reason.is_none() && self.envelope != *original {
+            return Err(StreamError::IdempotencyMismatch.into());
+        }
+        Ok(reason)
+    }
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -175,6 +194,7 @@ where
                     commit_id: record.commit_id,
                     sequence: record.sequence,
                 },
+                headers: record.headers,
             })
             .await?;
             Ok(None)
