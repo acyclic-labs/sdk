@@ -28,6 +28,7 @@ impl StockExecution<'_> {
         revision: String,
     ) -> Result<StockExecution<'_>> {
         Ok(StockExecution {
+            origin: self.origin,
             stock: ExecutionConfiguration::Borrowed(&self.stock),
             configuration: None,
             context: self.context,
