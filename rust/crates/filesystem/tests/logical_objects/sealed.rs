@@ -192,7 +192,7 @@ async fn sealed_reconstruction_preserves_association_without_publication()
     });
     // The erased and cache adapters must preserve the same reconstruction
     // mechanism; falling back to plaintext verification rejects this seal.
-    let store = acyclic_fs::cache::CachedObjectStore::with_default_options(logical.clone());
+    let store = acyclic_fs::cache::CachedObjectStore::new(logical.clone(), Default::default())?;
     let erased: &dyn acyclic_fs::async_storage::DynObjectStore = &store;
     let mut context = AuthorityWork::native(&original, &cancellation);
     let object = erased
