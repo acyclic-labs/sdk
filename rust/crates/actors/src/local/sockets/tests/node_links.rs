@@ -139,6 +139,21 @@ async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() 
         .await?;
     assert_eq!(provider.tail(presence_path.clone()).await?, initial + 1);
 
+    // A reconnect can overlap the old transport's Close. The old connection
+    // must not make the replacement offline, even after its input is consumed.
+    let mut replacement = route::open_link(&client, 1, backend.account(), &node).await?;
+    let online = changes.try_next().await?.ok_or("missing reconnect event")?;
+    let online = NodePresence::decode(&online.value)?;
+    assert!(online.online && online.node == node && online.generation == 2);
+    let inbox_path = paths.node_inbox(&node)?;
+    let mut closes = acyclic_stream::records_only(
+        provider
+            .follow(FollowRequest::new(
+                inbox_path.clone(),
+                provider.tail(inbox_path.clone()).await?,
+            ))
+            .await?,
+    );
     link.send(
         SocketFrame::Close {
             code: 1000,
@@ -148,10 +163,34 @@ async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() 
         .encode(),
     )
     .await?;
+    let close = closes.try_next().await?.ok_or("missing old Close input")?;
+    backend
+        .store
+        .wait_applied(
+            &open.actor,
+            AppliedCut::through("node-link".into(), inbox_path, &close)?,
+        )
+        .await?;
+    assert_eq!(provider.tail(presence_path.clone()).await?, initial + 2);
+    assert!(
+        NodePresence::read(provider.as_ref(), &paths, &node)
+            .await?
+            .is_some_and(|row| row.online && row.generation == 2)
+    );
+    replacement
+        .send(
+            SocketFrame::Close {
+                code: 1000,
+                reason: "finished".into(),
+                initiator: crate::guest::SocketCloseInitiator::Peer,
+            }
+            .encode(),
+        )
+        .await?;
     let offline = changes.try_next().await?.ok_or("missing offline event")?;
     let offline = NodePresence::decode(&offline.value)?;
-    assert!(!offline.online && offline.node == node && offline.generation == 1);
-    assert_eq!(provider.tail(presence_path).await?, initial + 2);
+    assert!(!offline.online && offline.node == node && offline.generation == 2);
+    assert_eq!(provider.tail(presence_path).await?, initial + 3);
     assert!(matches!(
         link.next()
             .await?
