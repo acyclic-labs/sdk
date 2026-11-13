@@ -213,6 +213,7 @@ impl ExecutionEvent {
                 ..
             }
             | ContextPrepared { projection, .. } => (None, [Some(projection), None, None]),
+            NativeCapture { receipt } => (None, [Some(receipt), None, None]),
             ContextCompacted {
                 projection,
                 compaction,

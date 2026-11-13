@@ -2,7 +2,7 @@
 use super::*;
 use crate::supervision::{
     Observation, Policy, Position,
-    streams::{Projection, Queries},
+    streams::{NativeMeasurement, Projection, Queries},
 };
 use std::borrow::Cow;
 
@@ -17,6 +17,10 @@ pub(super) enum Invocation<'a> {
 pub(super) enum Inputs<'a> {
     PolicyChanged,
     Progress,
+    NativeCapture {
+        call: OperationId,
+        measurement: NativeMeasurement,
+    },
     Usage {
         tokens: Option<u64>,
         usd_nanos: Option<u64>,
@@ -135,6 +139,32 @@ where
             }));
         }
         let (step, call_id) = match event {
+            ExecutionEvent::NativeCapture { receipt } => {
+                if !self
+                    .run_admission
+                    .as_ref()
+                    .is_some_and(|source| source.value.no_progress_turns.is_some())
+                {
+                    return Ok(None);
+                }
+                let (record, _hold) = crate::executor::load_json::<
+                    crate::runtime::NativeCaptureProgress,
+                >(self, receipt, io)
+                .await?;
+                record.validate(operation, receipt)?;
+                let measurement = if matches!(
+                    record.evidence,
+                    crate::runtime::NativeCaptureEvidence::Pending { .. }
+                ) {
+                    NativeMeasurement::Pending
+                } else {
+                    NativeMeasurement::Complete(record.changed)
+                };
+                return Ok(Some(Inputs::NativeCapture {
+                    call: record.call,
+                    measurement,
+                }));
+            }
             ExecutionEvent::Progress { .. } => {
                 return Ok(self
                     .run_admission
@@ -225,6 +255,12 @@ where
         if matches!(inputs, Inputs::Progress) {
             return queries
                 .project_progress(source, *turn, policy)
+                .await
+                .map(Some);
+        }
+        if let Inputs::NativeCapture { call, measurement } = inputs {
+            return queries
+                .project_native_capture(source, *turn, *call, *measurement, policy)
                 .await
                 .map(Some);
         }

@@ -131,6 +131,19 @@ impl CheckoutTools {
         )
         .await?;
         if let Some(started) = started {
+            if let Err(error) = context
+                .record_native_progress(
+                    crate::runtime::NativeCaptureEvidence::Pending {
+                        operation: super::capture::capture_operation(operation, 1),
+                    },
+                    None,
+                )
+                .await
+            {
+                control.stop();
+                let _ = completion.await;
+                return Err(error);
+            }
             let directory = format!("tools/{}/{}", context.turn_id(), operation);
             let cancel = native_spill.trim_end_matches(".log").to_owned() + ".cancel";
             let mut result = ToolResult {

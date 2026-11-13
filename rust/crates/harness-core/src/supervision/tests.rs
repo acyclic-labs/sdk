@@ -44,6 +44,7 @@ fn done(progress: bool) -> Observation<'static> {
     Observation::TurnDone {
         spent_tokens: true,
         progress,
+        progress_measured: true,
     }
 }
 
@@ -192,6 +193,7 @@ fn source_progress_and_zero_spending_break_unproductive_turn_runs() {
         Observation::TurnDone {
             spent_tokens: false,
             progress: false,
+            progress_measured: true,
         },
         &policy,
     );

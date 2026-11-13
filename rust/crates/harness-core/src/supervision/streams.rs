@@ -238,6 +238,42 @@ fn progress_key(turn: u64) -> [u8; 32] {
     super::signature(b"progress-turn", &[&turn.to_be_bytes()])
 }
 
+fn unmeasured_key(turn: u64) -> [u8; 32] {
+    super::signature(b"unmeasured-progress-turn", &[&turn.to_be_bytes()])
+}
+
+fn pending_key(turn: u64) -> [u8; 32] {
+    super::signature(b"pending-native-turn", &[&turn.to_be_bytes()])
+}
+
+fn capture_key(turn: u64, call: OperationId) -> [u8; 32] {
+    super::signature(
+        b"native-capture",
+        &[&turn.to_be_bytes(), &call.into_bytes()],
+    )
+}
+
+/// An original call's measurement phase. Completion retires only that call's
+/// pending contribution; unavailable completed evidence remains unmeasured.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeMeasurement {
+    /// Physical execution has not published its original content comparison.
+    Pending,
+    /// Original content changed, was unchanged, or could not be measured.
+    Complete(Option<bool>),
+}
+
+impl NativeMeasurement {
+    const fn code(self) -> u64 {
+        match self {
+            Self::Pending => 1,
+            Self::Complete(Some(false)) => 2,
+            Self::Complete(Some(true)) => 3,
+            Self::Complete(None) => 4,
+        }
+    }
+}
+
 fn occurrence_bytes(sequence: u64) -> Vec<u8> {
     let mut bytes = 1u32.to_be_bytes().to_vec();
     bytes.extend_from_slice(&sequence.to_be_bytes());
@@ -305,6 +341,38 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         Ok(())
     }
 
+    async fn indexed_number(&self, key: [u8; 32]) -> Result<(Option<u64>, CommitCondition)> {
+        let (record, fence) = self
+            .provider
+            .latest_fenced(
+                cell_path(self.agent, self.run, &key)?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let value = record
+            .map(|record| {
+                if record.value.len() != 12 || record.value[..4] != 1u32.to_be_bytes() {
+                    return Err(invalid(
+                        "native measurement index has an invalid version or length",
+                    ));
+                }
+                Ok(u64::from_be_bytes(
+                    record.value[4..].try_into().map_err(invalid)?,
+                ))
+            })
+            .transpose()?;
+        Ok((value, fence))
+    }
+
+    fn write_number(projection: &mut Projection, fence: CommitCondition, value: u64) {
+        projection.effect.mutations.push(CommitMutation::Append {
+            path: fence.path().clone(),
+            records: vec![occurrence_bytes(value).into()],
+        });
+        projection.effect.conditions.push(fence);
+    }
+
     /// Project usage and, when no-progress observation is enabled, its first
     /// positive per-turn fact. Both belong to the usage producer's one atomic
     /// publication. This performs no independent submission or history scan.
@@ -347,6 +415,58 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         Ok(projection)
     }
 
+    /// An original native capture contributes either a positive byte-change
+    /// fact, a known unchanged measurement, or an explicit coverage gap.
+    /// A coverage gap never writes a positive progress marker.
+    pub async fn project_native_capture(
+        &self,
+        source: &Position,
+        turn: u64,
+        call: OperationId,
+        measurement: NativeMeasurement,
+        policy: &Policy,
+    ) -> Result<Projection> {
+        let mut projection = self.project(source, &Observation::Progress, policy).await?;
+        if policy.no_progress_turns.is_some() {
+            let (previous, call_fence) = self.indexed_number(capture_key(turn, call)).await?;
+            if previous.is_some_and(|value| !(1..=4).contains(&value)) {
+                return Err(invalid("native measurement index has an invalid phase"));
+            }
+            let current = measurement.code();
+            if previous == Some(current) || previous.is_some_and(|value| value != 1) {
+                // A delayed start cannot downgrade an accepted completion, and
+                // exact replay cannot consume another call's pending credit.
+                if current != 1 && previous != Some(current) {
+                    return Err(invalid(
+                        "native measurement changed its original terminal verdict",
+                    ));
+                }
+                return Ok(projection);
+            }
+            Self::write_number(&mut projection, call_fence, current);
+            if previous == Some(1) || current == 1 {
+                let (pending, fence) = self.indexed_number(pending_key(turn)).await?;
+                let pending = pending.unwrap_or(0);
+                let pending = if current == 1 {
+                    pending.checked_add(1)
+                } else {
+                    pending.checked_sub(1)
+                }
+                .ok_or_else(|| invalid("native pending measurement count overflow or underflow"))?;
+                Self::write_number(&mut projection, fence, pending);
+            }
+            let key = match measurement {
+                NativeMeasurement::Complete(Some(true)) => Some(progress_key(turn)),
+                NativeMeasurement::Complete(None) => Some(unmeasured_key(turn)),
+                _ => None,
+            };
+            if let Some(key) = key {
+                self.join_turn_fact(&mut projection, key).await?;
+            }
+        }
+        Ok(projection)
+    }
+
     /// Join original progress receipts and this exact turn's reported spending
     /// to its terminal publication. The original settlement producer owns the
     /// returned effect; a concurrent usage publication refuses that same commit
@@ -361,22 +481,34 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         if policy.no_progress_turns.is_none() {
             return Ok(None);
         }
-        let ((spent_tokens, spending_fence), (progress, progress_fence)) =
-            futures::try_join!(self.spent_in_turn(turn), self.progress_in_turn(turn),)?;
+        let (
+            (spent_tokens, spending_fence),
+            (progress, progress_fence),
+            (unmeasured, measurement_fence),
+            (pending, pending_fence),
+        ) = futures::try_join!(
+            self.spent_in_turn(turn),
+            self.progress_in_turn(turn),
+            self.turn_fact(unmeasured_key(turn)),
+            self.indexed_number(pending_key(turn)),
+        )?;
         let mut projection = self
             .project(
                 source,
                 &Observation::TurnDone {
                     spent_tokens,
                     progress,
+                    progress_measured: !unmeasured && pending.unwrap_or(0) == 0,
                 },
                 policy,
             )
             .await?;
-        projection
-            .effect
-            .conditions
-            .extend([spending_fence, progress_fence]);
+        projection.effect.conditions.extend([
+            spending_fence,
+            progress_fence,
+            measurement_fence,
+            pending_fence,
+        ]);
         Ok(Some(projection))
     }
 

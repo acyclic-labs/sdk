@@ -278,12 +278,16 @@ async fn original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage()
     // to trust a caller-supplied spending boolean. Progress and a quiet turn
     // both break the consecutive spending-turn run.
     for (index, (spent_tokens, progress, expected)) in [
-        (true, false, 1),
-        (true, true, 0),
-        (true, false, 1),
-        (false, false, 0),
-        (true, false, 1),
-        (true, false, 2),
+        (true, Some(false), 1),
+        (true, Some(true), 0),
+        (true, Some(false), 1),
+        // Missing original content coverage breaks an absence proof without
+        // claiming positive progress. The next known unchanged turn counts.
+        (true, None, 0),
+        (true, Some(false), 1),
+        (false, Some(false), 0),
+        (true, Some(false), 1),
+        (true, Some(false), 2),
     ]
     .into_iter()
     .enumerate()
@@ -314,17 +318,24 @@ async fn original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage()
             sequence: sequence + 1,
             ..source
         };
-        let progress = if progress {
-            queries.project_progress(&source, turn, &policy).await?
-        } else {
-            queries
-                .project(&source, &Observation::Progress, &policy)
-                .await?
-        };
+        let measurement = queries
+            .project_native_capture(
+                &source,
+                turn,
+                OperationId::from_bytes([index as u8; 16]),
+                NativeMeasurement::Complete(progress),
+                &policy,
+            )
+            .await?;
         assert!(matches!(
-            provider.commit(publish(sequence + 1, progress)?).await?,
+            provider.commit(publish(sequence + 1, measurement)?).await?,
             CommitOutcome::Committed(_)
         ));
+        assert_eq!(
+            queries.progress_in_turn(turn).await?.0,
+            progress == Some(true),
+            "unavailable capture evidence became positive progress"
+        );
         let source = Position {
             sequence: sequence + 2,
             ..source
@@ -352,14 +363,145 @@ async fn original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage()
             .project_settlement(
                 &Position {
                     stream: agent.inbox()?,
-                    sequence: 24,
+                    sequence: 30,
                 },
-                106,
+                108,
                 &Policy::default(),
             )
             .await?
             .is_none()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_pending_measurements_settle_per_call_without_bypassing_no_progress() -> TestResult {
+    use crate::supervision::Action;
+    use NativeMeasurement::{Complete, Pending};
+    let a = OperationId::from_bytes([191; 16]);
+    let b = OperationId::from_bytes([192; 16]);
+    for (phases, expected) in [
+        (vec![(a, Pending), (a, Complete(Some(false)))], 1),
+        // One completion cannot clear another call's pending comparison.
+        (
+            vec![(a, Pending), (b, Pending), (a, Complete(Some(false)))],
+            0,
+        ),
+        (
+            vec![
+                (a, Pending),
+                (b, Pending),
+                (a, Complete(Some(false))),
+                (b, Complete(Some(false))),
+            ],
+            1,
+        ),
+        // Exact replay and a delayed start cannot resurrect pending credit.
+        (
+            vec![
+                (a, Pending),
+                (a, Pending),
+                (a, Complete(Some(false))),
+                (a, Complete(Some(false))),
+                (a, Pending),
+            ],
+            1,
+        ),
+        (vec![(a, Complete(Some(false))), (a, Pending)], 1),
+        (vec![(a, Pending), (a, Complete(None))], 0),
+        (
+            vec![(a, Pending), (b, Pending), (a, Complete(Some(true)))],
+            0,
+        ),
+    ] {
+        let provider = MemoryStream::default();
+        let agent = AgentPath::root(&AgentId::from_bytes([193; 16]));
+        let run = OperationId::from_bytes([194; 16]);
+        let queries = Queries::new(&provider, &agent, run);
+        let mut policy = Policy {
+            no_progress_turns: Some(1),
+            ..Default::default()
+        };
+        policy.actions.insert(Kind::NoProgress, Action::Stop);
+        let publish = |sequence, projection: Projection| -> TestResult<CommitRequest> {
+            Ok(CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: IdempotencyKey::unique(),
+                effects: vec![
+                    CommitEffect::hard(
+                        vec![if sequence == 0 {
+                            CommitCondition::Absent {
+                                path: agent.inbox()?,
+                            }
+                        } else {
+                            CommitCondition::Tail {
+                                path: agent.inbox()?,
+                                expected: sequence,
+                            }
+                        }],
+                        vec![CommitMutation::Append {
+                            path: agent.inbox()?,
+                            records: vec![b"original native producer".as_slice().into()],
+                        }],
+                    ),
+                    projection.effect,
+                ],
+            })
+        };
+        let source = |sequence| -> TestResult<Position> {
+            Ok(Position {
+                stream: agent.inbox()?,
+                sequence,
+            })
+        };
+        let usage = queries
+            .project_usage(
+                &source(0)?,
+                &TurnUsage {
+                    turn: 0,
+                    tokens: Some(1),
+                    usd_nanos: None,
+                    spent_tokens: true,
+                },
+                &policy,
+            )
+            .await?;
+        assert!(matches!(
+            provider.commit(publish(0, usage)?).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let mut sequence = 1;
+        for (call, measurement) in phases {
+            let projection = queries
+                .project_native_capture(&source(sequence)?, 0, call, measurement, &policy)
+                .await?;
+            let request = publish(sequence, projection)?;
+            let receipt = provider.commit(request.clone()).await?;
+            assert!(matches!(receipt, CommitOutcome::Committed(_)));
+            assert_eq!(provider.commit(request).await?, receipt);
+            sequence += 1;
+        }
+        let settlement = queries
+            .project_settlement(&source(sequence)?, 0, &policy)
+            .await?
+            .ok_or("native settlement missing")?;
+        assert_eq!(
+            settlement.checkpoint.state.unproductive_turns, expected,
+            "completed native measurements did not settle their own pending calls"
+        );
+        assert_eq!(
+            settlement.checkpoint.action,
+            if expected == 1 {
+                Action::Stop
+            } else {
+                Action::Alert
+            }
+        );
+        assert!(matches!(
+            provider.commit(publish(sequence, settlement)?).await?,
+            CommitOutcome::Committed(_)
+        ));
+    }
     Ok(())
 }
 

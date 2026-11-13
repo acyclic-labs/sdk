@@ -455,14 +455,8 @@ impl CheckoutTools {
             } else {
                 watcher
             };
-            self.capture(
-                (workspace, view),
-                watcher,
-                invocation.operation_id,
-                1,
-                PublicationPermit::Unrestricted,
-            )?
-            .await?;
+            self.finish_native_capture((workspace, view), watcher, context)?
+                .await?;
             if let Ok(result) = &result {
                 files.finish(result).await?;
             }
@@ -614,6 +608,7 @@ impl ToolExecutor for CheckoutTools {
             let context = context
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
+            context.recover_native_progress().await?;
             let fs = if let Some(command) = command {
                 match self.fs_arguments(&command, context.effective_scope()) {
                     Ok(parsed) => Some(parsed),

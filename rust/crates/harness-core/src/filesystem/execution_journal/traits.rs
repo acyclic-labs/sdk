@@ -148,12 +148,31 @@ where
                 )
             })?;
             let queries = crate::supervision::streams::Queries::new(&*self.stream, agent, *run);
+            if let crate::executor::ProgressPublication::NativeCapture(file) = publication {
+                let event = ExecutionEvent::NativeCapture {
+                    receipt: crate::model::clone_file(file, io)?,
+                };
+                let _receipt_hold = io
+                    .map(|io| io.guard_owned(file.logical_owned_bytes()?))
+                    .transpose()?;
+                let key = crate::executor::with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!("native-progress:{effect}:{}", file.path()),
+                        work,
+                    )
+                })?;
+                let _key_hold = io
+                    .map(|io| io.guard_owned(key.capacity() as u64))
+                    .transpose()?;
+                return self.append(execution, &key, &event, io)?.await;
+            }
             if queries.progress_in_turn(*turn).await?.0 {
                 return Ok(());
             }
             let unmeasured;
             let original_file;
             let publication = match publication {
+                crate::executor::ProgressPublication::NativeCapture(_) => unreachable!(),
                 crate::executor::ProgressPublication::Resource(publication) => publication,
                 crate::executor::ProgressPublication::Changes { volume, changes } => {
                     if !self

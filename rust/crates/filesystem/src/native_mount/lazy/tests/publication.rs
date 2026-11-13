@@ -7,6 +7,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     let source_root = tempfile::tempdir()?;
     std::fs::write(source_root.path().join("removed"), b"source before")?;
     std::fs::write(source_root.path().join("edited"), b"before")?;
+    std::fs::write(source_root.path().join("same"), b"same bytes")?;
     let view = mounted_view(source_root.path(), "original-native-cuts").await?;
     let cancellation = CancellationToken::new();
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -29,11 +30,42 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         assert_eq!(acknowledged, Some(receipt));
         Ok::<_, MountSourceError>(receipt)
     };
+    view.write_range(&mounted(&["same"]), 0, Bytes::from_static(b"same bytes"))?;
+    let unchanged = publish().await?;
+    let (unchanged_before, unchanged_after) = view
+        .lazy
+        .original_publication_cuts(
+            unchanged
+                .operation()
+                .ok_or("missing source promotion receipt")?,
+            &mut accounting,
+        )
+        .await?
+        .ok_or("missing source promotion cuts")?;
+    assert!(
+        view.lazy
+            .matches_optional_content_at_snapshots(
+                unchanged_before,
+                unchanged_after,
+                "/same",
+                &mut accounting,
+            )
+            .await?,
+        "source promotion with unchanged bytes counted as a content change"
+    );
+    assert_eq!(
+        view.lazy
+            .content_changed_at_snapshots(unchanged_before, unchanged_after, &mut accounting,)
+            .await?,
+        None,
+        "source identity promotion invented complete alias coverage"
+    );
     let created = mounted(&["created"]);
     view.create_file(&created, FileMetadata::default(), None, &work)?;
     view.write_range(&created, 0, Bytes::from_static(b"original publication"))?;
     view.remove(&mounted(&["removed"]), None, &work)?;
     view.write_range(&mounted(&["edited"]), 0, Bytes::from_static(b"after!"))?;
+    view.write_range(&mounted(&["same"]), 0, Bytes::from_static(b"same bytes"))?;
     let receipt = publish().await?;
     let operation = receipt.operation().ok_or("missing native DATA operation")?;
     assert!(
@@ -49,7 +81,41 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         .await?
         .ok_or("original native cuts missing")?;
     let (before, after) = cuts;
+    assert_eq!(
+        view.lazy
+            .content_changed_at_snapshots(before, after, &mut accounting)
+            .await?,
+        Some(true),
+        "native logical change was not witnessed"
+    );
+    assert_eq!(
+        view.lazy
+            .content_changed_at_snapshots(after, after, &mut accounting)
+            .await?,
+        Some(false),
+        "an identical complete logical cut was not unchanged"
+    );
     assert_eq!(after.authored_generation, receipt.generation());
+    for path in ["/created", "/removed", "/edited"] {
+        assert!(
+            !view
+                .lazy
+                .matches_optional_content_at_snapshots(before, after, path, &mut accounting)
+                .await?,
+            "original content change was lost at {path}",
+        );
+    }
+    assert!(
+        view.lazy
+            .matches_optional_content_at_snapshots(before, after, "/same", &mut accounting)
+            .await?,
+        "source promotion with unchanged bytes counted as a content change",
+    );
+    assert!(
+        view.lazy
+            .matches_optional_content_at_snapshots(before, after, "/absent", &mut accounting)
+            .await?,
+    );
     assert!(
         view.lazy
             .stat_at_snapshot(before, "/created", &mut accounting)
@@ -114,6 +180,19 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
             .original_publication_cuts(operation, &mut accounting)
             .await?,
         Some(cuts)
+    );
+    assert!(
+        !view
+            .lazy
+            .matches_optional_content_at_snapshots(before, after, "/edited", &mut accounting)
+            .await?,
+        "later writes or source removal replaced original content evidence",
+    );
+    assert!(
+        view.lazy
+            .matches_optional_content_at_snapshots(after, after, "/edited", &mut accounting)
+            .await?,
+        "an identical immutable cut differed from itself",
     );
     assert!(
         view.lazy
