@@ -191,7 +191,7 @@ impl<
         crate::heap_future::in_borrowed_frame!(ctx, |ctx| async move {
             let parent = self.namespace_path(parent, ctx)?;
             let result = async {
-                let mut source = None;
+                let mut source: Option<SourceReference> = None;
                 for depth in 1..=parent.value.components().len() {
                     let (prefix, allocation) = parent.value.prefix_with_accounting(
                         depth,

@@ -237,11 +237,6 @@ impl HistoryCursor {
             .ok_or(StreamError::Unavailable)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn with_native_work(mut self, work: Option<Arc<crate::native::Work>>) -> Self {
-        self.work = work;
-        self
-    }
     fn observe<T>(&self, lookup: impl FnOnce() -> T) -> Result<T, StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
