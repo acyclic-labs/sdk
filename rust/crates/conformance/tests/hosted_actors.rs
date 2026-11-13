@@ -293,9 +293,9 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     // Fetch and session ingress attach the same command to the actual wire
     // publication, including every selected routing and deployment field.
     assert_eq!(binding.prepare(&command)?.invocations(), [routed.clone()]);
-    clients[0].actor_call(&routed, 0, 1 << 20).await?;
+    clients[0].actor_call(&routed, 0, Some(1 << 20)).await?;
     assert!(matches!(
-        clients[1].actor_call(&routed, 0, 1 << 20).await,
+        clients[1].actor_call(&routed, 0, Some(1 << 20)).await,
         Err(error) if error.category() == StreamError::AccessDenied
     ));
     for field in ["account", "namespace"] {
