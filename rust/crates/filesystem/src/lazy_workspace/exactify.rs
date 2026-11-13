@@ -556,7 +556,7 @@ impl<
     /// Materializes an immutable cut in a deterministic scratch fork.
     pub async fn exactify_snapshot(
         &self,
-        cut: &LazySnapshotRef,
+        cut: LazySnapshotRef,
         destination: &str,
         key: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,

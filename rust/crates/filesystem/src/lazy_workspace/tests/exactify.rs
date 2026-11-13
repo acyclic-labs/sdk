@@ -15,7 +15,7 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let (paths, _) = root
-        .enumerate_paths("/", cut, &state, &mut accounting)
+        .enumerate_paths("/", &cut, &state, &mut accounting)
         .await
         .unwrap();
     let lookup = root.inspect("/file.txt", accounting!()).await.unwrap();
@@ -66,7 +66,7 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
     let stale = root
         .exactify_into(
             "/",
-            cut,
+            &cut,
             paths,
             start,
             crate::PublicationPermit::Unrestricted,

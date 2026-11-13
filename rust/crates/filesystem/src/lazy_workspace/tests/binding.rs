@@ -32,10 +32,10 @@ async fn retained_snapshot_rejects_the_previous_overlay_format_before_loading_it
         ..cut
     };
     assert!(matches!(
-        root.validate_snapshot(previous, accounting!()).await,
+        root.validate_snapshot(&previous, accounting!()).await,
         Err(LazyWorkspaceError::StaleSource)
     ));
-    root.validate_snapshot(cut, accounting!()).await.unwrap();
+    root.validate_snapshot(&cut, accounting!()).await.unwrap();
 }
 
 #[tokio::test]

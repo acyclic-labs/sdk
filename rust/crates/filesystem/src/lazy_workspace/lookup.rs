@@ -383,7 +383,7 @@ impl<
             LazyLookup::Authored { record, .. } => {
                 if record.kind == FileKind::Directory {
                     let state = self.state(ctx).await?;
-                    if let Some(LazyOverlayChange::Observe { source, node }) =
+                    if let Some(LazyOverlayChange::Observe { source, node, .. }) =
                         self.overlay_fact(state.overlay, path, ctx).await?
                         && node.kind == SourceNodeKind::Directory
                     {
