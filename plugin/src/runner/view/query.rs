@@ -125,7 +125,11 @@ pub(super) fn diff_key(
         *top = panel
             .lines
             .iter()
-            .position(|line| line.style.add_modifier.contains(super::Modifier::UNDERLINED))
+            .position(|line| {
+                line.style
+                    .add_modifier
+                    .contains(super::Modifier::UNDERLINED)
+            })
             .unwrap_or(0);
     }
     consumed
@@ -400,7 +404,14 @@ mod tests {
                 (KeyCode::Char(' '), "@@ -1 +1 @@"),
                 (KeyCode::Tab, "@@ -80 +80 @@"),
             ] {
-                assert!(diff_key(&mut panel, key, columns, wide, input.theme, &mut top));
+                assert!(diff_key(
+                    &mut panel,
+                    key,
+                    columns,
+                    wide,
+                    input.theme,
+                    &mut top
+                ));
                 let painted = terminal.draw(|frame| {
                     Screen {
                         overlay: &panel.lines,
@@ -574,7 +585,10 @@ mod tests {
             Arc::new(acyclic_harness::executor::ModelPrices::default()),
         )
         .await?;
-        assert!(loaded.context.diff.is_some(), "the real diff query lost its admitted presentation");
+        assert!(
+            loaded.context.diff.is_some(),
+            "the real diff query lost its admitted presentation"
+        );
         let retained = Arc::new(tokio::sync::Mutex::new(
             conversation
                 .diff_query(
