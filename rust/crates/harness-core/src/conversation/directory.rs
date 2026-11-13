@@ -1,5 +1,38 @@
 use super::*;
 
+/// A selected agent's directory namespace, never a caller-supplied volume grant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum DirectoryTarget {
+    /// The agent's authored UI and interaction files.
+    Private {},
+    /// Its current primary workspace, independent of its display name.
+    Primary {},
+    /// One retained workspace slot, including its declared subtree boundary.
+    Workspace {
+        /// Stable entry identity, preserved across workspace renames.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: crate::contract::EntryId,
+    },
+}
+
+/// One bounded directory selection under an agent's original authority.
+pub struct DirectoryQuery<'a> {
+    /// The selected namespace in the agent's committed workspace table.
+    pub target: DirectoryTarget,
+    /// Directory relative to the selected workspace's declared root.
+    pub path: &'a str,
+    /// Immutable generation for all continuation pages.
+    pub generation: Option<&'a GenerationRef>,
+    /// Wait for the selected volume's original publication after this cut.
+    pub after_generation: Option<&'a GenerationRef>,
+    /// Exclusive child name in this directory's immutable selection.
+    pub after_name: Option<&'a str>,
+    /// Row credit; continuation splits work without a directory-size ceiling.
+    pub maximum_entries: u32,
+}
+
 /// One immutable directory selection on the caller's original reader.
 #[derive(Clone, Copy)]
 pub struct DirectoryRead<'a> {

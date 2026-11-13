@@ -987,8 +987,10 @@ where
             }
             AgentCommand::Directory {
                 agent,
+                target,
                 path,
                 generation,
+                after_generation,
                 page: request,
             } => {
                 let agent = self.within_tree(agent)?;
@@ -996,10 +998,14 @@ where
                     .bound
                     .directory_page(
                         agent,
-                        path,
-                        generation.as_ref(),
-                        request.cursor(),
-                        request.items(),
+                        crate::conversation::DirectoryQuery {
+                            target: *target,
+                            path,
+                            generation: generation.as_ref(),
+                            after_generation: after_generation.as_ref(),
+                            after_name: request.cursor(),
+                            maximum_entries: request.items(),
+                        },
                     )
                     .await?;
                 let empty = |has_more| AgentReply::Directory {
@@ -1027,10 +1033,23 @@ where
             } => {
                 let agent = self.within_tree(agent)?;
                 let (bytes, length) = match target {
-                    ReadTarget::Private { path, generation } => {
+                    ReadTarget::Path {
+                        target,
+                        path,
+                        generation,
+                    } => {
                         let (bytes, length) = self
                             .bound
-                            .read_private_file(agent, path, generation, *offset, MAX_READ_BYTES)
+                            .read_path(
+                                agent,
+                                *target,
+                                path,
+                                generation,
+                                acyclic_fs::ByteRange {
+                                    offset: *offset,
+                                    length: MAX_READ_BYTES,
+                                },
+                            )
                             .await?;
                         return Ok(AgentReply::read(&bytes, length));
                     }
