@@ -365,18 +365,16 @@ fn driver(progress: Vec<ExecutionProgress<TurnOutput>>) -> (Arc<Script>, Executo
     (script.clone(), ExecutorDriver::new(Host(script, None)))
 }
 
-/// A turn-starting input that carries no file: a child's approval request.
-fn request(id: &str) -> Result<(InboxRecord, TurnInput)> {
-    let child = AgentPath::root(&super::id(1)).child(&super::id(7))?;
+/// A normal worker input without a file: an original child completion.
+fn request(name: &str) -> Result<(InboxRecord, TurnInput)> {
+    let root = AgentPath::root(&super::id(1));
+    let done = ChildDone {
+        child: root.child(&AgentId::derive(&root.id(), name))?,
+        outcome: AgentOutcome::Succeeded { result: None },
+    };
     Ok((
-        InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: child.clone(),
-            id: intent(id),
-        }),
-        TurnInput::ApprovalRequested {
-            child,
-            id: intent(id),
-        },
+        InboxRecord::ChildDone(done.clone()),
+        TurnInput::ChildDone { done },
     ))
 }
 
@@ -1156,6 +1154,189 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
         }
         assert_eq!(message.id.as_str(), format!("{GOAL_INTENT}{run}:{last}"));
         assert!(goal.rewrites.lock().expect("lock").is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn approval_selection_replays_its_policy_before_any_worker_context() -> Result {
+    struct ControlHost {
+        worker: Host,
+        policy: Mutex<FileRef>,
+        selected: Mutex<Vec<ApprovalSelection>>,
+        opened: Mutex<Vec<acyclic_harness_core::model::ModelContent>>,
+        summary: Option<FileRef>,
+    }
+    impl TurnHost for ControlHost {
+        fn select_approvals<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            inbox: u64,
+            cursor: u64,
+        ) -> BoxFuture<'a, acyclic_harness_core::Result<ApprovalSelection>> {
+            let selected = ApprovalSelection {
+                source: agent.path.clone(),
+                range: inbox..cursor,
+                policy: Some(self.policy.lock().unwrap().clone()),
+            };
+            Box::pin(async move { Ok(selected) })
+        }
+        fn triage<'a>(
+            &'a self,
+            _: &'a AgentState,
+            selection: &'a ApprovalSelection,
+        ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTriage>> {
+            self.selected.lock().unwrap().push(selection.clone());
+            let summary = self.summary.clone();
+            Box::pin(async move {
+                Ok(OpenTriage {
+                    summary,
+                    consumed: vec![selection.range.start],
+                    outs: Vec::new(),
+                })
+            })
+        }
+        fn open_control<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            action: &'a ContextAction,
+            stop: acyclic_actors::guest::CancellationToken,
+        ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenControl>> {
+            self.worker.open_control(agent, action, stop)
+        }
+        fn open<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            turn: OperationId,
+            inbox: u64,
+            cursor: u64,
+            input: &'a acyclic_harness_core::model::ModelContent,
+            stop: acyclic_actors::guest::CancellationToken,
+        ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
+            self.opened.lock().unwrap().push(input.clone());
+            self.worker.open(agent, turn, inbox, cursor, input, stop)
+        }
+    }
+    for escalated in [false, true] {
+        let script = Arc::new(Script {
+            progress: Mutex::new(vec![ready()].into()),
+            ..Default::default()
+        });
+        let original_policy = file("policy-original.md")?;
+        let summary = file("merged-summary.txt")?;
+        let host = Arc::new(ControlHost {
+            worker: Host(script.clone(), None),
+            policy: Mutex::new(original_policy.clone()),
+            selected: Mutex::new(Vec::new()),
+            opened: Mutex::new(Vec::new()),
+            summary: escalated.then_some(summary.clone()),
+        });
+        let driver = ExecutorDriver::new(host.clone());
+        let path = AgentPath::root(&id(1));
+        let child = path.child(&id(7))?;
+        let raw = TurnInput::ApprovalRequested {
+            child: child.clone(),
+            id: intent("action"),
+        };
+        assert!(
+            model_input(&raw).is_err(),
+            "raw child asks reached worker projection"
+        );
+        let frozen = step(
+            &driver,
+            &path,
+            Some(AgentState::adopted(path.clone(), &adopted(id(1)))?),
+            (2, 0),
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::ApprovalRequested(ApprovalRequested {
+                    child,
+                    id: intent("action"),
+                }),
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert!(
+            host.selected.lock().unwrap().is_empty(),
+            "review ran before the source cut committed"
+        );
+        assert!(host.opened.lock().unwrap().is_empty());
+        *host.policy.lock().unwrap() = file("policy-changed.md")?;
+        let review = step(
+            &driver,
+            &path,
+            Some(frozen.state.clone()),
+            (2, 0),
+            Wake::Alarm,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let replay = step(
+            &driver,
+            &path,
+            Some(frozen.state),
+            (2, 0),
+            Wake::Alarm,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(
+            review.state, replay.state,
+            "recovery changed the original source selection"
+        );
+        assert!(
+            host.selected
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|selected| selected.policy.as_ref() == Some(&original_policy))
+        );
+        assert!(
+            host.opened.lock().unwrap().is_empty(),
+            "control opened worker context"
+        );
+        assert!(script.operations.lock().unwrap().is_empty());
+        assert!(
+            !review
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::Conversation(_)))
+        );
+        if escalated {
+            let mut state = review.state;
+            // Announcement admission and execution are two explicit actor events.
+            for _ in 0..2 {
+                state = step(
+                    &driver,
+                    &path,
+                    Some(state),
+                    (2, 0),
+                    Wake::Alarm,
+                    acyclic_actors::guest::CancellationToken::new(),
+                )
+                .await?
+                .state;
+            }
+            assert_eq!(script.operations.lock().unwrap().len(), 1);
+            assert_eq!(state.conversation_tail, 1);
+            let expected = acyclic_harness_core::model::ModelContent::Part(
+                acyclic_harness_core::model::ModelContentPart::File {
+                    file: summary,
+                    policy: acyclic_harness_core::model::FileProjectionPolicy::BoundedFull,
+                },
+            );
+            assert!(
+                host.opened
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|input| input == &expected)
+            );
+        } else {
+            assert!(review.state.turn.is_none());
+            assert_eq!(review.state.conversation_tail, 0);
+        }
     }
     Ok(())
 }
