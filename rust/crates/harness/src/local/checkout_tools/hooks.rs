@@ -79,7 +79,13 @@ impl CheckoutTools {
                 // different object and refuse every projected-volume hook.
                 let mut environment = self.environment.clone();
                 let grant = match &self.execution_grant {
-                    Some(grant) => Some(grant.clone()),
+                    Some(grant) => {
+                        crate::filesystem::native_process::shell::workspace_environment(
+                            &mounts,
+                            &mut environment,
+                        )?;
+                        Some(grant.clone())
+                    }
                     None => crate::filesystem::native_process::shell::workspace_grant(
                         &mounts,
                         &mut environment,
