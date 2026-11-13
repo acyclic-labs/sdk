@@ -5,6 +5,8 @@ import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import {join, resolve} from 'node:path';
 
+if (process.platform === 'win32') throw Error('Actor capture requires POSIX process-group signals');
+
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const repository = resolve(directory, '../..');
 let active;
@@ -13,8 +15,7 @@ let stopFailure;
 function stopChild(signal) {
   if (!active?.pid || active.exitCode !== null || active.signalCode !== null) return;
   try {
-    if (process.platform === 'win32') active.kill(signal);
-    else process.kill(-active.pid, signal);
+    process.kill(-active.pid, signal);
   } catch (error) {
     if (error.code !== 'ESRCH') stopFailure ??= error;
   }
@@ -29,7 +30,7 @@ function requireUninterrupted() {
 async function cargo(args, cwd, observe = () => {}) {
   requireUninterrupted();
   const child = spawn('cargo', args, {cwd, stdio: ['ignore', 'pipe', 'inherit'],
-    detached: process.platform !== 'win32', windowsHide: true});
+    detached: true, windowsHide: true});
   active = child;
   let launchError;
   const ended = new Promise(accept => {
