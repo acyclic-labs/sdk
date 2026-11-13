@@ -32,7 +32,7 @@ pub struct ContextManifest {
     pub tools: Vec<ToolDefinition>,
 }
 
-/// The shared plans/ and goal-loop conventions, as their JSON source text.
+/// The shared goal-loop convention, as its JSON source text.
 #[doc(hidden)]
 pub const DEFAULT_CONVENTIONS_JSON: &str = include_str!("instructions.json");
 
@@ -43,7 +43,7 @@ impl ContextManifest {
         selected_skills: Vec<String>,
         tools: &ToolRegistry,
     ) -> Result<Self> {
-        let defaults: [&str; 2] = serde_json::from_str(DEFAULT_CONVENTIONS_JSON)
+        let defaults: Vec<&str> = serde_json::from_str(DEFAULT_CONVENTIONS_JSON)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(Self {
             conventions: defaults.into_iter().map(str::to_owned).collect(),

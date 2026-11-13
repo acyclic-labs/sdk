@@ -18,6 +18,70 @@ pub struct SkillMetadata {
     pub source: PinnedContextPath,
 }
 
+/// The model's discovery surface, without storage paths or read grants.
+/// Body locations, original source identity and callable fields stay pinned in the manifest.
+/// `id` identifies the declared name and original source across body versions
+/// and retained paths. Change and removal notices carry the same identifier.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct SkillSummary {
+    /// Opaque source identity, shared with change and removal notices.
+    pub id: String,
+    /// Declared skill name; different sources may declare the same name.
+    pub name: String,
+    /// Frontmatter description.
+    pub description: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SkillSummaryView<'a> {
+    id: SkillId,
+    name: &'a str,
+    description: &'a str,
+}
+
+struct SkillId([u8; 32]);
+
+impl Serialize for SkillId {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(&blake3::Hash::from_bytes(self.0).to_hex())
+    }
+}
+
+pub(super) struct SkillListing<'a> {
+    entries: Vec<SkillSummaryView<'a>>,
+    _custody: acyclic_fs::NativeCustody,
+}
+
+impl<'a> SkillListing<'a> {
+    pub(super) fn new(
+        skills: &'a [SkillMetadata],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut entries = crate::core::reserve_copy_vector(skills.len(), &mut quota)?;
+        for skill in skills {
+            entries.push(skill.summary(quota.work())?);
+        }
+        Ok(Self {
+            entries,
+            _custody: quota.into_custody()?,
+        })
+    }
+}
+
+impl Serialize for SkillListing<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_seq(&self.entries)
+    }
+}
 /// A callable declaration borrowed from the same pinned skill metadata.
 /// Registry admission validates the schema and interprets the runtime; this
 /// projection neither loads a body nor grants execution authority.
@@ -29,6 +93,30 @@ pub struct SkillCallFields<'a> {
 }
 
 impl SkillMetadata {
+    pub(crate) fn summary(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<SkillSummaryView<'_>> {
+        let identity = (&self.name, &self.identity);
+        let bytes = crate::executor::json::json_byte_length(&identity, None, work)?;
+        if let Some(observer) = work.as_deref_mut() {
+            observer.hashed_bytes(
+                bytes
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Invalid("skill identity length overflows".into()))?,
+            )?;
+        }
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"skill:");
+        serde_json::to_writer(&mut hash, &identity)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(SkillSummaryView {
+            id: SkillId(*hash.finalize().as_bytes()),
+            name: &self.name,
+            description: &self.description,
+        })
+    }
+
     /// Projects paired callable fields without copying or reading the skill body.
     /// Skills with neither field remain ordinary instruction skills.
     pub fn call_fields(
@@ -303,7 +391,7 @@ pub async fn discover_skills_at(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn skill_text_native(
-    skills: &[SkillMetadata],
+    listing: &SkillListing<'_>,
     size: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(String, acyclic_fs::NativeAllocation)> {
@@ -321,7 +409,7 @@ pub(super) fn skill_text_native(
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
     let bytes = match crate::executor::json::json_bytes_bounded(
-        &skills,
+        listing,
         bounds,
         Some(crate::wire::ErrorCode::Invalid),
         &mut |charge| observer.codec_charge(charge),

@@ -3003,7 +3003,8 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
     // Count the original native provider boundary, including the real command
-    // admission. A settlement must add only its one actor observation.
+    // admission. A settlement must add only its original actor and accepted
+    // inbox-cut observation, with no reread of its derived stream tails.
     struct HeadReads(Arc<AtomicUsize>);
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for HeadReads {
         fn on_new_span(
@@ -3101,7 +3102,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             (input, after) = (selected, next);
         }
     }
-    let catalog = |index| -> Result<Vec<crate::context::SkillMetadata>> {
+    let catalog = |index| -> Result<Vec<crate::context::SkillSummary>> {
         let request = provider
             .request(index)
             .ok_or_else(|| Error::NotFound("context request".into()))?;
@@ -3126,7 +3127,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                     )
             })
             .find_map(|text| {
-                serde_json::from_str::<Vec<crate::context::SkillMetadata>>(text)
+                serde_json::from_str::<Vec<crate::context::SkillSummary>>(text)
                     .ok()
                     .filter(|skills| !skills.is_empty())
             })
@@ -3178,17 +3179,21 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     else {
         return Err(Error::Invalid("spawn did not return its child".into()));
     };
-    let settlement = settled(&harness, &child).await.map(|_| ());
-    if let Err(error) = settlement {
-        return Err(Error::Conflict(format!(
-            "child write did not settle: {error}; model_requests={}; child_state={:?}",
-            provider.request_count(),
-            agents.state(&child).await,
-        )));
-    }
+    let history = settled(&harness, &child).await?;
+    let entry = ConversationEntry::decode(
+        history
+            .last()
+            .ok_or_else(|| Error::NotFound("child task completion".into()))?,
+    )
+    .map_err(agent)?;
+    assert_eq!(
+        entry.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "child task must complete before inspecting its catalog and writes"
+    );
+    let child_state = agents.state(&child).await.map_err(agent)?;
     assert_eq!(provider.request_count(), 2);
     let child_file = publication(&connection, &child, 0).await?;
-    let child_state = agents.state(&child).await.map_err(agent)?;
     let child_project = child_state
         .volumes
         .iter()
@@ -3205,33 +3210,25 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .volume()?;
     assert_ne!(child_scratch, &harness.scratch);
     let child_skills = catalog(0)?;
-    let project_skill = child_skills
+    let child_project_skill = child_skills
         .iter()
         .find(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == child_project
+            skill.name == "context-checkpoint" && skill.description == "Project-specific context"
         })
         .ok_or_else(|| Error::NotFound("child project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, child_project);
+    let child_seed_skill = child_skills
+        .iter()
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description != "Project-specific context"
+        })
+        .ok_or_else(|| Error::NotFound("child seed skill".into()))?;
+    assert_ne!(child_project_skill.id, child_seed_skill.id);
     assert_eq!(
         child_skills
             .iter()
             .filter(|skill| skill.name == "context-checkpoint")
             .count(),
-        2,
-        "configured and built-in sources remain separate pinned entries",
-    );
-    // Built-in skills are read in place from the one shared seed volume.
-    let seed = &harness.seed.0;
-    assert!(
-        child_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
-        })
-    );
-    assert!(
-        child_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
+        2
     );
 
     let mut parent = ObservedConversation::open(&harness).await?;
@@ -3245,22 +3242,20 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_eq!(parent_file.volume(), &project);
     // The second agent must not reuse the first agent's cached private pins.
     let parent_skills = catalog(2)?;
-    let project_skill = parent_skills
+    let parent_project_skill = parent_skills
         .iter()
-        .find(|skill| skill.name == "context-checkpoint" && skill.source.root.volume == project)
-        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, &project);
-    assert!(
-        parent_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description == "Project-specific context"
         })
-    );
-    assert!(
-        parent_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
-    );
+        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
+    let parent_seed_skill = parent_skills
+        .iter()
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description != "Project-specific context"
+        })
+        .ok_or_else(|| Error::NotFound("parent seed skill".into()))?;
+    assert_eq!(parent_seed_skill.id, child_seed_skill.id);
+    assert_ne!(parent_project_skill.id, child_project_skill.id);
     // Project skills differ: the child reads its own forked project.
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
@@ -3298,11 +3293,11 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         connection.execute(&AgentCommand::Root {}).await?;
         let admission_heads = head_reads.load(Ordering::Relaxed) - before;
         let before = head_reads.load(Ordering::Relaxed);
-        let state = agents.state(owner).await.map_err(agent)?;
+        let (state, settlement) = agents.settlement_snapshot(owner).await.map_err(agent)?;
         let state_heads = head_reads.load(Ordering::Relaxed) - before;
         assert!(
             state_heads > 0,
-            "native checkpoint observation was not counted"
+            "native settlement observation was not counted"
         );
         let before = head_reads.load(Ordering::Relaxed);
         let observed = connection
@@ -3313,7 +3308,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .await?;
         let observed_heads = head_reads.load(Ordering::Relaxed) - before;
         eprintln!(
-            "settlement head reads: admission={admission_heads}, checkpoint={state_heads}, observed={observed_heads}"
+            "settlement head reads: admission={admission_heads}, snapshot={state_heads}, observed={observed_heads}"
         );
         assert_eq!(
             observed_heads,
@@ -3331,7 +3326,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         };
         assert_eq!(
             (settled, statuses, phase),
-            (state.conversation_tail, state.status_tail, state.phase),
+            (state.conversation_tail, state.status_tail, settlement.phase),
             "settlement mixed committed actor cuts"
         );
         if owner == &root {

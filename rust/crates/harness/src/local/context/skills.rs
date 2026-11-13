@@ -19,7 +19,12 @@ pub(in crate::local) fn cache() -> Cache {
 pub(super) use crate::context::PROJECT_SKILL_ROOTS as PROJECT_ROOTS;
 
 impl LocalHarness {
-    pub(in crate::local) async fn skills_with_work(
+    /// Capture the host's pinned skill metadata without loading bodies.
+    /// Storage paths are host references, not addresses for model file tools.
+    ///
+    /// # Errors
+    /// Returns original discovery, authority or work-accounting failures.
+    pub async fn skills_with_work(
         &self,
         generation: Option<&crate::resources::GenerationRef>,
         work: &mut DiscoveryWork,
