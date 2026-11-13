@@ -98,9 +98,7 @@ impl<'io> StockExecution<'io> {
                         return Ok(ToolInvocationOutcome::Interrupted);
                     }
                     Err(error) => return Err(error),
-                    Ok(Err(error))
-                        if error.is_tool_failure() && !error.leaves_effect_uncertain() =>
-                    {
+                    Ok(Err(error)) if error.settles_tool_call() => {
                         return self
                             .reject_tool_call(
                                 journal,
@@ -255,7 +253,7 @@ impl<'io> StockExecution<'io> {
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
-            Err(error) if error.leaves_effect_uncertain() || !error.is_tool_failure() => {
+            Err(error) if !error.settles_tool_call() => {
                 tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
                 return Err(error);
             }
