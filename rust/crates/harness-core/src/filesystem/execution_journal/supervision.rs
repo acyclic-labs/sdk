@@ -48,7 +48,7 @@ impl Serialize for Arguments<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        // A shell's normalized program defines repetition. Capture and
+        // A shell's exact program bytes define repetition. Capture and
         // scheduling options cannot turn the same check into another check.
         match self.command {
             Some(command) => serializer.serialize_str(command),
@@ -276,20 +276,13 @@ where
                     .and_then(serde_json::Value::as_str)
             })
             .flatten();
-        let _normalization_hold = command
-            .map(|command| {
-                io.map(|io| io.reserve_decode(command.len() as u64))
-                    .transpose()
-            })
-            .transpose()?;
-        let normalized = command.map(crate::supervision::normalize_command);
         let _signature_hold;
         let signature = encode(
             &InvocationSignature {
                 name: &invocation.name,
                 arguments: Arguments {
                     value: &invocation.arguments,
-                    command: normalized.as_deref(),
+                    command,
                 },
             },
             io,
@@ -298,9 +291,7 @@ where
         let signature = std::str::from_utf8(&signature)
             .map_err(|_| Error::Invalid("tool signature is not UTF-8".into()))?;
         if matches!(event, ExecutionEvent::ToolStarted { .. }) {
-            let check = normalized
-                .as_ref()
-                .is_some_and(|command| policy.validation_commands.contains(command));
+            let check = command.is_some_and(|command| policy.validation_commands.contains(command));
             if !check && policy.quiet_ms.is_none() {
                 return Ok(None);
             }
