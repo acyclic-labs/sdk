@@ -31,7 +31,7 @@ mod error_code_tests {
                 assert_eq!(decoded, category);
                 assert!(decoded.source().is_none());
             }
-            #[cfg(feature = "grpc")]
+            #[cfg(not(target_arch = "wasm32"))]
             {
                 let encoded = tonic::Status::from(&cloned);
                 let canonical = tonic::Status::from(&category);

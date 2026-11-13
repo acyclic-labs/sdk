@@ -226,7 +226,7 @@ fn object_code(error: &ObjectStoreError) -> Code {
 
 fn stream_code(error: &acyclic_stream::StreamError) -> Code {
     use acyclic_stream::StreamError as E;
-    match error.category() {
+    match error {
         E::Caused(failure) => stream_code(failure.classification()),
         E::InvalidPath | E::InvalidArgument | E::LimitExceeded => Code::InvalidArgument,
         E::NotFound => Code::NotFound,
@@ -238,7 +238,8 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
         E::OutOfRange => Code::OutOfRange,
         E::Capacity => Code::ResourceExhausted,
         E::AccessDenied => Code::PermissionDenied,
-        E::Unavailable | E::Refused(_) => Code::Unavailable,
+        E::Unavailable => Code::Unavailable,
+        E::Refused(_) => stream_code(&error.category()),
         E::Caused(source) => stream_code(source.classification()),
         E::DeadlineElapsed => Code::DeadlineExceeded,
         E::Unsupported => Code::Unimplemented,
