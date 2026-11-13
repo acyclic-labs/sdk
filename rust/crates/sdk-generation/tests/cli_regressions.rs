@@ -25,7 +25,7 @@ fn fixture_directory() -> Arc<tempfile::TempDir> {
 
 fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    format!("sha256:{digest:x}")
+    format!("sha256:{}", hex::encode(digest))
 }
 
 fn hash_file(path: &Path) -> String {

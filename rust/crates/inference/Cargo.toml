@@ -29,7 +29,7 @@ sha2.workspace = true
 prost-reflect = { workspace = true, features = ["serde"], optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
-tonic = { workspace = true, optional = true }
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"], optional = true }
 tonic-prost = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }

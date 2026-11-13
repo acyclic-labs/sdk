@@ -30,7 +30,7 @@ proptest::proptest! {
             native.update(chunk);
             reference.update(chunk);
         }
-        let expected = format!("{:x}", reference.finalize());
+        let expected = hex::encode(reference.finalize());
         let one_shot = sha256_hex(&bytes);
         proptest::prop_assert_eq!(one_shot.as_str(), expected.as_str());
         let digest = native.finish();

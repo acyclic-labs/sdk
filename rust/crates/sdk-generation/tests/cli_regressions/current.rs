@@ -495,8 +495,10 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
             format!(
-                "profile-{:x}.json",
-                Sha256::digest(receipt["profile"].as_str().unwrap().as_bytes())
+                "profile-{}.json",
+                hex::encode(Sha256::digest(
+                    receipt["profile"].as_str().unwrap().as_bytes()
+                ))
             )
         );
         assert!(path.file_name().unwrap().to_string_lossy().len() < 255);

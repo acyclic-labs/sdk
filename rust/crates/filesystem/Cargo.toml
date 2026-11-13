@@ -136,7 +136,7 @@ cap-primitives = "4.0.3"
 cap-fs-ext = "4.0.2"
 cap-std = "4.0.3"
 tokio = { workspace = true, features = ["rt", "sync"] }
-tonic.workspace = true
+tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 tonic-prost.workspace = true
 serde_urlencoded = { workspace = true }
 s3s = { workspace = true }
@@ -196,7 +196,7 @@ tower = { workspace = true, features = ["util"] }
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
-getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 
 [lints]
 workspace = true

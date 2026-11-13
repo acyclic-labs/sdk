@@ -530,7 +530,7 @@ fn concurrent_publications_preserve_both_entries_and_index_hashes() {
     );
     for entry in &index.release_candidates {
         let bytes = fs::read(output.join(&entry.data_file)).expect("bundle should exist");
-        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), entry.data_sha256);
+        assert_eq!(hex::encode(Sha256::digest(&bytes)), entry.data_sha256);
     }
     // Reusing canonical schema bytes must not trust mutable external sidecars.
     let schema = DocsSchema::new().unwrap();
