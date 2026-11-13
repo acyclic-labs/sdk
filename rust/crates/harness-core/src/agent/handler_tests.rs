@@ -81,6 +81,254 @@ impl acyclic_stream::StreamProvider for ReplayCapacity {
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::NativeStreamProvider for ReplayCapacity {}
 
+struct Waiting;
+
+impl TurnDriver for Waiting {
+    fn step<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: u64,
+        _: Option<Queued>,
+        _: CancellationToken,
+    ) -> TurnFuture<'a> {
+        Box::pin(async {
+            Ok(TurnStep {
+                checkpoint: None,
+                wait: Wait::User("private-input-path".into()),
+                drops: None,
+                outs: Vec::new(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn public_metadata_changes_share_the_original_actor_commit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::agent::{
+        AgentHost, Routing, SessionPhase, SessionPublication, SessionRow, WorkspaceChanged,
+        WorkspaceEntry, WorkspaceKind, WorkspaceOp, WorkspaceRole, WorkspaceSource,
+    };
+    use acyclic_actors::{
+        local::SystemClock,
+        route::{NodeId, Paths},
+    };
+    use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest, StreamPath};
+
+    for publish in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let routing = Routing {
+            node: NodeId::new(b"node")?,
+            paths: Paths::new(StreamPath::new("account/routing")?),
+        };
+        let handler = AgentHandler::new(
+            crate::agent::actor_store(&provider)?,
+            Waiting,
+            ActorLimits::default(),
+        )?;
+        // Negative control runs the same real actor without the metadata publisher:
+        // its checkpoint changes, demonstrating the stale directory being prevented.
+        let handler = if publish {
+            handler.with_routing(routing.clone())
+        } else {
+            handler
+        };
+        let host = AgentHost::hosting(
+            provider.clone(),
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            Arc::new(handler),
+            Arc::new(SystemClock),
+            None,
+        )?
+        .with_root_placement(Some(routing));
+        let id = AgentId::from_bytes([9; 16]);
+        let storage = crate::filesystem::MemoryHarnessStorage::new(
+            crate::AgentId::from_bytes(id.to_bytes()),
+            crate::conversation::Limits::default().file_bytes,
+        )
+        .await?;
+        let body = storage
+            .stage(
+                crate::OperationId::new(),
+                "body",
+                b"input",
+                "text/plain",
+                "input",
+            )
+            .await?;
+        let mut hidden = WorkspaceEntry::initial_volume(
+            WorkspaceRole::Tree,
+            "hierarchy".into(),
+            body.volume().clone(),
+        );
+        hidden.kind = WorkspaceKind::Tree;
+        hidden.source = WorkspaceSource::Subtree(AgentPath::root(&id));
+        let user = WorkspaceEntry::initial_volume(
+            WorkspaceRole::User,
+            "project".into(),
+            body.volume().clone(),
+        );
+        let root = host
+            .create(
+                &"create".try_into()?,
+                ForkAdopted {
+                    agent: id,
+                    parent: None,
+                    profile: None,
+                    forked_at: 0,
+                    conversation_tail: 0,
+                    checkpoint: None,
+                    volumes: vec![hidden.clone(), user.clone()],
+                    brief: None,
+                    policy: None,
+                },
+            )
+            .await?;
+        host.drain(&root).await?;
+        let row_path = SessionPublication::row_path(&host.actor(&root)?)?;
+        let initial_tail = provider.tail(row_path.clone()).await?;
+        for (index, mut entry) in [hidden, user].into_iter().enumerate() {
+            let op = if index == 0 {
+                let previous = entry.id;
+                entry.id = crate::contract::EntryId::from_bytes([10; 16]);
+                entry.source =
+                    WorkspaceSource::Subtree(AgentPath::root(&AgentId::from_bytes([10; 16])));
+                WorkspaceOp::Rebind { previous }
+            } else {
+                entry.name = "projectchanged".into();
+                WorkspaceOp::Rename
+            };
+            let record = InboxRecord::WorkspaceChanged(Box::new(WorkspaceChanged {
+                version: 1,
+                op,
+                entry: entry.clone(),
+            }));
+            host.deliver(
+                &root,
+                CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: crate::agent::intent_key("rename", &[&index.to_string()])?,
+                    effects: vec![CommitEffect::hard(
+                        vec![CommitCondition::Present {
+                            path: root.inbox()?,
+                        }],
+                        vec![CommitMutation::Append {
+                            path: root.inbox()?,
+                            records: vec![record.encode()?.into()],
+                        }],
+                    )],
+                },
+            )
+            .await?;
+            host.drain(&root).await?;
+            let row = provider.head(row_path.clone()).await?;
+            assert_eq!(
+                row.tail,
+                initial_tail + u64::from(publish && index == 1),
+                "nonpublic changes publish no row"
+            );
+            if index == 1 && publish {
+                let record = row.last.ok_or("row missing")?;
+                let profile = SessionRow::decode(&record.value)?
+                    .profile
+                    .ok_or("profile missing")?;
+                assert_eq!(profile.workspaces, vec![entry]);
+                let state = provider
+                    .head(crate::agent::actor_store(&provider)?.path(&host.actor(&root)?)?)
+                    .await?;
+                assert_eq!(
+                    record.commit_id,
+                    state.last.ok_or("checkpoint missing")?.commit_id
+                );
+            }
+        }
+        host.send(
+            &root,
+            &Sender::User {
+                principal: "owner".into(),
+            },
+            &InboxRecord::Message(Message {
+                from: Sender::User {
+                    principal: "owner".into(),
+                },
+                id: "input".try_into()?,
+                body: Box::new(body.clone()),
+                re: None,
+                attachments: None,
+            }),
+        )
+        .await?;
+        host.drain(&root).await?;
+        let row = provider.head(row_path).await?.last.ok_or("row missing")?;
+        let profile = SessionRow::decode(&row.value)?
+            .profile
+            .ok_or("profile missing")?;
+        assert_eq!(
+            profile.phase,
+            if publish {
+                SessionPhase::WaitingUser
+            } else {
+                SessionPhase::Idle
+            }
+        );
+        assert!(!std::str::from_utf8(&row.value)?.contains("private-input-path"));
+        let state = provider
+            .head(crate::agent::actor_store(&provider)?.path(&host.actor(&root)?)?)
+            .await?;
+        assert_eq!(
+            row.commit_id == state.last.ok_or("checkpoint missing")?.commit_id,
+            publish
+        );
+        // Negative control: the original checkpoint retains the private binding
+        // whose omission from the independently persisted public row is required.
+        assert!(
+            matches!(host.state(&root).await?.phase, crate::agent::Phase::WaitingUser { path } if path == "private-input-path")
+        );
+        host.set_peer_membership(
+            &root,
+            &Sender::User {
+                principal: "owner".into(),
+            },
+            &"off".try_into()?,
+            false,
+        )
+        .await?;
+        let removed = provider
+            .head(SessionPublication::row_path(&host.actor(&root)?)?)
+            .await?;
+        host.send(
+            &root,
+            &Sender::User {
+                principal: "owner".into(),
+            },
+            &InboxRecord::Message(Message {
+                from: Sender::User {
+                    principal: "owner".into(),
+                },
+                id: "later-input".try_into()?,
+                body: Box::new(body),
+                re: None,
+                attachments: None,
+            }),
+        )
+        .await?;
+        host.drain(&root).await?;
+        let after = provider
+            .head(SessionPublication::row_path(&host.actor(&root)?)?)
+            .await?;
+        assert_eq!(
+            after.tail, removed.tail,
+            "phase updates cannot republish an opted-out root"
+        );
+        assert!(
+            SessionRow::decode(&after.last.ok_or("removal missing")?.value)?
+                .profile
+                .is_none()
+        );
+    }
+    Ok(())
+}
+
 struct Opening(Mutex<Option<oneshot::Sender<u64>>>);
 
 struct AdmissionWait {

@@ -799,6 +799,14 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         }
         let was_open = saved.as_ref().is_none_or(|state| !state.closed);
         let previously_steered = saved.as_ref().map_or(0, |state| state.steered_through);
+        let previous_phase = saved
+            .as_ref()
+            .map(|state| super::SessionPhase::from(&state.phase));
+        let workspace_changed = matches!(
+            &wake,
+            Wake::Inbox { record: InboxRecord::WorkspaceChanged(change), .. }
+                if change.entry.role == super::WorkspaceRole::User
+        );
         let mut state = saved;
         if let Some(state) = state.as_mut().filter(|_| failure.is_none()) {
             // Overflowed input precedes this delivery; read it back first.
@@ -926,6 +934,43 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             Some(routing) => routing.lower(&delivery.actor, &remote, step, cursor, key)?,
             None => lower(step, cursor, key)?,
         };
+        if path.depth() == 0
+            && let Some(routing) = &self.agents.routing
+            && (workspace_changed || previous_phase != Some((&step.state.phase).into()))
+        {
+            let (row, guard) = super::SessionPublication::observe(
+                self.agents.store.provider().as_ref(),
+                &delivery.actor,
+                &routing.node,
+            )
+            .await?;
+            // Even an absent or removed row fences a concurrent rejoin, whose
+            // public metadata must reflect either this checkpoint or its predecessor.
+            request
+                .effects
+                .push(CommitEffect::hard(vec![guard], Vec::new()));
+            if let Some(row) = row
+                && let Some(profile) = &row.profile
+            {
+                let profile = super::SessionProfile::project(
+                    &step.state.phase,
+                    profile.title.clone(),
+                    &step.state.volumes,
+                    &profile.goal_preview,
+                    profile.goal_preview.len(),
+                );
+                if let Some(row) = row.changed(Some(profile))? {
+                    request.effects.extend(
+                        super::SessionPublication {
+                            actor: delivery.actor.clone(),
+                            row,
+                            intent: request.idempotency_key.clone(),
+                        }
+                        .effects(&routing.paths)?,
+                    );
+                }
+            }
+        }
         let retired = step.state.turn.as_ref().and_then(|turn| {
             step.outs.iter().find_map(|out| match out {
                 Out::Steered(through) => Some(super::BoundaryCut {
