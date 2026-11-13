@@ -236,12 +236,14 @@ pub(in crate::bindings) fn browser_transaction_rebase<A, O>(
     outcome: TransactionRebase<A, O>,
 ) -> BrowserTransactionRebase {
     match outcome {
-        TransactionRebase::Rebased(generation) => BrowserTransactionRebase {
-            status: BrowserTransactionRebaseStatus::Rebased,
-            generation_id: Some(generation.id().to_bytes().to_vec().into()),
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        TransactionRebase::Rebased(generation) | TransactionRebase::Current(generation) => {
+            BrowserTransactionRebase {
+                status: BrowserTransactionRebaseStatus::Rebased,
+                generation_id: Some(generation.id().to_bytes().to_vec().into()),
+                conflicts: Vec::new(),
+                truncated: false,
+            }
+        }
         TransactionRebase::Conflicted {
             conflicts,
             truncated,

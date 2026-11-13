@@ -325,7 +325,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .map_err(|failure| map_error(failure.error))?
                         {
                             acyclic_fs::TransactionRebase::Rebased(_) => continue,
-                            acyclic_fs::TransactionRebase::Conflicted { .. } => {
+                            acyclic_fs::TransactionRebase::Current(_)
+                            | acyclic_fs::TransactionRebase::Conflicted { .. } => {
                                 Err(Error::Conflict("workspace generation changed".into()))
                             }
                         }

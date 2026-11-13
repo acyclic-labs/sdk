@@ -181,12 +181,14 @@ pub(in crate::bindings) fn native_transaction_rebase(
     outcome: TransactionRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeTransactionRebaseResult {
     match outcome {
-        TransactionRebase::Rebased(generation) => NativeTransactionRebaseResult {
-            status: "rebased".to_owned(),
-            generation_id: Some(Buffer::from(generation.id().to_bytes().to_vec())),
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        TransactionRebase::Rebased(generation) | TransactionRebase::Current(generation) => {
+            NativeTransactionRebaseResult {
+                status: "rebased".to_owned(),
+                generation_id: Some(Buffer::from(generation.id().to_bytes().to_vec())),
+                conflicts: Vec::new(),
+                truncated: false,
+            }
+        }
         TransactionRebase::Conflicted {
             conflicts,
             truncated,

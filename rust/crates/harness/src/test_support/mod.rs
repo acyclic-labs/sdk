@@ -298,7 +298,7 @@ pub async fn prompt_settled(
                     phase = Some(status.phase);
                     break;
                 }
-                Event::Turn(_) => break,
+                Event::Turn { .. } => break,
                 Event::Delta => {}
             }
         }

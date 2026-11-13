@@ -12,7 +12,9 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         },
     );
     journal.8 = Some(issuer.verifier(&mut None)?);
-    let (provider, _) = counted_model(65_536, None, [], []);
+    // Compaction admits input up to the whole window; the prior history
+    // below (about 52k synthetic tokens) overflows this one.
+    let (provider, _) = counted_model(49_152, None, [], []);
     let instruction = ModelContent::Text("fresh stage instruction".into());
     let stage = crate::context::Context {
         messages: vec![ModelMessage {

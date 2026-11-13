@@ -4,7 +4,7 @@ use super::*;
 enum Dispatch {
     Model,
     Tool,
-    InterleaveStage,
+    InterleaveClaim,
 }
 
 struct BarrierJournal(Journal, Dispatch, AtomicUsize);
@@ -79,7 +79,16 @@ impl ExecutionJournal for BarrierJournal {
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
-        self.0.append_if_tail(operation, tail, key, event, io)
+        // Yield between the writer's tail observation and its conditional
+        // append, the one window a second writer can race.
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if matches!(self.1, Dispatch::InterleaveClaim) {
+                tokio::task::yield_now().await;
+            }
+            self.0
+                .append_if_tail(operation, tail, key, event, io)?
+                .await
+        })
     }
     fn stage<'a>(
         &'a self,
@@ -89,12 +98,7 @@ impl ExecutionJournal for BarrierJournal {
         media: &'static str,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            if matches!(self.1, Dispatch::InterleaveStage) {
-                tokio::task::yield_now().await;
-            }
-            self.0.stage(operation, key, bytes, media, io)?.await
-        })
+        self.0.stage(operation, key, bytes, media, io)
     }
     fn load<'a>(
         &'a self,
@@ -131,7 +135,7 @@ async fn concurrent_summary_and_response_preserve_both_dispatch_claims() -> Resu
     for shared in [true, false] {
         let journal = BarrierJournal(
             Journal::default(),
-            Dispatch::InterleaveStage,
+            Dispatch::InterleaveClaim,
             AtomicUsize::new(0),
         );
         let provider = Arc::new(ScriptedModelProvider::new([

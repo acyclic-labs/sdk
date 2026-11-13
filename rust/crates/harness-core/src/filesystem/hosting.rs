@@ -1172,6 +1172,52 @@ where
         .await
     }
 
+    /// The bytes of text staged by [`Self::stage_text`], read under the host's
+    /// journal custody. A staged input is host-private until a committed
+    /// record names it, so host-internal assembly reads it here rather than
+    /// through the agent's own reader. Reads at most `maximum` bytes.
+    ///
+    /// # Errors
+    /// As [`Self::staged_text`], or when the staged file exceeds `maximum`.
+    pub async fn staged_text_bytes(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+        source: &str,
+        maximum: u64,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let Some(file) = self.staged_text(agent, kind, by, intent, source).await? else {
+            return Ok(None);
+        };
+        let length = file.descriptor().byte_length();
+        if length > maximum {
+            return Err(Error::Record("a staged input exceeds its bound"));
+        }
+        let state = self.agents.state(agent).await?;
+        let (_, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
+        let reader = super::FilesystemContentVerifier::new(
+            Arc::clone(&self.volumes),
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)?;
+        let bytes = crate::conversation::ContentResidencyVerifier::read_range(
+            &*reader,
+            &file,
+            acyclic_fs::ByteRange { offset: 0, length },
+            None,
+            None,
+        )
+        .map_err(turn)?
+        .await
+        .map_err(turn)?;
+        Ok(Some(bytes.to_vec()))
+    }
+
     /// Stages ordered text and immutable file references through the same
     /// sender/intent publication as text input. Every reference must already
     /// be readable under this agent's admission; input cannot grant access.

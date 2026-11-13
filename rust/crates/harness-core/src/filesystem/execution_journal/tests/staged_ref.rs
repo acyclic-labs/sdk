@@ -44,9 +44,11 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
     );
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
+    // The journal is host custody: its writer always holds the host role.
+    let custody = crate::contract::capability::HARNESS_HOST.to_owned();
     let scope = issuer.bootstrap_scope(
         "owner",
-        &crate::Capabilities::new([read, write.clone()]),
+        &crate::Capabilities::new([read, write.clone(), custody.clone()]),
         Some(agent),
         &mut None,
     )?;
@@ -85,7 +87,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
     }
     journal.scope = issuer.bootstrap_scope(
         "writer",
-        &crate::Capabilities::new([write]),
+        &crate::Capabilities::new([write, custody.clone()]),
         Some(agent),
         &mut None,
     )?;
@@ -142,6 +144,7 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             "projection",
             &crate::Capabilities::new([
                 volume.capability(VolumeOperation::Read, &mut None)?,
+                custody.clone(),
                 capability
                     .to_scope_label()
                     .map_err(|error| Error::Invalid(error.to_string()))?,

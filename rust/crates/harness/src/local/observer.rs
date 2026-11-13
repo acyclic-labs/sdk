@@ -21,8 +21,14 @@ pub enum Event {
     /// The agent's phase after a transition, with its consumed inbox cursor.
     Status(StatusRecord),
     /// One settled turn's conversation entry, at the inbox sequence of the
-    /// record that started it.
-    Turn(ConversationEntry),
+    /// record that started it. `sequence` is its committed conversation
+    /// sequence, the proof [`super::Conversation::turn`] reads its prompt with.
+    Turn {
+        /// Committed conversation sequence of `entry`.
+        sequence: u64,
+        /// The settled entry.
+        entry: ConversationEntry,
+    },
     /// A delta of live text was announced in the agent's `tools/` records:
     /// tool output, or a model dispatch's answer or reasoning while it
     /// streams. [`Observer::absorb`] reads it into [`Observer::live`]; a
@@ -207,7 +213,7 @@ impl Observer {
             } => {
                 self.next_turn = sequence + 1;
                 self.reset_output()?;
-                Some(Event::Turn(entry))
+                Some(Event::Turn { sequence, entry })
             }
             AgentEvent::Resource { .. } => Some(Event::Delta),
             AgentEvent::Progress => None,
