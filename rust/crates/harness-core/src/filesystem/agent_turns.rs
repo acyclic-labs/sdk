@@ -650,6 +650,7 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
     actor_root: Option<acyclic_stream::StreamPath>,
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
@@ -746,6 +747,7 @@ where
             stream,
             within,
             actor_root: None,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
             issuer,
             templates,
@@ -759,6 +761,13 @@ where
             #[cfg(feature = "test-support")]
             binding_fault: None,
         }
+    }
+
+    /// Share the scheduler's original clock with journal deadline admission.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Injects a deterministic failure before a turn binds or reads content.
@@ -1179,7 +1188,8 @@ where
                 io: None,
             },
         )?
-        .with_input_verifier(reader.clone());
+        .with_input_verifier(reader.clone())
+        .with_clock(self.clock.clone());
         let internal = self.internal_files(
             &storage.volume,
             private.volume()?,

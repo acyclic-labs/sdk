@@ -186,6 +186,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([81; 16]));
         let policy = Policy {
             validation_commands: ["check unit".to_owned()].into_iter().collect(),
+            quiet_ms: Some(10),
             ..Default::default()
         };
         let goal = "Check the project";
@@ -199,7 +200,9 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
             crate::executor::stage_json(&journal, run, "policy", &policy, None).await?;
         let admission =
             crate::executor::stage_json(&journal, run, "admission", &declaration, None).await?;
+        let (clock, _time) = acyclic_actors::local::ControlledClock::new(100);
         let mut journal = journal
+            .with_clock(Arc::new(clock))
             .with_run_admission(Some(RunAdmissionSource {
                 admission,
                 goal,
@@ -279,6 +282,30 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?
                 .await?;
+            // The original ToolStarted producer, not a hand-authored jobs
+            // record, must retain the scheduler's configured clock domain.
+            let mut jobs = stream
+                .read(acyclic_stream::ReadRequest {
+                    path: crate::supervision::tool_jobs::path(&agent)?,
+                    from: index as u64,
+                    limit: 1,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let job = futures::TryStreamExt::try_next(&mut jobs)
+                .await?
+                .ok_or_else(|| Error::Invalid("original quiet start missing".into()))?;
+            let job: crate::supervision::tool_jobs::Record = serde_json::from_slice(&job.value)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(matches!(
+                job.event,
+                crate::supervision::tool_jobs::Event::Started {
+                    at_ms: 100,
+                    quiet_ms: 10,
+                    ..
+                }
+            ));
             // Exact original replay is one admission, even after its decision.
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?

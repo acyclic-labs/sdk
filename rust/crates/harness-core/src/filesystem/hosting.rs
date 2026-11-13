@@ -459,6 +459,7 @@ where
             turns.limits,
             turns.approval_policy,
         )
+        .with_clock(turns.clock.clone())
         .with_actor_store(crate::agent::actor_store(&stream)?.root().clone())
         .with_filesystem_tools();
         let turner = Arc::new(configure(turner));
