@@ -394,6 +394,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
         Controlled(starting),
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?);
+    let host_handler = handler.clone();
     let interrupt_handler = handler.clone();
     let remote = wire::Remote::new(
         wire::decode_manifest(&wire::encode_manifest(handler.manifest()))?,
@@ -416,7 +417,11 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
         acyclic_actors::guest::Requests::default(),
         provider.clone(),
         ActorReference::new(b"account", b"agents", b"owner")?,
-        Arc::new(remote),
+        Arc::new(acyclic_actors::guest::HostedHandler::new(
+            host_handler,
+            Arc::new(remote),
+            |_| false,
+        )),
         Arc::new(SystemClock),
         None,
     )?;
