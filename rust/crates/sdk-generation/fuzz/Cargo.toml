@@ -12,6 +12,7 @@ workspace = true
 cargo-fuzz = true
 
 [dependencies]
+hex.workspace = true
 flate2 = "1"
 tar = "0.4"
 libfuzzer-sys = "0.4"
