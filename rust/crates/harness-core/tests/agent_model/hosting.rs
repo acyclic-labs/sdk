@@ -210,6 +210,38 @@ fn root(agent: AgentId, fresh: Vec<WorkspaceEntry>) -> RootRequest {
     }
 }
 
+// Pending inbox envelopes are host-owned journal content, not published client
+// output. Inspect the original reference under the fixture owner's authority.
+async fn read_host_input(
+    bound: &Bound<MemoryStream, Objects>,
+    issuer: &AuthorityRoot,
+    agent: &AgentPath,
+    file: &acyclic_harness_core::conversation::FileRef,
+) -> Result<Vec<u8>> {
+    use acyclic_harness_core::conversation::{ContentResidencyVerifier, VolumeOperation};
+    let journal = acyclic_harness_core::conversation::journal_volume(provider()?, &agent.id())?;
+    let scope = issuer.bootstrap_scope(
+        "control-input",
+        &acyclic_harness_core::Capabilities::new([
+            journal.capability(VolumeOperation::Read, &mut None)?,
+            acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+        ]),
+        Some(acyclic_harness_core::AgentId::from_bytes(agent.id_bytes())),
+        &mut None,
+    )?;
+    let reader = acyclic_harness_core::filesystem::FilesystemContentVerifier::new(
+        bound.volumes().clone(),
+        &issuer.verifier(&mut None)?,
+        &scope,
+        None,
+        None,
+    )?;
+    Ok(reader
+        .read(file, file.descriptor().byte_length(), None, None)?
+        .await?
+        .to_vec())
+}
+
 /// Drive the real filesystem producer, shared dispatcher and ordinary client
 /// files. Every wait is on the original event or inbox append, never a timer.
 #[tokio::test]
@@ -238,18 +270,15 @@ async fn rejected_steering_cannot_block_owner_pause_or_stop() -> Result {
         (b"healthy steering".to_vec(), false),
     ] {
         let stream = Arc::new(MemoryStream::default());
-        let bound = Bound::local_root(
-            AuthorityRoot::new(
-                "agents",
-                [7; 32],
-                Authority {
-                    kind: AggregateKind::Conversation,
-                    id: "local".into(),
-                },
-            ),
-            placement(&stream)?,
-            turns()?,
-        )?;
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "local".into(),
+            },
+        );
+        let bound = Bound::local_root(issuer.clone(), placement(&stream)?, turns()?)?;
         let private = volume(PRIVATE_VOLUME, id(125))?;
         let RootSubmission::Created(agent) = bound
             .create_root(
@@ -360,7 +389,7 @@ async fn rejected_steering_cannot_block_owner_pause_or_stop() -> Result {
                 let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? else {
                     return Err("corrected steering did not append a message".into());
                 };
-                let (bytes, _) = bound.read_file(&agent, &message.body, 0, 64 * 1024).await?;
+                let bytes = read_host_input(&bound, &issuer, &agent, &message.body).await?;
                 assert_eq!(
                     serde_json::from_slice::<ModelContent>(&bytes)?,
                     ModelContent::Text("corrected steering".into())
@@ -564,7 +593,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                     journal.capability(VolumeOperation::Write, &mut None)?,
                     acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
                 ]),
-                None,
+                Some(acyclic_harness_core::AgentId::from_bytes(agent.id_bytes())),
                 &mut None,
             )?;
             let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
@@ -757,18 +786,15 @@ async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
     let stream = Arc::new(MemoryStream::default());
     let mut options = turns()?;
     options.limits.maximum_bytes = maximum;
-    let bound = Bound::local_root(
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "local".into(),
-            },
-        ),
-        placement(&stream)?,
-        options,
-    )?;
+    let issuer = AuthorityRoot::new(
+        "agents",
+        [7; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "local".into(),
+        },
+    );
+    let bound = Bound::local_root(issuer.clone(), placement(&stream)?, options)?;
     let guest_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let bound = if guest {
         use acyclic_actors::guest::{GuestFuture, wire};
@@ -1058,7 +1084,7 @@ async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
             loop {
                 let record = inbox.try_next().await?.ok_or("inbox producer closed")?;
                 if let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? {
-                    let (bytes, _) = bound.read_file(&agent, &message.body, 0, 64 * 1024).await?;
+                    let bytes = read_host_input(&bound, &issuer, &agent, &message.body).await?;
                     assert_eq!(
                         serde_json::from_slice::<ModelContent>(&bytes)?,
                         ModelContent::Text(delta.into())
@@ -1157,14 +1183,7 @@ async fn file_control_journey(guest: bool, maximum: Option<u64>) -> Result {
             loop {
                 let record = inbox.try_next().await?.ok_or("inbox producer closed")?;
                 if let InboxRecord::Message(message) = InboxRecord::decode(&record.value)? {
-                    let (bytes, _) = bound
-                        .read_file(
-                            &agent,
-                            &message.body,
-                            0,
-                            message.body.descriptor().byte_length(),
-                        )
-                        .await?;
+                    let bytes = read_host_input(&bound, &issuer, &agent, &message.body).await?;
                     assert_eq!(
                         serde_json::from_slice::<ModelContent>(&bytes)?,
                         ModelContent::Text(delta)
