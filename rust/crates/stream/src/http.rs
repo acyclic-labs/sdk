@@ -16,8 +16,21 @@ mod shared;
 
 /// Invalid endpoint, bearer token, CA, or response bound.
 #[derive(Debug, thiserror::Error)]
-#[error("invalid Stream HTTP configuration")]
-pub struct ConnectError;
+#[error("invalid Stream HTTP configuration: {0}")]
+pub struct ConnectError(#[source] Box<dyn std::error::Error + Send + Sync>);
+
+impl ConnectError {
+    fn caused(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self(Box::new(source))
+    }
+
+    fn refused(reason: &'static str) -> Self {
+        Self::caused(acyclic_auth::refusal::Cause::new(
+            "stream.http.configuration",
+            reason,
+        ))
+    }
+}
 
 /// Bounded authenticated HTTP provider. Mutations are never automatically retried.
 #[derive(Clone)]
@@ -68,7 +81,7 @@ impl HttpStream {
         maximum: usize,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
-        let mut endpoint = Url::parse(endpoint).map_err(|_| ConnectError)?;
+        let mut endpoint = Url::parse(endpoint).map_err(ConnectError::caused)?;
         let loopback = endpoint.host_str().is_some_and(|host| {
             host == "localhost"
                 || host
@@ -77,14 +90,20 @@ impl HttpStream {
                     .parse::<IpAddr>()
                     .is_ok_and(|ip| ip.is_loopback())
         });
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-            || maximum == 0
-        {
-            return Err(ConnectError);
+        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback) {
+            return Err(ConnectError::refused("insecure_endpoint"));
+        }
+        if !endpoint.username().is_empty() || endpoint.password().is_some() {
+            return Err(ConnectError::refused("endpoint_credentials"));
+        }
+        if endpoint.query().is_some() {
+            return Err(ConnectError::refused("endpoint_query"));
+        }
+        if endpoint.fragment().is_some() {
+            return Err(ConnectError::refused("endpoint_fragment"));
+        }
+        if maximum == 0 {
+            return Err(ConnectError::refused("zero_response_capacity"));
         }
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
@@ -95,15 +114,15 @@ impl HttpStream {
             .retry(reqwest::retry::never());
         if let Some(ca) = ca {
             if ca.is_empty() {
-                return Err(ConnectError);
+                return Err(ConnectError::refused("empty_ca_certificate"));
             }
             client = client.add_root_certificate(
-                reqwest::Certificate::from_pem(ca).map_err(|_| ConnectError)?,
+                reqwest::Certificate::from_pem(ca).map_err(ConnectError::caused)?,
             );
         }
         let (session_endpoint, session_verifier) = session::session_endpoint(&endpoint, ca)?;
         Ok(Self {
-            client: client.build().map_err(|_| ConnectError)?,
+            client: client.build().map_err(ConnectError::caused)?,
             endpoint,
             authorization,
             credential,
@@ -480,10 +499,10 @@ impl crate::NativeStreamProvider for HttpStream {}
 
 fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
     if !acyclic_auth::credential::valid_credential(token) {
-        return Err(ConnectError);
+        return Err(ConnectError::refused("invalid_credential"));
     }
     let mut value = HeaderValue::from_maybe_shared(acyclic_auth::credential::bearer_bytes(token))
-        .map_err(|_| ConnectError)?;
+        .map_err(ConnectError::caused)?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -563,12 +582,58 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_and_credential_policy_matches_other_families() {
-        for token in ["", " ", "a\r\nb", "a\0b"] {
-            assert!(HttpStream::new("https://example.test", token, 1).is_err());
+    fn configuration_failures_retain_causes_without_credentials() {
+        use std::error::Error as _;
+        fn same_cause_type<E: std::error::Error + 'static>(
+            actual: &(dyn std::error::Error + 'static),
+            _: &E,
+        ) {
+            assert!(actual.is::<E>());
         }
-        for endpoint in ["http://example.test", "https://u@example.test"] {
-            assert!(HttpStream::new(endpoint, "t", 1).is_err());
+        let malformed = "://invalid";
+        let expected = reqwest::Url::parse(malformed).unwrap_err();
+        let error = HttpStream::new(malformed, "t", 1)
+            .err()
+            .expect("invalid URL");
+        same_cause_type(error.source().unwrap(), &expected);
+
+        for token in ["", " ", "a\r\nb", "a\0b", "never-retain-this-credential\n"] {
+            let error = HttpStream::new("https://example.test", token, 1)
+                .err()
+                .expect("invalid credential");
+            let cause = error
+                .source()
+                .unwrap()
+                .downcast_ref::<acyclic_auth::refusal::Cause>()
+                .unwrap();
+            assert_eq!(cause.reason, "invalid_credential");
+            assert!(!format!("{error} {error:?}").contains("never-retain-this-credential"));
+        }
+        for (endpoint, reason) in [
+            ("http://example.test", "insecure_endpoint"),
+            (
+                "https://never-retain-this-credential@example.test",
+                "endpoint_credentials",
+            ),
+            (
+                "https://example.test?key=never-retain-this-credential",
+                "endpoint_query",
+            ),
+            (
+                "https://example.test#never-retain-this-credential",
+                "endpoint_fragment",
+            ),
+        ] {
+            let error = HttpStream::new(endpoint, "t", 1)
+                .err()
+                .expect("endpoint refused");
+            let cause = error
+                .source()
+                .unwrap()
+                .downcast_ref::<acyclic_auth::refusal::Cause>()
+                .unwrap();
+            assert_eq!(cause.reason, reason);
+            assert!(!format!("{error} {error:?}").contains("never-retain-this-credential"));
         }
         for endpoint in ["http://localhost:1", "http://127.0.0.2:1", "http://[::1]:1"] {
             assert!(HttpStream::new(endpoint, &"t".repeat(64 * 1024), 1).is_ok());
