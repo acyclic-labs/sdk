@@ -283,7 +283,8 @@ impl<'v> AdmittedAgent<'v> {
     {
         let content = Capabilities::new(
             retained
-                .into_iter()
+                .iter()
+                .chain(external)
                 .filter(|file| file.volume() != &self.journal)
                 .map(|file| file.read_capability(&mut None))
                 .collect::<Result<Vec<_>>>()?,
