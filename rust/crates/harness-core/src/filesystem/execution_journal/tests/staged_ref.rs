@@ -75,14 +75,50 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             .await?,
         expected
     );
-    let recovered = journal.staged_ref_with_io(operation, key, None).await?;
+    let recovered = (&journal as &dyn ExecutionJournal)
+        .staged_ref(operation, key, None)?
+        .await?
+        .expect("original staged payload");
     assert_eq!(recovered, expected);
     assert_eq!(journal.load(&recovered, None)?.await?.as_ref(), bytes);
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1 << 20, 1 << 20),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let funded = (&journal as &dyn ExecutionJournal)
+        .staged_ref(operation, key, Some(&io))?
+        .await?;
+    assert_eq!(funded.as_ref(), Some(&expected));
+    let occupied = work.claim(
+        work.remaining()?.peak_allocation_bytes,
+        1,
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
+    let refused = match (&journal as &dyn ExecutionJournal).staged_ref(operation, key, Some(&io)) {
+        Ok(future) => future.await,
+        Err(error) => Err(error),
+    };
+    assert!(
+        matches!(refused, Err(Error::NativeWork { .. })),
+        "staged lookup must retain original allocation refusal"
+    );
+    drop(occupied);
+    cancellation.cancel();
+    let refused = match (&journal as &dyn ExecutionJournal).staged_ref(operation, key, Some(&io)) {
+        Ok(future) => future.await,
+        Err(error) => Err(error),
+    };
+    assert!(matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Cancelled));
     let other = OperationId::from_bytes(identity.map(|byte| byte ^ 1));
     for (operation, key) in [(other, key.to_owned()), (operation, format!("{key}-other"))] {
         assert!(matches!(
-            journal.staged_ref_with_io(operation, &key, None).await,
-            Err(Error::NotFound(_))
+            (&journal as &dyn ExecutionJournal)
+                .staged_ref(operation, &key, None)?
+                .await,
+            Ok(None)
         ));
     }
     journal.scope = issuer.bootstrap_scope(
@@ -92,7 +128,9 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
         &mut None,
     )?;
     assert!(matches!(
-        journal.staged_ref_with_io(operation, key, None).await,
+        (&journal as &dyn ExecutionJournal)
+            .staged_ref(operation, key, None)?
+            .await,
         Err(Error::Unauthorized(_))
     ));
     // The original authenticated reader still sees the retained payload, so

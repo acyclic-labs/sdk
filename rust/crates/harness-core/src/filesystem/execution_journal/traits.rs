@@ -649,6 +649,16 @@ where
         .map(Some)
     }
 
+    fn staged_ref<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<FileRef>>> {
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.staged_ref_with_io(operation, key, io)
+        })
+    }
     fn stage<'a>(
         &'a self,
         operation: OperationId,
