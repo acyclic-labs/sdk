@@ -260,7 +260,11 @@ impl NativeTools {
         let capabilities = self
             .0
             .iter()
-            .map(|(name, ..)| tools.get_shared(name, None, None).map(|tool| tool.cloned()))
+            .map(|(name, ..)| {
+                tools.get_shared(name, None, None).map(|tool| {
+                    tool.map(|tool| Arc::clone(tool.executor.capability_owner().unwrap_or(tool)))
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
         let mut presented = std::collections::BTreeMap::<&str, Vec<String>>::new();
         for ((name, implementation, definition, arguments), capability) in
