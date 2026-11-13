@@ -89,7 +89,7 @@ pub struct PrivateDirectoryPage {
     pub has_more: bool,
     /// Continuation including physical progress through hidden names.
     pub next: Option<String>,
-    /// Physical names examined, including omitted names.
+    /// Candidate names consumed before policy filtering; excludes SDK seek work.
     pub examined: u32,
 }
 

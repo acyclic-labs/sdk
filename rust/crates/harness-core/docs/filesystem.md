@@ -59,11 +59,12 @@ Commands writing the same paths have the host filesystem's ordinary concurrency
 semantics. Machine backends without a managed job owner refuse background mode
 before dispatch.
 
-Directory queries bound physical names examined, including names hidden by current policy.
+Directory queries bound candidate names consumed before filtering by current policy.
 An empty visible page with `next` is progress, not exhaustion. Pass that opaque
 continuation to the same directory; it retains the full authenticated opening
 generation and never grants read authority. Every page checks current policy.
-`examined` reports physical name work so upstream queries charge sparse pages too.
+`examined` counts those candidates, including hidden names, so upstream queries
+charge sparse pages too. SDK seek and witness work remains in its work receipt.
 Continuations encrypt hidden progress through the shared Auth cursor primitive;
 they retain no server-side query state and expire when the process key retires.
 File entry versions remain immutable read addresses; directory continuation uses

@@ -9,7 +9,7 @@ pub struct AuthorizedDirectoryPage {
     pub page: acyclic_fs::DirectoryPage,
     /// Confidential continuation at the same immutable generation and directory.
     pub next: Option<String>,
-    /// Physical names examined, including names omitted by policy.
+    /// Candidate names consumed before policy filtering; excludes SDK seek work.
     pub examined: u32,
 }
 
@@ -27,7 +27,7 @@ pub struct DirectoryOptions<'a> {
     pub generation: Option<&'a GenerationRef>,
     /// Confidential continuation returned by the previous page.
     pub after: Option<&'a str>,
-    /// Maximum physical entries examined in this page.
+    /// Maximum candidate entries consumed before policy filtering.
     pub maximum_entries: u32,
     /// Additional caller authority ceiling.
     pub ceiling: Option<&'a crate::Capabilities>,
