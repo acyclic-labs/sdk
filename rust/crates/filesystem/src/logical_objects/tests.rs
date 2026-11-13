@@ -11,7 +11,7 @@ fn store(maximum: u64) -> Result<Store, ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();
     let provider = MemoryObjects::memory();
-    LogicalObjectStore::new(Arc::new(provider)).with_object_limit(Some(maximum))
+    LogicalObjectStore::new(Arc::new(provider)).with_object_admission_limit(Some(maximum))
 }
 
 #[tokio::test]
@@ -775,7 +775,7 @@ async fn optional_policy_and_unbounded_read_maxima_preserve_real_object_results(
     crate::initialize_test_native_io();
     let cancel = CancellationToken::new();
     let provider = Arc::new(MemoryObjects::memory());
-    let limited = LogicalObjectStore::new(provider.clone()).with_object_limit(Some(4))?;
+    let limited = LogicalObjectStore::new(provider.clone()).with_object_admission_limit(Some(4))?;
     let objects = [
         HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"first")),
         HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"second")),
@@ -786,7 +786,7 @@ async fn optional_policy_and_unbounded_read_maxima_preserve_real_object_results(
         Err(ObjectStoreError::TooLarge { .. })
     ));
     assert_eq!(work.spent().backend_write_operations, 0);
-    let unlimited = limited.with_object_limit(None)?;
+    let unlimited = limited.with_object_admission_limit(None)?;
     let mut work = AuthorityWork::new(BUDGET, &cancel);
     unlimited.put_many_hashed(&objects, &mut work).await?;
     assert_eq!(work.spent().backend_write_operations, 1);

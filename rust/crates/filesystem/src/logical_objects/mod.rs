@@ -16,7 +16,7 @@ use std::sync::Arc;
 pub struct LogicalObjectStore<P: ?Sized, S = PlainObjects> {
     sealer: S,
     provider: Arc<P>,
-    maximum_object_bytes: Option<u64>,
+    maximum_admitted_object_bytes: Option<u64>,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
     epoch: Arc<Epoch>,
 }
@@ -27,7 +27,7 @@ impl<P: ?Sized> LogicalObjectStore<P> {
         Self {
             provider,
             sealer: PlainObjects,
-            maximum_object_bytes: None,
+            maximum_admitted_object_bytes: None,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
             epoch: Arc::default(),
         }
@@ -38,7 +38,7 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
     pub fn with_sealer<T: ObjectSealer>(self, sealer: T) -> LogicalObjectStore<P, T> {
         LogicalObjectStore {
             provider: self.provider,
-            maximum_object_bytes: self.maximum_object_bytes,
+            maximum_admitted_object_bytes: self.maximum_admitted_object_bytes,
             decoded: self.decoded,
             sealer,
             epoch: self.epoch,
@@ -57,18 +57,23 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
         &self.epoch
     }
 
-    /// Applies an optional positive per-object policy; `None` admits any size.
-    pub fn with_object_limit(mut self, maximum: Option<u64>) -> Result<Self, ObjectStoreError> {
+    /// Applies an optional positive object-admission policy; `None` admits any
+    /// size. This policy does not replace the decoder bounds supplied by each
+    /// read, and changing it invalidates decoded cache entries.
+    pub fn with_object_admission_limit(
+        mut self,
+        maximum: Option<u64>,
+    ) -> Result<Self, ObjectStoreError> {
         if maximum.is_some_and(|maximum| maximum == 0 || usize::try_from(maximum).is_err()) {
             return Err(ObjectStoreError::Rejected(
                 "invalid object size limit".to_owned(),
             ));
         }
-        if self.maximum_object_bytes != maximum {
+        if self.maximum_admitted_object_bytes != maximum {
             // A decoded hit must not bypass a newly narrowed backend byte limit.
             self.decoded = Arc::new(crate::cache::CachedObjectStore::with_default_options(()));
         }
-        self.maximum_object_bytes = maximum;
+        self.maximum_admitted_object_bytes = maximum;
         Ok(self)
     }
 
@@ -204,9 +209,11 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
             context,
             work,
             async {
-                let maximum = self
-                    .sealer
-                    .stored_limit(id, self.maximum_object_bytes.unwrap_or(bytes.len() as u64))?;
+                let maximum = self.sealer.stored_limit(
+                    id,
+                    self.maximum_admitted_object_bytes
+                        .unwrap_or(bytes.len() as u64),
+                )?;
                 if bytes.len() as u64 > maximum {
                     return Err(ObjectStoreError::TooLarge {
                         observed: bytes.len() as u64,
@@ -221,7 +228,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
                         bytes: bytes.clone(),
                         retention: ObjectReadRetention::Shared,
                     },
-                    self.maximum_object_bytes.unwrap_or(u64::MAX),
+                    self.maximum_admitted_object_bytes.unwrap_or(u64::MAX),
                     Some(&sealed),
                     &mut work,
                 )?;

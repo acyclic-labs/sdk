@@ -59,7 +59,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         maximum: u64,
         work: &mut KernelAccounting<'_>,
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
-        let plaintext_maximum = maximum.min(self.maximum_object_bytes.unwrap_or(maximum));
+        let plaintext_maximum = maximum.min(self.maximum_admitted_object_bytes.unwrap_or(maximum));
         let maximum = self.sealer.stored_limit(id, plaintext_maximum)?;
         let maximum = maximum.min(invocation::read_capacity(work)?);
         let mut body_custody = invocation::read_custody(maximum, work)?;
@@ -113,9 +113,10 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 ByteRange::FULL,
                 self.sealer.stored_limit(
                     request.object_id,
-                    request
-                        .maximum_bytes
-                        .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
+                    request.maximum_bytes.min(
+                        self.maximum_admitted_object_bytes
+                            .unwrap_or(request.maximum_bytes),
+                    ),
                 )?,
             ));
         }
@@ -200,9 +201,11 @@ impl<P: Blobs + ?Sized, S: ObjectSealer, const STORED: bool> invocation::BatchFi
                     .sealer
                     .stored_limit(
                         request.object_id,
-                        request
-                            .maximum_bytes
-                            .min(store.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
+                        request.maximum_bytes.min(
+                            store
+                                .maximum_admitted_object_bytes
+                                .unwrap_or(request.maximum_bytes),
+                        ),
                     )?
                     .min(left),
                 None => 0,
@@ -265,9 +268,11 @@ impl<P: Blobs + ?Sized, S: ObjectSealer, const STORED: bool> invocation::BatchFi
             *value = store.read_representation::<STORED>(
                 request.object_id,
                 read,
-                request
-                    .maximum_bytes
-                    .min(store.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
+                request.maximum_bytes.min(
+                    store
+                        .maximum_admitted_object_bytes
+                        .unwrap_or(request.maximum_bytes),
+                ),
                 work,
             )?;
             retained = retained

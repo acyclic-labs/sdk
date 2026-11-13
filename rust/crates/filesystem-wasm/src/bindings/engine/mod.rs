@@ -469,7 +469,7 @@ pub(in crate::bindings) fn memory_engine(
         CachedObjectStore::new(
             acyclic_fs::shared_objects(
                 LogicalObjectStore::new(Arc::new(objects))
-                    .with_object_limit(Some(maximum_object_bytes))
+                    .with_object_admission_limit(Some(maximum_object_bytes))
                     .map_err(js_error)?,
             ),
             cache,

@@ -106,7 +106,9 @@ pub enum UnicodePolicy {
 /// Chunk sizes and protective bounds for filesystem work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeLimits {
-    /// Maximum canonical bytes in one immutable object.
+    /// Protective decoder bound on canonical bytes in one immutable object.
+    /// File contents span chunks and are not limited to this size. This bound
+    /// is independent of the backend's optional object-admission policy.
     pub maximum_object_bytes: u64,
     /// Mutations processed per chunk of a logical atomic transaction.
     /// Larger transactions continue on the same private candidate before publication.
