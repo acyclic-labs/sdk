@@ -558,69 +558,74 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 }
                 acyclic_actors::local::AdmissionState::from_record(&record.value)
                     .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
-                let (current, fence) = self
-                    .agents
-                    .store
-                    .provider()
-                    .latest_fenced(bound.path.clone(), None, Default::default())
-                    .await
-                    .map_err(Error::Stream)?;
-                let current = current.ok_or(Error::Record("ancestor admission is missing"))?;
-                let admission = acyclic_actors::local::AdmissionState::from_record(&current.value)
-                    .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
-                if !admission.paused && failure.is_none() {
-                    let original = crate::supervision::Position {
-                        stream: bound.path.clone(),
-                        sequence: bound
-                            .cursor
-                            .checked_sub(1)
-                            .ok_or(Error::Record("ancestor pause cursor is zero"))?,
-                    };
-                    let run = crate::supervision::streams::paused_at(
-                        self.agents.store.provider().as_ref(),
-                        &state.path,
-                        &original,
-                    )
-                    .await
-                    .map_err(|error| Error::Turn(Box::new(error)))?;
-                    let event = crate::supervision::Event {
-                        version: 1,
-                        agent: state.path.clone(),
-                        run: Some(run),
-                        source: crate::supervision::Position {
+                if failure.is_none() {
+                    let (current, fence) = self
+                        .agents
+                        .store
+                        .provider()
+                        .latest_fenced(bound.path.clone(), None, Default::default())
+                        .await
+                        .map_err(Error::Stream)?;
+                    let current = current.ok_or(Error::Record("ancestor admission is missing"))?;
+                    let admission =
+                        acyclic_actors::local::AdmissionState::from_record(&current.value)
+                            .map_err(|_| Error::Record("ancestor admission record is malformed"))?;
+                    if !admission.paused {
+                        let original = crate::supervision::Position {
                             stream: bound.path.clone(),
-                            sequence: current.sequence,
-                        },
-                        event: crate::supervision::Lifecycle::Resumed {},
-                    };
-                    // Reopening must be visible before the continued model or
-                    // tool can wait on external IO. This one alarm schedules
-                    // the retained turn after that publication; it never polls.
-                    return Ok(Transition {
-                        response: None,
-                        checkpoint: checkpoint
-                            .cloned()
-                            .ok_or(Error::Record("ancestor wait has no checkpoint"))?,
-                        alarm: AlarmChange::Set {
-                            deadline_unix_ms: delivery.now_unix_ms,
-                        },
-                        pause: false,
-                        participant: None,
-                        effects: vec![CommitEffect::hard(
-                            vec![fence],
-                            vec![acyclic_stream::CommitMutation::Append {
-                                path: crate::supervision::streams::path(&state.path)
-                                    .map_err(|_| Error::Record("agent event path"))?,
-                                records: vec![
-                                    crate::supervision::streams::lifecycle_record(&event)
-                                        .map_err(|_| Error::Record("ancestor resume event"))?,
-                                ],
-                            }],
-                        )],
-                        subscriptions: vec![acyclic_actors::guest::SubscriptionChange::Remove {
-                            id: ADMISSION_SUBSCRIPTION.into(),
-                        }],
-                    });
+                            sequence: bound
+                                .cursor
+                                .checked_sub(1)
+                                .ok_or(Error::Record("ancestor pause cursor is zero"))?,
+                        };
+                        let run = crate::supervision::streams::paused_at(
+                            self.agents.store.provider().as_ref(),
+                            &state.path,
+                            &original,
+                        )
+                        .await
+                        .map_err(|error| Error::Turn(Box::new(error)))?;
+                        let event = crate::supervision::Event {
+                            version: 1,
+                            agent: state.path.clone(),
+                            run: Some(run),
+                            source: crate::supervision::Position {
+                                stream: bound.path.clone(),
+                                sequence: current.sequence,
+                            },
+                            event: crate::supervision::Lifecycle::Resumed {},
+                        };
+                        // Reopening must be visible before the continued model or
+                        // tool can wait on external IO. This one alarm schedules
+                        // the retained turn after that publication; it never polls.
+                        return Ok(Transition {
+                            response: None,
+                            checkpoint: checkpoint
+                                .cloned()
+                                .ok_or(Error::Record("ancestor wait has no checkpoint"))?,
+                            alarm: AlarmChange::Set {
+                                deadline_unix_ms: delivery.now_unix_ms,
+                            },
+                            pause: false,
+                            participant: None,
+                            effects: vec![CommitEffect::hard(
+                                vec![fence],
+                                vec![acyclic_stream::CommitMutation::Append {
+                                    path: crate::supervision::streams::path(&state.path)
+                                        .map_err(|_| Error::Record("agent event path"))?,
+                                    records: vec![
+                                        crate::supervision::streams::lifecycle_record(&event)
+                                            .map_err(|_| Error::Record("ancestor resume event"))?,
+                                    ],
+                                }],
+                            )],
+                            subscriptions: vec![
+                                acyclic_actors::guest::SubscriptionChange::Remove {
+                                    id: ADMISSION_SUBSCRIPTION.into(),
+                                },
+                            ],
+                        });
+                    }
                 }
                 // The original journal rechecks the current authority cut.
                 // A stale paused record must not hide a later owner resume.
