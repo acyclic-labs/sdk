@@ -196,6 +196,23 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                 .is_err()
         );
         owner.release();
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = if matches!(decision, ToolPolicyDecision::Allow) {
+            Some(
+                acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?,
+            )
+        } else {
+            None
+        };
+        let io = work
+            .as_ref()
+            .map(PreparationIo::from_native_work)
+            .transpose()?;
+        let observer = io.as_ref();
         let mut outcome = executor
             .settle_invocation(
                 journal.as_ref(),
@@ -203,7 +220,7 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                 (call.clone(), binding.clone()),
                 &Value::Null,
                 &mut hooks,
-                None,
+                observer,
             )?
             .await?;
         if matches!(decision, ToolPolicyDecision::RequireApproval { .. }) {
@@ -321,24 +338,29 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                     .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
             );
         }
-        let replay = executor
-            .settle_invocation(
-                journal.as_ref(),
-                (parent, 0),
-                (call.clone(), binding),
-                &Value::Null,
-                &mut hooks,
-                None,
-            )?
-            .await?;
-        let ExecutionProgress::Ready(Some(replayed)) = replay else {
-            return Err(Error::Invalid("host call lost its receipt".into()));
-        };
-        assert_eq!(replayed.content(), settled.content());
-        assert_eq!(
-            journal.replay(parent, 0, 64, None)?.await?.len(),
-            records.len()
-        );
+        // A funded replay uses its original ledger; explicit unbounded replay
+        // must recognize the same canonical selection and terminal receipt.
+        for replay_io in observer.into_iter().map(Some).chain(std::iter::once(None)) {
+            let replay = executor
+                .settle_invocation(
+                    journal.as_ref(),
+                    (parent, 0),
+                    (call.clone(), binding.clone()),
+                    &Value::Null,
+                    &mut hooks,
+                    replay_io,
+                )?
+                .await?;
+            let ExecutionProgress::Ready(Some(replayed)) = replay else {
+                return Err(Error::Invalid("host call lost its receipt".into()));
+            };
+            assert_eq!(replayed.content(), settled.content());
+            assert_eq!(replayed.invocation(), &call);
+            assert_eq!(
+                journal.replay(parent, 0, 64, None)?.await?.len(),
+                records.len()
+            );
+        }
         if let Ok((file, _, _)) = published {
             assert_eq!(
                 reader.read_tool_path("receipt.txt", None, None).await?.0,
