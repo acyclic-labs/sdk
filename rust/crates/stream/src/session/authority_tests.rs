@@ -1107,6 +1107,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
         assert_eq!(result.is_ok(), allowed);
     }
     for (target, allowed) in [("fs:/volume", true), ("fs:/other", false)] {
+        let before = resource.current()?;
         let next = verify::verify(
             &fs_token(target, |_| {}),
             &signed::Snapshot::default(),
@@ -1114,6 +1115,9 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
         )?;
         let result = root.within_sync(|| resource.renew(Arc::new(next)));
         assert_eq!(result.is_ok(), allowed);
+        if !allowed {
+            assert!(Arc::ptr_eq(&before, &resource.current()?));
+        }
     }
     let mut query = TraceQuery::new(
         trace.follow(0, Default::default()).await?,
