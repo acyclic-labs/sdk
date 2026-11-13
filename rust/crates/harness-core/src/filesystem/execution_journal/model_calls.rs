@@ -60,6 +60,7 @@ where
                 .map(|io| io as &mut dyn crate::store::HistoryIo);
             let path = crate::distributed::execution_path(operation, &mut work)?;
             let _path_hold = io
+                .filter(|io| io.original_native_work().is_none())
                 .map(|io| io.guard_owned(path.as_str().len() as u64))
                 .transpose()?;
             crate::store::operations::one_selected_record(
