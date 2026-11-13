@@ -86,6 +86,17 @@ impl HeapLayout for serde_json::Map<String, Value> {
 impl<T: HeapLayout> HeapLayout for Option<T> {
     const LAYOUT: &'static JsonLayout = T::LAYOUT;
 }
+/// Serde's externally tagged result selects its payload by `Ok` or `Err`.
+impl<T: HeapLayout, E: HeapLayout> HeapLayout for std::result::Result<T, E> {
+    const LAYOUT: &'static JsonLayout = &JsonLayout::Node {
+        seq: None,
+        map: Some(Alloc::INLINE),
+        tagged: false,
+        fields: &[("Ok", T::LAYOUT), ("Err", E::LAYOUT)],
+        elements: &[],
+        flatten: &[],
+    };
+}
 impl<T: HeapLayout> HeapLayout for Box<T> {
     const LAYOUT: &'static JsonLayout = &JsonLayout::Boxed {
         bytes: size_of::<T>() as u64,
@@ -411,7 +422,7 @@ mod materializer {
 /// Filesystem access policies and capabilities, as their derived
 /// `Deserialize` decodes them.
 mod access {
-    use super::{Alloc, HeapLayout, JsonLayout};
+    use super::{HeapLayout, JsonLayout};
     use acyclic_fs::access::{
         Action, Capability, Conditions, Effect, GenerationRange, Generations, Grant, Policy,
         PrincipalKind, PrincipalPattern, Relation, ResourcePattern, Rule,
