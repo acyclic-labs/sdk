@@ -14,25 +14,25 @@ fn failed(step: &str, cause: impl std::fmt::Display) -> Box<dyn std::error::Erro
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn codex_exited_session_settles_with_an_external_stderr_writer() -> Result {
-    served("codex", exercise).await
+    served(&["codex"], exercise).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_exited_session_settles_with_an_external_stderr_writer() -> Result {
-    served("claude-code", exercise).await
+    served(&["claude-code"], exercise).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pi_exited_session_settles_with_an_external_stderr_writer() -> Result {
-    served("pi", exercise).await
+    served(&["pi"], exercise).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nested_children_preserve_unmerged_work_across_follow_up_and_merge() -> Result {
-    served("codex", follow_up).await
+    served(&["codex"], follow_up).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_reference_aliases_preserve_process_and_parent_ownership() -> Result {
     for host in ["codex", "claude-code", "pi"] {
-        served(host, |host, cwd| {
+        served(&[host], |host, cwd| {
             references(host, cwd)?;
             shared_references(host, cwd)
         })
@@ -249,7 +249,7 @@ fn references(host: &str, cwd: &Path) -> Result {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Result {
-    served("codex", |host, cwd| {
+    served(&["codex"], |host, cwd| {
         let (mut sessions, _) = children(host, cwd, "closed-pid")?;
         let (mut running, view) = claim(
             &mut sessions,
@@ -301,7 +301,7 @@ async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Resul
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof() -> Result {
-    served("codex", |host, cwd| {
+    served(&["codex"], |host, cwd| {
         let captured = include_bytes!("../fixtures/codex-completed.jsonl");
         let mut events = captured.split_inclusive(|byte| *byte == b'\n');
         let start = events.next().ok_or("captured start absent")?;
@@ -421,8 +421,9 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
     .await
 }
 
-/// Runs `body` against a live workspace server for `host`.
-pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
+/// Runs the selected host adapters against one live workspace server.
+/// Callers that mutate the checkout use separate invocations for isolation.
+pub(super) async fn served(hosts: &[&str], body: fn(&str, &Path) -> Result) -> Result {
     let checkout = tempfile::tempdir()?;
     let state = tempfile::tempdir()?;
     let cwd = checkout.path().canonicalize()?;
@@ -456,7 +457,7 @@ pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Resul
         ready = readiness => ready.map_err(|cause| failed("start native child workspace", cause)),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        readiness.and_then(|()| body(host, &cwd))
+        readiness.and_then(|()| hosts.iter().try_for_each(|host| body(host, &cwd)))
     }));
     let _ = shutdown.send(());
     let retirement = server.await;

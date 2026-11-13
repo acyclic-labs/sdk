@@ -265,8 +265,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn eof_retires_native_children_before_draining_a_held_reply()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        for host in ["codex", "claude-code", "pi"] {
-            served(host, |host, cwd| {
+        served(&["codex", "claude-code", "pi"], |host, cwd| {
               for unavailable in [false, true] {
                 let (mut children, _) = children(host, cwd, if unavailable { "eof-retirement-refusal" } else { "eof-retirement" })?;
                 let (mut running, view) = claim(&mut children, cwd, if unavailable { "refused" } else { "held" }, SessionAction::Spawn { prompt: "wait for parent".into() })?;
@@ -319,9 +318,8 @@ mod tests {
                     result?;
                 }
               }
+                assert!(!cwd.join("partial.txt").exists(), "retired child published into the shared checkout");
                 Ok(())
-            }).await?;
-        }
-        Ok(())
+            }).await
     }
 }
