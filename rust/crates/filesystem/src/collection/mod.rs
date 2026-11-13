@@ -337,24 +337,21 @@ impl Collection {
 }
 
 impl Collecting {
-    pub(crate) async fn sweepable(
+    /// Retains each candidate's identity through the common admission cut.
+    pub(crate) async fn sweepable<T: Copy + Into<crate::Digest>>(
         &self,
-        batch: Vec<crate::Digest>,
-    ) -> (tokio::sync::OwnedRwLockWriteGuard<()>, Vec<crate::Digest>) {
+        mut batch: Vec<T>,
+    ) -> (tokio::sync::OwnedRwLockWriteGuard<()>, Vec<T>) {
         let guard = self.collection.gate().write_owned().await;
         let state = self.collection.state();
-        let sweepable = batch
-            .into_iter()
-            .filter(|object| {
-                !state
-                    .admitted
-                    .as_ref()
-                    .is_some_and(|admitted| admitted.contains(object))
-            })
-            .collect();
-        (guard, sweepable)
+        batch.retain(|candidate| {
+            !state
+                .admitted
+                .as_ref()
+                .is_some_and(|admitted| admitted.contains(&(*candidate).into()))
+        });
+        (guard, batch)
     }
-
     pub(crate) fn sweeping(&self) {
         self.collection.state().sweeps += 1;
     }

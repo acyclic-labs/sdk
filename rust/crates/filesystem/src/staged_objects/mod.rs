@@ -34,6 +34,7 @@ mod io;
 use io::{read_spilled, read_spilled_native, staged_owned_bytes, staged_vector};
 
 mod admission;
+mod collection;
 mod ordering;
 mod publication;
 mod read;

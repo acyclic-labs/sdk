@@ -5,9 +5,9 @@ use super::*;
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LocalGarbageCollection {
-    /// Immutable filesystem object versions examined.
+    /// Durable and privately staged immutable filesystem versions examined.
     pub examined: u64,
-    /// Unreachable immutable filesystem object versions removed.
+    /// Unreachable durable or privately staged filesystem versions removed.
     pub removed: u64,
 }
 
@@ -49,8 +49,9 @@ pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
 
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
-    /// Reclaims every stored object nothing live reaches, while the root
-    /// stays open for publications.
+    /// Reclaims durable and privately staged objects nothing live reaches,
+    /// while the root stays open for publications. Private construction and
+    /// live ephemeral authorities participate in the same mark and admission cut.
     ///
     /// A first pass sweeps what no epoch retains. Only when that finds
     /// unreachable objects an epoch still retains does a second pass open the
@@ -263,8 +264,17 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 epoch.hooks.released.notify_one();
                 crash(&epoch, Step::Released)?;
             }
-            self.sweep_local_objects(&collecting, unmarked, cancellation)
-                .await
+            let (mut result, retained) = self
+                .sweep_local_objects(&collecting, unmarked, cancellation)
+                .await?;
+            let private = self
+                .inner
+                .objects
+                .sweep_private(&collecting, &marked, cancellation)
+                .await?;
+            result.examined = result.examined.saturating_add(private.examined);
+            result.removed = result.removed.saturating_add(private.removed);
+            Ok((result, retained))
         })
         .await
     }

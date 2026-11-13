@@ -526,7 +526,7 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
     let proven_at = collection.sweeps();
     for _ in 0..9 {
         let collecting = collection.begin().await;
-        let (_gate, _) = collecting.sweepable(Vec::new()).await;
+        let (_gate, _) = collecting.sweepable(Vec::<crate::Digest>::new()).await;
         collecting.sweeping();
     }
     let scope = crate::PublicationScope {

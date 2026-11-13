@@ -159,7 +159,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
     assert_eq!(original.live_allocation_bytes(), live);
     assert!(store.index().objects.contains_key(&id));
     let collecting = store.collection.begin().await;
-    let (sweep, _) = collecting.sweepable(Vec::new()).await;
+    let (sweep, _) = collecting.sweepable(Vec::<crate::Digest>::new()).await;
     for (publication, exit, hold_spill) in [
         (false, 0, true),
         (false, 1, true),

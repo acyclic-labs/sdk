@@ -152,6 +152,7 @@ async fn spill_bytes_with_reuse_fixture(
     Ok((id, bytes))
 }
 
+mod collection;
 mod native_batch;
 mod native_read;
 mod native_write;
