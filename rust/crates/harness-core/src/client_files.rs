@@ -130,7 +130,9 @@ pub struct FileCut {
     pub generation: GenerationRef,
     /// Original authority minimum; reconnects must not regress behind it.
     pub revision: acyclic_stream::RevisionCut,
-    /// Exclusive committed cuts for the requested query sources.
+    /// Exclusive committed cuts for the requested query sources. JSON values
+    /// are canonical decimal strings, preserving all 64 bits in JavaScript.
+    #[serde(with = "acyclic_stream::serde_u64::map")]
     pub queries: BTreeMap<acyclic_stream::StreamPath, u64>,
 }
 

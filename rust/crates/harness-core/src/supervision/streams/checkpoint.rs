@@ -28,6 +28,7 @@ pub struct Checkpoint {
 /// One original source's conditional contribution. It is never submitted by
 /// the query: the source owner joins it to its original atomic publication.
 pub struct Projection {
+    run: crate::OperationId,
     /// Candidate durable decision.
     pub checkpoint: Checkpoint,
     /// Query counters, signals and checkpoint sharing the original commit.
@@ -50,6 +51,7 @@ impl Projection {
     pub fn append_event(&mut self, event: &Event) -> Result<()> {
         let path = path(&event.agent)?;
         if event.version != 1
+            || event.run != Some(self.run)
             || event.source != self.checkpoint.source
             || !self.effect.conditions.iter().any(|condition| {
                 condition.path() == &path
@@ -282,6 +284,10 @@ impl<P: StreamProvider + ?Sized> Queries<'_, P> {
             path,
             records: vec![record],
         });
-        Ok(Projection { checkpoint, effect })
+        Ok(Projection {
+            run: self.run,
+            checkpoint,
+            effect,
+        })
     }
 }
