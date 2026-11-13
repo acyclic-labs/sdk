@@ -78,10 +78,11 @@ where
             return self.detach_async().await;
         }
         self.sync().await?;
-        self.advance_to_head().await?;
         if retire {
             self.prepare_command_cleanup().await?;
             self.detach_async().await?;
+        } else {
+            self.advance_to_head().await?;
         }
         Ok(())
     }

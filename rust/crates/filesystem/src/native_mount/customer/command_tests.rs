@@ -102,7 +102,7 @@ async fn command_completion_publishes_once_with_an_independent_duplicate_sync_co
 -> Result<(), Box<dyn std::error::Error>> {
     let (bytes, trace) = publish_command(false, true).await?;
     assert_eq!(bytes, b"updated!");
-    assert_eq!(trace, ["sync", "advance", "detach"]);
+    assert_eq!(trace, ["sync", "detach"]);
     let (baseline_bytes, duplicate_trace) = publish_command(true, true).await?;
     assert_eq!(baseline_bytes, bytes);
     assert_eq!(duplicate_trace, ["sync", "advance", "sync", "detach"]);
