@@ -322,13 +322,13 @@ where
                 let journal_changed =
                     self.journal_record(journal.follow(*operation, Q::end(&page)).map_err(turn)?);
                 tokio::select! {
-                    result = journal_changed => result?,
-                    result = actor_changed => result?,
+                    result = journal_changed => { result?; },
+                    result = actor_changed => { result?; },
                     cause = failed => failure = Some(cause),
                 };
             } else {
                 tokio::select! {
-                    result = actor_changed => result?,
+                    result = actor_changed => { result?; },
                     cause = failed => failure = Some(cause),
                 };
             }
