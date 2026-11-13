@@ -2,7 +2,7 @@
 //! timing hook: the next input settles before the original query resumes.
 use super::*;
 use crate::{
-    agent::{AgentId, Control, InboxRecord, Phase},
+    agent::{AgentId, InboxRecord, Phase},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PRIVATE_VOLUME, TurnAuthority},
 };
@@ -167,17 +167,21 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
         None,
     )?;
     let operation = OperationId::from_bytes([64; 16]);
+    let initial_through = acyclic_stream::StreamProviderExt::tail(
+        bound.agents().provider().as_ref(),
+        state.path.inbox()?,
+    )
+    .await?;
     let boundary = FilesystemBoundary::new(
         Arc::clone(bound.agents().provider()),
         Arc::clone(bound.volumes()),
         bound.issuer().clone(),
         bound.admission().clone(),
         state.clone(),
-        operation,
-        inbox,
+        (operation, inbox, initial_through),
         files,
-        journal_reader,
-        writer,
+        Arc::new(journal_reader),
+        Arc::new(writer),
         None,
     );
     assert!(boundary.messages(operation, 0, None).await?.is_empty());

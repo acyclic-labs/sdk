@@ -267,13 +267,13 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
         "later_original_producer_result": "Unavailable", "recovered": recovered,
         "same_owner_retry_result": "Unknown", "same_owner_retry_request_exact": true,
         "same_owner_retry_additional_journal_stages": [0, 0, 0],
-        "participants": original.mutations.len(),
+        "participants": original.mutations().count(),
         "negative_controls": if stage == 2 { vec!["Unknown is not Created", "omitted recovered participant"] } else { vec!["Unknown is not Created"] },
     }))
 }
 
 async fn require_absent(fixture: &Fixture, original: &CommitRequest) -> Result {
-    for mutation in &original.mutations {
+    for mutation in original.mutations() {
         let CommitMutation::Append { path, .. } = mutation else {
             return Err("fresh root request unexpectedly contains a fork".into());
         };
@@ -287,10 +287,10 @@ async fn require_absent(fixture: &Fixture, original: &CommitRequest) -> Result {
 fn require_envelope(original: &CommitRequest, envelope: &CommittedEnvelope) -> Result {
     let mut canonical = original.clone();
     acyclic_stream::request::validate_commit(&mut canonical)?;
-    if canonical.mutations.len() != envelope.mutations.len() {
+    if canonical.mutations().count() != envelope.mutations.len() {
         return Err("recovered root omitted or added a participant".into());
     }
-    for (requested, committed) in canonical.mutations.iter().zip(&envelope.mutations) {
+    for (requested, committed) in canonical.mutations().zip(&envelope.mutations) {
         let (CommitMutation::Append { path, records }, CommittedMutation::Append(append)) =
             (requested, committed)
         else {
