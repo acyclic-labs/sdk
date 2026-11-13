@@ -201,7 +201,6 @@ impl SharedFuseInstance {
         .map_err(|error| error.during("prepare shared FUSE device transport", root))?;
         let notifier = session.notifier();
         state.transport = Some(session.transport());
-        views.set_notifier(notifier.clone());
         #[cfg(test)]
         let worker_lifetime = session.worker_lifetime();
         session.start_mount(

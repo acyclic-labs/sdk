@@ -6,8 +6,12 @@ use crate::{NativeMaterializationWork as Work, WorkCounters};
 #[cfg(loom)]
 pub(super) mod model_checking;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(super) enum KernelCacheItem {
+    Attributes {
+        inode: u64,
+        credit: crate::materializer::NativeWorkReservation,
+    },
     Inode(u64),
     Entry {
         parent: u64,
@@ -103,7 +107,7 @@ impl FuseSession {
                     .transpose()?;
                 let count =
                     usize::from(file_inode.is_some()) + 2 * usize::from(parent_inode.is_some());
-                fuse_reserve(&mut state.invalidation.deferred, count, work)?;
+                state.reserve_invalidations(count, work)?;
                 if let Some(inode) = file_inode {
                     state
                         .invalidation
@@ -145,6 +149,7 @@ impl ProjectionCore {
     ) -> Result<(), NativeMountError> {
         // Later notifications belong to later callers, even if another pass
         // has already started by the time this waiter wakes.
+        state.queue_superseded_attributes();
         let deferred = state.invalidation.deferred_target()?;
         let mut cancellation = None;
         loop {
@@ -238,6 +243,7 @@ impl ProjectionState {
         }
         for item in items.iter() {
             match item {
+                KernelCacheItem::Attributes { .. } => (),
                 KernelCacheItem::Inode(inode) => {
                     self.by_inode.get_mut(inode).ok_or(libc::EIO)?.kernel = Some(through);
                 }
@@ -263,6 +269,7 @@ impl ProjectionState {
 
 /// The kernel cache notifications the invalidator sends.
 pub(super) trait KernelCacheNotifier {
+    fn inval_attributes(&self, inode: u64) -> std::io::Result<()>;
     fn inval_inode(&self, inode: u64) -> std::io::Result<()>;
     fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()>;
 }
@@ -353,13 +360,27 @@ fn drop_kernel_caches(
 ) -> Result<(), NativeMountError> {
     run_native_mount_handler_on_meter(work, |work| {
         while !items.as_slice().is_empty() {
-            work.charge(WorkCounters {
-                backend_write_operations: 1,
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
+            if !matches!(
+                items.as_slice().first(),
+                Some(KernelCacheItem::Attributes { .. })
+            ) {
+                work.charge(WorkCounters {
+                    backend_write_operations: 1,
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
             let item = items.next().ok_or(libc::EPROTO)?;
             let result = match item {
+                KernelCacheItem::Attributes { inode, mut credit } => {
+                    let result = notifier.inval_attributes(inode);
+                    credit.record_deferred(WorkCounters {
+                        backend_write_operations: 1,
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    });
+                    result
+                }
                 KernelCacheItem::Inode(inode) => notifier.inval_inode(inode),
                 KernelCacheItem::Entry { parent, name } => notifier.inval_entry(parent, &name),
             };

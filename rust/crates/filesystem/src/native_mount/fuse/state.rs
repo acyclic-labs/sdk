@@ -90,6 +90,13 @@ impl ProjectionState {
             return Ok(());
         }
         fuse_reserve(&mut self.superseded_attributes, 1, work)?;
+        // A guard's drop must only move already-funded work, never allocate
+        // or publish a device packet while handling the kernel's request.
+        fuse_reserve(
+            &mut self.invalidation.deferred,
+            self.superseded_attributes.len() + 1,
+            work,
+        )?;
         let credit = work.reserve_work(crate::WorkCounters {
             backend_write_operations: 1,
             items_examined: 1,
@@ -97,6 +104,26 @@ impl ProjectionState {
         })?;
         self.superseded_attributes.push((inode, credit));
         Ok(())
+    }
+
+    pub(super) fn reserve_invalidations(
+        &mut self,
+        additional: usize,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        let additional = additional
+            .checked_add(self.superseded_attributes.len())
+            .ok_or(crate::WorkError::Overflow)?;
+        fuse_reserve(&mut self.invalidation.deferred, additional, work)
+    }
+
+    pub(super) fn queue_superseded_attributes(&mut self) {
+        let mut attributes = std::mem::take(&mut self.superseded_attributes).map(Vec::into_iter);
+        while let Some((inode, credit)) = attributes.next() {
+            self.invalidation
+                .deferred
+                .push(KernelCacheItem::Attributes { inode, credit });
+        }
     }
 
     /// A projection whose inodes are `inode_base + 1 ..` within one view span.
@@ -214,7 +241,7 @@ impl ProjectionState {
                 && let Some(parent) = self.inode_by_path.get(&*parent).copied()
             {
                 let name = fuse_copy_bytes(path.components().last().ok_or(libc::ESTALE)?, work)?;
-                fuse_reserve(&mut self.invalidation.deferred, 1, work)?;
+                self.reserve_invalidations(1, work)?;
                 self.invalidation
                     .deferred
                     .push(KernelCacheItem::Entry { parent, name });
@@ -495,7 +522,7 @@ impl ProjectionState {
             work,
         )?;
         if !admitted {
-            fuse_reserve(&mut self.invalidation.deferred, 1, work)?;
+            self.reserve_invalidations(1, work)?;
         }
         if let Some(entry) = self.by_inode.get_mut(&inode) {
             hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));

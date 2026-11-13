@@ -414,7 +414,7 @@ impl ProjectionState {
                 .ok_or(crate::WorkError::Overflow)?;
             remaining -= 1;
         }
-        fuse_reserve(&mut self.invalidation.deferred, items.len(), work)?;
+        self.reserve_invalidations(items.len(), work)?;
         let appended = items
             .len()
             .checked_mul(std::mem::size_of::<KernelCacheItem>())

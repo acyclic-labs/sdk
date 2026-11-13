@@ -331,7 +331,6 @@ impl FuseSession {
             )
             .map_err(|error| error.during("prepare FUSE device transport", &request.destination))?;
             started.notifier = Some(session.notifier());
-            let _ = core.notifier.set(session.notifier());
             // Retain the join handle through unmount refusal and physical exit.
             session
                 .start_mount(

@@ -368,10 +368,11 @@ impl HostIo {
     ) -> io::Result<PacketDevicePublication> {
         // Stream writes may split a frame; retain its one publication claim
         // until every slice is sent, without interleaving another response.
-        let _publication = self
-            .publication
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _publication = self.framed.then(|| {
+            self.publication
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
         let total = packet.iter().try_fold(0_usize, |length, part| {
             length
                 .checked_add(part.len())

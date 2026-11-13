@@ -9,6 +9,9 @@ struct Notifications {
     entries: RefCell<Vec<(u64, Vec<u8>)>>,
 }
 impl KernelCacheNotifier for Notifications {
+    fn inval_attributes(&self, inode: u64) -> std::io::Result<()> {
+        self.inval_inode(inode)
+    }
     fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
         self.inodes.borrow_mut().push(inode);
         Ok(())
