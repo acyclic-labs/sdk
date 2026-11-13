@@ -64,6 +64,7 @@ pub fn implementation_methods(arguments: TokenStream, input: TokenStream) -> Tok
 /// Generate an `ExplicitNAME` provider contract with every default removed,
 /// and the forwarding implementation of `NAME`. Adding a default method to
 /// `NAME` therefore breaks incomplete explicit adapters at compile time.
+/// Pass `arc` to generate direct `Arc<T>` forwarding from the same declaration.
 ///
 /// ```
 /// use acyclic_contract_derive::explicit_provider;
@@ -96,9 +97,20 @@ pub fn implementation_methods(arguments: TokenStream, input: TokenStream) -> Tok
 /// impl ExplicitProvider for Incomplete {}
 /// ```
 #[proc_macro_attribute]
-pub fn explicit_provider(_arguments: TokenStream, input: TokenStream) -> TokenStream {
+pub fn explicit_provider(arguments: TokenStream, input: TokenStream) -> TokenStream {
+    let arc = if arguments.is_empty() {
+        false
+    } else {
+        let argument = parse_macro_input!(arguments as syn::Ident);
+        if argument != "arc" {
+            return syn::Error::new_spanned(argument, "expected arc")
+                .into_compile_error()
+                .into();
+        }
+        true
+    };
     let contract = parse_macro_input!(input as syn::ItemTrait);
-    explicit_provider::expand(contract)
+    explicit_provider::expand(contract, arc)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

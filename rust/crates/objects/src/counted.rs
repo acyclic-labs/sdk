@@ -1,8 +1,8 @@
 //! Request accounting over the exact public blob boundary. Native arguments
 //! and results keep their original work and custody owners.
 use crate::{
-    Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
-    RootId, Usage,
+    Blobs, ByteRange, Collection, Digest, Error, ExplicitBlobs, Head, Manifest, Object, Page, Put,
+    Retained, RootId, Usage,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -13,7 +13,7 @@ use acyclic_stream::testing::{Counted, RequestClass};
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl<P: Blobs> Blobs for Counted<P> {
+impl<P: Blobs> ExplicitBlobs for Counted<P> {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
         self.record(RequestClass::Data);
         self.inner().availability(digest).await
