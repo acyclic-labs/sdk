@@ -175,9 +175,9 @@ impl Serialize for AgentPath {
 crate::core::ownership::owned_struct!(AgentPath { text, depth });
 
 impl AgentPath {
-    /// The actor that owns a stream in an agent's subtree. Child boundaries
-    /// are parsed once; suffixes such as status, conversation and execution
-    /// journals all retain the same canonical owner.
+    /// The actor owning an agent stream or its separate canonical status
+    /// stream. Both prefixes share one ancestry parser; conversation and
+    /// execution journal suffixes retain that same owner.
     pub fn containing(stream: &StreamPath) -> Option<Self> {
         let text = stream.as_str();
         let prefix = if text.starts_with(AGENTS) {
