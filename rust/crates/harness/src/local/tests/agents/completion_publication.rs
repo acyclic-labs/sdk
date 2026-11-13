@@ -1,5 +1,6 @@
 //! Completion uses the original fork cut after the child's final observation.
 use super::*;
+use acyclic_fs::facade::FsWork as _;
 use acyclic_harness_client::{AgentCommand, AgentReply};
 use std::sync::Mutex;
 

@@ -19,6 +19,7 @@ use crate::{
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
+use acyclic_fs::facade::FsWork as _;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness_client::AgentCommand;
 use acyclic_stream::{BoxProviderFuture, StreamError};
@@ -1240,7 +1241,7 @@ mod completion_tests {
             &own.workspace.state,
         ))
         .await;
-        let mut completion = Box::pin(own.source());
+        let mut completion = Box::pin(own.source(&local.project));
         assert!(futures::poll!(&mut completion).is_pending());
         // The admitted command's final capture commits before releasing its guard.
         own.workspace
@@ -1261,7 +1262,9 @@ mod completion_tests {
             .map_err(storage)?
             .value;
         drop(busy);
-        let source = completion.await?;
+        let source = completion.await?.ok_or_else(|| {
+            Error::Conflict("captured changes were classified as read-only".into())
+        })?;
         assert_eq!(source.generation, captured.id());
         Arc::try_unwrap(local)
             .map_err(|_| Error::Conflict("completion retained the harness owner".into()))?

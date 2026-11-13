@@ -78,7 +78,9 @@ impl Observer {
         projection: &acyclic_harness_client::EventProjection,
     ) -> Result<Self> {
         let agent = connection.root();
-        projection.execution_position(agent).map_err(storage)?;
+        projection
+            .execution_position(agent)
+            .map_err(|message| Error::Storage(message.into()))?;
         let cursor = |path: StreamPath| {
             projection
                 .cursor(&acyclic_stream::wire_codec::session::stream_resource(
@@ -98,7 +100,7 @@ impl Observer {
         )?;
         projection
             .validate_sources(&observer.sources())
-            .map_err(storage)?;
+            .map_err(|message| Error::Storage(message.into()))?;
         Ok(observer)
     }
 
