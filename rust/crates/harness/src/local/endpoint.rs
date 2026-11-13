@@ -413,7 +413,7 @@ impl LocalHarness {
                 .await
                 .map_err(exchange)?;
             Ok(Connection {
-                session: connection.session,
+                session: controls.observation_session(),
                 controls: Arc::new(controls),
                 root: agent,
                 tools,
