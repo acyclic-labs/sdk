@@ -84,6 +84,8 @@ async fn open_fixture(
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
+    let files = FilesystemHost::new(filesystem.clone(), &provider, None)?;
+    files.create_volume(&private).await?;
     let workspace = Arc::new(
         workspace::open(
             &filesystem,
@@ -110,7 +112,6 @@ async fn open_fixture(
         )
         .await?,
     );
-    let files = FilesystemHost::new(filesystem, &provider, None)?;
     let issuer = AuthorityRoot::new(
         "publisher",
         [17; 32],
