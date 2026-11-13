@@ -5448,6 +5448,24 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     } else {
         harness.connect().await?
     };
+    assert_lost_model_producer(harness, connection, entering, producer, wire).await?;
+    if let Some((stop, serving)) = transport {
+        let _ = stop.send(());
+        eprintln!("producer-loss wire={wire}: stopping server");
+        serving.await.map_err(agent)??;
+    }
+    Ok(())
+}
+
+// Returning releases every client and live follow before graceful HTTP/2
+// shutdown, which must otherwise wait for these active Sessions indefinitely.
+async fn assert_lost_model_producer(
+    harness: Arc<LocalHarness>,
+    connection: crate::local::Connection,
+    entering: tokio::sync::oneshot::Receiver<()>,
+    producer: tokio::sync::oneshot::Sender<()>,
+    wire: bool,
+) -> Result<()> {
     let client = Conversation::open(connection.clone());
     // Create the conversation through its actual first turn before testing
     // out-of-range follows: an absent stream intentionally waits for creation.
@@ -5712,10 +5730,6 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     assert!(saved.try_next().await.map_err(agent)?.is_some());
     assert!(saved.try_next().await.map_err(agent)?.is_none());
     eprintln!("producer-loss wire={wire}: bounded saved read complete");
-    if let Some((stop, serving)) = transport {
-        let _ = stop.send(());
-        eprintln!("producer-loss wire={wire}: stopping server");
-        serving.await.map_err(agent)??;
-    }
+
     Ok(())
 }
