@@ -3305,6 +3305,12 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             "native checkpoint observation was not counted"
         );
         let before = head_reads.load(Ordering::Relaxed);
+        crate::agent::inbox_tail(&**agents.provider(), owner)
+            .await
+            .map_err(agent)?;
+        let inbox_heads = head_reads.load(Ordering::Relaxed) - before;
+        assert!(inbox_heads > 0, "accepted input cut was not counted");
+        let before = head_reads.load(Ordering::Relaxed);
         let observed = connection
             .execute(&AgentCommand::Settlement {
                 agent: owner.clone(),
@@ -3313,12 +3319,12 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .await?;
         let observed_heads = head_reads.load(Ordering::Relaxed) - before;
         eprintln!(
-            "settlement head reads: admission={admission_heads}, checkpoint={state_heads}, observed={observed_heads}"
+            "settlement head reads: admission={admission_heads}, checkpoint={state_heads}, inbox={inbox_heads}, observed={observed_heads}"
         );
         assert_eq!(
             observed_heads,
-            admission_heads + state_heads,
-            "settlement reread stream tails outside its actor observation"
+            admission_heads + state_heads + inbox_heads,
+            "settlement reread stream tails outside its actor and accepted-input observations"
         );
         let AgentReply::Settlement {
             settled,
