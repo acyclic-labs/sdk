@@ -495,7 +495,6 @@ impl FuseProjection {
                 let (entry, handle, flags) =
                     self.create_file(owner, inode, name, mode & !umask, flags, work)?;
                 output.entry(&entry.attr, &entry.ttl)?;
-                output.attributes_before_reply = attributes_before_reply;
                 output.opened(handle, flags)?;
             }
             _ => return Err(libc::ENOSYS.into()),
