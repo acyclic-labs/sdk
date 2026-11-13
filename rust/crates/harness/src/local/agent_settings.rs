@@ -12,6 +12,7 @@ use crate::model::ResolvedModel;
 pub(super) struct Settings {
     pub(super) model: Arc<ResolvedModel>,
     pub(super) sampling: Option<Sampling>,
+    pub(super) effort: Option<crate::config::Effort>,
 }
 
 /// Resolves a model selection the settings name.
@@ -577,11 +578,6 @@ async fn settle(
             Error::Invalid(format!("{}: {reason}", config::AGENT)),
         )
     };
-    if settings.effort.is_some() {
-        return Err(rejected(
-            "effort is not selectable on this host; leave it null",
-        ));
-    }
     if settings
         .host
         .is_some_and(|host| host != config::Host::Builtin)
@@ -610,6 +606,17 @@ async fn settle(
             resolve(&settings.model).map_err(Refused::selection)?
         }
     };
+    if settings.effort.is_some()
+        && model
+            .1
+            .model_profile(&model.0)?
+            .and_then(|profile| profile.baseline_effort())
+            .is_none()
+    {
+        return Err(rejected(
+            "selected model has no admitted reasoning baseline",
+        ));
+    }
     if let Some(sampling) = settings.sampling {
         crate::model::ModelSampling::admit(
             sampling.model_sampling(),
@@ -623,6 +630,7 @@ async fn settle(
     Ok(Settings {
         model,
         sampling: settings.sampling,
+        effort: settings.effort,
     })
 }
 

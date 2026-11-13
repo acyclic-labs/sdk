@@ -49,6 +49,7 @@ use accounting::*;
 mod binding;
 mod compaction;
 mod composition;
+mod configuration;
 mod content;
 mod context_files;
 mod dispatch;
@@ -367,6 +368,9 @@ pub enum ExecutionEvent {
         projection: FileRef,
         /// Inbox range included in this exact response request, if bound to an agent.
         steering: Option<crate::agent::BoundaryCut>,
+        /// Host-admitted effort delta, restored into the original turn transcript on replay.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        configuration: Option<crate::model::ConfigurationUpdate>,
     },
     /// Pins a verified compacted projection before response admission.
     ContextCompacted {
@@ -734,6 +738,7 @@ pub trait StepConfiguration: acyclic_stream::ProviderPlatform {
 pub struct StepBinding {
     model: ExecutorModel,
     sampling: Option<crate::model::ModelSampling>,
+    effort: Option<crate::config::Effort>,
     resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
     provider: Arc<dyn ModelProvider>,
     tools: ToolRegistry,
@@ -837,6 +842,7 @@ pub(crate) struct RetainedModelStep {
     #[cfg(feature = "research")]
     pub(crate) journal_cut: Option<ExecutionJournalCut>,
     pub(crate) request: Option<crate::model::PreparedModelRequest>,
+    pub(crate) configuration: Option<crate::model::ConfigurationUpdate>,
     pub(crate) admission: ModelEventAdmission,
     pub(crate) events: Vec<ModelEvent>,
 }

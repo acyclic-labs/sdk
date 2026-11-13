@@ -111,13 +111,14 @@ impl StepConfiguration for Steps {
             .await?;
             let sampling = settings.sampling.and_then(Sampling::model_sampling);
             let selected = previous.as_deref().unwrap_or(&self.template);
-            if selected.matches_model(&settings.model, sampling) {
+            if selected.matches_model(&settings.model, sampling, settings.effort) {
                 *self.current()? = Some((cut, previous.clone()));
                 return Ok(previous);
             }
             let binding = self.template.bind_model(
                 settings.model,
                 sampling,
+                settings.effort,
                 Arc::clone(&self.reader),
                 local.limits.file_bytes,
                 io,

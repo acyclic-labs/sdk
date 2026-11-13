@@ -94,6 +94,7 @@ pub(crate) async fn retained_model_step<'a>(
     let mut events = Vec::new();
     let mut admission = ModelEventAdmission::default();
     let mut started = None;
+    let mut configuration = None;
     #[cfg(feature = "research")]
     let mut journal_cut = None;
     for record in records {
@@ -122,6 +123,16 @@ pub(crate) async fn retained_model_step<'a>(
             && *event_purpose == purpose
         {
             started = Some((*request_digest, request, *context));
+        }
+        if purpose == ModelPurpose::Response
+            && let ExecutionEvent::ContextPrepared {
+                step: recorded,
+                configuration: update,
+                ..
+            } = &record.event
+            && *recorded == step
+        {
+            configuration = *update;
         }
         if super::model_observation::matches_turn(&record.event, step, purpose) {
             let event = super::model_observation::load(journal, &record.event, io)
@@ -179,6 +190,7 @@ pub(crate) async fn retained_model_step<'a>(
         #[cfg(feature = "research")]
         journal_cut,
         request,
+        configuration,
         admission,
         events,
     };

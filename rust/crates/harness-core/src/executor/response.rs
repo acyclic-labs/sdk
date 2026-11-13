@@ -9,17 +9,31 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        prior_messages: &[ModelMessage],
-    ) -> Result<(ResponseProjection, crate::model::PreparedModelRequest)> {
+        history: &mut request::ModelStepHistory<'_>,
+    ) -> Result<(
+        ResponseProjection,
+        crate::model::PreparedModelRequest,
+        Option<crate::model::ConfigurationUpdate>,
+    )> {
         if let Some(continued) = self
-            .continue_response_request(journal, input, step, prior_messages)
+            .continue_response_request(journal, input, step, history.messages())
             .await?
         {
-            return Ok(continued);
+            return Ok((continued.0, continued.1, None));
         }
-        let (context_input, base, working) = self
-            .response_base(journal, input, step, prior_messages)
+        let (mut context_input, mut base, working) = self
+            .response_base(journal, input, step, history.messages())
             .await?;
+        let configuration = if matches!(history, request::ModelStepHistory::Turn(..)) {
+            self.configuration_delta(&base.messages)?
+        } else {
+            None
+        };
+        if let Some(update) = configuration {
+            history.append_configuration(update, self.io)?;
+            stock_vec_push(&mut context_input.prior_messages, update.message(), self.io)?;
+            stock_vec_push(&mut base.messages, update.message(), self.io)?;
+        }
         let (context, prepared) = self
             .prepare_transformed_request(&context_input, base)
             .await?;
@@ -33,9 +47,11 @@ impl StockExecution<'_> {
                 accounting: None,
             },
             prepared,
+            configuration,
         ))
     }
 
+    #[cfg(test)]
     pub(super) async fn capture_response(
         &self,
         journal: &dyn ExecutionJournal,
@@ -48,8 +64,30 @@ impl StockExecution<'_> {
         Option<ContextAccounting>,
         crate::model::PreparedModelRequest,
     )> {
-        let (mut projection, prepared) = self
-            .prepare_response_context(journal, input, step, prior_messages)
+        self.capture_response_history(
+            journal,
+            input,
+            step,
+            &mut request::ModelStepHistory::Selected(prior_messages),
+            boundary,
+        )
+        .await
+    }
+
+    async fn capture_response_history(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        history: &mut request::ModelStepHistory<'_>,
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
+    ) -> Result<(
+        ResponseProjection,
+        Option<ContextAccounting>,
+        crate::model::PreparedModelRequest,
+    )> {
+        let (mut projection, prepared, configuration) = self
+            .prepare_response_context(journal, input, step, history)
             .await?;
         let accounting = if self.unchecked()? {
             None
@@ -98,6 +136,7 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
+                    configuration,
                     steering: boundary
                         .map(|boundary| boundary.selection(input.operation_id, step))
                         .transpose()?,
@@ -111,12 +150,31 @@ impl StockExecution<'_> {
         Ok((projection, accounting, prepared))
     }
 
+    #[cfg(test)]
     pub(super) async fn prepared_response(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
+        boundary: Option<&dyn crate::agent::ModelBoundary>,
+    ) -> Result<crate::model::PreparedModelRequest> {
+        self.prepared_response_history(
+            journal,
+            input,
+            step,
+            &mut request::ModelStepHistory::Selected(prior_messages),
+            boundary,
+        )
+        .await
+    }
+
+    pub(super) async fn prepared_response_history(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        history: &mut request::ModelStepHistory<'_>,
         boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<crate::model::PreparedModelRequest> {
         crate::conversation::BoundedContentFuture::new(self.io, || async {
@@ -144,7 +202,7 @@ impl StockExecution<'_> {
                     if self.stock.reconciliation_only {
                         return Err(Error::Indeterminate(input.operation_id));
                     }
-                    self.capture_response(journal, input, step, prior_messages, boundary)
+                    self.capture_response_history(journal, input, step, history, boundary)
                         .await?
                 }
                 Some(reference) => {
@@ -173,7 +231,7 @@ impl StockExecution<'_> {
             }
             self.resolve_response_accounting(
                 journal,
-                (input, step, prior_messages),
+                (input, step, history.messages()),
                 (projection, accounting),
                 prepared,
                 &records,

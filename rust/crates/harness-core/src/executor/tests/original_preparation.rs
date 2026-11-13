@@ -158,6 +158,7 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
+                    configuration: None,
                     steering: boundary
                         .map(|boundary| boundary.selection(input.operation_id, step))
                         .transpose()?,

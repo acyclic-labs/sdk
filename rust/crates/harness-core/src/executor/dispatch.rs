@@ -145,10 +145,9 @@ impl StockExecution<'_> {
                     result?;
                 }
             }
-            let prior_messages = match &prior_messages {
-                request::ModelStepHistory::Turn(history, _) => history.as_slice(),
-                request::ModelStepHistory::Selected(history) => history,
-            };
+            if let Some(update) = retained.configuration {
+                prior_messages.append_configuration(update, self.io)?;
+            }
             let PreparedDispatchStep {
                 #[cfg(feature = "research")]
                 journal_cut,
@@ -161,12 +160,13 @@ impl StockExecution<'_> {
                     journal,
                     input,
                     step,
-                    (prior_messages, prepared),
+                    (&mut prior_messages, prepared),
                     retained,
                     scope,
                     phase,
                 )
                 .await?;
+            let prior_messages = prior_messages.messages();
             let purpose = scope.purpose;
             let request_digest = request.request_digest();
             let purpose_key = model_purpose_key(purpose);
@@ -317,7 +317,10 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        material: (&[ModelMessage], Option<crate::model::PreparedModelRequest>),
+        material: (
+            &mut request::ModelStepHistory<'_>,
+            Option<crate::model::PreparedModelRequest>,
+        ),
         retained: RetainedModelStep,
         scope: ModelStepScope<'_>,
         phase: &mut DispatchPhase,
@@ -329,6 +332,7 @@ impl StockExecution<'_> {
             #[cfg(feature = "research")]
             journal_cut,
             request,
+            configuration: _,
             admission,
             events,
         } = retained;
@@ -410,7 +414,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         turn: (
             u32,
-            &[ModelMessage],
+            &mut request::ModelStepHistory<'_>,
             ModelStepScope<'_>,
             Option<crate::model::PreparedModelRequest>,
         ),
@@ -426,7 +430,10 @@ impl StockExecution<'_> {
                 ) {
                     let selected = match prepared {
                         Some(request) => request,
-                        None => self.prepare_request(input, step, prior_messages).await?,
+                        None => {
+                            self.prepare_request(input, step, prior_messages.messages())
+                                .await?
+                        }
                     };
                     if selected.request_digest() != recorded.request_digest() {
                         return Err(Error::Conflict(
@@ -438,10 +445,13 @@ impl StockExecution<'_> {
             }
             (None, Some(request)) => request,
             (None, None) if purpose == ModelPurpose::Response => {
-                self.prepared_response(journal, input, step, prior_messages, scope.boundary)
+                self.prepared_response_history(journal, input, step, prior_messages, scope.boundary)
                     .await?
             }
-            (None, None) => self.prepare_request(input, step, prior_messages).await?,
+            (None, None) => {
+                self.prepare_request(input, step, prior_messages.messages())
+                    .await?
+            }
         };
         self.verify_model_request_content(journal, &mut request)
             .await?;

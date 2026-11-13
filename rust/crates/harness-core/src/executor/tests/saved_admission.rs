@@ -78,6 +78,7 @@ async fn save_unaccounted_request(
             &ExecutionEvent::ContextPrepared {
                 step: 0,
                 projection,
+                configuration: None,
                 steering: None,
             },
             None,

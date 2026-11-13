@@ -229,6 +229,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
         ContextPrepared {
             step: 1,
             projection: file.clone(),
+            configuration: None,
             steering: None,
         },
         ContextCompacted {

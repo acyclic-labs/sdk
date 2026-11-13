@@ -12,10 +12,14 @@ impl StockExecutor {
     /// Shared storage uses the supplied original preparation owner.
     pub fn into_step_binding(self, io: Option<&PreparationIo>) -> Result<Arc<StepBinding>> {
         let attempt = io.map(PreparationIo::scoped).transpose()?;
-        self.into_step_binding_scoped(attempt.as_ref())
+        self.into_step_binding_scoped(attempt.as_ref(), None)
     }
 
-    fn into_step_binding_scoped(self, storage: Option<&PreparationIo>) -> Result<Arc<StepBinding>> {
+    fn into_step_binding_scoped(
+        self,
+        storage: Option<&PreparationIo>,
+        effort: Option<crate::config::Effort>,
+    ) -> Result<Arc<StepBinding>> {
         let bytes = acyclic_fs::shared_allocation_bytes::<StepBinding>().map_err(|_| {
             stock_boundary(
                 storage,
@@ -36,6 +40,7 @@ impl StockExecutor {
         Ok(Arc::new(StepBinding {
             model: self.model,
             sampling: self.sampling,
+            effort,
             resolved_sampling: self.resolved_sampling,
             provider: self.provider,
             tools: self.tools,
@@ -56,6 +61,7 @@ impl StockExecutor {
         StepBinding {
             model: self.model.clone(),
             sampling: self.sampling,
+            effort: None,
             resolved_sampling: once_cell::sync::OnceCell::new(),
             provider: Arc::clone(&self.provider),
             tools: self.tools.clone(),
@@ -459,8 +465,9 @@ impl StepBinding {
         &self,
         model: &Arc<crate::model::ResolvedModel>,
         sampling: Option<crate::model::ModelSampling>,
+        effort: Option<crate::config::Effort>,
     ) -> bool {
-        Arc::ptr_eq(&self.model.0, model) && self.sampling == sampling
+        Arc::ptr_eq(&self.model.0, model) && self.sampling == sampling && self.effort == effort
     }
     /// Binds another admitted model through the same canonical stock composition.
     /// The template's executable revisions and hooks stay under the running turn's
@@ -469,6 +476,7 @@ impl StepBinding {
         &self,
         model: Arc<crate::model::ResolvedModel>,
         sampling: Option<crate::model::ModelSampling>,
+        effort: Option<crate::config::Effort>,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
         maximum_bytes: Option<u64>,
         io: Option<&PreparationIo>,
@@ -497,6 +505,6 @@ impl StepBinding {
         if let Some(native) = native {
             executor = executor.with_native_tools(&native)?;
         }
-        executor.into_step_binding_scoped(temporary)
+        executor.into_step_binding_scoped(temporary, effort)
     }
 }
