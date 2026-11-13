@@ -175,7 +175,7 @@ fn policy_cache_reachable_pair_traversal_continues_past_4096() -> Result<(), Inv
                     [Outcome {
                         rule: None,
                         denial: None,
-                    }; 12],
+                    }; Action::ALL.len()],
                 )
             })
             .collect()
@@ -210,7 +210,7 @@ fn policy_determinization_admits_discovered_states_and_preserves_finite_denials(
         [Outcome {
             rule: None,
             denial: (!subset.contains(&end)).then_some(Denial::Capability),
-        }; 12]
+        }; Action::ALL.len()]
     };
     let mut remaining = usize::MAX;
     let states = determinize(
@@ -230,7 +230,7 @@ fn policy_determinization_admits_discovered_states_and_preserves_finite_denials(
         assert_eq!(states[state].actions, 0);
         state = states[state].transitions[0];
     }
-    assert_eq!(states[state].actions, (1 << 12) - 1);
+    assert_eq!(states[state].actions, (1 << Action::ALL.len()) - 1);
     assert_eq!(states[states[state].transitions[0]].actions, 0);
     assert_eq!(states[states[0].transitions[1]].actions, 0);
 

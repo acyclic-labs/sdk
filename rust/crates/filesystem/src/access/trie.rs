@@ -17,7 +17,7 @@ struct Outcome {
 
 struct State {
     transitions: Vec<usize>,
-    decisions: [Outcome; 12],
+    decisions: [Outcome; Action::ALL.len()],
     actions: u16,
 }
 
@@ -748,7 +748,7 @@ fn outcomes(
     rules: &BTreeMap<&str, (usize, usize)>,
     grants: &BTreeMap<*const super::Grant, usize>,
     subset: &[usize],
-) -> [Outcome; 12] {
+) -> [Outcome; Action::ALL.len()] {
     Action::ALL.map(|action| {
         let decision = super::decision::evaluate(
             policy,
@@ -816,7 +816,7 @@ fn determinize(
     mut starts: Vec<usize>,
     alphabet: &[char],
     other: char,
-    decide: impl Fn(&[usize]) -> [Outcome; 12],
+    decide: impl Fn(&[usize]) -> [Outcome; Action::ALL.len()],
     rules: usize,
     work: &mut usize,
     admission: &mut StateAdmission<'_>,
@@ -859,7 +859,7 @@ fn determinize(
     Ok(states)
 }
 
-fn terminal(transitions: Vec<usize>, decisions: [Outcome; 12]) -> State {
+fn terminal(transitions: Vec<usize>, decisions: [Outcome; Action::ALL.len()]) -> State {
     State {
         transitions,
         actions: decisions

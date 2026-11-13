@@ -1,6 +1,13 @@
 //! `policy.ts` is plain data. Each admitted policy lowers to one layer of the
 //! filesystem's access policy, and the layers are met: every layer must
 //! allow and any denial wins, so no lower policy can widen a higher one.
+//!
+//! `call` and `spawn` retain independent access actions. A consumer checks
+//! [`Permissions::allows`] with the actual operation and its canonical target
+//! path before invoking a program/model or creating a child. Neither a file
+//! read grant nor a create grant substitutes for that operation. Issuer rules,
+//! the subject's advisory policy and the original static ceiling all apply;
+//! removing a self-imposed file lock does not authorize a call or a spawn.
 use super::{Action, Policy, PolicyRule};
 use crate::{Error, Result};
 use acyclic_fs::access::{
@@ -19,9 +26,9 @@ pub fn decode(value: serde_json::Value) -> Result<Policy> {
         .map_err(|error| Error::Invalid(format!("{}: {error}", super::POLICY)))
 }
 
-/// The filesystem actions a policy action covers. `spawn` and `call` are
-/// not file actions: they are judged where children and calls are created.
-fn file_actions(action: Action) -> &'static [access::Action] {
+/// Operations judged by the one access compiler. Call and spawn never imply
+/// read or create; consumers check their own operation at its addressed path.
+fn access_actions(action: Action) -> &'static [access::Action] {
     match action {
         Action::Read => &[
             access::Action::List,
@@ -37,7 +44,8 @@ fn file_actions(action: Action) -> &'static [access::Action] {
         // A file append is create-only. Mutable append-only data belongs in
         // Streams; granting Append on a file would permit changing its bytes.
         Action::Append => &[access::Action::Create],
-        Action::Spawn | Action::Call => &[],
+        Action::Spawn => &[access::Action::Spawn],
+        Action::Call => &[access::Action::Call],
     }
 }
 
@@ -58,13 +66,13 @@ fn rule(id: String, effect: Effect, actions: BTreeSet<access::Action>, path: &st
 }
 
 /// One policy as one access layer, its rule ids prefixed by `layer`. With
-/// no `only`, everything is allowed; with `only`, only its matching file
+/// no `only`, everything is allowed; with `only`, only its matching
 /// actions are allowed. An empty list allows nothing. `deny` rules deny on top.
 fn lower(layer: &str, policy: &Policy) -> Vec<access::Rule> {
     let actions = |rule: &PolicyRule| -> BTreeSet<access::Action> {
         rule.actions
             .iter()
-            .flat_map(|action| file_actions(*action))
+            .flat_map(|action| access_actions(*action))
             .copied()
             .collect()
     };
@@ -254,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn file_policy_meet_cannot_widen_an_issuer_or_an_only_list() -> Result<()> {
+    fn policy_meet_cannot_widen_an_issuer_or_an_only_list() -> Result<()> {
         let principal = access::Principal {
             kind: access::PrincipalKind::Agent,
             id: "child".into(),
@@ -279,6 +287,55 @@ mod tests {
         };
         for (issuer, subject, action, path, allowed) in [
             (json!({}), json!({}), access::Action::Read, "notes", true),
+            (
+                json!({"deny": [{"path": "models/restricted/**", "actions": ["call"]}]}),
+                json!({"only": [{"path": "models/**", "actions": ["call"]}]}),
+                access::Action::Call,
+                "models/restricted/large",
+                false,
+            ),
+            (
+                json!({"only": [{"path": "models/public/*", "actions": ["call"]}]}),
+                json!({}),
+                access::Action::Call,
+                "models/public/small",
+                true,
+            ),
+            (
+                json!({"only": [{"path": "models/public/*", "actions": ["call"]}]}),
+                json!({}),
+                access::Action::Read,
+                "models/public/small",
+                false,
+            ),
+            (
+                json!({"only": [{"path": "models/public/*", "actions": ["read"]}]}),
+                json!({}),
+                access::Action::Call,
+                "models/public/small",
+                false,
+            ),
+            (
+                json!({"only": [{"path": "children/*", "actions": ["spawn"]}]}),
+                json!({}),
+                access::Action::Spawn,
+                "children/helper",
+                true,
+            ),
+            (
+                json!({"only": [{"path": "children/*", "actions": ["spawn"]}]}),
+                json!({}),
+                access::Action::Create,
+                "children/helper",
+                false,
+            ),
+            (
+                json!({"deny": [{"path": "children/*", "actions": ["spawn"]}]}),
+                json!({}),
+                access::Action::Spawn,
+                "children/helper",
+                false,
+            ),
             (
                 json!({"deny": [{"path": "plugins.ts", "actions": ["write"]}]}),
                 json!({}),
@@ -332,6 +389,24 @@ mod tests {
                 allowed,
                 "{met:?} {action:?} {path}"
             );
+            let mut work = usize::MAX;
+            let program = std::sync::Arc::new(
+                access::CompiledPolicy::compile_with_work(&met, resource.config, &mut work, |_| {
+                    Ok(())
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+            let shared = program
+                .bind_with_work(
+                    &principal,
+                    resource,
+                    context,
+                    &capability,
+                    &mut work,
+                    |_| Ok(()),
+                )
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(shared.decide(action, path, 0), view.decide(action, path, 0));
         }
         let empty = decoded(json!({}));
         let locked = decoded(json!({"only": []}));
@@ -349,6 +424,8 @@ mod tests {
                 false,
             ),
             (&empty, &locked, access::Action::Read, "policy.ts", false),
+            (&empty, &locked, access::Action::Call, "policy.ts", false),
+            (&empty, &locked, access::Action::Spawn, "plugins.ts", false),
             (
                 &issuer_lock,
                 &empty,
@@ -390,6 +467,31 @@ mod tests {
             &read_only,
         )?;
         assert!(!compiled.allows(access::Action::Write, "policy.ts", 0));
+        assert!(!compiled.allows(access::Action::Call, "models/public/small", 0));
+        assert!(!compiled.allows(access::Action::Spawn, "children/helper", 0));
+        let open = meet([], 7)?;
+        for grants in [
+            vec![access::Action::Read, access::Action::Create],
+            vec![access::Action::Call, access::Action::Spawn],
+        ] {
+            let mut ceiling = access::Capability::whole_volume(None, &grants);
+            ceiling.layers[0][0].resource.path = "targets/*".into();
+            let compiled =
+                Permissions::compile(&open, None, &principal, resource, context, &ceiling)?;
+            for action in [
+                access::Action::Read,
+                access::Action::Create,
+                access::Action::Call,
+                access::Action::Spawn,
+            ] {
+                assert_eq!(
+                    compiled.allows(action, "targets/one", 0),
+                    grants.contains(&action),
+                    "file and invocation ceilings differ for {action:?}"
+                );
+                assert!(!compiled.allows(action, "other/one", 0));
+            }
+        }
 
         // File append is an absent-path create, never permission to modify an
         // existing file or append mutable bytes in place.

@@ -101,7 +101,8 @@ pub const INITIAL_POLICY: &[u8] = include_bytes!("initial.json");
 /// Versioned policy record in the root directory's authenticated metadata.
 pub const POLICY_METADATA_KEY: &[u8] = b"security.acyclic.access.v1";
 
-/// Independently grantable filesystem operations.
+/// Independently grantable operations on addressed resources. File access,
+/// calls and child creation remain distinct even when their paths coincide.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Action {
@@ -129,11 +130,15 @@ pub enum Action {
     Lock,
     /// Change policy or administer the volume.
     Admin,
+    /// Invoke an addressed program, action or model. Does not grant file access.
+    Call,
+    /// Create a child at the addressed name. Does not grant file creation.
+    Spawn,
 }
 
 impl Action {
     /// Every action, in stable discriminant order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::List,
         Self::Read,
         Self::Create,
@@ -146,6 +151,8 @@ impl Action {
         Self::ReadHistory,
         Self::Lock,
         Self::Admin,
+        Self::Call,
+        Self::Spawn,
     ];
 }
 

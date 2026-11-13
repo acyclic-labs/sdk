@@ -709,7 +709,7 @@ fn compile_paths(
         [Outcome {
             rule: None,
             denial: Some(Denial::NoAllow),
-        }; 12]
+        }; Action::ALL.len()]
     };
     let states = if uniform {
         admission.state(nfa.nodes.len())?;
