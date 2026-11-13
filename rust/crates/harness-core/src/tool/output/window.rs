@@ -2,11 +2,40 @@
 use crate::{Error, Result, tool::ToolResult};
 use std::{collections::VecDeque, ops::Range};
 
-pub(crate) fn notice(omitted: u64, start: u64, end: u64) -> String {
-    if omitted == 0 {
-        String::new()
-    } else {
-        format!("\n[{omitted} bytes omitted in [{start}, {end})]\n")
+pub(crate) struct Omission {
+    omitted: u64,
+    start: u64,
+    end: u64,
+}
+
+pub(crate) fn notice(omitted: u64, start: u64, end: u64) -> Omission {
+    Omission {
+        omitted,
+        start,
+        end,
+    }
+}
+
+impl std::fmt::Display for Omission {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.omitted == 0 {
+            Ok(())
+        } else {
+            write!(
+                formatter,
+                "\n[{} bytes omitted in [{}, {})]\n",
+                self.omitted, self.start, self.end
+            )
+        }
+    }
+}
+
+impl serde::Serialize for Omission {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 

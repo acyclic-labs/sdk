@@ -2130,6 +2130,114 @@ async fn a_shell_call_stages_its_output_on_the_journal_volume() -> Result<()> {
     follow_tool_output(&harness, &state.path, &scope).await
 }
 
+#[tokio::test]
+async fn truncated_shell_output_keeps_both_ends_and_the_model_reads_the_missing_range() -> Result<()>
+{
+    use crate::model::{
+        ModelContentPart, ModelDataPart, ModelEvent, ModelRequest, ToolCall, ToolResultContent,
+    };
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    fn result<'a>(request: &'a ModelRequest, id: &str) -> Result<&'a ToolResultContent> {
+        request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolResult {
+                    call_id, content, ..
+                } if call_id == id => Some(content),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound(format!("tool result {id}")))
+    }
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let command = if cfg!(windows) {
+        r#"[Console]::Write("HEAD-GC207`n" + ('x' * 131072) + "`nTAIL-GC207")"#
+    } else {
+        "printf 'HEAD-GC207\\n'; printf 'x%.0s' {1..131072}; printf '\\nTAIL-GC207'"
+    };
+    let original = format!("HEAD-GC207\n{}\nTAIL-GC207", "x".repeat(131072));
+    let provider = super::scripted([
+        super::checked_commands::call(0, "shell", command),
+        ScriptedTurn::Text("captured".into()),
+    ]);
+    let harness = Arc::new(
+        super::open_scripted(super::checkout_config(
+            directory.path(),
+            (super::model()?, provider.clone()),
+        )?)
+        .await?,
+    );
+    let mut client = ObservedConversation::open(&harness).await?;
+    let input = client
+        .conversation
+        .send("capture", "capture output")
+        .await?;
+    assert!(client.settled(input).await?.outcome.is_completed());
+    let request = provider
+        .request(1)
+        .ok_or_else(|| Error::NotFound("captured request".into()))?;
+    let ToolResultContent::Parts { parts } = result(&request, "checkout-0")? else {
+        return Err(agent("shell did not return its plain model presentation"));
+    };
+    let [ModelDataPart::Text { text }] = parts.as_slice() else {
+        return Err(agent("shell presentation did not contain one text part"));
+    };
+    // The old suffix-only collector fails the opening-byte assertion. Read
+    // exactly the coordinates and path the real model received, with no host
+    // file reader, extra mount or inspection credential.
+    let (_, omitted) = text
+        .split_once("bytes omitted in [")
+        .ok_or_else(|| agent("missing omission notice"))?;
+    let (range, continuation) = omitted
+        .split_once("); read this byte range from ")
+        .ok_or_else(|| agent("missing continuation"))?;
+    let (start, end) = range
+        .split_once(", ")
+        .ok_or_else(|| agent("missing source coordinates"))?;
+    let (start, end) = (
+        start.parse::<usize>().map_err(agent)?,
+        end.parse::<usize>().map_err(agent)?,
+    );
+    assert!(start > 0 && start < end && end < original.len());
+    assert!(text.starts_with(&format!("Exit code: 0\n{}", &original[..start])));
+    assert!(text.ends_with(&original[end..]));
+    let (path, _) = continuation
+        .split_once("]\n")
+        .ok_or_else(|| agent("missing spill path"))?;
+    assert!(path.starts_with("volume:///output/"));
+    let page_end = end.min(start + 256);
+    provider.extend([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "read-middle".into(),
+                "read".into(),
+                serde_json::json!({"path":path,"range":{"start":start,"end":page_end}}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ]),
+        ScriptedTurn::Text("paged".into()),
+    ]);
+    let input = client
+        .conversation
+        .send("page", "read the omitted middle")
+        .await?;
+    assert!(client.settled(input).await?.outcome.is_completed());
+    let request = provider
+        .request(3)
+        .ok_or_else(|| Error::NotFound("paged request".into()))?;
+    let ToolResultContent::Json { value } = result(&request, "read-middle")? else {
+        return Err(agent(format!(
+            "ordinary read refused the model's continuation: {:?}",
+            result(&request, "read-middle")?
+        )));
+    };
+    assert_eq!(value["text"].as_str(), Some(&original[start..page_end]));
+    Ok(())
+}
+
 async fn observation(
     harness: &LocalHarness,
     authority: &crate::filesystem::AgentAuthority<'_>,

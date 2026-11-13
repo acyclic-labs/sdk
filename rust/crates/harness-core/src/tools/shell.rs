@@ -122,9 +122,12 @@ pub(crate) fn omission(fields: &serde_json::Map<String, serde_json::Value>) -> S
         let end = fields["omitted_range"]["end"]
             .as_u64()
             .unwrap_or(start.saturating_add(omitted));
-        text.push_str(
-            crate::tool::output::omission_notice(omitted, start, end).trim_end_matches("]\n"),
+        let _ = write!(
+            text,
+            "{}",
+            crate::tool::output::omission_notice(omitted, start, end)
         );
+        text.truncate(text.len() - 2);
         text.push_str("; read this byte range from");
         if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
             let _ = write!(text, " {spill}");
