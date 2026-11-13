@@ -4,6 +4,47 @@ use crate::agent::{SessionPublication, SessionRow};
 use acyclic_stream::{CommitCondition, CommitEffect, HeadProjection, HeadsRequest, StreamProvider};
 
 impl PeerRoute<'_> {
+    /// Join host-prepared storage admission to current account membership.
+    /// The host's `AdmissionPolicy` must first authorize this sender's peer
+    /// grant and prepare funded storage/residency effects. No default funding
+    /// or authority policy is supplied here. All effects join the original
+    /// relay or canonical refusal publication through the ordinary account path.
+    ///
+    /// Exhausted credit returns its captured event without reading directory
+    /// rows. After it fires, the account service prepares a new guarded cut.
+    pub async fn account_admission<P: StreamProvider + ?Sized>(
+        &self,
+        provider: &P,
+        destination: Option<&route::Placement>,
+        account_node: &route::NodeId,
+        funded: route::Admission,
+    ) -> Result<route::Admission, Error> {
+        let (mut effects, refused) = match funded {
+            wait @ route::Admission::Credit { .. } => return Ok(wait),
+            route::Admission::Allow(effects) => (effects, None),
+            route::Admission::Reject {
+                reason,
+                notice,
+                effects,
+            } => {
+                if notice != self.rejection(account_node.clone(), reason)? {
+                    return Err(Error::Record("peer refusal differs from its original send"));
+                }
+                (effects, Some(reason))
+            }
+        };
+        let (membership, guard) = self.account_membership(provider, destination).await?;
+        effects.push(guard);
+        match membership.or(refused) {
+            Some(reason) => Ok(route::Admission::Reject {
+                reason,
+                notice: self.rejection(account_node.clone(), reason)?,
+                effects,
+            }),
+            None => Ok(route::Admission::Allow(effects)),
+        }
+    }
+
     /// Select both current account memberships in one bounded authority view.
     /// The account's `AdmissionPolicy::prepare` joins this hard guard to its
     /// funded relay admission or canonical rejection. A conditional conflict
@@ -13,7 +54,7 @@ impl PeerRoute<'_> {
     /// `agent.send-peer` grant, and resolve the immutable destination placement
     /// before calling. An exact replay recovers the original admission before
     /// preparing current membership, so opt-out cannot rewrite its outcome.
-    pub async fn account_membership<P: StreamProvider + ?Sized>(
+    pub(super) async fn account_membership<P: StreamProvider + ?Sized>(
         &self,
         provider: &P,
         destination: Option<&route::Placement>,

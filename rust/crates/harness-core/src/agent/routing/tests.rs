@@ -31,10 +31,57 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
         )?;
         let peer = PeerRoute::parse(&envelope)?;
         let paths = route::Paths::new(StreamPath::new("routing")?);
+        let account_node = route::NodeId::new(b"account")?;
         let destination = route::Placement {
             actor: envelope.to.clone(),
             node: route::NodeId::new(b"destination")?,
         };
+        let no_credit = acyclic_stream::testing::Counted::new(provider.clone());
+        let (drained, changed) = futures::channel::oneshot::channel();
+        let waiting = peer
+            .account_admission(
+                &no_credit,
+                Some(&destination),
+                &account_node,
+                route::Admission::Credit {
+                    changed: Box::pin(async move {
+                        changed.await.map_err(|_| route::Error::InvalidRecord)?;
+                        Ok(())
+                    }),
+                },
+            )
+            .await?;
+        assert_eq!(
+            no_credit.requests().control(),
+            0,
+            "exhausted storage must wait without reading directory rows"
+        );
+        assert_eq!(no_credit.requests().data(), 0);
+        let route::Admission::Credit { changed } = waiting else {
+            return Err("credit wait was replaced".into());
+        };
+        drained
+            .send(())
+            .map_err(|_| "credit listener disappeared")?;
+        changed.await?;
+        let mut altered = peer.rejection(account_node.clone(), route::Rejection::Closed)?;
+        altered.request.deadline_unix_millis = Some(1);
+        assert!(
+            peer.account_admission(
+                &no_credit,
+                Some(&destination),
+                &account_node,
+                route::Admission::Reject {
+                    reason: route::Rejection::Closed,
+                    notice: altered,
+                    effects: Vec::new(),
+                }
+            )
+            .await
+            .is_err(),
+            "a host policy must not smuggle a changed Notice through membership admission"
+        );
+        assert_eq!(no_credit.requests().control(), 0);
         assert_eq!(
             peer.account_membership(&provider, None).await?.0,
             Some(route::Rejection::NoSuchActor)
@@ -77,10 +124,27 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
             CommitOutcome::Committed(_)
         ));
         let counted = acyclic_stream::testing::Counted::new(provider.clone());
-        let (reason, guard) = peer
-            .account_membership(&counted, Some(&destination))
+        let debit = StreamPath::new("storage-debit")?;
+        let funded = CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: debit.clone(),
+            }],
+            vec![CommitMutation::Append {
+                path: debit.clone(),
+                records: vec![b"debit".to_vec().into()],
+            }],
+        );
+        let decision = peer
+            .account_admission(
+                &counted,
+                Some(&destination),
+                &account_node,
+                route::Admission::Allow(vec![funded]),
+            )
             .await?;
-        assert_eq!(reason, None);
+        let route::Admission::Allow(effects) = decision else {
+            return Err("enabled peers were refused".into());
+        };
         assert_eq!(
             counted
                 .requests()
@@ -110,13 +174,20 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
             CommitOutcome::Committed(_)
         ));
         let mut admission = envelope.relay_request(&paths, &destination.node)?;
-        admission.effects.push(guard);
+        admission.effects.extend(effects);
         assert!(
             matches!(
                 provider.commit(admission.clone()).await?,
                 CommitOutcome::Conflict(_)
             ),
             "either root's opt-out must fence a previously prepared relay"
+        );
+        assert!(
+            matches!(
+                provider.tail(debit.clone()).await,
+                Err(acyclic_stream::StreamError::NotFound)
+            ),
+            "a refused publication must not spend its storage debit"
         );
         assert!(
             provider
@@ -130,6 +201,20 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
                 .0,
             Some(route::Rejection::Closed)
         );
+        let refused = peer
+            .account_admission(
+                &provider,
+                Some(&destination),
+                &account_node,
+                route::Admission::Allow(Vec::new()),
+            )
+            .await?;
+        let route::Admission::Reject { reason, notice, .. } = refused else {
+            return Err("removed peer was admitted".into());
+        };
+        assert_eq!(reason, route::Rejection::Closed);
+        assert_eq!(notice, peer.rejection(account_node.clone(), reason)?);
+        assert!(crate::agent::PeerRejectionRoute::parse(&notice).is_ok());
         // Removing only the membership guard reproduces relay admission after
         // opt-out on the same native store.
         admission.effects.pop().ok_or("guard missing")?;
@@ -138,6 +223,18 @@ async fn account_membership_uses_one_fenced_view_for_both_roots()
             CommitOutcome::Committed(_)
         ));
         assert_eq!(provider.tail(paths.relay(&destination.node)?).await?, 1);
+        let relay = provider
+            .record_at(paths.relay(&destination.node)?, 0)
+            .await?
+            .ok_or("relay missing")?;
+        let spent = provider
+            .record_at(debit, 0)
+            .await?
+            .ok_or("funded effect was omitted")?;
+        assert_eq!(
+            spent.commit_id, relay.commit_id,
+            "the host's funding effects must join relay publication atomically"
+        );
         let mut wrong = destination.clone();
         wrong.node = route::NodeId::new(b"wrong-node")?;
         assert!(
