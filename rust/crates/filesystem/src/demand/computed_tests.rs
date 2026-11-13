@@ -40,10 +40,11 @@ impl Provider {
         }
     }
     fn append(&self, bytes: Bytes, ctx: &mut KernelAccounting<'_>) {
+        let delivery = self.sink.lock().unwrap();
         let epoch = self.epoch.load(Ordering::SeqCst) + 1;
         self.data.lock().unwrap().insert(epoch, bytes);
         self.epoch.store(epoch, Ordering::SeqCst);
-        if let Some(sink) = self.sink.lock().unwrap().as_ref() {
+        if let Some(sink) = delivery.as_ref() {
             sink.changed(&epoch, ctx).unwrap();
         }
     }
@@ -112,19 +113,41 @@ impl ViewProvider for Provider {
     }
 }
 struct Watch(Arc<Mutex<Option<Arc<dyn ViewChangeSink<u64>>>>>);
+impl Watch {
+    fn retire(&self) {
+        self.0.lock().unwrap().take();
+    }
+}
 impl SourceWatch for Watch {
     fn fence(&self, _: &mut KernelAccounting<'_>) -> Result<SourceFence, DemandError> {
-        Ok(SourceFence::Confirmed)
+        match self.0.lock().unwrap().as_ref() {
+            Some(_) => Ok(SourceFence::Confirmed),
+            None => Err(DemandError::SourceUnavailable),
+        }
     }
     fn stop(&self, _: &mut KernelAccounting<'_>) -> Result<(), DemandError> {
-        self.0.lock().unwrap().take();
+        self.retire();
         Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
+        wait.check().map_err(|_| DemandError::Cancelled)?;
+        self.retire();
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.retire();
+        Ok(())
+    }
+    fn is_stopped(&self) -> bool {
+        self.0.lock().unwrap().is_none()
     }
     fn logical_owned_bytes(&self) -> u64 {
         std::mem::size_of::<Self>() as u64
     }
     fn is_exact(&self) -> bool {
-        true
+        !self.is_stopped()
     }
 }
 struct Projection(Arc<Counts>, bool);
