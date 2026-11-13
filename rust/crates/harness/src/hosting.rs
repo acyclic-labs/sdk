@@ -1982,11 +1982,55 @@ fn parse_children_cursor(cursor: &str) -> Result<(CommitId, StreamPath), Error> 
     ))
 }
 
+impl<P, O> Server<P, O>
+where
+    P: AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn actor_failure(&self, agent: AgentPath) -> BoxProviderFuture<'static, StreamError> {
+        let server = self.this.clone();
+        Box::pin(async move {
+            let Some(server) = server.upgrade() else {
+                return StreamError::Unavailable;
+            };
+            let actors = server.bound.agents();
+            let actor = match actors.actor(&agent) {
+                Ok(actor) => actor,
+                Err(error) => return StreamError::unavailable_with_cause(&error),
+            };
+            let failure = match actors.runtime().delivery_failure(&actor) {
+                Ok(failure) => failure,
+                Err(error) => return StreamError::unavailable_with_cause(&error),
+            };
+            StreamError::unavailable_with_cause(&failure.await)
+        })
+    }
+}
+
 impl<P, O> CallProvider for Server<P, O>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn failure(
+        &self,
+        subscription: &acyclic_stream::wire::SessionSubscription,
+    ) -> Option<BoxProviderFuture<'static, StreamError>> {
+        use acyclic_stream::wire::session_subscription::Kind;
+        let agent = match subscription.kind.as_ref()? {
+            Kind::Follow(follow) => {
+                let path =
+                    acyclic_stream::wire_codec::session::stream_path(&follow.resource).ok()?;
+                AgentPath::containing(&path)?
+            }
+            _ => return None,
+        };
+        if self.within_tree(&agent).is_err() {
+            return None;
+        }
+        Some(self.actor_failure(agent))
+    }
+
     fn target(
         &self,
         invocation: &[u8],
@@ -2059,7 +2103,21 @@ where
                 );
                 eprintln!("server dispatch caller: {bytes} bytes");
             }
-            let result = dispatch.await;
+            let result = if matches!(
+                call.command(),
+                AgentCommand::Settlement { wait: true, .. }
+                    | AgentCommand::Usage { wait: true, .. }
+                    | AgentCommand::Events { wait: true, .. }
+            ) {
+                let agent = call.command().agent().ok_or(StreamError::InvalidArgument)?;
+                let failed = server.actor_failure(agent.clone());
+                match futures::future::select(Box::pin(dispatch), failed).await {
+                    futures::future::Either::Left((result, _)) => result,
+                    futures::future::Either::Right((cause, _)) => Err(Error::Stream(cause)),
+                }
+            } else {
+                dispatch.await
+            };
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}

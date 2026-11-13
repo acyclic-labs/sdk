@@ -20,8 +20,8 @@ mod runtime;
 mod scheduling;
 pub use crate::guest::Subscription;
 pub use runtime::{
-    Clock, ClockControl, ClockError, ControlledClock, PlacementRequests, Runtime, RuntimeLimits,
-    SystemClock,
+    Clock, ClockControl, ClockError, ControlledClock, DeliveryFailure, PlacementRequests, Runtime,
+    RuntimeLimits, SystemClock,
 };
 pub use scheduling::DEFAULT_SCHEDULING_SHARDS;
 mod sockets;
