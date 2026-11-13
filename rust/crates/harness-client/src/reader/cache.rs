@@ -646,6 +646,17 @@ impl RecordCache {
         )
     }
 
+    pub(super) fn retains_custody(
+        &self,
+        stream: &StreamPath,
+        custody: &std::sync::Weak<()>,
+    ) -> bool {
+        self.meta
+            .get(stream)
+            .and_then(|meta| meta.custody.as_ref())
+            .is_some_and(|current| custody.ptr_eq(&std::sync::Arc::downgrade(current)))
+    }
+
     fn meta_mut(&mut self, stream: &StreamPath) -> &mut Meta {
         if !self.meta.contains_key(stream) && self.meta.len() >= self.max_streams {
             // Facts are re-learnable from history; drop one this frame does
