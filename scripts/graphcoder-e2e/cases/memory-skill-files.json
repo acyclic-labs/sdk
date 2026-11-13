@@ -261,6 +261,26 @@
     "requests": 15,
     "last_model_absent": [
       "CHILD_PRIVATE_REVISION"
+    ],
+    "model_notices": [
+      {
+        "notice": {
+          "kind": "context.changed",
+          "source": "harness",
+          "body": {
+            "skill": {
+              "name": "retained-check",
+              "description": "Inspect retained evidence before revising it."
+            },
+            "version": 1
+          }
+        },
+        "absent": [
+          "READ_RETAINED_EVIDENCE_BEFORE_EDITING",
+          "ORIGINAL_PRIVATE_EVIDENCE"
+        ],
+        "step": 4
+      }
     ]
   },
   "physical": true,

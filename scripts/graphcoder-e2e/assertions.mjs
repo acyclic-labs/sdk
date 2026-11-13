@@ -194,6 +194,30 @@ export function modelInputs(expected, generations) {
   }
 }
 
+// Inspect actual rendered event blocks, not historical tool arguments that may
+// contain the same authored text. All native families carry the same notice.
+function renderedNotices(body) {
+  const notices = [];
+  function visit(value) {
+    if (typeof value === "string") {
+      try { visit(JSON.parse(value)); } catch {}
+      for (const match of value.matchAll(/<notice source="([^"]*)" kind="([^"]*)">([\s\S]*?)<\/notice>/g)) {
+        const decode = text => text.replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+          .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+        notices.push({source: decode(match[1]), kind: decode(match[2]), body: JSON.parse(decode(match[3]))});
+      }
+    } else if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+    } else if (value && typeof value === "object") {
+      if (typeof value.source === "string" && typeof value.kind === "string" && value.body !== undefined)
+        notices.push(value);
+      else for (const item of Object.values(value)) visit(item);
+    }
+  }
+  visit(body);
+  return notices;
+}
+
 export function requests(test, records) {
   const generations = records.filter(isGeneration);
   assert.equal(generations.length, test.assert.requests, "generation count");
@@ -204,6 +228,15 @@ export function requests(test, records) {
       tool.functionDeclarations?.map(item => item.name) ?? [tool.function?.name ?? tool.name]));
     for (const name of expected.present ?? []) assert.ok(names.has(name), `step ${expected.step} does not offer ${name}`);
     for (const name of expected.absent ?? []) assert.ok(!names.has(name), `step ${expected.step} offers forbidden ${name}`);
+  }
+  for (const expected of test.assert.model_notices ?? []) {
+    const request = generations.find(request => request.step === expected.step);
+    assert.ok(request, `missing model request for notice step ${expected.step}`);
+    const notices = renderedNotices(request.body);
+    assert.ok(notices.some(notice => subset(notice, expected.notice)),
+      `step ${expected.step} missing rendered notice ${JSON.stringify(expected.notice)}`);
+    for (const text of expected.absent ?? []) assert.ok(!JSON.stringify(notices).includes(text),
+      `step ${expected.step} eagerly injected ${text} into event context`);
   }
   const expected = test.assert.steps ?? test.model.steps.map((_, index) => index);
   assert.deepEqual(records.filter(record => record.step !== null).map(record => record.step).sort((a,b) => a-b), [...expected].sort((a,b) => a-b), "each expected script step consumed exactly once");
