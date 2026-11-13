@@ -107,7 +107,20 @@ pub(crate) async fn review_model(
     };
     drop(binding);
     let result = executor.infer(execution.0, &input, io).await?;
-    let review: Review = result.decode(limits, io)?;
+    let review: Review = match result.decode(limits, io) {
+        Ok(review) => review,
+        // The inference is already terminal and journaled. Replaying invalid
+        // decision text cannot repair it; let the original approval owner ask.
+        Err(Error::Invalid(_))
+        | Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }) => Review {
+            verdict: RuleVerdict::Ask,
+            reason: None,
+        },
+        Err(error) => return Err(error),
+    };
     drop(result);
     drop(input);
     drop(executor);
@@ -307,6 +320,8 @@ mod tests {
                     let hold = io.as_ref().map(|io| io.guard_owned(retained)).transpose()?;
                     drop(first);
                     drop(hold);
+                } else if case == 1 || case == 7 {
+                    assert_eq!(first?, (RuleVerdict::Ask, None));
                 } else if case == 2 {
                     assert_eq!(first?, (RuleVerdict::Allow, None));
                 } else {
@@ -335,6 +350,8 @@ mod tests {
                     let hold = io.as_ref().map(|io| io.guard_owned(retained)).transpose()?;
                     drop(replay);
                     drop(hold);
+                } else if case == 1 || case == 7 {
+                    assert_eq!(replay?, (RuleVerdict::Ask, None));
                 } else if case == 2 {
                     assert_eq!(replay?, (RuleVerdict::Allow, None));
                 } else {
