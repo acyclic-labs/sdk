@@ -407,6 +407,37 @@ async fn search_grants_no_authority_and_reconciliation_never_dispatches() -> Res
     assert_eq!(transport.0.load(Ordering::SeqCst), 1);
     Ok(())
 }
+
+#[test]
+fn search_selection_storage_follows_page_size_instead_of_matching_catalog_size() -> Result<()> {
+    let mut expected_overhead = None;
+    for count in [8, 128] {
+        let names: Vec<_> = (0..count).rev().map(|n| format!("tool{n:04}")).collect();
+        let refs: Vec<_> = names.iter().map(String::as_str).collect();
+        let catalog = catalog("selection", &refs);
+        catalog.validate(None, None)?;
+        let mut found = None;
+        let found_work = acyclic_test_support::measure(|| {
+            found = Some(catalog.search("find", None, 1, None, None));
+        });
+        let mut missing = None;
+        let missing_work = acyclic_test_support::measure(|| {
+            missing = Some(catalog.search("miss", None, 1, None, None));
+        });
+        let found = found.expect("matching query executed")?;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "mcp.fixture.tool0000");
+        assert!(missing.expect("missing query executed")?.is_empty());
+        // Both queries validate and inspect the same catalog. Their allocation
+        // difference is selection storage plus one complete returned definition.
+        let overhead = found_work.bytes_total - missing_work.bytes_total;
+        if let Some(expected) = expected_overhead {
+            assert_eq!(overhead, expected, "matching history enlarged page storage");
+        }
+        expected_overhead = Some(overhead);
+    }
+    Ok(())
+}
 #[test]
 fn schema_bounds_namespace_and_result_negative_controls() {
     let mut input = catalog("1", &["a"]);
