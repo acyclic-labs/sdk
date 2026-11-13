@@ -363,7 +363,7 @@ pub fn reply_header(
     } else {
         length
     };
-    if length < OUTPUT_HEADER || bytes.len() < length {
+    if length < OUTPUT_HEADER || bytes.len() < OUTPUT_HEADER {
         return Err(ENOBUFS);
     }
     let status = match errno {
