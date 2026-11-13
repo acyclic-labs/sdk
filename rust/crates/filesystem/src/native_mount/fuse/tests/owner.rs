@@ -20,8 +20,8 @@ fn current_thread_embedder_writes_through_its_own_view() -> Result<(), Box<dyn s
             .value;
         let checkout = volume
             .checkout(
-                crate::GenerationSelector::Head,
-                crate::CheckoutMode::tracking_transaction(),
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
                 crate::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
