@@ -125,6 +125,42 @@ impl AgentApprovalPolicy {
         })
     }
 
+    /// Opens an original action only for its active retained parent stage.
+    /// This check precedes independent inference; a human-only action or an
+    /// unrelated parent must not even enter the reviewer's context.
+    pub(crate) async fn parent_request(
+        &self,
+        files: &dyn ApprovalFiles,
+        id: &str,
+        parent: &AgentId,
+    ) -> Result<Vec<u8>> {
+        if self.parent.as_ref() != Some(parent) {
+            return Err(Error::Unauthorized(
+                "reviewer is not the retained parent".into(),
+            ));
+        }
+        let bytes = self.request(files, id).await?;
+        let request = ApprovalRequest::new(id, &bytes, self.limits.file_bytes)?;
+        match super::next_agent_stage(
+            &self.policy,
+            self.digest,
+            self.parent.clone(),
+            &request,
+            files,
+            0,
+        )
+        .await?
+        {
+            NextStage::Review {
+                approver: Approver::Parent,
+                ..
+            } => Ok(bytes),
+            _ => Err(Error::Unauthorized(
+                "parent is not the active approval stage".into(),
+            )),
+        }
+    }
+
     /// The immutable request file of approval `id`.
     pub(crate) async fn request(&self, files: &dyn ApprovalFiles, id: &str) -> Result<Vec<u8>> {
         files
