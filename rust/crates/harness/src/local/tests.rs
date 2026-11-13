@@ -36,11 +36,7 @@ pub(super) fn text() -> Arc<ScriptedModelProvider> {
     scripted([ScriptedTurn::Text("done".into())])
 }
 
-/// Finite scripts model the task's requests, without optional settlement
-/// followups. Settlement coverage opens the default composition directly.
-pub(super) async fn open_scripted(config: LocalHarnessConfig) -> Result<LocalHarness> {
-    LocalHarness::open(config.feedback_plugin(false)).await
-}
+pub(super) use crate::test_support::open_scripted;
 
 /// One conversation and its observation, which reports each settled entry.
 struct ObservedConversation {

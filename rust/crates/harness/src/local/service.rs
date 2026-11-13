@@ -1148,7 +1148,7 @@ mod tests {
             }),
         );
         let local = Arc::new(
-            super::super::LocalHarness::open(
+            crate::test_support::open_scripted(
                 local_harness_config(
                     checkout.path(),
                     (

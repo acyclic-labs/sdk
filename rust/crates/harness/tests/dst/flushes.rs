@@ -76,7 +76,7 @@ fn turns(
         };
         let mut cuts = [0; 10];
         cuts[0] = schedule.durable_write_count();
-        let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        let harness = Arc::new(entry(open_scripted(config()?)).await?);
         cuts[1] = schedule.durable_write_count();
         let (agents, _) = entry(harness.agents()).await?;
         for (turn, expected) in expected[..5].iter().enumerate() {
@@ -98,7 +98,7 @@ fn turns(
             .map_err(storage)?;
         cuts[7] = schedule.durable_write_count();
         drop(harness);
-        let reopened = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        let reopened = Arc::new(entry(open_scripted(config()?)).await?);
         cuts[8] = schedule.durable_write_count();
         prompt(&reopened, "reopened", "reply", &expected[5]).await?;
         let (agents, _) = entry(reopened.agents()).await?;

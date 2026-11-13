@@ -29,7 +29,7 @@ fn local_turn<'a>(
         let config = local_harness_config(directory.join("checkout"), (model, provider))?
             .without_user_settings()
             .state_directory(directory.join("state"));
-        let harness = Arc::new(entry(LocalHarness::open(config)).await?);
+        let harness = Arc::new(entry(open_scripted(config)).await?);
         if matches!(cut, Some(Cut::FirstTurnWrite)) {
             ordinal.store(schedule.cut_next(DurableFault::After), Ordering::SeqCst);
         }

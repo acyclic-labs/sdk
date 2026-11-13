@@ -173,6 +173,15 @@ pub fn fixture_models(
     ))
 }
 
+/// Open finite task scripts without optional settlement followups.
+/// Settlement proofs use the default composition directly.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_scripted(
+    config: crate::LocalHarnessConfig,
+) -> acyclic_stream::BoxProviderFuture<'static, crate::Result<crate::LocalHarness>> {
+    crate::LocalHarness::open(config.feedback_plugin(false))
+}
+
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn local_harness_config(
