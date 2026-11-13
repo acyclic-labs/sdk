@@ -152,9 +152,7 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
         connection,
         u64::from(owner_thread),
     ];
-    for word in info {
-        control.write_all(&word.to_ne_bytes())?;
-    }
+    control.write_all(info.map(u64::to_ne_bytes).as_flattened())?;
     let mut go = [0];
     control.read_exact(&mut go)?;
     let path = root.join("blocked");
@@ -232,18 +230,19 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // This deadline only fails a broken child protocol; no elapsed time
         // establishes the pending request or supplies a passing observation.
         control.set_read_timeout(Some(Duration::from_secs(5)))?;
-        let mut child = Command::new(std::env::current_exe()?)
+        let child = Command::new(std::env::current_exe()?)
             .args([OWNER_TEST, "--exact", "--nocapture"])
             .env(OWNER_CASE, if old { "old" } else { "hosted" })
             .env(OWNER_ROOT, &owner_root)
             .stdin(Stdio::from(OwnedFd::from(input)))
             .spawn()?;
-        let mut info = [0_u64; 4];
-        for word in &mut info {
-            let mut bytes = [0; 8];
-            control.read_exact(&mut bytes)?;
-            *word = u64::from_ne_bytes(bytes);
-        }
+        let mut child = OwnerProcess {
+            child,
+            root: owner_root.clone(),
+        };
+        let mut bytes = [[0; 8]; 4];
+        control.read_exact(bytes.as_flattened_mut())?;
+        let info = bytes.map(u64::from_ne_bytes);
         if old {
             assert_eq!(info[0], 0);
         } else {
@@ -304,4 +303,59 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         wait_exit(&host_exit)?;
     }
     Ok(())
+}
+
+/// A failed proof must not strand the deliberately blocked old-path owner.
+/// Discover its actual connection from kernel metadata even if startup failed
+/// before the child could send its information record.
+struct OwnerProcess {
+    child: std::process::Child,
+    root: std::path::PathBuf,
+}
+
+impl std::ops::Deref for OwnerProcess {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for OwnerProcess {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
+    }
+}
+
+impl Drop for OwnerProcess {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        if let Ok(table) = std::fs::read_to_string(format!("/proc/{}/mountinfo", self.child.id())) {
+            for line in table.lines() {
+                let Some((mount, filesystem)) = line.split_once(" - ") else {
+                    continue;
+                };
+                if !filesystem.starts_with("fuse ") {
+                    continue;
+                }
+                let fields = mount.split_whitespace().collect::<Vec<_>>();
+                if fields
+                    .get(4)
+                    .is_some_and(|path| Path::new(path) == self.root)
+                    && let Some((major, minor)) =
+                        fields.get(2).and_then(|device| device.split_once(':'))
+                    && let (Ok(major), Ok(minor)) = (major.parse::<u64>(), minor.parse::<u64>())
+                {
+                    let connection = (major << 20) | minor;
+                    let _ = std::fs::write(
+                        format!("/sys/fs/fuse/connections/{connection}/abort"),
+                        b"1",
+                    );
+                }
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
