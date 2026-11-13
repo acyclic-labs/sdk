@@ -278,9 +278,9 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
     {
         use std::{io::Write as _, os::fd::AsRawFd as _, path::PathBuf};
 
-        // This control proves observation of the real syncfs call, not crash
-        // persistence (the local checkpoint above covers that). A memory file
-        // keeps unrelated dirty files out of the filesystem-wide operation.
+        // This control proves observation of the real syncfs call. The local
+        // checkpoint above retains the disk-backed drain control. A memory
+        // file keeps unrelated dirty files out of this filesystem-wide call.
         let mut dirty = std::fs::File::from(
             rustix::fs::memfd_create(c"drain-control", rustix::fs::MemfdFlags::CLOEXEC)
                 .map_err(storage)?,
