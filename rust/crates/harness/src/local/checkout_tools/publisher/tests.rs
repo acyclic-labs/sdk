@@ -63,6 +63,27 @@ async fn open_fixture(
     ))
     .await
     .map_err(storage)?;
+    let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(state.path().join("workspace"))
+        .map_err(storage)?;
+    open_fixture_shared(
+        directory,
+        state,
+        &filesystem,
+        store,
+        crate::AgentId::from_bytes([1; 16]),
+        "project",
+    )
+    .await
+}
+
+async fn open_fixture_shared(
+    directory: &Path,
+    state: tempfile::TempDir,
+    filesystem: &acyclic_fs::LocalFs,
+    store: acyclic_fs::LocalCoreStateStore,
+    agent: crate::AgentId,
+    project_name: &str,
+) -> Result<(Fixture, CheckoutPublisher)> {
     let provider = crate::resources::ProviderRef::new(
         "publisher".into(),
         "filesystem".into(),
@@ -71,12 +92,11 @@ async fn open_fixture(
     )?;
     let project = VolumeRef::new(
         provider.clone(),
-        "project".into(),
+        project_name.into(),
         VolumeClass::Project,
         VolumeOwner::Project("publisher".into()),
         &mut None,
     )?;
-    let agent = crate::AgentId::from_bytes([1; 16]);
     let private = VolumeRef::new(
         provider.clone(),
         "task-files".into(),
@@ -88,7 +108,7 @@ async fn open_fixture(
     files.create_volume(&private).await?;
     let workspace = Arc::new(
         workspace::open(
-            &filesystem,
+            filesystem,
             &workspace::Attach {
                 volume: &project,
                 scratch: &private,
@@ -103,10 +123,7 @@ async fn open_fixture(
             acyclic_fs::hold_root(directory).map_err(storage)?,
             false,
             workspace::OwnerState {
-                store: acyclic_fs::LocalCoreStateStore::open_shared_owner(
-                    state.path().join("workspace"),
-                )
-                .map_err(storage)?,
+                store,
                 processes: None,
             },
         )
