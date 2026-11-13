@@ -514,27 +514,35 @@ async fn a_held_immutable_publication_does_not_exclude_another_address() {
     tokio::time::timeout(std::time::Duration::from_secs(2), held.entered())
         .await
         .expect("first publisher never reached its physical publication cut");
-    let mut second_accounting = unbounded_accounting(&cancellation);
-    let allocation = second_accounting
-        .claim_owned(second_node.owned_bytes(), 0)
-        .unwrap();
-    let mut second = Box::pin(store.put_lazy_overlay(
-        second_id,
-        (second_node.clone(), allocation),
-        &mut second_accounting,
-    ));
+    // A dedicated inline producer supplies execution capacity even when the
+    // shared blocking pool has only one worker, occupied by the held producer.
+    let independent_store = store.clone();
+    let independent_node = second_node.clone();
+    let (completed, mut completion) = tokio::sync::oneshot::channel();
+    let second = std::thread::spawn(move || {
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = unbounded_accounting(&cancellation);
+        let allocation = accounting
+            .claim_owned(independent_node.owned_bytes(), 0)
+            .unwrap();
+        let result = futures::executor::block_on(independent_store.put_lazy_overlay(
+            second_id,
+            (independent_node, allocation),
+            &mut accounting,
+        ));
+        let _ = completed.send(result);
+    });
     let independent =
-        tokio::time::timeout(std::time::Duration::from_secs(2), second.as_mut()).await;
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut completion).await;
     // Always release and finish both real producers before reporting a failure.
     drop(held);
     first.await.unwrap();
-    match independent {
-        Ok(result) => result.unwrap(),
-        Err(_) => {
-            second.await.unwrap();
-            panic!("an unrelated immutable address waited for the held publisher");
-        }
-    }
+    second.join().unwrap();
+    independent
+        .expect("an unrelated immutable address waited for the held publisher")
+        .expect("independent producer disappeared")
+        .unwrap();
     let mut accounting = unbounded_accounting(&cancellation);
     for (id, expected) in [(first_id, first_node), (second_id, second_node)] {
         assert_eq!(
