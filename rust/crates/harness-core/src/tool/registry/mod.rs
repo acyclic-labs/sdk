@@ -150,7 +150,7 @@ impl ToolRegistry {
     ) -> Result<Vec<ToolDefinition>> {
         Self {
             data: self.data.clone(),
-            sources: Vec::new(),
+            sources: None,
             source_ceiling: None,
         }
         .definitions_for_grants(grants, io)
