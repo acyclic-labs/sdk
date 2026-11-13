@@ -250,10 +250,12 @@ fn staged_archive_preserves_original_members_and_immutable_publication() {
             );
         }
         fs::write(root.path().join("fixture-0.1.0/Cargo.toml"), b"changed").unwrap();
-        assert!(staged
-            .publish(root.path(), "fixture-0.1.0")
-            .unwrap_err()
-            .contains("immutable"));
+        assert!(
+            staged
+                .publish(root.path(), "fixture-0.1.0")
+                .unwrap_err()
+                .contains("immutable")
+        );
     }
     staged_archive_refuses_late_corruption_duplicates_and_every_limit_before_publication();
     staged_archive_retains_snapshot_and_detects_source_replacement();
@@ -337,10 +339,12 @@ fn staged_archive_retains_snapshot_and_detects_source_replacement() {
     )
     .unwrap();
     fs::write(input.path(), b"replacement").unwrap();
-    assert!(staged
-        .check_source(&release, input.path())
-        .unwrap_err()
-        .contains("changed"));
+    assert!(
+        staged
+            .check_source(&release, input.path())
+            .unwrap_err()
+            .contains("changed")
+    );
     assert_eq!(
         staged.files["src/lib.rs"].sha256,
         crate::sha256_bytes(&[42])

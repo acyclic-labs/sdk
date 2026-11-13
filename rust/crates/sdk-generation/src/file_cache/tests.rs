@@ -283,14 +283,16 @@ fn changes_during_reads_and_failed_reads_are_not_cached() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("input");
     fs::write(&path, b"before").unwrap();
-    assert!(get(&path, "mutation", || {
-        let value = crate::sha256_file(&path)?;
-        fs::write(&path, b"after with different length").map_err(io_error)?;
-        Ok(value)
-    })
-    .unwrap_err()
-    .0
-    .contains("file changed while reading identity"));
+    assert!(
+        get(&path, "mutation", || {
+            let value = crate::sha256_file(&path)?;
+            fs::write(&path, b"after with different length").map_err(io_error)?;
+            Ok(value)
+        })
+        .unwrap_err()
+        .0
+        .contains("file changed while reading identity")
+    );
     assert_eq!(
         sha256_file(&path).unwrap(),
         crate::sha256_file(&path).unwrap()

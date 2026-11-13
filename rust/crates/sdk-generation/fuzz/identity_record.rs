@@ -9,9 +9,11 @@ pub fn check(bytes: &[u8], key: &str) -> Option<String> {
     let value = cache_record::decode(bytes, key)?;
     for hash in [key, value.as_str()] {
         assert_eq!(hash.len(), 71, "accepted a malformed SHA-256 identity");
-        assert!(hash.strip_prefix("sha256:").is_some_and(|digest| digest
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))));
+        assert!(hash.strip_prefix("sha256:").is_some_and(|digest| {
+            digest
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        }));
     }
     // Compare the admitted bytes, before the writer can repair authentication.
     // JSON ordering and whitespace are not part of the persisted contract.
