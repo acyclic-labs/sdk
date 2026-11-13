@@ -5,6 +5,8 @@ use crate::agent::{
     InputSelection, StatusRecord,
 };
 use acyclic_stream::{StreamPath, StreamProviderExt as _};
+use futures::StreamExt as _;
+mod text;
 
 impl<P, O> Bound<P, O>
 where
@@ -89,24 +91,17 @@ where
                     match message {
                         Some(message) => {
                             let reader = bound.input_reader(&state, &message.body).await?;
-                            // Reuse the validated original envelope decoder. Attached
-                            // files stay references; recall projects only human text.
-                            let text = if message.body.descriptor().media_type() == crate::agent::USER_INPUT_MEDIA_TYPE {
-                                let content = crate::agent::read_user_input(&message.body, &*reader).await.map_err(turn)?;
-                                Some(match content {
-                                    crate::model::ModelContent::Text(text) => text,
-                                    content => content.parts().iter().filter_map(|part| match part {
-                                        crate::model::ModelContentPart::Text { text, .. } => Some(text.as_str()),
-                                        _ => None,
-                                    }).collect::<String>(),
-                                })
-                            } else { None };
+                            if message.body.descriptor().media_type() == crate::agent::USER_INPUT_MEDIA_TYPE {
+                                let mut ranges = structured_preview(&*reader, &message.body, maximum, selection, end);
+                                while let Some(step) = ranges.next().await {
+                                    yield step?;
+                                }
+                                if selection == InputSelection::Latest { return; }
+                                continue;
+                            }
                             let mut offset = 0;
                             loop {
-                                let preview = match &text {
-                                    Some(text) => text_prefix(text, offset, maximum)?,
-                                    None => input_prefix(&*reader, &message.body, offset, maximum).await?,
-                                };
+                                let preview = input_prefix(&*reader, &message.body, offset, maximum).await?;
                                 if selection == InputSelection::Latest {
                                     yield InputPreviewStep::Selected(Some(preview));
                                     return;
@@ -223,19 +218,71 @@ where
     }
 }
 
-fn text_prefix(text: &str, offset: u64, maximum: u64) -> Result<InputPreview, Error> {
-    let length = text.len() as u64;
-    let remaining = length
-        .checked_sub(offset)
-        .ok_or(Error::Record("input offset is past its end"))?;
-    let start = offset as usize;
-    let mut end = (offset + remaining.min(maximum)) as usize;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    Ok(InputPreview {
-        text: text[start..end].to_owned(),
-        bytes: length,
+fn structured_chunks<'a>(
+    reader: &'a dyn crate::conversation::ContentResidencyVerifier,
+    file: &'a FileRef,
+    maximum: u64,
+) -> acyclic_stream::BoxProviderStream<'a, Result<String, Error>> {
+    Box::pin(async_stream::try_stream! {
+        // A chunk splits work; it never limits the original message's size.
+        let chunk = maximum.clamp(4, 4096);
+        let mut projection = text::Text::new(chunk as usize);
+        let mut offset = 0;
+        while offset < file.descriptor().byte_length() {
+            let part = input_prefix(reader, file, offset, chunk).await?;
+            if part.text.is_empty() { Err(Error::Record("input source made no progress"))?; }
+            offset += part.text.len() as u64;
+            yield projection.feed(&part.text)?;
+        }
+        projection.finish()?;
+    })
+}
+
+fn structured_preview<'a>(
+    reader: &'a dyn crate::conversation::ContentResidencyVerifier,
+    file: &'a FileRef,
+    maximum: u64,
+    selection: InputSelection,
+    inbox: u64,
+) -> acyclic_stream::BoxProviderStream<'a, Result<InputPreviewStep, Error>> {
+    Box::pin(async_stream::try_stream! {
+        // Decoded size is part of the presentation contract. Count it without
+        // retaining text, yielding credit for every bounded original-source read.
+        let mut bytes = 0u64;
+        let mut counting = structured_chunks(reader, file, maximum);
+        while let Some(part) = counting.next().await {
+            bytes = bytes.checked_add(part?.len() as u64).ok_or(Error::Record("input text length overflows"))?;
+            yield InputPreviewStep::Progress;
+        }
+        if bytes == 0 || maximum == 0 {
+            let preview = InputPreview { text: String::new(), bytes };
+            yield if selection == InputSelection::Latest {
+                InputPreviewStep::Selected(Some(preview))
+            } else { InputPreviewStep::MessageRange { inbox, offset: 0, preview } };
+            return;
+        }
+        let mut ranges = structured_chunks(reader, file, maximum);
+        let mut pending = String::new();
+        let mut offset = 0;
+        while let Some(part) = ranges.next().await {
+            pending.push_str(&part?);
+            while pending.len() as u64 >= maximum || (offset + pending.len() as u64 == bytes && !pending.is_empty()) {
+                let mut end = (pending.len() as u64).min(maximum) as usize;
+                while !pending.is_char_boundary(end) { end -= 1; }
+                let rest = pending.split_off(end);
+                let preview = InputPreview { text: std::mem::replace(&mut pending, rest), bytes };
+                if selection == InputSelection::Latest {
+                    yield InputPreviewStep::Selected(Some(preview));
+                    return;
+                }
+                let start = offset;
+                offset += preview.text.len() as u64;
+                yield InputPreviewStep::MessageRange { inbox, offset: start, preview };
+                if offset == bytes { return; }
+            }
+            yield InputPreviewStep::Progress;
+        }
+        if offset != bytes { Err(Error::Record("input projection ended early"))?; }
     })
 }
 async fn input_prefix(

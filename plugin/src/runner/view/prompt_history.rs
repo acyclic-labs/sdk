@@ -1,7 +1,7 @@
 //! Navigation owns only the original socket and prompts the user has requested.
 use super::{Conversation, Failure};
 use acyclic_harness::local::sessions::PromptHistory;
-use futures::{Future, future::BoxFuture};
+use futures::future::BoxFuture;
 use std::{
     collections::VecDeque,
     sync::Arc,
