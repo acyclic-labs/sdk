@@ -445,7 +445,8 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             self.0.load(Ordering::SeqCst)
         }
     }
-    for finish in [false, true] {
+    for completion in [0, 1, 2] {
+        let finish = completion != 0;
         let commit_clock = Arc::new(CommitClock(AtomicU64::new(100)));
         let stream = Arc::new(MemoryStream::new_with_clock(
             MemoryLimits::default(),
@@ -571,6 +572,21 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 )
                 .await?;
             bound.agents().runtime().complete().await?;
+            let completed_path =
+                acyclic_harness_core::runtime::tool_output_completion_path(execution, call);
+            bound
+                .publish_files(
+                    &agent,
+                    FileRoot::Private {},
+                    OperationId::from_bytes([238; 16]),
+                    &[ClientFileChange {
+                        path: completed_path.clone(),
+                        expected: None,
+                        text: Some("{}".into()),
+                    }],
+                )
+                .await?;
+            bound.agents().runtime().complete().await?;
             assert_eq!(
                 store
                     .load(&actor)
@@ -623,12 +639,38 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 queries.read_signal(Kind::Stuck).await?.is_none(),
                 "old alarm ignored fresh output"
             );
-            if finish {
+            if completion == 1 {
                 // Completion may be committed while its delivery is still queued.
                 stream.append(AppendRequest { path: jobs.clone(), records: vec![AppendRecord {
                     value: serde_json::to_vec(&serde_json::json!({"version":1,"call":call,"event":{"kind":"finished"}}))?.into(),
                     headers: RecordHeaders::new(vec![call.into_bytes().to_vec().into()], vec![])?,
                 }], if_tail: None, idempotency_key: IdempotencyKey::new("quiet-finish")? }).await?;
+            } else if completion == 2 {
+                let completed =
+                    serde_json::to_vec(&acyclic_harness_core::runtime::ToolOutputCompletion {
+                        version: 1,
+                        turn: execution,
+                        call,
+                    })?;
+                publisher
+                    .stage_once(
+                        OperationId::from_bytes([239; 16]),
+                        &completed_path,
+                        &completed,
+                        "application/json",
+                        "completed.json",
+                        ContentAccess::default(),
+                    )?
+                    .await?;
+                bound.agents().runtime().complete().await?;
+                let physical = store.load(&actor).await?;
+                let physical = physical
+                    .state()
+                    .ok_or("quiet actor missing after completion")?;
+                assert!(
+                    physical.paused() && physical.alarm().deadline_unix_ms().is_none(),
+                    "physical completion did not retire quiet supervision",
+                );
             }
             // B starts after A's tool admission; A's later pause still owns resume.
             let independent = OperationId::from_bytes([237; 16]);
