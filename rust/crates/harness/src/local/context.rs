@@ -280,30 +280,27 @@ impl LocalHarness {
         Ok(through)
     }
 
-    /// This turn's hook configuration: the live one, pinned once per turn so
-    /// a resumed turn binds the hooks it started with. Hooks are behaviour,
-    /// not prefix, so they change at the next turn, never waiting for an
-    /// epoch.
+    /// Imported host rules, pinned once per turn. Plugin selection is kept
+    /// separate so subsequent model steps cannot replace the host contribution.
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) async fn turn_hooks(
         &self,
         turn: OperationId,
         publisher: &dyn ContentPublisher,
     ) -> Result<Option<FileRef>> {
-        let operation = publication_operation(b"acyclic.local.turn-hooks/v1\0", &turn.into_bytes());
+        let operation = publication_operation(b"acyclic.local.host-hooks/v1\0", &turn.into_bytes());
         if let Some(hooks) = self.observe_manifest(operation, publisher).await? {
             return Ok(Some(hooks));
         }
         // The user's imported host hooks rank above every plugin.
-        let mut hooks = match &self.settings {
+        let hooks = match &self.settings {
             Some(settings) => {
                 crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings)).await?
             }
             None => crate::hooks::Hooks::default(),
         };
-        hooks.append(self.plugin_set.rules.clone());
         let bytes = hooks.encode(self.limits.file_bytes)?;
-        let path = format!("config/hooks/{turn}.json");
+        let path = format!("config/host-hooks/{turn}.json");
         let staged = publisher
             .stage_once(
                 operation,

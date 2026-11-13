@@ -36,6 +36,28 @@ pub(crate) struct BoundHooks {
     pub(crate) manifest: [u8; 32],
 }
 
+pub(crate) fn bind_rules(
+    host: &Hooks,
+    plugins: &Hooks,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<Arc<BoundHooks>> {
+    let mut rules = Hooks::default();
+    for source in [host, plugins] {
+        for binding in &source.bindings {
+            crate::executor::stock_vec_push(&mut rules.bindings, Arc::clone(binding), io)?;
+        }
+        for custody in &source.custody {
+            crate::executor::stock_vec_push(&mut rules.custody, Arc::clone(custody), io)?;
+        }
+    }
+    let identity = ("acyclic.agent.hooks/v1", &rules);
+    let manifest = match io {
+        Some(io) => io.canonical_digest(&identity)?,
+        None => crate::executor::json::canonical_json_digest(&identity, None, &mut None)?,
+    };
+    shared(BoundHooks { rules, manifest }, io)
+}
+
 fn shared<T>(value: T, io: Option<&crate::filesystem::PreparationIo>) -> Result<Arc<T>> {
     if let Some(io) = io {
         let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<T>().map_err(

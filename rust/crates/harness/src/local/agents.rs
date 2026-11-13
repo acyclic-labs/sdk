@@ -385,6 +385,7 @@ impl TurnContext for LocalContext {
                     hooks
                         .as_ref()
                         .map(|file| (file, journal_content.reader.as_ref())),
+                    &local.plugin_set,
                 )
                 .await?;
             #[cfg(not(any(test, not(target_arch = "wasm32"))))]
