@@ -182,9 +182,9 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
     #[cfg(not(target_arch = "wasm32"))]
     {
         let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
-        // Absence is distinct from successful measured data, decoder denial
+        // Absence is distinct from successful measured data, work denial
         // and cancellation. None may silently use the portable entrance.
-        for (kind, cut, decode, cancelled, absent) in [
+        for (kind, cut, admit_items, cancelled, absent) in [
             (Kind::RepeatFailure, 0, true, false, true),
             (Kind::Stuck, b_cut, true, false, true),
             (Kind::RepeatFailure, b_cut, false, false, false),
@@ -193,7 +193,11 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
             let cancellation = acyclic_fs::CancellationToken::new();
             let original = acyclic_fs::NativeMaterializationWork::new(
                 acyclic_fs::WorkBudget {
-                    bytes_decoded: if decode { budget.bytes_decoded } else { 0 },
+                    items_examined: if admit_items {
+                        budget.items_examined
+                    } else {
+                        0
+                    },
                     ..budget
                 },
                 &cancellation,

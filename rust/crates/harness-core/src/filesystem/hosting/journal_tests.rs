@@ -617,7 +617,10 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
         }),
     };
     for unresolved in [
-        Err(crate::Error::Record("original capture unavailable")),
+        Err(crate::Error::exchange(
+            crate::ExchangeStep::Step("capture original output"),
+            std::io::Error::other("original capture unavailable"),
+        )),
         Ok(None),
         Ok(Some(capture.clone())),
     ] {
