@@ -807,9 +807,7 @@ impl Client {
         let input = matches!(&kind, Kind::ActorCall(call) if call.input)
             .then(|| Arc::new(input::State::new(self.pool.clone(), id, progress.clone())));
         cursor.input = input.clone();
-        if !matches!(&kind, Kind::Follow(_)) {
-            cursor.primitive = "session-reply";
-        }
+
         let operation = cursor.observation.operation.clone();
         let registration = async {
             self.pool
@@ -869,7 +867,6 @@ impl Client {
         }
         Ok(Cursor {
             observation: Observation::channel(id),
-            primitive: "session-follow",
             id,
             client: self.clone(),
             progress,
@@ -886,7 +883,6 @@ struct Cursor {
     pending: Option<Delivery>,
     observation: Observation,
     /// Names this cursor's deliveries in wait reports.
-    primitive: &'static str,
     id: u64,
     client: Client,
     progress: Arc<Progress>,
@@ -899,7 +895,7 @@ impl Cursor {
         match self.receiver.try_recv() {
             Ok(received) => Some(received),
             Err(_) => {
-                let work = super::runtime::waiting(self.primitive, self.id, self.receiver.recv());
+                let work = self.receiver.recv();
                 #[cfg(feature = "serde")]
                 {
                     let progress = &self.progress;
