@@ -402,7 +402,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                                 &bindings,
                             )
                             .map_err(turn)?
-                            .journal_authority(&[])
+                            .journal_authority(self.volumes.as_ref(), &[], &[])
                             .await
                             .map_err(turn)?;
                         let body = InputStager {
