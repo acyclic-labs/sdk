@@ -16,7 +16,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         scope: &Scope,
         verifier: &AuthorityVerifier,
         operation: OperationId,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<RunAdmissionSource>> {
         let publisher = FilesystemContentPublisher::new(
             self.clone(),
