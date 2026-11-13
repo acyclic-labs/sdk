@@ -3,6 +3,7 @@
 use super::*;
 use std::sync::mpsc::sync_channel;
 
+#[path = "tests/wire.rs"]
 mod wire;
 
 const CASE: &str = "ACYCLIC_MOUNT_HOST_ADMISSION_PROOF";
