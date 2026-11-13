@@ -403,6 +403,7 @@ impl Session {
         if output.filled != needed {
             return Ok(());
         }
+        let notification = needed >= 16 && output.slice(8, 16) == [0; 8];
         let count = match write(self.device, output.slice(0, needed)) {
             Ok(Some(count)) => count,
             Ok(None) => return Ok(()),
@@ -411,7 +412,7 @@ impl Session {
                 // the original errno for the caller's policy (cache invalidation
                 // can legitimately miss an inode) and keep the session alive.
                 output.filled = 0;
-                send_receipt(self.control, Receipt::Rejected(error.0))?;
+                send_receipt(self.control, Receipt::Rejected(notification, error.0))?;
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -434,7 +435,7 @@ impl Session {
         let response = core::mem::replace(&mut self.response, Response::Backend);
         match response {
             Response::Backend => {
-                send_receipt(self.control, Receipt::Published)?;
+                send_receipt(self.control, Receipt::Published(notification))?;
             }
             Response::Session {
                 transition,

@@ -3,8 +3,8 @@
 
 pub(super) enum Receipt {
     Retired,
-    Published,
-    Rejected(i32),
+    Published(bool),
+    Rejected(bool, i32),
 }
 
 impl Receipt {
@@ -15,16 +15,20 @@ impl TryFrom<Receipt> for [u8; Receipt::SIZE] {
     type Error = ();
 
     fn try_from(receipt: Receipt) -> Result<Self, Self::Error> {
-        let word = match receipt {
-            Receipt::Retired => 0,
-            Receipt::Published => 1,
-            Receipt::Rejected(errno) if errno > 0 => u32::try_from(errno)
-                .ok()
-                .and_then(|errno| errno.checked_add(1))
-                .ok_or(())?,
-            Receipt::Rejected(_) => return Err(()),
+        let (notification, word) = match receipt {
+            Receipt::Retired => (false, 0),
+            Receipt::Published(notification) => (notification, 1),
+            Receipt::Rejected(notification, errno) if errno > 0 => (
+                notification,
+                u32::try_from(errno)
+                    .ok()
+                    .and_then(|errno| errno.checked_add(1))
+                    .filter(|word| word & (1 << 31) == 0)
+                    .ok_or(())?,
+            ),
+            Receipt::Rejected(_, _) => return Err(()),
         };
-        Ok(word.to_ne_bytes())
+        Ok((word | (u32::from(notification) << 31)).to_ne_bytes())
     }
 }
 
@@ -32,10 +36,16 @@ impl TryFrom<[u8; Receipt::SIZE]> for Receipt {
     type Error = ();
 
     fn try_from(bytes: [u8; Receipt::SIZE]) -> Result<Self, Self::Error> {
-        match u32::from_ne_bytes(bytes) {
-            0 => Ok(Self::Retired),
-            1 => Ok(Self::Published),
-            word => Ok(Self::Rejected(i32::try_from(word - 1).map_err(|_| ())?)),
+        let word = u32::from_ne_bytes(bytes);
+        let notification = word & (1 << 31) != 0;
+        match word & !(1 << 31) {
+            0 if !notification => Ok(Self::Retired),
+            0 => Err(()),
+            1 => Ok(Self::Published(notification)),
+            status => Ok(Self::Rejected(
+                notification,
+                i32::try_from(status - 1).map_err(|_| ())?,
+            )),
         }
     }
 }
