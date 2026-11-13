@@ -1385,7 +1385,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 participant: participant.clone(),
                 key: key.clone(),
                 delivered: match (trigger, delivered) {
-                    (Trigger::Record { subscription, .. }, Some(record)) => Some((
+                    (
+                        Trigger::Record { subscription, .. }
+                        | Trigger::KeyedRecord { subscription, .. },
+                        Some(record),
+                    ) => Some((
                         state
                             .subscriptions
                             .get(subscription)
