@@ -5,8 +5,11 @@ use crate::{
     workspace::{VolumeView, compose},
 };
 use acyclic_fs::access::*;
-use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf};
+#[cfg(unix)]
+use std::{fs::OpenOptions, io::Write};
 
+#[cfg(unix)]
 fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
     table_with_home(root, false)
 }
@@ -99,7 +102,9 @@ fn table_with_home(root: PathBuf, home: bool) -> Result<MountTable<Arc<tempfile:
 
 fn invocation(root: &Path) -> Invocation {
     Invocation {
-        executable: PathBuf::from("/bin/bash"),
+        executable: acyclic_native_runtime::platform_shell()
+            .expect("native platform shell")
+            .to_path_buf(),
         argv: Vec::new(),
         cwd: root.into(),
         environment: BTreeMap::new(),
@@ -456,6 +461,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
 
 // A declared native binding may leave the primary root, but resolving a
 // symlink within it must never leave that binding's own authorized root.
+#[cfg(unix)]
 #[test]
 fn bound_volume_cwd_keeps_its_authority() {
     use proptest::prelude::*;
@@ -557,6 +563,7 @@ fn bound_volume_cwd_keeps_its_authority() {
         .unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() -> Result<()> {
     use proptest::prelude::*;
@@ -858,6 +865,7 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn missing_shell_inputs_are_preflight_results_with_paths() -> Result<()> {
     let directory = tempfile::tempdir().map_err(Error::process_io)?;

@@ -280,6 +280,5 @@ pub fn workspace_grant<T>(
     }
 }
 
-#[cfg(test)]
-#[cfg(unix)]
+#[cfg(all(test, any(unix, windows)))]
 mod tests;
