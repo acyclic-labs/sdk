@@ -104,7 +104,12 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// idempotent and observable like any other, but lives only in this
     /// process's memory: never journalled or flushed, never listed by a
     /// children page, inherited by a durable fork, or in a snapshot. A write
-    /// that publishes durably may name no owned path at all, so it is refused
+    /// retains its account-scoped idempotency identity while its lease lives:
+    /// `inspect_idempotency` and `read_commit` return the original result, and
+    /// a different request cannot spend the same key in another lease or in
+    /// durable storage. Releasing the lease forgets its results and keys;
+    /// durable receipts remain available. A write that publishes durably may
+    /// name no owned path at all, so it is refused
     /// with `InvalidArgument`, as is one that also writes an existing durable
     /// path or another lease's; a fresh path without a parent is `NotFound`.
     /// Dropping or settling the lease removes every subtree it owns, and

@@ -35,12 +35,60 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     {
         return Err(violated!());
     }
-    let mut follows = publish(provider, &source, &forked, &adopted).await?;
+    let (mut follows, mut receipts) = publish(provider, &source, &forked, &adopted).await?;
+    let fork_key = key(b"ephemeral/plain-fork")?;
+    let fork = provider
+        .fork(ForkRequest {
+            source: source.clone(),
+            destination: path("ephemeral/lease/plain-fork")?,
+            exclude: Vec::new(),
+            at_tail: Some(1),
+            idempotency_key: fork_key.clone(),
+        })
+        .await?;
+    receipts.push((fork_key, fork.commit_id));
+    for (key, id) in &receipts {
+        receipt(provider, key.clone(), *id).await?;
+    }
+    // Retry identities are account-scoped, not silently scoped to a lease.
+    for (target, retry) in [
+        (&source, receipts[0].0.clone()),
+        (&forked, key(b"ephemeral/source")?),
+    ] {
+        if provider
+            .append(AppendRequest {
+                path: target.clone(),
+                records: vec![Bytes::from_static(b"key-collision").into()],
+                if_tail: None,
+                idempotency_key: retry,
+            })
+            .await
+            .err()
+            != Some(StreamError::IdempotencyMismatch)
+        {
+            return Err(violated!());
+        }
+    }
     refusals(provider, &source, &forked, &adopted).await?;
     isolation(provider, &parent, &source).await?;
     // Release removes the subtree and every adopted path; followers of both
     // observe the loss.
     lease.settle().await?;
+    for (key, id) in receipts {
+        if provider.inspect_idempotency(key).await?.is_some()
+            || provider.read_commit(id).await.err() != Some(StreamError::NotFound)
+        {
+            return Err(violated!());
+        }
+    }
+    // Negative control: ending a lease never retires durable recovery facts.
+    if provider
+        .inspect_idempotency(key(b"ephemeral/source")?)
+        .await?
+        .is_none()
+    {
+        return Err(violated!());
+    }
     for (follow, gone) in follows.iter_mut().zip([&forked, &adopted]) {
         if !matches!(follow.next().await, Some(Err(StreamError::NotFound)))
             || provider.tail(gone.clone()).await != Err(StreamError::NotFound)
@@ -61,7 +109,13 @@ async fn publish<P: StreamProvider + ?Sized>(
     source: &StreamPath,
     forked: &StreamPath,
     adopted: &StreamPath,
-) -> Result<[crate::RecordStream; 2], Failure> {
+) -> Result<
+    (
+        [crate::RecordStream; 2],
+        Vec<(IdempotencyKey, crate::CommitId)>,
+    ),
+    Failure,
+> {
     let fork = CommitRequest {
         deadline_unix_millis: None,
         effects: vec![CommitEffect::hard(
@@ -99,6 +153,7 @@ async fn publish<P: StreamProvider + ?Sized>(
     if retried.commit_id != first.commit_id {
         return Err(violated!());
     }
+    let mut receipts = vec![(key(b"ephemeral/fork")?, first.commit_id)];
     let mut follows = [
         crate::records_only(
             provider
@@ -129,6 +184,7 @@ async fn publish<P: StreamProvider + ?Sized>(
         if appended.tail != tail + 1 {
             return Err(violated!());
         }
+        receipts.push((key(retry)?, appended.commit_id));
     }
     for (follow, records) in follows.iter_mut().zip([
         [b"seed".as_slice(), b"forked", b"appended"].as_slice(),
@@ -143,7 +199,37 @@ async fn publish<P: StreamProvider + ?Sized>(
             }
         }
     }
-    Ok(follows)
+    Ok((follows, receipts))
+}
+
+async fn receipt<P: StreamProvider + ?Sized>(
+    provider: &P,
+    key: IdempotencyKey,
+    id: crate::CommitId,
+) -> Result<(), Failure> {
+    let Some(observed) = provider.inspect_idempotency(key.clone()).await? else {
+        return Err(violated!());
+    };
+    let actual = match &observed.outcome {
+        IdempotencyOutcome::Append(AppendOutcome::Committed(receipt)) => receipt.commit_id,
+        IdempotencyOutcome::Fork(receipt) => receipt.commit_id,
+        IdempotencyOutcome::Commit(envelope) => envelope.commit_id,
+        _ => return Err(violated!()),
+    };
+    let envelope = provider.read_commit(id).await?;
+    if observed.idempotency_key != key
+        || actual != id
+        || envelope.commit_id != id
+        || envelope.mutations.is_empty()
+    {
+        return Err(violated!());
+    }
+    if let IdempotencyOutcome::Commit(original) = observed.outcome
+        && original != envelope
+    {
+        return Err(violated!());
+    }
+    Ok(())
 }
 
 /// A durable write naming an owned path anywhere, or one mixing scopes or
