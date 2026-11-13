@@ -45,10 +45,16 @@ pub use stdin::{Stdin, stdin};
 mod output;
 #[cfg(not(target_arch = "wasm32"))]
 pub use output::InheritedOutput;
+#[cfg(target_os = "linux")]
+#[path = "../runner/fuse_protocol.rs"]
+#[doc(hidden)]
+pub mod fuse_protocol;
 pub mod obs;
 mod process_tree;
 #[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 pub use process_tree::fuzz_runner_request;
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use process_tree::receive_packet_device_reply_for_test;
 #[cfg(windows)]
 mod windows;
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -78,7 +84,10 @@ pub use process_tree::{
     ProcessWaitOutcome, ProcessWake,
 };
 #[cfg(target_os = "linux")]
-pub use process_tree::{ChildExitWatch, ProcessExitAction, wait_child_until};
+pub use process_tree::{
+    ChildExitWatch, PacketDevice, PacketDevicePublication, PacketDeviceRetirement,
+    ProcessExitAction, wait_child_until,
+};
 #[cfg(unix)]
 pub use process_tree::{DescriptorInterest, DescriptorReadiness, descriptor_readiness};
 #[cfg(not(target_arch = "wasm32"))]

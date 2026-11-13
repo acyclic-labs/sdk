@@ -38,13 +38,13 @@ async function controllerState(env) {
     let full;
     do {
       const retained = text(storage, 'cursor');
-      const page = await domain.created(retained === undefined ? 0n : BigInt(decoder.decode(retained)));
+      const page = await domain.created(BigUint64Array.from(retained === undefined ? [] : JSON.parse(decoder.decode(retained)).map(BigInt)));
       for (const address of page.actors) {
         await request(address, '/admit', address);
         const name = 'owner:' + hex(address);
         await put(storage, name, address); routes.set(name, address);
       }
-      await put(storage, 'cursor', encoder.encode(String(page.next)));
+      await put(storage, 'cursor', encoder.encode(JSON.stringify(page.next.map(String))));
       full = page.full;
     } while (full);
   });

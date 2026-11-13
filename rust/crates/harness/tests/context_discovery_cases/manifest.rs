@@ -126,6 +126,29 @@ async fn assert_request(
     assert!(text.contains("SELECTED BODY"));
     assert!(!text.contains("UNSELECTED BODY"));
     assert!(!text.contains("replacement"));
+    let catalog =
+        &request.messages[manifest.conventions.len() + manifest.discovery.instructions.len()];
+    let ModelContent::Text(catalog) = &catalog.content else {
+        return Err(Error::Invalid("skill catalog is not text".into()));
+    };
+    let listing: Vec<acyclic_harness::context::SkillSummary> =
+        serde_json::from_str(catalog).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(listing.len(), 2);
+    for (entry, metadata) in listing.iter().zip(&manifest.discovery.skills) {
+        assert_eq!(entry.name, metadata.name);
+        assert_eq!(entry.description, metadata.description);
+    }
+    assert_ne!(listing[0].id, listing[1].id);
+    assert!(!catalog.contains("SKILL.md"));
+    let (_, body) = manifest.discovery.skills[1]
+        .source
+        .read(reader, 4096)
+        .await?;
+    assert!(
+        std::str::from_utf8(&body)
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .contains("UNSELECTED BODY")
+    );
     for ((message, pinned), (path, expected)) in request
         .messages
         .iter()

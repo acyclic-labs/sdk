@@ -489,6 +489,7 @@ async fn cancelling_an_injected_input_preserves_the_original_and_later_turns() -
         },
     );
     let host = AgentHost::hosting(
+        acyclic_actors::guest::Requests::default(),
         provider.clone(),
         ActorReference::new(b"account", b"agents", b"owner")?,
         Arc::new(acyclic_actors::guest::HostedHandler::new(
@@ -693,6 +694,20 @@ async fn cancelling_during_open_publishes_its_input_and_preserves_queued_work() 
 
     struct Opening(mpsc::UnboundedSender<u64>);
     impl TurnHost for Opening {
+        fn park<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+        fn settle<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
         fn open_control<'a>(
             &'a self,
             _: &'a AgentState,
@@ -1328,6 +1343,7 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
     )?);
     let host = AgentHost::hosting(
+        acyclic_actors::guest::Requests::default(),
         provider.clone(),
         ActorReference::new(b"account", b"agents", b"owner")?,
         handler.clone(),

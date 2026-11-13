@@ -247,13 +247,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionRebase<A, O>>, WorkspaceError>
     {
         let maximum_conflicts = maximum_conflicts.into();
-
+        let base = self.checkout.base_generation();
         let receipt = self
             .checkout
             .rebase_head(maximum_conflicts, budget, cancellation)
             .await
             .map_err(|failure| failure.map_error(WorkspaceError::from))?;
         let value = match receipt.value {
+            crate::kernel::RebaseDecision::Safe { generation } if generation == base => {
+                TransactionRebase::Current(Generation {
+                    workspace: self.workspace.clone(),
+                    id: generation,
+                    publication_closure: None,
+                })
+            }
             crate::kernel::RebaseDecision::Safe { generation } => {
                 self.requires_rebase = false;
                 TransactionRebase::Rebased(Generation {
@@ -298,6 +305,11 @@ pub enum TransactionCommit<A: 'static, O: 'static> {
 pub enum TransactionRebase<A: 'static, O: 'static> {
     /// The current head is now the candidate's immutable base and its sparse
     Rebased(Generation<A, O>),
+    /// The candidate already stands on the current head: nothing moved. A
+    /// commit that conflicted here was refused by a dependency outside this
+    /// volume's head, such as an observed policy cut, so committing again
+    /// conflicts again; a retry needs a new candidate, not a rebase.
+    Current(Generation<A, O>),
     /// One or more exact observed or mutated regions changed upstream.
     Conflicted {
         /// Stable region-specific conflicts bounded by the caller.

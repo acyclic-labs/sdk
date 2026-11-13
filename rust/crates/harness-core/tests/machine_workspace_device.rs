@@ -375,6 +375,7 @@ async fn committed_handover(refused_close: bool) -> Result {
     )
     .await?;
     let runtime = Runtime::new(
+        acyclic_actors::guest::Requests::default(),
         store.with_composer(Arc::new(TargetComposer::new(Arc::new(sockets.clone())))),
         Arc::new(TargetActor::new(
             provider.clone(),

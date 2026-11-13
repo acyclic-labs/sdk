@@ -311,7 +311,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::NotFound,
-                    "selected file does not exist",
+                    crate::conversation::SELECTED_FILE_MISSING,
                 )
                 .tool_input()
             })?;
@@ -835,23 +835,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 }
 // Only the selected user path is classified here. Metadata, backing storage,
 // cancellation and accounting failures retain their original terminal cause.
-fn path_read_refusal(error: WorkspaceError) -> Error {
-    let (code, reason) = match error {
-        WorkspaceError::NotFound => (
-            crate::wire::ErrorCode::NotFound,
-            "selected file does not exist",
-        ),
-        WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
-            crate::wire::ErrorCode::Invalid,
-            "selected path is not a regular file",
-        ),
-        WorkspaceError::ReadLimitExceeded => (
-            crate::wire::ErrorCode::Invalid,
-            "selected file exceeds the admitted read bound",
-        ),
-        other => return other.into(),
-    };
-    Error::ToolRejected { code, reason }
+fn path_read_refusal(error: Error) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Error::NativeWorkspace { source, .. } = &error {
+        let (code, reason) = match source.as_ref() {
+            WorkspaceError::NotFound => (
+                crate::wire::ErrorCode::NotFound,
+                crate::conversation::SELECTED_FILE_MISSING,
+            ),
+            WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
+                crate::wire::ErrorCode::Invalid,
+                "selected path is not a regular file",
+            ),
+            WorkspaceError::ReadLimitExceeded => (
+                crate::wire::ErrorCode::Invalid,
+                "selected file exceeds the admitted read bound",
+            ),
+            _ => return error,
+        };
+        return Error::ToolRejected { code, reason };
+    }
+    error
 }
 
 // An absent application policy reads the immutable file's own extent through

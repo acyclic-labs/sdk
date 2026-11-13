@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-tui/src/diff.rs b/rust/crates/harness-tui/src/diff.rs
+--- a/rust/crates/harness-tui/src/diff.rs
++++ b/rust/crates/harness-tui/src/diff.rs
+@@ -254,7 +254,7 @@ fn side_by_side(
+     };
+     let before = wrap(old, left);
+     let after = wrap(new, right);
+-    for row in 0..before.len().max(after.len()) {
++    for row in 0..before.len().max(after.len()).min(1) {
+         let mut line = before.get(row).cloned().unwrap_or_default();
+         line.spans.push(Span::raw(
+             " ".repeat(usize::from(left).saturating_sub(line.width())),

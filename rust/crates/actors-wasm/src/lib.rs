@@ -2,7 +2,7 @@
 // Keep the bridge type-checkable on the host so contract generators inventory
 // the same exported implementation without executing JavaScript operations.
 
-use acyclic_actors::{client, domain};
+use acyclic_actors::{client, domain, guest};
 use js_sys::{BigInt, Function, Reflect, Uint8Array};
 use tokio_util::sync::CancellationToken;
 use wasm_bindgen::JsCast;
@@ -120,6 +120,116 @@ pub fn current_head_marker(
     domain::subscription_start::CurrentHeadMarker::try_from(value)
         .map(bool::from)
         .map_err(nominal_error)
+}
+
+fn guest_error(error: guest::GuestError) -> JsValue {
+    let code = match error {
+        guest::GuestError::UnsupportedFormat => "unsupported_format",
+        _ => "invalid_argument",
+    };
+    js_error(code, error)
+}
+
+fn object(entries: &[(&str, JsValue)]) -> JsValue {
+    let object = js_sys::Object::new();
+    for (name, value) in entries {
+        let _ = Reflect::set(&object, &JsValue::from_str(name), value);
+    }
+    object.into()
+}
+
+/// Decode one strict `guest::wire` delivery for a JavaScript guest: u64 fields
+/// as bigint, bytes as Uint8Array, and a "record" trigger carrying its record.
+#[wasm_bindgen(js_name = decodeDelivery)]
+pub fn decode_delivery(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let (delivery, checkpoint) = guest::wire::decode_delivery(bytes).map_err(guest_error)?;
+    let u64 = |value: u64| JsValue::from(BigInt::from(value));
+    let bytes = |value: &[u8]| JsValue::from(Uint8Array::from(value));
+    let trigger = match (delivery.trigger, &delivery.record) {
+        (
+            guest::Trigger::Record {
+                subscription,
+                sequence,
+            },
+            Some(record),
+        ) => object(&[
+            ("type", "record".into()),
+            ("subscription", subscription.into()),
+            ("sequence", u64(sequence)),
+            (
+                "record",
+                object(&[
+                    ("sequence", u64(record.sequence)),
+                    ("value", bytes(&record.value)),
+                    ("commitId", bytes(record.commit_id.as_bytes())),
+                    ("committedAtMicros", u64(record.committed_at_micros)),
+                    ("origin", record.origin.as_str().into()),
+                ]),
+            ),
+        ]),
+        (
+            guest::Trigger::Alarm {
+                generation,
+                now_unix_ms,
+            },
+            None,
+        ) => object(&[
+            ("type", "alarm".into()),
+            ("generation", u64(generation)),
+            ("nowUnixMs", u64(now_unix_ms)),
+        ]),
+        _ => {
+            return Err(guest_error(guest::GuestError::Decode(
+                "guest delivery record differs from its trigger".into(),
+            )));
+        }
+    };
+    let checkpoint = checkpoint.map_or(JsValue::NULL, |checkpoint| {
+        object(&[
+            (
+                "codec",
+                object(&[
+                    ("name", checkpoint.codec.name.into()),
+                    ("version", checkpoint.codec.version.into()),
+                ]),
+            ),
+            ("bytes", bytes(&checkpoint.bytes)),
+        ])
+    });
+    Ok(object(&[
+        ("request", u64(delivery.request.get())),
+        ("actor", bytes(&delivery.actor.encode())),
+        ("epoch", u64(delivery.epoch)),
+        ("nowUnixMs", u64(delivery.now_unix_ms)),
+        ("trigger", trigger),
+        ("checkpoint", checkpoint),
+    ]))
+}
+
+/// Encode a JavaScript guest's transition: its checkpoint and optional reply,
+/// keeping the alarm, with no effects, participant or subscription changes.
+#[wasm_bindgen(js_name = encodeTransition)]
+pub fn encode_transition(
+    codec_name: String,
+    codec_version: String,
+    checkpoint: Vec<u8>,
+    response: Option<Vec<u8>>,
+) -> Result<Vec<u8>, JsValue> {
+    guest::wire::encode_transition(&guest::Transition {
+        response: response.map(Into::into),
+        checkpoint: guest::Checkpoint {
+            codec: guest::CodecIdentity {
+                name: codec_name,
+                version: codec_version,
+            },
+            bytes: checkpoint.into(),
+        },
+        alarm: guest::AlarmChange::Keep,
+        effects: Vec::new(),
+        participant: None,
+        subscriptions: Vec::new(),
+    })
+    .map_err(guest_error)
 }
 
 struct AbortRegistration {

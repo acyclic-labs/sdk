@@ -1,5 +1,7 @@
 import { beforeAll, test } from "bun:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import "fake-indexeddb/auto";
 import { materializeBindings } from "../../workers/src/bindings.js";
 import { WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -7,6 +9,8 @@ import { initializeClientQueries } from "../src/client-query.js";
 import { EventStreamLedger, streamLedgerPort, streamProviderPort,
   type EventStorage, type OwnedStreamProviderPort } from "../src/event-host.js";
 import { sharedProviderTree } from "./support/stream-provider-contract.js";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { AppendRequestSchema, ReadRequestSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 
 beforeAll(initializeClientQueries);
 
@@ -40,7 +44,53 @@ async function ledgerBinding(port: OwnedStreamProviderPort): Promise<OwnedStream
 }
 
 test("hosted provider bindings share the original fork and activation cut", async () => {
+  await sharedProviderTree(streamProviderPort(new WasmStream()));
   await sharedProviderTree(await ledgerBinding(streamProviderPort(new WasmStream())));
   await sharedProviderTree(await ledgerBinding(streamProviderPort(await WasmStream.openBrowser(
     `shared-provider-${crypto.randomUUID()}`, 64, 1048576n))));
+});
+
+test("closed provider negative control rejects a cursor pull after closure", () => {
+  const driver = fileURLToPath(new URL("./stream-provider-close-driver.ts", import.meta.url));
+  const result = spawnSync(process.execPath, [driver], { encoding: "utf8" });
+  assert.equal(result.error, undefined);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /closed binding admitted another cursor pull/);
+});
+
+test("a provider from another wasm module serves cursors through the port", async () => {
+  // Each wasm-bindgen module has its own classes: same shape, distinct constructors.
+  const original = new WasmStream();
+  type Request = ReturnType<WasmStream["openProviderRequest"]>;
+  const foreign = {
+    openProviderRequest(operation: string, input: Uint8Array, preceding: Uint8Array) {
+      const request: Request = original.openProviderRequest(operation, input, preceding);
+      return {
+        async next() {
+          const value = await request.next();
+          if (value === null || value instanceof Uint8Array) return value;
+          return { next: () => value.next(), close: () => value.close(), free: () => value.free() };
+        },
+        close: () => request.close(),
+        free: () => request.free(),
+      };
+    },
+    free: () => original.free(),
+  } as unknown as Parameters<typeof streamProviderPort>[0];
+  const port = streamProviderPort(foreign);
+  try {
+    const encode = new TextEncoder();
+    const appended = await port.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, {
+      path: "foreign/read", idempotencyKey: encode.encode("foreign"), records: [{ value: encode.encode("record") }],
+    })));
+    assert.ok("value" in appended);
+    // An instanceof check against this module's cursor class answered invalid_response here.
+    const opened = await port.open("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, {
+      path: "foreign/read", from: 0n, limit: 1,
+    })), new Uint8Array());
+    assert.ok("value" in opened, "code" in opened ? opened.code : "");
+    const frame = await opened.value.next();
+    assert.ok("value" in frame && frame.value instanceof Uint8Array);
+    opened.value.close();
+  } finally { port.close(); }
 });

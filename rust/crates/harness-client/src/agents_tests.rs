@@ -787,3 +787,57 @@ async fn lossless_projection_resumes_at_the_flushed_provider_cursor()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn selected_subscription_failures_retain_resource_and_original_cause()
+-> Result<(), Box<dyn std::error::Error>> {
+    for resource_only in [false, true] {
+        let memory = Arc::new(MemoryStream::default());
+        let agent = AgentPath::root(&AgentId::from_bytes([6; 16]));
+        let conversation = agent.conversation()?;
+        let status = agent.status()?;
+        let pool = Client::with_transport(
+            Arc::new(Endpoint(memory)),
+            Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable.into()) })),
+            Arc::new(PlatformExecutor),
+        );
+        pool.register_credential(0, session::testing::credential())?;
+        // The server has no credential at slot one, so either producer refuses
+        // through the real session admission path rather than an invented frame.
+        let mut client = AgentClient::new(pool, agent, 0, 0, 1)?;
+        let expected = if resource_only {
+            client.session.clear()?;
+            let resource = "fs:/tools/output".to_owned();
+            let mut request = subscription(&conversation, Default::default(), 1, false);
+            let Some(wire::session_subscription::Kind::Follow(follow)) = &mut request.kind else {
+                return Err("missing resource follow".into());
+            };
+            follow.resource = resource.clone();
+            client.open_resource(request)?;
+            vec![resource]
+        } else {
+            vec![
+                wire_codec::session::stream_resource(conversation.as_str()),
+                wire_codec::session::stream_resource(status.as_str()),
+            ]
+        };
+        let error = match poll_fn(|context| client.poll_delivery(context)).await {
+            Err(error) => error,
+            Ok(_) => return Err("unregistered credential unexpectedly opened a producer".into()),
+        };
+        assert_eq!(error.code(), StreamError::AccessDenied.code());
+        let AgentClientError::Subscription {
+            resource,
+            cause: WireSessionError::Stream(cause),
+        } = error
+        else {
+            return Err("selected producer lost its resource or typed refusal".into());
+        };
+        assert!(
+            expected.contains(&resource),
+            "unexpected failed producer: {resource}"
+        );
+        assert_eq!(cause.category(), StreamError::AccessDenied);
+    }
+    Ok(())
+}

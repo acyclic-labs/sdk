@@ -59,11 +59,20 @@ impl Shared {
         &self,
         reading: &mut RawReads,
         work: &mut W,
+        remaining: &mut usize,
     ) -> Result<Option<bool>, DemandError> {
+        if *remaining == 0 {
+            reading.buffer = Vec::new();
+            reading.filled = 0;
+            reading.cursor = 0;
+            reading.alias_cursor = 0;
+            return Ok(Some(self.delivery.is_exact()));
+        }
         let maximum = usize::try_from(
             work.remaining()?
                 .source_bytes_read
-                .min(READ_BUFFER_BYTES as u64),
+                .min(READ_BUFFER_BYTES as u64)
+                .min(*remaining as u64),
         )
         .map_err(|_| WorkError::Overflow)?;
         if maximum < EVENT_HEADER_BYTES {
@@ -77,8 +86,6 @@ impl Shared {
             ..WorkCounters::default()
         })?;
         work.started_io(READ)?;
-        // Records the kernel queued reach this inbox before it is read.
-        hub::hub()?.drain()?;
         let taken = self
             .inbox
             .lock()
@@ -88,6 +95,7 @@ impl Shared {
         reading.alias_cursor = 0;
         match taken {
             Ok(read) => {
+                *remaining -= read;
                 reading.filled = read;
                 work.record(WorkCounters {
                     source_bytes_read: read as u64,
@@ -137,6 +145,14 @@ impl Shared {
         }
         let _batch = self.delivery.event_batch();
         let result = (|| {
+            // Fence only the records present at entry. Refilling must not extend
+            // this cut with work produced by callbacks or concurrent writers.
+            hub::hub()?.drain()?;
+            let mut remaining = self
+                .inbox
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .cut()?;
             loop {
                 work.check()?;
                 while let Some(path) = reading.cleanup.last().filter(|_| reading.alias_cursor == 0)
@@ -153,7 +169,7 @@ impl Shared {
                         .fetch_sub(bytes, Ordering::AcqRel);
                 }
                 if reading.cursor == reading.filled
-                    && let Some(exact) = self.refill(reading, work)?
+                    && let Some(exact) = self.refill(reading, work, &mut remaining)?
                 {
                     return Ok(exact);
                 }
@@ -449,5 +465,80 @@ impl Shared {
             self.reschedule();
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source_watch::HostChangeSink;
+
+    #[test]
+    fn delivery_fences_a_finite_prefix_and_preserves_callback_arrivals()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct WritesDuringDelivery {
+            root: PathBuf,
+            wrote: AtomicBool,
+            saw_later: AtomicBool,
+        }
+        impl HostChangeSink for WritesDuringDelivery {
+            fn logical_owned_bytes(&self) -> u64 {
+                0
+            }
+            fn host_changed(
+                &self,
+                changes: &[HostChange],
+                work: &mut DemandWork,
+            ) -> Result<(), DemandError> {
+                work.check()?;
+                for change in changes {
+                    if matches!(change,
+                        HostChange::Altered(path) | HostChange::Rebound(path)
+                            if path == Path::new("later"))
+                    {
+                        self.saw_later.store(true, Ordering::Release);
+                    }
+                }
+                if !self.wrote.swap(true, Ordering::AcqRel) {
+                    // A real native event arrives after this pass's entry cut.
+                    // Routing it here makes the old refill-until-empty path
+                    // deterministically consume it in the first pass.
+                    std::fs::write(self.root.join("later"), b"second")?;
+                    hub::hub()?.drain()?;
+                }
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("seed"), b"before")?;
+        let sink = Arc::new(WritesDuringDelivery {
+            root: root.path().to_owned(),
+            wrote: AtomicBool::new(false),
+            saw_later: AtomicBool::new(false),
+        });
+        let mut work = crate::native_host::ordinary_work();
+        let held = crate::native_host::HostRoot::open(root.path(), &mut work)?;
+        let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
+        let watch = NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
+        // The real cursor excludes background service without blocking its pool.
+        let mut reading = watch.shared.reading();
+        std::fs::write(root.path().join("seed"), b"after")?;
+        assert!(
+            watch
+                .shared
+                .read_events_and_deliver_locked(&mut reading, &mut work)?
+        );
+        assert!(sink.wrote.load(Ordering::Acquire));
+        assert!(!sink.saw_later.load(Ordering::Acquire));
+        assert!(
+            watch
+                .shared
+                .read_events_and_deliver_locked(&mut reading, &mut work)?
+        );
+        assert!(sink.saw_later.load(Ordering::Acquire));
+        drop(reading);
+        watch.stop_with_work(&mut work)?;
+        assert!(watch.shared.physically_cleared());
+        Ok(())
     }
 }

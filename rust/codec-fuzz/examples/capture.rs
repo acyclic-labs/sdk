@@ -1158,7 +1158,13 @@ fn capture_actors_selected(
     let mut found = false;
     for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
         if selected.is_none_or(|selected| selected == name) {
-            save("actor_codecs", name, &bytes, producer, manifest)?;
+            // Preserve original runtime clock and commit context across captures.
+            let name = if name.starts_with("socket-input-") {
+                format!("{name}-{}", hex::encode(Sha256::digest(&bytes)))
+            } else {
+                name.to_owned()
+            };
+            save("actor_codecs", &name, &bytes, producer, manifest)?;
             found = true;
         }
     }

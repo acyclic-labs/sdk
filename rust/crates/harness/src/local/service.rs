@@ -1097,7 +1097,7 @@ mod tests {
                 tokio::select! {
                     entered = &mut entering => { entered.map_err(storage)?; break; },
                     event = events.next() => match event? {
-                        super::super::Event::Turn(entry) => return Err(Error::Storage(format!(
+                        super::super::Event::Turn { entry, .. } => return Err(Error::Storage(format!(
                             "turn ended before model dispatch: {:?}", entry.outcome,
                         ))),
                         super::super::Event::Status(status) if matches!(status.phase, crate::agent::Phase::Done { .. }) => {

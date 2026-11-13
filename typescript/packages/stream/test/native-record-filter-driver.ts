@@ -14,14 +14,15 @@ plugin({ name: "native-filter-boundary", setup(build) {
       const filter = "filter: structuredClone(options.filter)";
       assert(source.includes(filter)); source = source.replace(filter, "filter: undefined");
     }
-    if (fault === "consecutive") {
-      const check = "checkedRecord(decoded, decoded.sequence, path)";
-      assert(source.includes(check)); source = source.replace(check, "checkedRecord(decoded, next, path)");
-    }
+
     return { contents: source, loader: "ts" };
   });
   build.onLoad({ filter: /[\\/]src[\\/]record\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
+    if (fault === "consecutive") {
+      const check = "checkedRecord(decoded, decoded.sequence, path)";
+      assert(source.includes(check)); source = source.replace(check, "checkedRecord(decoded, next, path)");
+    }
     if (fault === "dropped-headers") {
       const headers = ", keys: record.keys, attributes: record.attributes";
       assert(source.includes(headers)); source = source.replace(headers, "");
@@ -32,6 +33,20 @@ plugin({ name: "native-filter-boundary", setup(build) {
 const filter = create(wire.SessionFilterSchema, { keys: [{ start: new Uint8Array([4]), end: new Uint8Array([5]) }] });
 let closed = 0;
 let registered = false;
+// Exercise the shipping TypeScript native boundary against a real Rust cursor.
+// Only the ABI object is adapted; Rust supplies the receipt, filtered records,
+// headers and selected cut. Replaying its last frame is the hostile-wire input.
+const { ensureStreamWasm } = await import("../src/contract.js");
+await ensureStreamWasm();
+const { WasmStream, WasmOpened } = await import("../generated/wasm/acyclic_stream_wasm.js");
+const backing = new WasmStream();
+await backing.dispatch("append", toBinary(wire.AppendRequestSchema, create(wire.AppendRequestSchema, {
+  path: "scoped", idempotencyKey: new Uint8Array(16).fill(6),
+  records: Array.from({ length: 6 }, (_, index) => ({
+    value: new Uint8Array([1]), keys: [new Uint8Array([index === 2 || index === 5 ? 4 : 8])],
+    attributes: [{ name: "owner", value: new Uint8Array([9]) }],
+  })),
+})));
 class Client {
   static async connectResult() { return { client: new Client() }; }
   registerCredential(slot: number, credential: Uint8Array) {
@@ -40,17 +55,19 @@ class Client {
   async openFollowResult(bytes: Uint8Array) {
     const request = fromBinary(wire.FollowRequestSchema, bytes);
     assert.deepEqual(request.filter && toBinary(wire.SessionFilterSchema, request.filter), toBinary(wire.SessionFilterSchema, filter), "native follow dropped its requested filter");
+    const pending = backing.open_follow(bytes);
+    const cursor = await pending.next();
+    pending.close(); pending.free();
+    assert(cursor instanceof WasmOpened);
     let index = 0;
-    return { follow: {
+    let last: Uint8Array | undefined;
+    return { opened: fault === "missing-opening" ? undefined : cursor.opened(), follow: {
       async nextResult() {
-        const sequence = [2n, 5n, 5n][index++];
-        if (sequence === undefined) return {};
-        const record = create(wire.RecordSchema, { sequence, value: new Uint8Array([1]), commitId: new Uint8Array(32).fill(6),
-          keys: [new Uint8Array([4])], attributes: [{ name: "owner", value: new Uint8Array([9]) }] });
-        const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
-        return { value: toBinary(wire.ReadResponseSchema, create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) })) };
+        if (index++ === 2) return { value: last };
+        last = await cursor.next() ?? undefined;
+        return { value: last };
       },
-      async close() { closed++; },
+      async close() { closed++; cursor.close(); cursor.free(); },
     } };
   }
 }
@@ -67,3 +84,5 @@ for (const sequence of [2n, 5n]) {
 }
 await assert.rejects(follow.next(), (error: any) => error.code === "invalid_response");
 assert.equal(closed, 1, "invalid cursors must release the native follow");
+
+backing.free();

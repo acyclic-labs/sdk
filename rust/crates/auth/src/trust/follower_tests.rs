@@ -188,6 +188,58 @@ fn credential(world: &World, trust: &Follower, index: u8) -> (Vec<u8>, BlockId) 
 }
 
 #[test]
+fn exported_snapshot_preserves_historical_verification_floor() {
+    let mut world = world();
+    let trust = follower(&world);
+    let (bytes, _) = credential(&world, &trust, 0);
+    let holder = verify::verify(&bytes, &trust, NOW).unwrap();
+    let check = |time| {
+        let exported = trust.snapshot("account", time).unwrap();
+        let encoded = serde_json::to_vec(&exported).unwrap();
+        let exported: crate::trust::Snapshot = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(
+            verify::verify(&bytes, &exported, NOW).err(),
+            verify::verify(&bytes, &trust, NOW).err()
+        );
+        assert_eq!(holder.check(&exported, NOW), holder.check(&trust, NOW));
+        assert!(holder.check(&exported, time).is_ok());
+        let mut omitted = serde_json::to_value(&exported).unwrap();
+        omitted
+            .as_object_mut()
+            .unwrap()
+            .remove("not_before_unix_seconds");
+        assert!(serde_json::from_value::<crate::trust::Snapshot>(omitted).is_err());
+    };
+    check(NOW);
+    let keyring = world.issuer.keyring(&mut world.root, NOW + 1).unwrap();
+    trust.apply(&keyring, NOW + 1).unwrap();
+    assert!(holder.check(&trust, NOW).is_err());
+    check(NOW + 1);
+    let delta = world.root.revoke(&[([91; 32], NOW + 2)], NOW + 2).unwrap();
+    trust.apply(&delta, NOW + 2).unwrap();
+    check(NOW + 2);
+    let TrustRecordKind::Revocation(mut signed) = decode(&world.genesis[1]).unwrap().record else {
+        panic!("genesis did not contain a revocation checkpoint");
+    };
+    let RevocationPublication::Checkpoint(checkpoint) = &mut signed.publication else {
+        panic!("genesis did not contain a checkpoint");
+    };
+    checkpoint.sequence = 3;
+    checkpoint.issued_at_unix_seconds = NOW + 3;
+    checkpoint.retired_before_unix_seconds = NOW + 3;
+    signed.signature = key(2)
+        .sign(&crate::revocation::transcript(&signed.publication))
+        .to_bytes()
+        .to_vec();
+    let record = TrustRecordProto::from(TrustRecord {
+        record: TrustRecordKind::Revocation(signed),
+    })
+    .encode_to_vec();
+    trust.apply(&record, NOW + 3).unwrap();
+    check(NOW + 3);
+}
+
+#[test]
 fn swap_precedes_wake_and_lost_follow_fences() {
     let mut world = world();
     let trust = follower(&world);

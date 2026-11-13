@@ -67,15 +67,22 @@ impl ObservedConversation {
     /// The entry settled at inbox sequence `inbox`, as the observer reports
     /// it; a finished agent or a closed Session fails the wait.
     async fn settled(&mut self, inbox: u64) -> Result<ConversationEntry> {
+        Ok(self.settled_at(inbox).await?.1)
+    }
+
+    /// As [`Self::settled`], with the entry's committed conversation sequence.
+    async fn settled_at(&mut self, inbox: u64) -> Result<(u64, ConversationEntry)> {
         loop {
             match self.observer.next().await? {
-                Event::Turn(entry) if entry.inbox == inbox => return Ok(entry),
+                Event::Turn { sequence, entry } if entry.inbox == inbox => {
+                    return Ok((sequence, entry));
+                }
                 Event::Status(status) => {
                     if matches!(status.phase, crate::agent::Phase::Done { .. }) {
                         return Err(Error::Conflict(format!("agent finished: {status:?}")));
                     }
                 }
-                Event::Turn(_) | Event::Delta => {}
+                Event::Turn { .. } | Event::Delta => {}
             }
         }
     }

@@ -10,7 +10,7 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
     let (overlay, node) = linked_overlay("/original", empty, empty);
     let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
     store
-        .put_lazy_overlay(overlay, (node, allocation), &mut accounting)
+        .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
         .await
         .unwrap();
     let (_, tampered) = linked_overlay("/tampered", empty, empty);
@@ -27,31 +27,41 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
             .await,
         Err(crate::LazyWorkspaceError::NativeRecordIntegrity)
     ));
+    let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
+    assert!(matches!(
+        store
+            .put_lazy_overlay(overlay, (node, allocation), &mut accounting)
+            .await,
+        Err(crate::LazyWorkspaceError::NativeRecordIntegrity)
+    ));
+    assert_eq!(
+        std::fs::read(paths).unwrap(),
+        serde_json::to_vec(&tampered).unwrap()
+    );
 }
 
 #[tokio::test]
-async fn content_addressed_nodes_share_one_family_lock() {
+async fn concurrent_immutable_nodes_retain_payload_and_publication_custody() {
     let cancellation = crate::CancellationToken::new();
     let mut accounting = unbounded_accounting(&cancellation);
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
     let empty = LazyOverlayId::from_bytes([0; 32]);
-    let mut stored = Vec::new();
-    for path in ["/a", "/b", "/c"] {
-        let (overlay, node) = linked_overlay(path, empty, empty);
-        let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
-        store
-            .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
-            .await
-            .unwrap();
-        // A repeated publication of the same bytes is the same record.
-        let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
-        store
-            .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
-            .await
-            .unwrap();
-        stored.push((overlay, node));
-    }
+    let publications = ["/a", "/b", "/c", "/a", "/b", "/c"].map(|path| {
+        let store = &store;
+        let cancellation = &cancellation;
+        async move {
+            let mut accounting = unbounded_accounting(&cancellation);
+            let (overlay, node) = linked_overlay(path, empty, empty);
+            let allocation = accounting.claim_owned(node.owned_bytes(), 0).unwrap();
+            store
+                .put_lazy_overlay(overlay, (node.clone(), allocation), &mut accounting)
+                .await
+                .unwrap();
+            (overlay, node)
+        }
+    });
+    let stored = futures::future::join_all(publications).await;
     let (absent, _) = linked_overlay("/absent", empty, empty);
     assert!(
         store
@@ -71,28 +81,6 @@ async fn content_addressed_nodes_share_one_family_lock() {
             Some(node)
         );
     }
-    let family = store
-        .namespace()
-        .unwrap()
-        .content_record("lazy-overlays", &empty.into_bytes())
-        .unwrap()
-        .directory()
-        .to_path_buf();
-    let mut names = std::fs::read_dir(&family)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    names.sort();
-    let mut expected = stored
-        .iter()
-        .map(|(overlay, _)| format!("{}.json", hex::encode(overlay.into_bytes())))
-        .chain([".lock".to_owned()])
-        .collect::<Vec<_>>();
-    expected.sort();
-    // One file per record and the family's one lock: no lock file per record
-    // or per lookup, which would double a store's files.
-    assert_eq!(names, expected);
-
     // Withdraw a real publication while its original native producer is held.
     // The caller cannot reuse admission or retire the producer's input credit.
     let mut caller =
@@ -496,6 +484,75 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                 .await
                 .unwrap(),
             Some(state)
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_held_immutable_publication_does_not_exclude_another_address() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = LocalCoreStateStore::new(directory.path());
+    let cancellation = crate::CancellationToken::new();
+    let empty = LazyOverlayId::from_bytes([0; 32]);
+    let (first_id, first_node) = linked_overlay("/held", empty, empty);
+    let (second_id, second_node) = linked_overlay("/independent", empty, empty);
+    let namespace = store.namespace().unwrap();
+    let mut held =
+        crate::core_state::nodes::publication_pause::hold(&namespace.root, first_id.into_bytes());
+    let mut first_accounting = unbounded_accounting(&cancellation);
+    let allocation = first_accounting
+        .claim_owned(first_node.owned_bytes(), 0)
+        .unwrap();
+    let mut first = Box::pin(store.put_lazy_overlay(
+        first_id,
+        (first_node.clone(), allocation),
+        &mut first_accounting,
+    ));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    // Wait for the actual post-rename publication cut, not just worker admission.
+    tokio::time::timeout(std::time::Duration::from_secs(2), held.entered())
+        .await
+        .expect("first publisher never reached its physical publication cut");
+    // A dedicated inline producer supplies execution capacity even when the
+    // shared blocking pool has only one worker, occupied by the held producer.
+    let independent_store = store.clone();
+    let independent_node = second_node.clone();
+    let (completed, mut completion) = tokio::sync::oneshot::channel();
+    let second = std::thread::spawn(move || {
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = unbounded_accounting(&cancellation);
+        let allocation = accounting
+            .claim_owned(independent_node.owned_bytes(), 0)
+            .unwrap();
+        let result = futures::executor::block_on(independent_store.put_lazy_overlay(
+            second_id,
+            (independent_node, allocation),
+            &mut accounting,
+        ));
+        let _ = completed.send(result);
+    });
+    let independent =
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut completion).await;
+    // Always release and finish both real producers before reporting a failure.
+    drop(held);
+    first.await.unwrap();
+    second.join().unwrap();
+    independent
+        .expect("an unrelated immutable address waited for the held publisher")
+        .expect("independent producer disappeared")
+        .unwrap();
+    let mut accounting = unbounded_accounting(&cancellation);
+    for (id, expected) in [(first_id, first_node), (second_id, second_node)] {
+        assert_eq!(
+            store
+                .load_lazy_overlay(id, &mut accounting)
+                .await
+                .unwrap()
+                .as_ref()
+                .map(|(node, _)| node),
+            Some(&expected)
         );
     }
 }

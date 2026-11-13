@@ -70,10 +70,21 @@ pub(super) fn resolve_object<E: std::error::Error + 'static>(
     if let Some(id) = state.tags.get(object) {
         return Ok(*id);
     }
+    let unknown = || GitCompatError::<E>::UnknownObject(object.to_owned());
+    let mut lower = [b'0'; 64];
+    lower
+        .get_mut(..object.len())
+        .ok_or_else(unknown)?
+        .copy_from_slice(object.as_bytes());
+    let mut bytes = [0; 32];
+    hex::decode_to_slice(lower, &mut bytes).map_err(|_| unknown())?;
+    // Hexadecimal prefixes form contiguous ranges in the byte-ordered index.
+    // Resolve at most two matches instead of scanning every retained commit.
     let mut matching = state
         .commits
-        .keys()
-        .filter(|id| id.to_hex().starts_with(object));
+        .range(GitCommitId::from_bytes(bytes)..)
+        .map(|(id, _)| id)
+        .take_while(|id| id.to_hex().starts_with(object));
     match (matching.next(), matching.next()) {
         (Some(id), None) => Ok(*id),
         _ => Err(GitCompatError::UnknownObject(object.to_owned())),
@@ -121,17 +132,18 @@ pub(super) fn walk_commits(
     state: &GitCompatState,
     mut next: Option<GitCommitId>,
     maximum: u32,
-) -> Vec<GitCommit> {
+) -> (Vec<GitCommit>, Option<GitCommitId>) {
     let mut commits = Vec::new();
     while let Some(id) = next {
+        let Some(commit) = state.commits.get(&id) else {
+            next = None;
+            break;
+        };
         if commits.len() >= usize::try_from(maximum).unwrap_or(usize::MAX) {
             break;
         }
-        let Some(commit) = state.commits.get(&id) else {
-            break;
-        };
         commits.push(commit.clone());
         next = commit.parents.first().copied();
     }
-    commits
+    (commits, next)
 }

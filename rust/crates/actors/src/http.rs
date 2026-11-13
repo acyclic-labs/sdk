@@ -59,13 +59,7 @@ impl Error {
 }
 
 fn credential_header(token: &str) -> Result<HeaderValue, Error> {
-    if !crate::valid_token(token) {
-        return Err(Error::InvalidArgument);
-    }
-    let mut value = HeaderValue::from_maybe_shared(acyclic_auth::credential::bearer_bytes(token))
-        .map_err(|_| Error::InvalidArgument)?;
-    value.set_sensitive(true);
-    Ok(value)
+    acyclic_auth::credential::bearer_header(token).map_err(|_| Error::InvalidArgument)
 }
 
 /// Configures bounded authenticated HTTP without redirects.
@@ -74,28 +68,12 @@ fn configure(
     token: Option<&str>,
     maximum: usize,
 ) -> Result<(Transport, Url, Option<HeaderValue>), Error> {
-    let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
-    let loopback = endpoint.host_str().is_some_and(|host| {
-        host == "localhost"
-            || host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    });
-    if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-        || endpoint.query().is_some()
-        || endpoint.fragment().is_some()
-        || maximum == 0
-    {
+    let endpoint =
+        acyclic_auth::credential::base_endpoint(endpoint).map_err(|_| Error::InvalidArgument)?;
+    if maximum == 0 {
         return Err(Error::InvalidArgument);
     }
     let authorization = token.map(credential_header).transpose()?;
-    if !endpoint.path().ends_with('/') {
-        endpoint.set_path(&format!("{}/", endpoint.path()));
-    }
     let transport = Transport::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;

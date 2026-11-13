@@ -7,7 +7,8 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
     let journal = storage.journal();
     let journal = journal.as_ref();
     let (provider, accounting_calls) = counted_model(
-        65_536,
+        // The whole window; two echoed exchanges overflow it.
+        49_152,
         None,
         [
             tool_turn([echo_call("first", json!({"value": "old ".repeat(3_100)}))]),
@@ -86,7 +87,8 @@ async fn stock_driver_retires_only_settled_history_and_restarts_its_offset_on_re
 async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Result<()> {
     let journal = Journal::default();
     let (provider, _) = counted_model(
-        65_536,
+        // The whole window; the one echoed exchange overflows it.
+        49_152,
         None,
         [
             tool_turn([echo_call("only", json!({"value": "old ".repeat(6_500)}))]),
@@ -127,7 +129,7 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
         .execute_progress(&input, &journal)
         .await;
     assert!(
-        matches!(result, Err(Error::Invalid(ref reason)) if reason == "mandatory content leaves no compaction source")
+        matches!(result, Err(Error::Invalid(ref reason)) if reason == "no complete older compaction source")
     );
     assert_eq!(
         provider.requests().len(),

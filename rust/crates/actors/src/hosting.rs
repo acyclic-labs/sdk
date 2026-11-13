@@ -1,6 +1,6 @@
 //! One actor per event owner, using the shared delivery and publication engine.
 //!
-//! The platform admits the actor and injects its Store, Handler and clock. It
+//! The platform admits the actor and injects its request ledger, Store, Handler and clock. It
 //! routes committed input changes and the returned alarm to [`Host::wake`],
 //! retaining its event until that call finishes. No background task is started.
 
@@ -27,7 +27,10 @@ pub struct Host<P: StreamProvider + ?Sized> {
 
 impl<P: StreamProvider + ?Sized> Host<P> {
     /// Bind exactly one actor, without selecting a backend or an application.
+    /// Bind the guest capability bridge to a clone of `requests` before
+    /// constructing this host.
     pub fn new(
+        requests: crate::guest::Requests,
         store: Store<P>,
         actor: ActorReference,
         handler: Arc<dyn Handler>,
@@ -35,7 +38,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         limits: RuntimeLimits,
     ) -> Self {
         Self {
-            runtime: Runtime::new(store, handler, Arc::clone(&clock)).with_limits(limits),
+            runtime: Runtime::new(requests, store, handler, Arc::clone(&clock)).with_limits(limits),
             actor,
             clock,
             events: tokio::sync::Mutex::new(()),
@@ -46,7 +49,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
     /// own placement command, and admits only through [`Self::place`].
     #[must_use]
     pub fn with_external_placement(mut self) -> Self {
-        self.runtime = self.runtime.with_external_placement();
+        self.runtime = self.runtime.externally_placed();
         self
     }
 
@@ -72,6 +75,12 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         self.runtime.place(self.actor.clone(), index).await
     }
 
+    /// Observe the committed placement index and whether this host owns it.
+    /// An unpublished command leaves the index unchanged. Retain the exact
+    /// placement command through an uncertain publication result.
+    pub async fn placement_state(&self) -> Result<(u64, bool), Error> {
+        self.runtime.placement_state(&self.actor).await
+    }
     /// Commit a pause/resume fence without waiting for an active event.
     /// This neither delivers nor consumes input. Resume needs a platform wake.
     pub async fn pause(&self, paused: bool) -> Result<(), Error> {

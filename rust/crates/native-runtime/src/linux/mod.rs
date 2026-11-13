@@ -144,7 +144,6 @@ pub(super) fn validate_io_range(offset: u64, length: usize) -> io::Result<()> {
     Ok(())
 }
 
-const OWNER_THREADS: usize = 4;
 const OWNER_MAILBOX: usize = 16;
 // Each owner retains at most one retired request and its original buffer.
 
@@ -228,9 +227,10 @@ fn owner_pool() -> io::Result<&'static OwnerPool> {
     if let Some(pool) = POOL.get() {
         return Ok(pool);
     }
-    let mut senders = Vec::with_capacity(OWNER_THREADS);
-    let mut threads = Vec::with_capacity(OWNER_THREADS);
-    for index in 0..OWNER_THREADS {
+    let workers = crate::workers::parallelism();
+    let mut senders = Vec::with_capacity(workers);
+    let mut threads = Vec::with_capacity(workers);
+    for index in 0..workers {
         let (sender, receiver) = mpsc::sync_channel(OWNER_MAILBOX);
         let wake = Arc::new(OwnerWake::default());
         let runner_wake = Arc::clone(&wake);

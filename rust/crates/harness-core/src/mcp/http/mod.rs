@@ -181,9 +181,14 @@ impl HttpMcpTransport {
         let provider = self.provider.clone();
         let generation = self.tools_generation.clone();
         self.notifications = Some(Arc::new(NotificationWatch(tokio::spawn(async move {
-            let mut backoff = std::time::Duration::from_millis(100);
+            let [a, b, c, d, ..] = OperationId::new().into_bytes();
+            let schedule = || {
+                acyclic_auth::operation::Backoff::new(100, 5_000, u32::from_le_bytes([a, b, c, d]))
+            };
+            let mut backoff = schedule();
             loop {
                 let operation = OperationId::new();
+                let mut progressed = false;
                 let result = async {
                     let response = provider.exchange(operation, request.clone()).await?;
                     if response.status == 405 {
@@ -200,6 +205,7 @@ impl HttpMcpTransport {
                         operation,
                         request.maximum_response_bytes,
                         &generation,
+                        &mut progressed,
                     )
                     .await?;
                     Ok(true)
@@ -208,11 +214,16 @@ impl HttpMcpTransport {
                 if matches!(result, Ok(false)) {
                     return;
                 }
+                if progressed {
+                    backoff = schedule();
+                }
                 // EOF is a disconnected notification transport too. Invalidate
                 // before reconnecting so events lost across the gap are read.
                 generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(std::time::Duration::from_secs(5));
+                tokio::time::sleep(std::time::Duration::from_millis(u64::from(
+                    backoff.delay_ms(),
+                )))
+                .await;
             }
         }))));
         Ok(())

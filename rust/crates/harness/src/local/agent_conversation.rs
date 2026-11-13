@@ -799,30 +799,23 @@ impl Conversation {
     }
 
     /// A settled turn as a view shows it: its prompt, its tool calls and its
-    /// answer, from the entry's input and its one output record.
+    /// answer, from the entry's input and its one output record. `sequence`
+    /// is the entry's committed conversation sequence, as [`super::Event::Turn`]
+    /// and [`Reply::Answered`] report it: that proof is what admits its prompt,
+    /// which stays host-private until committed, and inherited turns read
+    /// without source-volume authority.
     ///
     /// # Errors
-    /// Session, host or decoding failures.
-    pub async fn turn(&self, entry: &ConversationEntry) -> Result<Turn> {
-        self.selected_turn(entry, None).await
-    }
-
-    /// Render a turn with its original committed sequence as the exact-file
-    /// proof. This also reads inherited turns without source-volume authority.
-    pub async fn turn_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<Turn> {
-        self.selected_turn(entry, Some(sequence)).await
-    }
-
-    async fn selected_turn(
-        &self,
-        entry: &ConversationEntry,
-        sequence: Option<u64>,
-    ) -> Result<Turn> {
+    /// Session, host or decoding failures, or a sequence that does not commit
+    /// `entry`.
+    pub async fn turn(&self, sequence: u64, entry: &ConversationEntry) -> Result<Turn> {
         let prompt = match &entry.input {
-            TurnInput::Message { body, .. } => Some(self.selected_text(body, sequence).await?),
+            TurnInput::Message { body, .. } => {
+                Some(self.selected_text(body, Some(sequence)).await?)
+            }
             _ => None,
         };
-        let output = self.output(entry, sequence).await?;
+        let output = self.output(entry, Some(sequence)).await?;
         Ok(Turn {
             prompt,
             tools: output.tool_cards(),
@@ -943,7 +936,7 @@ impl Conversation {
             status = loop {
                 match events.next().await? {
                     super::Event::Status(next) => break Some(next),
-                    super::Event::Turn(_) => break None,
+                    super::Event::Turn { .. } => break None,
                     super::Event::Delta => {}
                 }
             };

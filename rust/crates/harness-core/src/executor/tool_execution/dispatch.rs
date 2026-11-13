@@ -1,6 +1,13 @@
 use super::*;
 
 impl<'io> StockExecution<'io> {
+    fn tool_wait_deadline(started: Option<u64>, timeout: u64) -> Result<u64> {
+        let started = started.ok_or_else(|| {
+            Error::Unsupported("timed tool wait has no original start timestamp".into())
+        })?;
+        Ok(started.div_ceil(1000).saturating_add(timeout))
+    }
+
     pub(super) async fn execute_tool_invocation(
         &self,
         journal: &dyn ExecutionJournal,
@@ -9,6 +16,7 @@ impl<'io> StockExecution<'io> {
         tool: &crate::tool::Tool,
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
+        original_started_at: Option<u64>,
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ToolInvocationOutcome<'io>> {
         let (operation_id, step) = identity;
@@ -63,13 +71,20 @@ impl<'io> StockExecution<'io> {
                     Err(error) => return Err(error),
                 }
             };
+            let timeout = if preparation.is_some() {
+                tool.executor.preparation_timeout(invocation)?
+            } else {
+                None
+            };
             let claim = self.claim_tool_invocation(
                 journal,
                 (operation_id, step),
                 (&record, dispatch.as_ref()),
                 started,
+                original_started_at,
+                timeout.is_some(),
             );
-            let claimed = if started {
+            let (claimed, started_at) = if started {
                 // Reconciliation consumes the original intent; it publishes none.
                 crate::executor::phase::claim(claim).await?
             } else {
@@ -83,6 +98,28 @@ impl<'io> StockExecution<'io> {
                 .await?
             };
             let prepared = if let Some(preparation) = preparation {
+                let deadline = timeout
+                    .as_ref()
+                    .map(|(timeout, _)| Self::tool_wait_deadline(started_at, *timeout))
+                    .transpose()?;
+                let preparation = async {
+                    let Some((_, result)) = timeout else {
+                        return preparation.await;
+                    };
+                    let alarm = journal.preparation_deadline(deadline.ok_or_else(|| {
+                        Error::Invalid("timed preparation has no original deadline".into())
+                    })?)?;
+                    futures::pin_mut!(preparation);
+                    // At expiry, do no new storage work merely to describe an
+                    // already elapsed wait. Unobserved children remain unknown.
+                    match futures::future::select(alarm, preparation).await {
+                        futures::future::Either::Right((prepared, _)) => prepared,
+                        futures::future::Either::Left((expired, _)) => {
+                            expired?;
+                            Ok((crate::tool::ToolPreparation::Ready(result), None))
+                        }
+                    }
+                };
                 let preparation = self
                     .observe_tool_cancellation(
                         journal,
@@ -127,7 +164,11 @@ impl<'io> StockExecution<'io> {
                 let _ = custody;
                 match preparation {
                     crate::tool::ToolPreparation::Ready(result) => Some(result),
-                    crate::tool::ToolPreparation::Deferred(until) => {
+                    crate::tool::ToolPreparation::Deferred(mut until) => {
+                        if let Some(timeout) = until.timeout_ms {
+                            until.deadline_unix_ms =
+                                Some(Self::tool_wait_deadline(started_at, timeout)?);
+                        }
                         journal.defer_tool(until, self.io)?;
                         return Ok(ToolInvocationOutcome::Pending(invocation.operation_id));
                     }
@@ -452,13 +493,16 @@ impl<'io> StockExecution<'io> {
             Option<&crate::tool::Dispatch>,
         ),
         started: bool,
-    ) -> Result<bool> {
+        original_started_at: Option<u64>,
+        timestamped: bool,
+    ) -> Result<(bool, Option<u64>)> {
         let _writer = self.journal_writes.lock().await;
         let (operation_id, step) = identity;
         let invocation = record.invocation;
-        let claimed = if started {
-            false
-        } else {
+        if started {
+            return Ok((false, original_started_at));
+        }
+        let claimed = {
             let key = with_history_io(self.io, |work| {
                 preparation_format(
                     format_args!("tool:{step}:{}:invocation", invocation.call_id),
@@ -495,6 +539,14 @@ impl<'io> StockExecution<'io> {
                 invocation: reference,
                 publication: None,
             };
+            if timestamped {
+                let started_at = journal
+                    .claim_if_tail(operation_id, tail, &key, &event, self.io)?
+                    .await?;
+                return started_at
+                    .map(|at| (true, Some(at)))
+                    .ok_or(Error::Indeterminate(operation_id));
+            }
             let appended = match dispatch {
                 Some(dispatch) => journal.dispatch_if_tail(
                     operation_id,
@@ -514,7 +566,7 @@ impl<'io> StockExecution<'io> {
                 }
             }
         };
-        Ok(claimed)
+        Ok((claimed, None))
     }
 
     async fn project_tool_output(

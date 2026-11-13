@@ -61,12 +61,12 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
 rustls.workspace = true
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring"] }
+tonic = { workspace = true, features = ["codegen", "router", "transport", "tls-ring"] }
 tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "wasm"] }
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
+tonic = { workspace = true, features = ["codegen"] }
 url = "=2.5.8"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

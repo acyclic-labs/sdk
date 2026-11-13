@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 // The original caller's journal root is required. The retired
 // `acyclic.actors.invoke` attribute belongs to the previous record generation,
-// which stores refuse as a whole.
+// which stores refuse as a whole and individual record readers must not ignore.
 const HEADER: &str = "acyclic.actor.invoke";
 const VERSION: &[u8] = b"1";
 
@@ -152,6 +152,12 @@ impl Invocation {
 
     pub(crate) fn decode_bound(record: &Record) -> Result<Option<(StreamPath, Self)>, GuestError> {
         let attributes = record.headers.attributes();
+        if attributes
+            .binary_search_by(|attribute| attribute.name.cmp("acyclic.actors.invoke"))
+            .is_ok()
+        {
+            return Err(GuestError::UnsupportedFormat);
+        }
         let Ok(index) = attributes.binary_search_by(|attribute| attribute.name.cmp(HEADER)) else {
             return Ok(None);
         };

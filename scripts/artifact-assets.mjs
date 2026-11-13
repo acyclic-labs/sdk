@@ -63,23 +63,44 @@ export function wasmAssetClosure(recovery) {
   };
 }
 
+/** Verified module bytes by digest, and each loaded artifact's declared assets.
+ * Bun registers loader plugins per process, so one registration serves all. */
+const hosted = {modules:new Map(), directories:new Map(), registered:false};
+
 /** Load the original module snapshots already verified with the artifact.
- * The loader cannot open undeclared files or observe later file changes. */
+ * The loader cannot open undeclared files or observe later file changes.
+ * A module resolves to its content digest, never to the staging path: Bun's
+ * transpiler cache replays a resolution for identical artifact bytes, so a
+ * location-bound one would name another process's deleted directory. */
 export async function loadHostedArtifact(entry, assets, files) {
   const {plugin} = await import('bun');
-  const modules = new Map(assets.map(asset => [join(dirname(entry), asset.path), files.get(asset.path)]));
-  const directory = dirname(entry)+sep;
-  const namespace = 'hosted-wasm-'+crypto.createHash('sha256').update(entry).digest('hex');
-  plugin({name:'hosted-artifact-modules', setup(build) {
-    build.onResolve({filter:/\.wasm$/}, ({path, importer}) => {
-      if (!importer.startsWith(directory)) return;
-      const selected = resolve(dirname(importer), path);
-      if (!modules.has(selected)) throw Error('HostedWasmAssetUndeclared');
-      return {path:selected, namespace};
-    });
-    build.onLoad({filter:/.*/, namespace}, ({path}) => {
-      return {loader:'object', exports:{default:new WebAssembly.Module(modules.get(path))}};
-    });
-  }});
+  const declared = new Map();
+  for (const asset of assets) {
+    const bytes = files.get(asset.path);
+    if (bytes === undefined || crypto.createHash('sha256').update(bytes).digest('hex') !== asset.sha256) {
+      throw Error(`HostedWasmAssetUnverified: ${asset.path}`);
+    }
+    hosted.modules.set(asset.sha256, bytes);
+    declared.set(join(dirname(entry), asset.path), asset.sha256);
+  }
+  hosted.directories.set(dirname(entry)+sep, declared);
+  if (!hosted.registered) {
+    hosted.registered = true;
+    plugin({name:'hosted-artifact-modules', setup(build) {
+      build.onResolve({filter:/\.wasm$/}, ({path, importer}) => {
+        const directory = [...hosted.directories.keys()].filter(directory => importer.startsWith(directory))
+          .reduce((longest, directory) => directory.length > longest.length ? directory : longest, '');
+        if (directory === '') return;
+        const digest = hosted.directories.get(directory).get(resolve(dirname(importer), path));
+        if (digest === undefined) throw Error('HostedWasmAssetUndeclared');
+        return {path:digest, namespace:'hosted-wasm'};
+      });
+      build.onLoad({filter:/.*/, namespace:'hosted-wasm'}, ({path}) => {
+        const bytes = hosted.modules.get(path);
+        if (bytes === undefined) throw Error('HostedWasmAssetUndeclared');
+        return {loader:'object', exports:{default:new WebAssembly.Module(bytes)}};
+      });
+    }});
+  }
   return import(pathToFileURL(entry).href);
 }

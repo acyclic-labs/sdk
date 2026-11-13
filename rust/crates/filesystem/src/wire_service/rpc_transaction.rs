@@ -79,6 +79,13 @@ where
                     .map_err(|failure| status(&failure.error))?
                     .value,
             ))),
+            // Nothing moved: the conflict lies outside this head, so a
+            // second commit of the same candidate would conflict again.
+            TransactionRebase::Current(_) => Ok(Response::new(mutation_with_conflicts(
+                wire::MutationStatus::Conflict,
+                Vec::new(),
+                false,
+            ))),
             TransactionRebase::Conflicted {
                 conflicts,
                 truncated,

@@ -172,12 +172,8 @@ impl Providers {
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),
-            ActorLimits::new(
-                options.handler_timeout_ms.unwrap_or_default(),
-                1 << 20,
-                1 << 16,
-            )
-            .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
+            ActorLimits::new(options.handler_timeout_ms, 1 << 20, 1 << 16)
+                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
         )
         .map(|handler| handler.with_spawn_volumes(self.spawn_volumes()))
         .map_err(|error| js_error(Error::Invalid(error.to_string())))

@@ -276,6 +276,8 @@ struct Route {
     input: Option<input::Owner>,
 }
 struct Link {
+    /// Recovery spacing survives Welcome/EOF cycles until useful frames arrive.
+    backoff: Option<acyclic_auth::operation::Backoff>,
     opening_subscription: Option<wire::SessionChannel>,
     opening_credentials: BTreeMap<u32, Bytes>,
     observation: Option<Observation>,

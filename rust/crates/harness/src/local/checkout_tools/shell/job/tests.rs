@@ -300,7 +300,7 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
 }
 
 #[tokio::test]
-async fn background_startup_deadline_bounds_volume_admission() -> Result<()> {
+async fn queued_background_shell_keeps_its_execution_lifetime() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
     let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
     let harness = LocalHarness::open(crate::test_support::local_harness_config(
@@ -330,41 +330,49 @@ async fn background_startup_deadline_bounds_volume_admission() -> Result<()> {
     let context = ToolContext::new(task, crate::OperationId::new(), "background-admission")?;
     let output_directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
     let physical = harness.workspace.as_ref().unwrap();
-    let (_, home) = physical.mounts.named(Some("home"))?;
-    let source = home.view.source.as_ref().unwrap();
-    let held = crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
+    let held = crate::sync::owned::lock_owned(StateArc::clone(&physical.state)).await;
     let invocation = ToolInvocation {
         operation_id: context.operation_id(),
         call_id: "background-admission".into(),
         name: "shell".into(),
         arguments: serde_json::json!({
             "command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child"],
-            "timeout_ms": 20,
+            "timeout_ms": 5000,
             "background": true,
         }),
     };
     let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(83);
-    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
-        &acyclic_stream::SystemUnixMillisClock,
-    ));
+    let now =
+        acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock);
+    schedule.set_unix_millis(now);
     crate::test_support::run_native_schedule(&schedule, boundaries, async {
         tokio::time::pause();
         let executor = &harness.harness.target(None)?.executor;
-        let result = executor.execute(invocation, Some(context)).await;
-        assert!(
-            matches!(
-                result,
-                Err(Error::Process(crate::ProcessError::Timeout { .. }))
-            ),
-            "{result:?}"
-        );
-        assert!(
-            StateArc::clone(&physical.state).try_lock_owned().is_err(),
-            "worker did not retain its admitted checkout"
-        );
+        let call = executor.execute(invocation, Some(context));
+        tokio::pin!(call);
+        assert!(call.as_mut().now_or_never().is_none());
+        // The native capture deadline uses std::time::Instant, independently
+        // of the paused Tokio clock and injected wall clock. Wait on one real
+        // OS timeout while checkout is held, then verify that clock elapsed.
+        let admitted = std::time::Instant::now();
+        let (elapsed, waited) = tokio::sync::oneshot::channel();
+        let timer = std::thread::spawn(move || {
+            let (_sender, receiver) = std::sync::mpsc::channel::<()>();
+            assert!(matches!(
+                receiver.recv_timeout(std::time::Duration::from_secs(6)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            let _ = elapsed.send(());
+        });
+        waited.await.map_err(storage)?;
+        timer.join().expect("monotonic deadline waiter panicked");
+        assert!(admitted.elapsed() > std::time::Duration::from_millis(5000));
+        schedule.set_unix_millis(now + 6000);
         drop(held);
+        let result = call.await?;
+        assert_eq!(result.value["background"], true, "{result:?}");
         let published = terminal(&harness, &output_directory).await?;
-        assert!(published.get("error").is_some(), "{published}");
+        assert_eq!(published["exit_code"], 0, "{published}");
         Ok::<_, Error>(())
     })
     .await?;

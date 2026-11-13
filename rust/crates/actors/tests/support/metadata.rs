@@ -12,10 +12,7 @@ fn field<'a>(value: &'a Value, name: &str, index: usize) -> Option<&'a Value> {
 
 /// Check the independent metadata text contract.
 pub fn text(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 1024
-        && value.trim() == value
-        && !value.chars().any(char::is_control)
+    !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control)
 }
 fn handle(value: &Value) -> bool {
     field(value, "version", 0)

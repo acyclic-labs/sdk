@@ -68,6 +68,7 @@ mod mcp;
 
 /// Host-managed signing authority for browser and guest agent admission.
 #[wasm_bindgen]
+#[derive(Clone)]
 pub struct WasmAgentAuthority {
     issuer: RuntimeAuthority,
     caller: acyclic_auth::contract::CallerContext,

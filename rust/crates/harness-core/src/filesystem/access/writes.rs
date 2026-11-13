@@ -7,7 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &'a Workspace<A, O>,
         grant: &'a ContentGrant,
         path: &'a str,
-        replay: bool,
+        inspect_destination: bool,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<
@@ -43,7 +43,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .0
                 .publication_fence()
                 .ok_or_else(|| io.invalid("missing write policy fence"))?;
-            if replay {
+            if !inspect_destination {
                 if !view.0.decide(Action::Create, path, access_now()?).allowed {
                     require(&view.0, Action::Write, path, io)?;
                 }
@@ -67,11 +67,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .0
                     .get(..candidate.len() + 1)
                     .ok_or_else(|| io.invalid("invalid parent path boundary"))?;
-                let present = match io.sdk(generation.stat(prefix, io, io.cancellation()).await) {
-                    Ok(_) => true,
-                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => false,
+                let stat = match io.sdk(generation.stat(prefix, io, io.cancellation()).await) {
+                    Ok(stat) => Some(stat),
+                    Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                     Err(error) => return Err(error),
                 };
+                let present = stat.is_some();
                 if candidate == path || !present {
                     let action = if present {
                         Action::Write
@@ -79,6 +80,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         Action::Create
                     };
                     require(&view.0, action, candidate, io)?;
+                }
+                if candidate == path
+                    && stat.is_some_and(|stat| stat.kind == acyclic_fs::kernel::FileKind::Directory)
+                {
+                    return Err(io.invalid("path is a directory"));
                 }
                 let Some((parent, _)) = candidate.rsplit_once('/') else {
                     break;

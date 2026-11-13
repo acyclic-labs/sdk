@@ -8,7 +8,7 @@ import { BlobsService } from "../packages/objects/generated/proto/objects/v1/obj
 import { MachinesService } from "../packages/machines/generated/proto/machines/v1/machines_pb.js";
 import { createStreamGrpcClient } from "../packages/stream/src/grpc.js";
 import { DefaultStreamProvider } from "../packages/stream/src/default.js";
-import { Stream } from "../packages/stream/src/client.js";
+import { StreamClient } from "../packages/stream/src/client.js";
 import { createFilesystemGrpcClient } from "../packages/filesystem/src/grpc.js";
 import { createObjectsV1GrpcClients } from "../packages/objects/src/v1-grpc.js";
 import { createMachinesGrpcClient } from "../packages/machines/src/grpc.js";
@@ -118,7 +118,7 @@ test("default Streams selection snapshots providers once and renews through its 
       expect(sent.length).toBe(start + values.length);
       calls = 0;
       const envOptions = credentialGetter({ ...base }, callback, kind);
-      const fromEnv = Stream.fromEnv(envOptions);
+      const fromEnv = StreamClient.fromEnv(envOptions);
       const envStart = sent.length;
       for (const _value of values) expect(await fromEnv.bytes("credential/test").tail()).toBe(7n);
       expect(envOptions.credentialReads()).toBe(1);

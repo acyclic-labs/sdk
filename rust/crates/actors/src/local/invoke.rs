@@ -205,12 +205,31 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 for effect in joined(&input)? {
                     publication.join(effect)?;
                 }
-                let mut request = publication.into_request()?;
-                let binding = acyclic_stream::request::commit_binding_with(&mut request, |_| {
-                    Ok::<(), StreamError>(())
-                })??;
+                let binding = acyclic_stream::request::commit_binding_with(
+                    &mut publication.request,
+                    |_| Ok::<(), StreamError>(()),
+                )??;
+                // Only deferred providers need a retained request if persistence
+                // confirmation fails. Other providers consume the original.
+                let outcome = if self.provider.context().deferred_durability() {
+                    let outcome = self
+                        .provider
+                        .commit_accepted(publication.request.clone())
+                        .await?;
+                    if matches!(
+                        &outcome,
+                        acyclic_stream::AcceptedCommitOutcome::Committed { .. }
+                    ) {
+                        self.confirm_durable(publication).await?;
+                    }
+                    outcome
+                } else {
+                    self.provider
+                        .commit_accepted(publication.into_request()?)
+                        .await?
+                };
                 let acyclic_stream::AcceptedCommitOutcome::Committed { receipt, envelope } =
-                    self.provider.commit_accepted(request).await?
+                    outcome
                 else {
                     return Err(Error::Conflict);
                 };
@@ -298,6 +317,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 let call = journal
                     .receipt(path.log())
                     .ok_or(Error::Invalid("call terminal receipt is missing"))?;
+                // A follow can observe acceptance while the writer is still
+                // confirming persistence. Certify this observer's own reply.
+                if let Err(source) = self.confirm_durability().await {
+                    return Err(Error::InvocationDurabilityUnknown {
+                        receipt: Box::new(call),
+                        source,
+                    });
+                }
                 if matches!(outcome, Outcome::Cancelled(_) | Outcome::Indeterminate(_)) {
                     return Err(Error::InvocationTerminated {
                         receipt: Box::new(call),

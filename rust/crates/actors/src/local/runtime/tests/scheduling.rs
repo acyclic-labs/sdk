@@ -33,6 +33,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
         Ok(0) | Err(StreamError::NotFound)
     ));
     let host = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -40,6 +41,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     .with_scheduling_shards([shard])?;
     assert!(matches!(
         Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
@@ -60,6 +62,7 @@ async fn shard_assignment_isolates_wakes_and_checkpoint_progress() -> TestResult
     host.advance_dispatcher(&checkpoint, initial, shard, tail, 0, Vec::new())
         .await?;
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -140,6 +143,7 @@ async fn restart_work(
         residents.push(spawn_with(&store, &format!("dormant-{index}"), &[b"emit"]).await?);
     }
     serve_to_checkpoint(&Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -158,6 +162,7 @@ async fn restart_work(
     PreparedPublish::settle(&provider.commit(input.into_request()?).await?)?;
     let counted = Arc::new(Counted::new((*provider).clone()));
     serve_to_checkpoint(&Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&counted), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -200,6 +205,7 @@ async fn after_wake(
     let target = spawn_with(&store, "forged-target", &[b"emit"]).await?;
     let host = || {
         Ok::<_, Box<dyn std::error::Error>>(Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
@@ -273,6 +279,7 @@ async fn armed_before_start(
         .with_scheduling_shards(std::num::NonZeroU16::MIN);
     let actor = spawn_with(&store, name, commands).await?;
     let earlier = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::clone(clock) as Arc<dyn Clock>,
@@ -292,6 +299,7 @@ async fn hibernated_alarms_fire_in_the_running_host() -> TestResult {
     let (provider, store, near) =
         armed_before_start(&clock, "hibernate-near", &[b"set 30000"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::clone(&clock) as Arc<dyn Clock>,
@@ -343,6 +351,7 @@ async fn resumed_after_checkpoint(
     let (provider, store, actor) = armed_before_start(&clock, name, &[command]).await?;
     {
         let host = Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(Package::new()?),
             Arc::clone(&clock) as Arc<dyn Clock>,
@@ -390,7 +399,12 @@ async fn resumed_after_checkpoint(
             .retain(|mutation| CommitMutation::path(mutation) != &shard);
     }
     store.submit(resume).await?;
-    let host = Runtime::new(store, Arc::new(Package::new()?), clock);
+    let host = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        clock,
+    );
     let mut serving = Box::pin(host.run(|_, error| panic!("delivery failed: {error}")));
     completed(&host, serving.as_mut()).await?;
     Ok(records(provider.as_ref(), &format!("out/{name}")).await?)
@@ -428,7 +442,12 @@ async fn deleting_a_resident_actor_keeps_its_host_completing() -> TestResult {
     let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
-    let runtime = Runtime::new(store.clone(), Arc::new(Package::new()?), Arc::new(clock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store.clone(),
+        Arc::new(Package::new()?),
+        Arc::new(clock),
+    );
     let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
     let doomed = spawn_with(&store, "doomed", &[b"set 60000"]).await?;
     completed(&runtime, serving.as_mut()).await?;
@@ -457,6 +476,7 @@ async fn pause_control_files_an_inherited_alarm_in_the_stores_shard() -> TestRes
     let unconfigured = Store::new(Arc::clone(&provider), root()?);
     let parent = spawn_with(&store, "inherit-parent", &[b"set 600000"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -550,6 +570,7 @@ async fn a_poisoned_actor_is_carried_through_checkpoints_and_restart() -> TestRe
     let healthy = spawn_with(&store, "healthy", &[b"emit"]).await?;
     let log = store.scheduling_path(0)?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Poisons {
             package: Package::new()?,
@@ -626,6 +647,7 @@ async fn a_poisoned_actor_is_carried_through_checkpoints_and_restart() -> TestRe
     );
     // A restarted host without the poison replays the carried entry alone.
     serve_to_checkpoint(&Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -668,12 +690,124 @@ async fn carried_beyond<P: StreamProvider + ?Sized>(
     "activation follow ended".into()
 }
 
+/// A restarted externally placed host asks its owner to place each dormant
+/// actor with due work, and that placement then delivers the waiting input.
+///
+/// Negative control: an actor already resident is never requested, and the
+/// dormant actor delivers nothing until its owner places it.
+#[tokio::test]
+async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
+    let one = std::num::NonZeroU16::MIN;
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one);
+    let dormant = spawn_with(&store, "dormant", &[b"emit"]).await?;
+    let resident = spawn_with(&store, "resident", &[b"emit"]).await?;
+    let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement(Arc::new(move |actor: &ActorReference| {
+        sender.send(actor.clone()).ok();
+    }));
+    runtime.place(resident.clone(), 1).await?;
+    let mut serving = Box::pin(runtime.run(|actor, error| panic!("{actor:?}: {error}")));
+    let first = observe_while_running(serving.as_mut(), async {
+        Ok(requested.recv().await.ok_or("placement requests closed")?)
+    })
+    .await?;
+    assert_eq!(first, dormant);
+    observe_while_running(serving.as_mut(), async { Ok(runtime.complete().await?) }).await?;
+    assert!(records(&*provider, "out/dormant").await?.is_empty());
+    assert_eq!(records(&*provider, "out/resident").await?.len(), 1);
+    assert!(!runtime.release(&dormant), "pending placement lost custody");
+    // Restart after a checkpoint can advance for the healthy actor, but before
+    // the owner has committed the requested placement. No new input arrives.
+    drop(serving);
+    drop(runtime);
+    let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
+    let replacement = Runtime::new(
+        store.clone(),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement(Arc::new(move |actor: &ActorReference| {
+        sender.send(actor.clone()).ok();
+    }));
+    let mut serving = Box::pin(replacement.run(|actor, error| panic!("{actor:?}: {error}")));
+    let restored = observe_while_running(serving.as_mut(), async {
+        tokio::select! {
+            biased;
+            actor = requested.recv() => Ok(actor.ok_or("placement requests closed")?),
+            idle = replacement.complete() => Err(format!("pending input was forgotten: {idle:?}").into()),
+        }
+    })
+    .await?;
+    assert_eq!(restored, dormant);
+    replacement.place(dormant.clone(), 1).await?;
+    observe_while_running(serving.as_mut(), async {
+        Ok(replacement.complete().await?)
+    })
+    .await?;
+    assert_eq!(records(&*provider, "out/dormant").await?.len(), 1);
+    while let Ok(actor) = requested.try_recv() {
+        assert_eq!(actor, dormant, "a resident actor was requested");
+    }
+    Ok(())
+}
+
+/// A placement request cannot retire an alarm window before its owner admits
+/// the actor. Restarting with no new activation must discover the same alarm.
+#[tokio::test]
+async fn an_unplaced_alarm_retains_its_window_across_restart() -> TestResult {
+    let (clock, mut time) = ControlledClock::new(WINDOW_TEN);
+    let clock = Arc::new(clock);
+    let (provider, store, actor) =
+        armed_before_start(&clock, "pending-alarm", &[b"set 1000"]).await?;
+    time.advance_to(WINDOW_TEN + 120_000)?;
+    for attempt in 0..2 {
+        let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
+        let runtime = Runtime::new(
+            store.clone(),
+            Arc::new(Package::new()?),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+        )
+        .with_external_placement(Arc::new(move |actor: &ActorReference| {
+            sender.send(actor.clone()).ok();
+        }));
+        let mut serving = Box::pin(runtime.run(|actor, error| panic!("{actor:?}: {error}")));
+        let restored = observe_while_running(serving.as_mut(), async {
+            tokio::select! {
+                biased;
+                actor = requested.recv() => Ok(actor.ok_or("placement requests closed")?),
+                idle = runtime.complete() => Err(format!("pending alarm was forgotten: {idle:?}").into()),
+            }
+        })
+        .await?;
+        assert_eq!(restored, actor);
+        completed(&runtime, serving.as_mut()).await?;
+        assert!(records(&*provider, "out/pending-alarm").await?.is_empty());
+        if attempt == 1 {
+            runtime.place(actor.clone(), 2).await?;
+            completed(&runtime, serving.as_mut()).await?;
+        }
+    }
+    assert_eq!(records(&*provider, "out/pending-alarm").await?.len(), 1);
+    Ok(())
+}
+
 /// An externally placed host releases its failed actor: it carries that
 /// actor's wake exactly once, then no more however many checkpoints pass,
 /// and the input stays unconsumed for the next placer, which delivers it.
 ///
-/// Negative control: keeping the released actor's failure mark carried a
-/// fresh entry at every checkpoint, each one's observation forcing the next.
+/// Reading that handoff entry back asks the owner to place the actor and
+/// recreates no slot here.
+///
+/// Negative controls: keeping the released actor's failure mark carried a
+/// fresh entry at every checkpoint, each one's observation forcing the next;
+/// taking custody of the read-back handoff recreated an unplaced slot whose
+/// failure mark carried the actor again.
 #[tokio::test]
 async fn a_released_failed_actor_is_carried_once() -> TestResult {
     const ROUNDS: usize = 4;
@@ -681,9 +815,11 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one);
     let poisoned = spawn_with(&store, "released", &[b"emit"]).await?;
+    let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
     let healthy = spawn_with(&store, "resident", &[b"emit"]).await?;
     let log = store.scheduling_path(0)?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Poisons {
             package: Package::new()?,
@@ -691,7 +827,9 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
         }),
         Arc::new(SystemClock),
     )
-    .with_external_placement();
+    .with_external_placement(Arc::new(move |actor: &ActorReference| {
+        sender.send(actor.clone()).ok();
+    }));
     runtime.place(poisoned.clone(), 1).await?;
     runtime.place(healthy.clone(), 1).await?;
     let mut serving = Box::pin(runtime.run(|actor, error| {
@@ -730,7 +868,20 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
             from = Some(provider.tail(log.clone()).await?);
         }
     }
+    assert!(
+        runtime.slot(&poisoned).is_none(),
+        "reading the handoff entry back rehosted the released actor"
+    );
     drop(serving);
+    let mut requests = Vec::new();
+    while let Ok(actor) = requested.try_recv() {
+        requests.push(actor);
+    }
+    assert_eq!(
+        requests,
+        [poisoned.clone()],
+        "the owner was not asked once to place the handoff"
+    );
     let from = usize::try_from(from.ok_or("no release")?)?;
     let entries = records(&*provider, log.as_str()).await?;
     assert_eq!(
@@ -752,11 +903,12 @@ async fn a_released_failed_actor_is_carried_once() -> TestResult {
     );
     // The next placer delivers the retained input.
     let next = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     )
-    .with_external_placement();
+    .externally_placed();
     next.place(poisoned.clone(), 2).await?;
     next.drain_actor(&poisoned).await?;
     assert_eq!(records(&*provider, "out/released").await?.len(), 1);

@@ -1,18 +1,15 @@
 use super::Invocation;
-#[cfg(test)]
-#[cfg(unix)]
+#[cfg(all(test, any(unix, windows)))]
 use super::{NativeProcessObserver, NativeProcessResult, capture};
 use crate::{Error, Result, tools::ShellInput, workspace::MountTable};
 use acyclic_fs::access::Action;
 use std::path::Path;
-#[cfg(test)]
-#[cfg(unix)]
+#[cfg(all(test, any(unix, windows)))]
 use std::sync::Arc;
 
 /// Validates the already-composed task namespace and uses the native provider's
 /// capture path. Its caller retains the view and publishes each writable mount.
-#[cfg(test)]
-#[cfg(unix)]
+#[cfg(all(test, any(unix, windows)))]
 pub(crate) async fn run<T>(
     input: ShellInput,
     mounts: &MountTable<T>,
@@ -99,19 +96,23 @@ pub fn prepare<T>(
     }
     invocation.cwd = cwd;
     for (name, value) in mounts.environment()? {
-        if invocation.environment.insert(name, value).is_some() {
+        if invocation
+            .environment
+            .keys()
+            .any(|key| super::invocation::environment_key_matches(key, &name))
+        {
             return Err(Error::Invalid(
                 "volume discovery hint collides with the explicit process environment".into(),
             ));
         }
+        invocation.environment.insert(name, value);
     }
     // Shell commands receive only the host's explicit ordinary variables and
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
     // even when another native process caller requested inheritance.
     invocation.inherit_environment = false;
-    // The deadline runs from the call's admission, so queueing behind the
-    // checkout and preparation count against it; an expired call is refused
-    // at launch as a timeout instead of starting late.
+    // The caller admits native execution after checkout preparation. Queueing
+    // for the checkout consumes scope lifetime, not this process lifetime.
     invocation.schedule = input.timeout_ms()?.map_or(
         acyclic_native_runtime::CaptureSchedule::Unbounded,
         |timeout| {
@@ -131,13 +132,7 @@ pub fn prepare<T>(
                 invocation
                     .environment
                     .iter()
-                    .find(|(key, _)| {
-                        if cfg!(windows) {
-                            key.eq_ignore_ascii_case(name)
-                        } else {
-                            key.as_str() == name
-                        }
-                    })
+                    .find(|(key, _)| super::invocation::environment_key_matches(key, name))
                     .map(|(_, value)| value.into())
             });
         invocation.executable = search.resolve(program).map_err(Error::process_io)?;
@@ -147,6 +142,8 @@ pub fn prepare<T>(
         standard_input.map(acyclic_native_runtime::OwnedCaptureInput::Literal);
     if invocation.execution_grant.is_none() {
         invocation.execution_grant = workspace_grant(mounts, &mut invocation.environment)?;
+    } else {
+        workspace_environment(mounts, &mut invocation.environment)?;
     }
     super::invocation::validate(
         &invocation.executable,
@@ -158,6 +155,81 @@ pub fn prepare<T>(
     Ok(invocation)
 }
 
+/// Selects process-local directories independently of execution-grant selection.
+/// The private home projection owns temporary files; host scratch is reserved
+/// for process output custody when no private home is projected.
+#[doc(hidden)]
+pub fn workspace_environment<T>(
+    mounts: &MountTable<T>,
+    environment: &mut std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    let home = mounts
+        .native_mounts()
+        .find(|(relative, _, mount)| *relative == "volume:///home" && !mount.mode.read_only());
+    let temporary = home
+        .map(|(_, root, _)| {
+            // The admitted binding may be an owner-maintained alias. Resolve
+            // that root before the no-follow walk of authored descendants.
+            let canonical = std::fs::canonicalize(root).map_err(Error::process_io)?;
+            acyclic_fs::hold_root(&canonical)
+                .and_then(|root| {
+                    // The ordinary volume publication owns persistence after
+                    // the process completes, not this disposable projection.
+                    root.create_directories(
+                        Path::new("tmp"),
+                        acyclic_fs::NativeDurability::Visibility,
+                    )
+                })
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            Ok::<_, Error>(root.join("tmp"))
+        })
+        .transpose()?;
+    let home_root = home.map_or(mounts.root.as_path(), |(_, root, _)| root);
+    for name in [
+        "HOME",
+        #[cfg(windows)]
+        "USERPROFILE",
+    ] {
+        if !environment
+            .keys()
+            .any(|key| super::invocation::environment_key_matches(key, name))
+        {
+            environment.insert(
+                name.into(),
+                home_root
+                    .to_str()
+                    .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
+                    .into(),
+            );
+        }
+    }
+    let temporary = temporary.as_ref().map_or_else(
+        || {
+            mounts.scratch_root.as_deref().unwrap_or_else(|| {
+                mounts
+                    .native_mounts()
+                    .find(|(_, _, mount)| !mount.mode.read_only())
+                    .map_or(home_root, |(_, root, _)| root)
+            })
+        },
+        |temporary| temporary.as_path(),
+    );
+    let temporary = temporary
+        .to_str()
+        .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?;
+    for name in [
+        "TMPDIR",
+        #[cfg(windows)]
+        "TEMP",
+        #[cfg(windows)]
+        "TMP",
+    ] {
+        environment.retain(|key, _| !super::invocation::environment_key_matches(key, name));
+        environment.insert(name.into(), temporary.into());
+    }
+    Ok(())
+}
+
 /// Host-owned workspace boundary shared by shell and lifecycle hooks. Explicit
 /// execution grants retain their existing, separately authenticated authority.
 /// Native enforcement failures refuse launch, never retry unconfined. Linux
@@ -167,6 +239,7 @@ pub fn workspace_grant<T>(
     mounts: &MountTable<T>,
     environment: &mut std::collections::BTreeMap<String, String>,
 ) -> Result<Option<acyclic_native_runtime::execution::ExecutionGrant>> {
+    workspace_environment(mounts, environment)?;
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         use acyclic_native_runtime::execution::{ExecutionAccess, ExecutionGrant};
@@ -197,38 +270,6 @@ pub fn workspace_grant<T>(
                 scoped_read.push((root.clone(), ceiling.clone()));
             }
         }
-        // A closed environment must not rediscover the owner's home through
-        // host NSS IPC. Ordinary tools use the same workspace as their home.
-        #[cfg(unix)]
-        if let std::collections::btree_map::Entry::Vacant(home) = environment.entry("HOME".into()) {
-            home.insert(
-                primary
-                    .to_str()
-                    .ok_or_else(|| Error::Invalid("sandbox home directory is not UTF-8".into()))?
-                    .into(),
-            );
-        }
-        // Harness-bound processes put temporary files in host scratch.
-        let temporary = if let Some(scratch) = &mounts.scratch_root {
-            scratch
-        } else if access == ExecutionAccess::ReadOnly {
-            write.first().unwrap_or(&primary)
-        } else {
-            &primary
-        };
-        environment.insert(
-            "TMPDIR".into(),
-            temporary
-                .to_str()
-                .ok_or_else(|| Error::Invalid("sandbox temporary directory is not UTF-8".into()))?
-                .into(),
-        );
-        #[cfg(windows)]
-        {
-            let temporary = environment["TMPDIR"].clone();
-            environment.insert("TEMP".into(), temporary.clone());
-            environment.insert("TMP".into(), temporary);
-        }
         ExecutionGrant::workspace_default_with_optional_read_scopes(
             &primary,
             access,
@@ -246,6 +287,5 @@ pub fn workspace_grant<T>(
     }
 }
 
-#[cfg(test)]
-#[cfg(unix)]
+#[cfg(all(test, any(unix, windows)))]
 mod tests;

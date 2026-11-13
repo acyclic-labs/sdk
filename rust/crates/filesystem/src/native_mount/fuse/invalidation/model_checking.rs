@@ -171,3 +171,54 @@ fn production_guard_wakes_invalidation_failure_and_its_waiter() {
         .expect("Loom deadlock message");
     assert!(message.contains("deadlock"), "{message}");
 }
+
+#[test]
+fn a_waiter_finishes_before_notifications_admitted_after_its_cut() {
+    crate::initialize_test_native_io();
+    loom::model(|| {
+        let (core, work) = super::super::tests::model_checking::fixture();
+        let (sleeping, asleep) = mpsc::channel();
+        let producer = loom::thread::spawn({
+            let core = Arc::clone(&core);
+            let work = work.clone();
+            move || {
+                asleep.recv().unwrap();
+                struct AddsLater<'a> {
+                    core: &'a ProjectionCore,
+                    work: &'a Work,
+                }
+                impl KernelCacheNotifier for AddsLater<'_> {
+                    fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
+                        assert_eq!(inode, 10);
+                        let mut state = self.core.state_to_finish();
+                        fuse_reserve(&mut state.invalidation.deferred, 1, self.work).unwrap();
+                        state.invalidation.deferred.push(KernelCacheItem::Inode(20));
+                        Ok(())
+                    }
+                    fn inval_entry(&self, _: u64, _: &[u8]) -> std::io::Result<()> {
+                        unreachable!("this pass contains inode notifications")
+                    }
+                }
+                invalidation_pass(
+                    &core,
+                    &AddsLater {
+                        core: &core,
+                        work: &work,
+                    },
+                );
+            }
+        });
+        let mut state = core.state().unwrap();
+        fuse_reserve(&mut state.invalidation.deferred, 1, &work).unwrap();
+        state.invalidation.deferred.push(KernelCacheItem::Inode(10));
+        WAITER_WAIT.with(|hook| *hook.borrow_mut() = Some(sleeping));
+        core.wait_for_invalidation(state, None, &work).unwrap();
+        producer.join().unwrap();
+        let state = core.state_to_finish();
+        assert_eq!(state.invalidation.deferred.len(), 1);
+        assert!(state.invalidation.is_pending(None));
+        assert_eq!(state.invalidation.deferred_processed, 1);
+        drop(state);
+        core.stop();
+    });
+}

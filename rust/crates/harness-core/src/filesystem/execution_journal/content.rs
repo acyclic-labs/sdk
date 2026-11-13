@@ -86,9 +86,6 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<(IdempotencyKey, String)> {
         let digest = operation_digest(operation_id, idempotency_key, io)?;
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
-        })?)?;
         let path = crate::executor::with_history_io(io, |work| {
             // Stock publication binds JSON bytes to the original operation key
             // with one BLAKE3 suffix. The result kind precedes that suffix.
@@ -98,6 +95,18 @@ where
                     suffix.len() == 64 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
                 })
                 .map_or(idempotency_key, |(key, _)| key);
+            // A summary is model input: it lives where the agent's own reader
+            // may read it, beside the host-private execution records.
+            if crate::executor::summary_identity::is_summary_key(kind_key) {
+                return crate::executor::preparation_format(
+                    format_args!(
+                        "{}{operation_id}/{}.json",
+                        InternalContentClass::Summary.prefix(),
+                        digest.to_hex()
+                    ),
+                    work,
+                );
+            }
             if kind_key.starts_with("tool:") && kind_key.ends_with(":result") {
                 return crate::executor::preparation_format(
                     format_args!(
@@ -114,6 +123,19 @@ where
                 work,
             )
         })?;
+        // An upload identity binds its path as well as its bytes. Published
+        // summaries must not reuse the host-private execution upload identity.
+        let namespace = if path.starts_with(InternalContentClass::Summary.prefix()) {
+            "journal-summary-v1"
+        } else {
+            "journal"
+        };
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(
+                format_args!("{namespace}-{}", digest.to_hex()),
+                work,
+            )
+        })?)?;
         Ok((key, path))
     }
 
@@ -664,6 +686,8 @@ where
 pub(super) fn payload_class(path: &str) -> InternalContentClass {
     if path.starts_with(InternalContentClass::ToolResult.prefix()) {
         InternalContentClass::ToolResult
+    } else if path.starts_with(InternalContentClass::Summary.prefix()) {
+        InternalContentClass::Summary
     } else {
         InternalContentClass::Execution
     }

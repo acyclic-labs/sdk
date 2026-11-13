@@ -115,6 +115,7 @@ impl WasmSessionAuthority {
             if current.environment != next.environment
                 || current.account != next.account
                 || current.minimum_key_epoch > next.minimum_key_epoch
+                || current.not_before_unix_seconds > next.not_before_unix_seconds
                 || !current.revoked_key_ids.is_subset(&next.revoked_key_ids)
                 || !current.revoked_block_ids.is_subset(&next.revoked_block_ids)
             {

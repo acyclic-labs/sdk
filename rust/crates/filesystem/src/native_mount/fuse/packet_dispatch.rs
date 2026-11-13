@@ -116,6 +116,20 @@ impl From<i32> for PacketFailure {
     }
 }
 
+impl From<acyclic_native_runtime::fuse_protocol::Error> for PacketFailure {
+    fn from(error: acyclic_native_runtime::fuse_protocol::Error) -> Self {
+        use acyclic_native_runtime::fuse_protocol::Error;
+        match error {
+            Error::Errno(errno) => errno.into(),
+            Error::UnsupportedCapabilities(flags) => {
+                NativeMountError::FuseUnsupportedCapabilities(InitFlags::from_bits_retain(flags))
+                    .into()
+            }
+            Error::Closed => Self::TransportClosed,
+        }
+    }
+}
+
 impl From<NativeMountError> for PacketFailure {
     fn from(error: NativeMountError) -> Self {
         Self::Local(error)
@@ -148,6 +162,75 @@ impl Drop for PacketView {
 }
 
 impl PacketCompletion {
+    pub(super) fn view_core(&self) -> Option<&Arc<ProjectionCore>> {
+        self._view.as_ref().map(|view| &view.core)
+    }
+
+    /// Reclaim only kernel references from a physically rejected reply. Source
+    /// mutations already completed and must never be replayed or rolled back.
+    /// The original view/work remain retained until this cleanup finishes.
+    pub(super) fn discard_rejected(
+        &self,
+        core: &ProjectionCore,
+        request: &PacketRequest<'_>,
+        response: &[u8],
+    ) -> Result<(), i32> {
+        if !matches!(request.opcode, 1 | 6 | 8 | 9 | 13 | 14 | 35 | 44) {
+            return Ok(());
+        }
+        let Some(length) = self.length else {
+            return Ok(());
+        };
+        let mut input = PacketInput::new(response.get(..length).ok_or(libc::EPROTO)?);
+        input.u32()?;
+        if input.u32()? != 0 {
+            return Ok(());
+        }
+        input.u64()?;
+        match request.opcode {
+            14 | 35 => {
+                let inode = if request.opcode == 35 {
+                    let inode = input.u64()?;
+                    input.take(120)?;
+                    inode
+                } else {
+                    request.inode
+                };
+                let handle = input.u64()?;
+                let mut state = core.state_to_finish();
+                state.discard_file_handle(inode, handle)?;
+                // An unobserved OPEN cannot establish the kernel's cache
+                // version. Conservatively refuse KEEP_CACHE on the next open.
+                if let Some(entry) = state.by_inode.get_mut(&inode) {
+                    entry.cached_content = None;
+                }
+                if request.opcode == 35 {
+                    state.release_lookup_reference(inode, 1);
+                }
+            }
+            1 | 6 | 8 | 9 | 13 => {
+                core.state_to_finish()
+                    .release_lookup_reference(input.u64()?, 1);
+            }
+            44 => {
+                let mut state = core.state_to_finish();
+                while !input.remaining().is_empty() {
+                    let inode = input.u64()?;
+                    input.take(120 + 16)?;
+                    let length = usize::try_from(input.u32()?).map_err(|_| libc::EOVERFLOW)?;
+                    input.u32()?;
+                    let name = input.take(length)?;
+                    input.take((8 - length % 8) % 8)?;
+                    if !matches!(name, b"." | b"..") {
+                        state.release_lookup_reference(inode, 1);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) fn reply(length: usize) -> Self {
         Self {
             length: Some(length),

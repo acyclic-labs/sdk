@@ -124,6 +124,7 @@ fn usage(call: &Call<'_>) -> ModelUsageRecord {
         system_fingerprint: None,
         ttft_ns: None,
         cache: None,
+        abandoned: Some(Default::default()),
     }
 }
 
@@ -551,6 +552,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         system_fingerprint: None,
         ttft_ns: None,
         cache: None,
+        abandoned: Default::default(),
     };
     model_observation::append(
         journal.as_ref(),

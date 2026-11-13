@@ -128,6 +128,28 @@ pub fn grants() -> Result<JsValue, JsValue> {
     Ok(grants.into())
 }
 
+#[wasm_bindgen(js_name = hostFixtureWorkspaceGrants)]
+pub fn workspace_grants(volume: &[u8]) -> Result<JsValue, JsValue> {
+    use acyclic_harness_core::conversation::{VolumeOperation, VolumeRef};
+    use prost::Message as _;
+    let error = |error: String| JsValue::from_str(&error);
+    let volume = acyclic_harness_core::wire::VolumeRef::decode(volume)
+        .map_err(|cause| error(cause.to_string()))?;
+    let volume = VolumeRef::try_from(volume).map_err(|cause| error(cause.to_string()))?;
+    let grants = js_sys::Array::from(&grants()?);
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        grants.push(&JsValue::from_str(
+            &volume
+                .capability(operation, &mut None)
+                .map_err(|cause| error(cause.to_string()))?,
+        ));
+    }
+    grants.push(&JsValue::from_str(
+        &acyclic_harness_core::contract::capability::tool_call("shell"),
+    ));
+    Ok(grants.into())
+}
+
 #[wasm_bindgen(js_name = hostFixtureTrust)]
 pub fn trust() -> String {
     let keys = acyclic_auth::testing::Snapshot::default();
@@ -253,4 +275,19 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
     .await;
     result.map_err(|error| JsValue::from_str(&format!(
         "STEP adoption-fixture spawn failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))
+}
+
+/// Open the Actor verifier's authority with the canonical alarm admission rule.
+#[wasm_bindgen(js_name = openActorJournal)]
+pub async fn actor_journal(journal: JsValue) -> Result<acyclic_stream::WasmStream, JsValue> {
+    let provider = acyclic_stream::JournalStream::open(journal, Default::default())
+        .await
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    provider
+        .install_commit_admission(acyclic_actors::local::alarm_admission())
+        .await
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    Ok(acyclic_stream::WasmStream::from_provider(Arc::new(
+        provider,
+    )))
 }

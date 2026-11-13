@@ -61,9 +61,9 @@ proptest! {
         prop_assert_eq!(constructed.expires_at_ms(), expiry.to_string());
     }
 
-    /// UTF-8 bytes, not character count, bound every constructor and serde route.
+    /// Content admission agrees across constructors and both serde representations.
     #[test]
-    fn metadata_boundaries_apply_to_native_and_wire(count in 0usize..=1100, multibyte in any::<bool>(), version in any::<u32>(), field in 0usize..5) {
+    fn metadata_content_agrees_across_native_and_wire(count in 0usize..=4096, multibyte in any::<bool>(), version in any::<u32>(), field in 0usize..5) {
         let text = if multibyte { "λ" } else { "a" }.repeat(count);
         let valid = oracle::text(&text);
         let caller_valid = match field {0 => !text.is_empty(),4 => acyclic_actors::addressing::validate_actor_id(text.as_bytes()).is_ok(),_ => valid};
@@ -139,15 +139,6 @@ fn rejected_metadata_never_enters_context() -> Result<(), Box<dyn std::error::Er
         let raw = json!({"accountId":[97],"orgId":"o","principal":"p","credentialId":"c","actorId":"i","expiresAtMs":invalid});
         assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
     }
-    for text in ["a".repeat(1024), "λ".repeat(512)] {
-        let handle = CallerCapability::new(1, text.clone())?;
-        assert_eq!(handle.handle(), text);
-        assert!(CallerCapability::new(1, format!("{text}a")).is_err());
-    }
-    let huge = "a".repeat(1024 * 1024);
-    assert!(CallerCapability::new(1, huge.clone()).is_err());
-    assert!(RuntimeHandle::new(1, huge.clone()).is_err());
-    assert!(caller(&huge, 1, 1).is_err());
     let caller = AdmittedCaller::new(
         b"a".to_vec(),
         "o".into(),
@@ -181,5 +172,50 @@ fn rejected_metadata_never_enters_context() -> Result<(), Box<dyn std::error::Er
     *raw.pointer_mut("/capability/version")
         .ok_or("capability version")? = 0.into();
     assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
+    Ok(())
+}
+
+#[test]
+fn host_metadata_round_trips_without_field_size_policy() -> Result<(), Box<dyn std::error::Error>> {
+    let text = "opaque-handle-λ".repeat(512);
+    let capability = CallerCapability::new(1, text.clone())?;
+    let runtime = RuntimeHandle::new(2, text.clone())?;
+    assert_eq!(
+        serde_json::from_slice::<CallerCapability>(&serde_json::to_vec(&capability)?)?,
+        capability
+    );
+    assert_eq!(
+        serde_json::from_slice::<RuntimeHandle>(&serde_json::to_vec(&runtime)?)?,
+        runtime
+    );
+    let caller = AdmittedCaller::new(
+        b"account".to_vec(),
+        text.clone(),
+        text.clone(),
+        text.clone(),
+        "actor".into(),
+        1,
+    )?
+    .with_capability(capability)?;
+    assert_eq!(
+        serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&caller)?)?,
+        caller
+    );
+    for raw in [json!([1, text]), json!({ "version": 1, "handle": text })] {
+        let bytes = serde_json::to_vec(&raw)?;
+        oracle::check(&bytes);
+        assert_eq!(
+            serde_json::from_slice::<CallerCapability>(&bytes)?.handle(),
+            text
+        );
+    }
+    assert_eq!(
+        CallerCapability::new(0, text.clone()),
+        Err(GuestMetadataError("version"))
+    );
+    assert_eq!(
+        RuntimeHandle::new(1, format!("{text}\n")),
+        Err(GuestMetadataError("handle"))
+    );
     Ok(())
 }

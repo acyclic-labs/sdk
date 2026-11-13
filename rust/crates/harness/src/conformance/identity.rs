@@ -5,7 +5,7 @@ use crate::conformance::{Backend, Result, admission::fixture::Fixture};
 use acyclic_harness_core::{
     Capabilities,
     conversation::VolumeOperation,
-    core::{AggregateKind, Authority, AuthorityRoot},
+    core::AuthorityRoot,
     filesystem::{TurnAdmission, agent_authority},
     oidc,
 };
@@ -216,10 +216,7 @@ async fn check(
     now: u64,
     expected: Expected<'_>,
 ) -> Result {
-    let audience = Authority {
-        kind: AggregateKind::Conversation,
-        id: "workload".into(),
-    };
+    let audience = fixture.audience();
     let root = AuthorityRoot::new("conformance", [7; 32], audience.clone());
     let journal = acyclic_harness_core::conversation::journal_volume(
         fixture.binding.volume()?.provider().clone(),

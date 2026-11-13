@@ -37,7 +37,8 @@ pub fn child_branch_operand(args: &[String]) -> Option<(usize, &str, Option<&str
     (operand
         .strip_prefix("agents/")
         .is_some_and(|name| !name.is_empty())
-        || operand.starts_with("harness/agents/"))
+        || operand.starts_with("harness/agents/")
+        || (path.is_some() && operand != "HEAD" && !operand.is_empty()))
     .then_some((index, operand, path))
 }
 

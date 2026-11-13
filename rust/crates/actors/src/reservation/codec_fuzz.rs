@@ -100,6 +100,7 @@ async fn publication_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std
     store.submit(creation).await?;
     let (clock, _controller) = ControlledClock::new(10);
     let host = Host::new(
+        crate::guest::Requests::default(),
         Store::new(provider, root),
         actor.clone(),
         Arc::new(Package::new(

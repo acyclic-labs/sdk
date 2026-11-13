@@ -217,14 +217,9 @@ pub async fn connect(
     peer: PeerTrust<'_>,
     identity: Option<Identity>,
 ) -> Result<Channel, ConnectError> {
-    let url = url::Url::parse(&endpoint.uri().to_string()).map_err(|_| ConnectError::Endpoint)?;
-    if url.scheme() != "https"
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
+    let url = super::credential::base_endpoint(&endpoint.uri().to_string())
+        .map_err(|_| ConnectError::Endpoint)?;
+    if url.scheme() != "https" {
         return Err(ConnectError::Endpoint);
     }
     let mut tls = ClientTlsConfig::new();
@@ -364,10 +359,8 @@ pub fn request<T>(
 /// governed by its producer, without imposing a periodic reconnect deadline.
 /// Dispatch performs the same exact-lease check as a finite request.
 pub fn retained_request<T>(body: T, lease: &ResolvedCredential) -> Result<Request<T>, Status> {
-    let mut authorization =
-        tonic::metadata::MetadataValue::try_from(crate::credential::bearer_bytes(lease.as_str()))
-            .map_err(|_| credential_error(CredentialError::Invalid))?;
-    authorization.set_sensitive(true);
+    let authorization =
+        crate::credential::bearer_metadata(lease.as_str()).map_err(credential_error)?;
     let mut request = Request::new(body);
     request
         .metadata_mut()

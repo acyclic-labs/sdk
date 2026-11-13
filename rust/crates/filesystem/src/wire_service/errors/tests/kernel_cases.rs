@@ -210,3 +210,8 @@ fn native_objects_keep_the_service_failure() {
         Code::PermissionDenied
     );
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+kernel_cases! { stale_watch_interval: crate::DemandError, kernel::demand_code {
+    FailedPrecondition => [E::Observation(Box::new(crate::NativeWatchError::WatchCutMismatch))];
+}}

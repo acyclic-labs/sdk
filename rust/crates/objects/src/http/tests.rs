@@ -117,6 +117,9 @@ async fn http_availability_uses_shared_accounts_framing_and_terminal_failure() -
     let second = HttpObjects::new(&endpoint, "second", Some(1024 * 1024), None)?;
     crate::conformance::verify(&first, &second, "http-availability").await?;
     let digest = Digest::of(b"HTTP physical restoration");
+    assert!(
+        matches!(HttpObjects::new(&endpoint, "first", Some(1), None)?.availability(digest).await, Err(error) if error.code == wire::ErrorCode::QuotaExceeded)
+    );
     let mut observation = first.availability(digest).await?;
     let mut isolated = second.availability(digest).await?;
     assert!(

@@ -793,3 +793,77 @@ fn a_lost_delivery_requires_a_rescan_until_one_completes() -> Result<(), Box<dyn
     assert!(watch.confirmable()?);
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ready_interval_pages_exclude_later_events_and_revalidate_continuity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut watch = NativeWatch::open(directory.path(), measured_watch_options())?;
+    watch.accept_lazy_baseline()?;
+    let cancellation = CancellationToken::new();
+    for name in ["first", "second", "third"] {
+        std::fs::write(directory.path().join(name), b"before cut")?;
+    }
+    watch.fence()?;
+    let cut = watch.ready_cut()?;
+    std::fs::write(directory.path().join("later"), b"after cut")?;
+    watch.fence()?;
+    let path = NamespacePath::from_portable(
+        &crate::path::PortablePath::parse("/later", VolumeLimits::default())?,
+        VolumeLimits::default(),
+    )?;
+    let mut pages = 0;
+    loop {
+        let batch = watch
+            .poll_through(&cut, 1, WorkBudget::UNBOUNDED, &cancellation)?
+            .value;
+        let WatchBatch::Changes { ref changes, .. } = batch else {
+            return Err(format!("unexpected invalidation: {batch:?}").into());
+        };
+        if changes.is_empty() {
+            break;
+        }
+        pages += 1;
+        assert!(changes.iter().all(|change| !matches!(change,
+            WatchChange::Created(p) | WatchChange::Modified(p) | WatchChange::Arrived(p)
+                if *p == path)));
+    }
+    assert!(
+        pages >= 3,
+        "the real prefix must span multiple one-hint pages"
+    );
+    let later = watch.poll(32, WorkBudget::UNBOUNDED, &cancellation)?.value;
+    assert!(matches!(&later, WatchBatch::Changes { changes, .. }
+        if changes.iter().any(|change| matches!(change,
+            WatchChange::Created(p) | WatchChange::Modified(p) | WatchChange::Arrived(p)
+                if *p == path))));
+    // A completed interval still observes loss without consuming later hints.
+    let cut = watch.ready_cut()?;
+    watch.invalidate()?;
+    assert!(matches!(
+        watch
+            .poll_through(&cut, 1, WorkBudget::UNBOUNDED, &cancellation)?
+            .value,
+        WatchBatch::RescanRequired { .. }
+    ));
+    let scan = watch.begin_rescan()?;
+    watch.finish_rescan(scan)?;
+    assert!(matches!(
+        watch.poll_through(&cut, 1, WorkBudget::UNBOUNDED, &cancellation),
+        Err(OperationFailure {
+            error: NativeWatchError::WatchCutMismatch,
+            ..
+        })
+    ));
+    let other_directory = tempfile::tempdir()?;
+    let mut other = NativeWatch::open(other_directory.path(), measured_watch_options())?;
+    assert!(matches!(
+        other.poll_through(&cut, 1, WorkBudget::UNBOUNDED, &cancellation),
+        Err(OperationFailure {
+            error: NativeWatchError::WatchCutMismatch,
+            ..
+        })
+    ));
+    Ok(())
+}

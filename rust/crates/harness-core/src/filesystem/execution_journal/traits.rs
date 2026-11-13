@@ -519,6 +519,26 @@ where
         self.append_contributed_if_tail(operation, expected_tail, key, event, &[], None, io)
     }
 
+    fn claim_if_tail<'a>(
+        &'a self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<u64>>> {
+        self.append_projected(
+            operation,
+            Some(expected_tail),
+            key,
+            event,
+            &[],
+            None,
+            io,
+            |receipt| Ok(receipt.committed_at_micros),
+        )
+    }
+
     fn dispatch_if_tail<'a>(
         &'a self,
         operation: OperationId,
@@ -729,6 +749,22 @@ where
 
     fn defer_tool(&self, until: crate::agent::Until, io: Option<&PreparationIo>) -> Result<()> {
         self.approvals(io)?.defer(until)
+    }
+
+    fn preparation_deadline(
+        &self,
+        deadline_unix_ms: u64,
+    ) -> Result<acyclic_stream::BoxProviderFuture<'static, Result<()>>> {
+        let deadline = self
+            .clock
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("execution journal has no host clock".into()))?
+            .sleep_until(deadline_unix_ms);
+        Ok(Box::pin(async move {
+            deadline
+                .await
+                .map_err(|error| Error::Invalid(error.to_string()))
+        }))
     }
 
     fn commit_tool_effects(&self, io: Option<&PreparationIo>) -> Result<()> {

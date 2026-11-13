@@ -32,9 +32,21 @@ pub fn parse_git_argv<E: std::error::Error + 'static>(
                     .any(|arg| arg == "--cached" || arg == "--staged"),
             })
         }
-        "log" => Ok(GitCommand::Log {
-            maximum: parse_log_maximum(args)?,
-        }),
+        "log" => {
+            let (counts, object) = match args.split_last() {
+                Some((object, counts))
+                    if !object.starts_with('-')
+                        && !matches!(counts, [option] if option == "-n" || option == "--max-count") =>
+                {
+                    (counts, Some(object.clone()))
+                }
+                _ => (args, None),
+            };
+            Ok(GitCommand::Log {
+                maximum: parse_log_maximum(counts)?,
+                object,
+            })
+        }
         "show" => {
             let (args, offset) = match args {
                 [object, flag, offset] if flag == "--offset" => (
@@ -144,7 +156,7 @@ pub fn parse_git_argv<E: std::error::Error + 'static>(
                     ));
                 }
                 return Ok(GitCommand::Restore {
-                    source: args.first().cloned(),
+                    source: args.get(..separator).and_then(|source| source.first()).cloned(),
                     paths,
                 });
             }

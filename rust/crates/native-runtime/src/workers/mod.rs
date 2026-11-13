@@ -68,18 +68,15 @@ pub(crate) fn receive_job(
 }
 
 pub(crate) static NATIVE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-native-io", |parallelism| parallelism.clamp(2, 4)));
+    LazyLock::new(|| start_workers("acyclic-native-io"));
 
-pub(crate) static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> = LazyLock::new(|| {
-    start_workers("acyclic-host-io", |parallelism| {
-        parallelism.saturating_mul(2).clamp(2, 16)
-    })
-});
+pub(crate) static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> =
+    LazyLock::new(|| start_workers("acyclic-host-io"));
 
 // Persistence never waits for a capture callback or interactive input. Keeping
 // it separate prevents a blocked host callback from occupying its producer.
 pub(crate) static PERSISTENCE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-persistence", |parallelism| parallelism.clamp(2, 4)));
+    LazyLock::new(|| start_workers("acyclic-persistence"));
 
 // A synchronous inherited sink can retain its write until the peer drains.
 // It must not occupy persistence or host-callback capacity. This work class
@@ -87,14 +84,14 @@ pub(crate) static PERSISTENCE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
 // the first synchronous output submission, never per descriptor or agent.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) static OUTPUT_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-output", std::convert::identity));
+    LazyLock::new(|| start_workers("acyclic-output"));
 
 // Host I/O includes file-lock transactions that wait on other owners. Process
 // launch, capture turns and their owner callbacks never wait on such a lock,
 // so an unrelated command never queues behind them. Created on first use,
 // never per process or agent.
 pub(crate) static PROCESS_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-process-io", |parallelism| parallelism.clamp(2, 4)));
+    LazyLock::new(|| start_workers("acyclic-process-io"));
 
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -119,14 +116,15 @@ pub(crate) fn workers(
         .map_err(|error| io::Error::new(error.kind(), error.to_string()))
 }
 
-pub(crate) fn start_workers(
-    name: &str,
-    worker_count: impl FnOnce(usize) -> usize,
-) -> io::Result<NativeWorkers> {
+/// One service worker per available CPU; queue admission supplies backpressure.
+pub(crate) fn parallelism() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
+
+pub(crate) fn start_workers(name: &str) -> io::Result<NativeWorkers> {
     // Every process that does native I/O, product or test, starts here.
     crate::raise_descriptor_limit();
-    let worker_count =
-        worker_count(std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
+    let worker_count = parallelism();
     let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
     let receiver = Arc::new(QueueMutex::new(receiver));
     let admission = Arc::new(QueueMutex::new(AdmissionState::new()));

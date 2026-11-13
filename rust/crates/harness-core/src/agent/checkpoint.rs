@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // V7 retains deferred invocations and original supervision admission.
-            version: "7".into(),
+            // Retain original deadlines with deferred wait releases.
+            version: "8".into(),
         });
     &IDENTITY
 }
@@ -636,6 +636,7 @@ mod tests {
                     let state = AgentState {
                         wait_resume: Some(super::super::WaitResume {
                             operation: crate::OperationId::from_bytes([u8::MAX; 16]),
+                            deadline_unix_ms: Some(u64::MAX),
                             reason: Some(reason.clone()),
                         }),
                         spawned_children: open_children.clone(),

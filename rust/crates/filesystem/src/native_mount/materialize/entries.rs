@@ -399,21 +399,25 @@ where
     let target = read_source!(reader, receipt, remaining, value,
         reader.read_symbolic_link(path, receipt.custody.work(), cancellation) => value,
         reader.read_symbolic_link(path, remaining, cancellation) => {
-            receipt.adopt(value.len())?;
+            receipt.adopt(
+                usize::try_from(value.logical_owned_bytes)
+                    .map_err(|_| MaterializeError::Work(WorkError::Overflow))?,
+            )?;
             value
         },
     );
-    if target.len() as u64 != target_bytes {
+    if target.bytes.len() as u64 != target_bytes {
         return Err(MaterializeError::Engine("symbolic-link length mismatch").into());
     }
     generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-    create_symlink(host_root, &target, host_path, receipt)?;
+    create_symlink(host_root, &target.bytes, host_path, receipt)?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+    let owned = target.logical_owned_bytes;
     drop(target);
     if !reader.validate_native_work(receipt.custody.work()).is_ok() {
         receipt
             .custody
-            .release(target_bytes)
+            .release(owned)
             .map_err(MaterializeError::from)?;
     }
     receipt.value.symbolic_links = receipt

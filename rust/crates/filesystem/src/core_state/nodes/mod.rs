@@ -113,7 +113,7 @@ impl LocalCoreStateStore {
                     .as_ref()
                     .expect("bound native work")
                     .work();
-                let paths = namespace.content_record(T::FAMILY, &T::address(id))?;
+                let paths = namespace.record(T::FAMILY, &T::address(id))?;
                 {
                     let paths = &paths;
                     let Some(mut owned) = read_published::<T>(paths)? else {
@@ -180,20 +180,53 @@ impl LocalCoreStateStore {
                         .as_ref()
                         .expect("bound native work")
                         .work();
-                    let mut paths = namespace.content_record(T::FAMILY, &T::address(id))?;
-                    with_lock(&mut paths, |paths| {
-                        if let Some(existing) = read_published::<T>(paths)? {
-                            work.charge(crate::WorkCounters {
-                                items_examined: 1,
-                                ..Default::default()
-                            })?;
-                            if existing.0 != owned.value {
-                                return Err(LocalCoreStateStoreError::Integrity);
-                            }
-                        } else {
-                            write_journaled(paths, &owned.value)?;
+                    // Immutable publication needs only its final leaf, never
+                    // the mutable journal's previous, temporary or lock paths.
+                    let mut leaf = [0_u8; 69];
+                    let encoding = crate::WorkCounters {
+                        bytes_encoded: 64,
+                        ..crate::WorkCounters::UNCHARGED
+                    };
+                    work.admit(encoding)?;
+                    hex::encode_to_slice(T::address(id), &mut leaf[..64])
+                        .map_err(std::io::Error::other)?;
+                    work.spent(encoding)?;
+                    leaf[64..].copy_from_slice(b".json");
+                    let leaf = std::str::from_utf8(&leaf).map_err(std::io::Error::other)?;
+                    let mut encoded = LogBuffer {
+                        bytes: Vec::new(),
+                        allocation: Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
+                    };
+                    serde_json::to_writer(&mut encoded, &owned.value)?;
+                    // Immutable records need atomic no-replace publication,
+                    // not exclusion between unrelated content addresses.
+                    #[cfg(all(test, target_os = "linux"))]
+                    publication_pause::install(&namespace.root, T::address(id));
+                    let mut original = work.clone();
+                    let mut publish = || -> Result<(), crate::DemandError> {
+                        let root =
+                            crate::native_host::HostRoot::open(&namespace.root, &mut original)?
+                                .create_directories(
+                                    Path::new(T::FAMILY),
+                                    crate::NativeDurability::Durable,
+                                    &mut original,
+                                )?;
+                        root.publish_immutable(
+                            Path::new(leaf),
+                            &encoded.bytes,
+                            crate::NativeDurability::Durable,
+                            &mut original,
+                        )
+                    };
+                    publish().map_err(|error| match error {
+                        crate::DemandError::Io(error)
+                            if error.kind() == std::io::ErrorKind::InvalidData =>
+                        {
+                            LocalCoreStateStoreError::Integrity
                         }
-                        Ok(())
+                        error => LocalCoreStateStoreError::from(
+                            crate::NativeTreeMaterializationError::from(error),
+                        ),
                     })
                 })
                 .await?;
@@ -205,3 +238,79 @@ impl LocalCoreStateStore {
 }
 
 mod store;
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) mod publication_pause {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, PoisonError, mpsc};
+    struct Pause {
+        root: PathBuf,
+        address: [u8; 32],
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    static PAUSE: Mutex<Option<Pause>> = Mutex::new(None);
+
+    pub(in crate::core_state) struct Held {
+        root: PathBuf,
+        address: [u8; 32],
+        entered: tokio::sync::oneshot::Receiver<()>,
+        release: mpsc::Sender<()>,
+    }
+    impl Held {
+        pub(in crate::core_state) async fn entered(&mut self) {
+            (&mut self.entered)
+                .await
+                .expect("original publisher reached its physical cut");
+        }
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            let mut slot = PAUSE.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot
+                .as_ref()
+                .is_some_and(|pause| pause.root == self.root && pause.address == self.address)
+            {
+                slot.take();
+            }
+            let _ = self.release.send(());
+        }
+    }
+    pub(in crate::core_state) fn hold(root: &Path, address: [u8; 32]) -> Held {
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (release, released) = mpsc::channel();
+        let mut slot = PAUSE.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(slot.is_none(), "only one publication fixture owns this cut");
+        *slot = Some(Pause {
+            root: root.to_owned(),
+            address,
+            entered,
+            release: released,
+        });
+        Held {
+            root: root.to_owned(),
+            address,
+            entered: observed,
+            release,
+        }
+    }
+    pub(super) fn install(root: &Path, address: [u8; 32]) {
+        let pause = {
+            let mut slot = PAUSE.lock().unwrap_or_else(PoisonError::into_inner);
+            if slot
+                .as_ref()
+                .is_some_and(|pause| pause.root == root && pause.address == address)
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = pause {
+            crate::native_host::publish_probe::before_directory_sync(move || {
+                let _ = pause.entered.send(());
+                let _ = pause.release.recv();
+            });
+        }
+    }
+}

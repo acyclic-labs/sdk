@@ -40,6 +40,13 @@ fn protected_buffers_are_scrubbed_before_deallocation() {
         "json-client",
         "json-failure",
         "json-unprotected",
+        "bearer-header",
+        "bearer-header-invalid",
+        "bearer-unprotected",
+        #[cfg(feature = "grpc-metadata")]
+        "bearer-metadata",
+        #[cfg(feature = "grpc-metadata")]
+        "bearer-metadata-invalid",
     ] {
         let active = directory.path().join(case);
         let output = Command::new(std::env::current_exe().unwrap())
@@ -53,13 +60,17 @@ fn protected_buffers_are_scrubbed_before_deallocation() {
             .env("AUTH_SCRUB_CASE", case)
             .env(
                 "AUTH_SCRUB_BYTE",
-                if case.starts_with("json-") { "90" } else { "4" },
+                if case.starts_with("json-") || case.starts_with("bearer-") {
+                    "90"
+                } else {
+                    "4"
+                },
             )
             .output()
             .unwrap();
         let expected = if matches!(
             case,
-            "broken" | "body-unprotected-growth" | "json-unprotected"
+            "broken" | "body-unprotected-growth" | "json-unprotected" | "bearer-unprotected"
         ) {
             86
         } else {
@@ -86,6 +97,10 @@ fn scrub_child() {
     }
     if case.starts_with("json-") {
         json_storage(&case);
+        return;
+    }
+    if case.starts_with("bearer-") {
+        bearer_storage(&case);
         return;
     }
     let mut bytes = Zeroizing::new(root(|_| {}));
@@ -120,6 +135,54 @@ fn scrub_child() {
             drop(verify(&bytes, &trust, NOW).unwrap());
         }
         _ => assert!(verify(&bytes, &trust, NOW).is_err()),
+    }
+}
+
+fn bearer_storage(case: &str) {
+    use acyclic_auth::credential::{CredentialError, bearer_header};
+    use std::error::Error as _;
+
+    let mut token = Zeroizing::new("Z".repeat(8192));
+    if case.ends_with("-invalid") {
+        token.push('\u{7f}');
+    }
+    std::fs::write(std::env::var_os("AUTH_SCRUB_ACTIVE").unwrap(), b"active").unwrap();
+    match case {
+        "bearer-unprotected" => drop(format!("Bearer {}", token.as_str())),
+        "bearer-header" => {
+            let header = bearer_header(&token).unwrap();
+            let retained = header.clone();
+            assert!(header.is_sensitive());
+            assert_eq!(header.as_bytes().as_ptr(), retained.as_bytes().as_ptr());
+            drop(header);
+            assert_eq!(&retained.as_bytes()[7..], token.as_bytes());
+            drop(retained);
+        }
+        "bearer-header-invalid" => {
+            let error = bearer_header(&token).unwrap_err();
+            assert!(matches!(error, CredentialError::Header(_)));
+            assert!(error.source().is_some());
+        }
+        #[cfg(feature = "grpc-metadata")]
+        "bearer-metadata" => {
+            let metadata = acyclic_auth::credential::bearer_metadata(&token).unwrap();
+            let retained = metadata.clone();
+            assert!(metadata.is_sensitive());
+            assert_eq!(
+                metadata.as_encoded_bytes().as_ptr(),
+                retained.as_encoded_bytes().as_ptr()
+            );
+            drop(metadata);
+            assert_eq!(&retained.as_encoded_bytes()[7..], token.as_bytes());
+            drop(retained);
+        }
+        #[cfg(feature = "grpc-metadata")]
+        "bearer-metadata-invalid" => {
+            let error = acyclic_auth::credential::bearer_metadata(&token).unwrap_err();
+            assert!(matches!(error, CredentialError::Metadata(_)));
+            assert!(error.source().is_some());
+        }
+        _ => panic!("unknown bearer storage case"),
     }
 }
 

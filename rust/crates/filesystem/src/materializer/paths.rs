@@ -3,7 +3,13 @@ use crate::native_host::HostRoot;
 
 pub(super) use crate::native_host::host_path;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 /// Validates a recovery location against the held checkout allocation.
+/// Linux admission also requires the same mount identity and refuses any
+/// mounted entry below the checkout, including same-device read-only bind
+/// mounts. This proof precedes native preparation and authored publication.
 pub fn validate_native_preparation_location(
     root: &Path,
     operation: &Path,
@@ -47,6 +53,8 @@ pub(super) fn validate_layout(
     if root.identity() == operation.identity() {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
+    #[cfg(target_os = "linux")]
+    linux::validate_mounts(root, operation, work)?;
     // A missing path cannot be an ancestor of an existing checkout.
     #[cfg(unix)]
     let nested = crate::native_host::directory_has_ancestor(

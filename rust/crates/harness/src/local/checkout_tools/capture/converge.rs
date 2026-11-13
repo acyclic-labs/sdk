@@ -12,10 +12,14 @@ pub(super) const MAXIMUM_RESCANS: usize = 4;
 const WATCH_PAGE_PATHS: u32 = 1024;
 
 impl Cursor {
-    fn poll(&mut self, cancellation: &CancellationToken) -> Result<WatchBatch> {
+    fn poll(
+        &mut self,
+        cut: &acyclic_fs::NativeWatchCut,
+        cancellation: &CancellationToken,
+    ) -> Result<WatchBatch> {
         Ok(self
             .watcher
-            .poll(WATCH_PAGE_PATHS, WorkBudget::UNBOUNDED, cancellation)
+            .poll_through(cut, WATCH_PAGE_PATHS, WorkBudget::UNBOUNDED, cancellation)
             .map_err(storage)?
             .value)
     }
@@ -170,12 +174,13 @@ fn drain<'a>(
     cancellation: &'a CancellationToken,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
     crate::conversation::BoundedContentFuture::new(None, || async move {
+        let cut = cursor.watcher.ready_cut().map_err(storage)?;
         let mut pending = None;
         loop {
             // The batch retains its producer-owned vector through replay.
             let batch = match pending.take() {
                 Some(batch) => batch,
-                None => cursor.poll(cancellation)?,
+                None => cursor.poll(&cut, cancellation)?,
             };
             #[cfg(all(test, not(loom)))]
             cursor.inject("poll")?;
@@ -192,10 +197,11 @@ fn drain<'a>(
             {
                 return Ok(false);
             }
-            // Recheck invalidation after replay, including an empty batch. Do not
+            // Recheck invalidation at the same finite cut after replay, including
+            // an empty batch. Later hints remain queued for the next capture. Do not
             // fence here: FSEvents correctly cannot promise synchronous delivery.
             if empty {
-                let validated = cursor.poll(cancellation)?;
+                let validated = cursor.poll(&cut, cancellation)?;
                 if matches!(&validated, WatchBatch::Changes { changes, .. } if changes.is_empty()) {
                     return Ok(true);
                 }

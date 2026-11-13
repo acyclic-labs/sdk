@@ -301,6 +301,90 @@ async fn reconnect_rediscovers_only_the_authenticated_home_endpoint() -> TestRes
 }
 
 #[tokio::test]
+async fn empty_session_reconnects_keep_spacing_until_current_data_progresses() -> TestResult {
+    #[derive(Default)]
+    struct Clock(Mutex<Vec<u32>>);
+    impl crate::runtime::Executor for Clock {
+        fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
+            crate::runtime::Executor::spawn(&crate::runtime::PlatformExecutor, future);
+        }
+        fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+            self.0.lock().unwrap().push(milliseconds);
+            Box::pin(future::ready(()))
+        }
+    }
+
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "healthy", 1).await?;
+    let endpoint: transport::Endpoint = Arc::new(ReplacedNode {
+        provider,
+        replacement: AtomicUsize::new(0),
+        destinations: Mutex::new(Vec::new()),
+        closed: Arc::new(tokio::sync::Notify::new()),
+    });
+    let channel = Endpoint::from_static("http://unused.invalid").connect_lazy();
+    let (mut pool, _records) = pool::fixture::fixture(&channel);
+    pool.links.remove("bad");
+    pool.routes.remove(&1);
+    pool.active.store(1, Ordering::Release);
+    pool.credentials
+        .insert(0, crate::session::testing::credential());
+    pool.home_channel = endpoint.clone();
+    pool.links.get_mut("good").unwrap().channel = endpoint;
+    let clock = Arc::new(Clock::default());
+    pool.executor = clock.clone();
+
+    for _ in 0..8 {
+        let home = pool.home.clone();
+        pool.reconnect(&home)?;
+        // Drive the actual handshake/serve protocol; dropping its pending read
+        // models connection loss after Welcome and before useful data.
+        let dial = pool.dials.remove("").ok_or("missing recovery dial")?;
+        let (node, epoch, ready) = dial.future.await;
+        pool.dial_ready(&node, epoch, ready)?;
+        assert!(pool.links.get("old").unwrap().backoff.is_some());
+        pool.reads.clear();
+    }
+    {
+        let waits = clock.0.lock().unwrap();
+        assert_eq!(waits.len(), 8);
+        assert!((5..=10).contains(&waits[0]));
+        assert!((500..=1_000).contains(&waits[7]));
+    }
+    assert!(pool.receive_frame(
+        "old",
+        frame(3, 1, Body::Watermark(wire::SessionWatermark::default())),
+    ));
+    assert!(pool.links.get("old").unwrap().backoff.is_some());
+
+    pool.reconnect("old")?;
+    let dial = pool.dials.remove("").ok_or("missing resumed dial")?;
+    let (node, epoch, ready) = dial.future.await;
+    pool.dial_ready(&node, epoch, ready)?;
+    loop {
+        let (node, _, response, value) = pool.reads.next().await.ok_or("missing session read")?;
+        let value = value.ok_or("unexpected EOF before retained record")??;
+        let progress = matches!(value.wire().body, Some(Body::Data(_) | Body::Watermark(_)));
+        assert!(pool.receive_frame(&node, value));
+        if progress {
+            break;
+        }
+        assert!(pool.links.get("old").unwrap().backoff.is_some());
+        pool.read(node, response);
+    }
+    assert!(pool.links.get("old").unwrap().backoff.is_none());
+    pool.reconnect("old")?;
+    let dial = pool.dials.remove("").ok_or("missing fresh recovery dial")?;
+    let (_, _, ready) = dial.future.await;
+    // Only the recovery dial's success matters here; close its stream.
+    drop(ready?);
+    let waits = clock.0.lock().unwrap();
+    assert_eq!(waits.len(), 10);
+    assert!((5..=10).contains(&waits[9]));
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     provider

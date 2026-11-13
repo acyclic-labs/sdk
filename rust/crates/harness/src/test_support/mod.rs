@@ -132,6 +132,40 @@ pub fn check_native_child_reference(input: &[u8]) {
             );
         }
     }
+    // Every show alias preserves the path and paging operands while resolving
+    // to exactly the same owned child, including under a nested parent.
+    // Spawn identities also contain their prefix and the generated suffix.
+    let spawn_name = &portable[..portable
+        .len()
+        .min(crate::agent::MAX_INTENT_BYTES - "spawn:".len() - "/worker".len())];
+    for owner in [&parent, &admitted] {
+        for name in [spawn_name.to_owned(), format!("{spawn_name}/worker")] {
+            let expected = crate::tools::spawned_child(owner, &name).expect("valid spawn name");
+            for reference in [name.clone(), format!("agents/{name}"), expected.to_string()] {
+                for suffix in [vec![], vec!["--offset".into(), "65536".into()]] {
+                    let mut arguments =
+                        vec!["show".into(), format!("{reference}:reports/result.md")];
+                    arguments.extend(suffix.clone());
+                    assert_eq!(
+                        crate::tools::resolve_child_branch(
+                            owner,
+                            &mut arguments,
+                            crate::tools::spawned_child
+                        )
+                        .expect("show alias must resolve"),
+                        Some(expected.clone()),
+                    );
+                    assert_eq!(arguments[1], format!("{expected}:reports/result.md"));
+                    assert_eq!(&arguments[2..], suffix.as_slice());
+                }
+            }
+        }
+    }
+    let mut head = ["show".into(), "HEAD:reports/result.md".into()];
+    assert_eq!(
+        crate::tools::resolve_child_branch(&parent, &mut head, child).unwrap(),
+        None
+    );
     for unrelated in [&parent, &grandchild] {
         assert!(
             matches!(
@@ -264,7 +298,7 @@ pub async fn prompt_settled(
                     phase = Some(status.phase);
                     break;
                 }
-                Event::Turn(_) => break,
+                Event::Turn { .. } => break,
                 Event::Delta => {}
             }
         }

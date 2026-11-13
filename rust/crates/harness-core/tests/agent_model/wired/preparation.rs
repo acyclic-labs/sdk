@@ -12,6 +12,12 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+pub(super) struct JournalClock(pub Arc<acyclic_actors::local::ControlledClock>);
+impl acyclic_stream::UnixMillisClock for JournalClock {
+    fn now_unix_millis(&self) -> u64 {
+        acyclic_actors::local::Clock::now_unix_ms(&*self.0)
+    }
+}
 #[derive(Default)]
 struct Probe {
     journal: Mutex<
@@ -27,6 +33,7 @@ struct Probe {
     gate: Mutex<Option<oneshot::Receiver<()>>>,
     observing: Mutex<Option<oneshot::Sender<()>>>,
     stop: Mutex<Option<acyclic_actors::guest::CancellationToken>>,
+    model_gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
 
 struct Children {
@@ -226,20 +233,39 @@ pub(super) async fn check(
     filesystem: &Host,
     parent: &AgentPath,
     child: &AgentPath,
+    clock: Arc<acyclic_actors::local::ControlledClock>,
+    control: &mut acyclic_actors::local::ClockControl,
 ) -> Result {
     let probe = Arc::new(Probe::default());
-    let model = Arc::new(ScriptedModelProvider::new([
-        wait(child),
-        ScriptedTurn::Text("child advanced after selection".into()),
-        ScriptedTurn::Text("none".into()),
-        ScriptedTurn::Text("selected answer retained".into()),
-        ScriptedTurn::Text("none".into()),
-        wait(child),
-        ScriptedTurn::Text("child releases deferred wait".into()),
-        ScriptedTurn::Text("none".into()),
-        ScriptedTurn::Text("deferred wait finished".into()),
-        ScriptedTurn::Text("none".into()),
-    ]));
+    let dispatch_probe = probe.clone();
+    let model = Arc::new(
+        ScriptedModelProvider::new([
+            wait(child),
+            ScriptedTurn::Text("child advanced after selection".into()),
+            ScriptedTurn::Text("none".into()),
+            ScriptedTurn::Text("selected answer retained".into()),
+            ScriptedTurn::Text("none".into()),
+            wait(child),
+            ScriptedTurn::Text("child releases deferred wait".into()),
+            ScriptedTurn::Text("none".into()),
+            ScriptedTurn::Text("deferred wait finished".into()),
+            ScriptedTurn::Text("none".into()),
+        ])
+        .with_dispatch_observer(move |_| {
+            let gate = dispatch_probe.model_gate.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some((entered, release)) = gate {
+                    entered.send(()).map_err(|_| {
+                        acyclic_harness_core::Error::Storage("model observer dropped".into())
+                    })?;
+                    release.await.map_err(|_| {
+                        acyclic_harness_core::Error::Storage("model producer dropped".into())
+                    })?;
+                }
+                Ok(())
+            })
+        }),
+    );
     let executors = Executors {
         original: StockExecutors::new(
             (
@@ -269,8 +295,8 @@ pub(super) async fn check(
         Arc::new(executors),
         LIMITS,
         acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
-    );
-    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+    )
+    .with_clock(clock.clone());
     let host = AgentHost::with_spawn_volumes(
         stream.clone(),
         Driver {
@@ -279,10 +305,10 @@ pub(super) async fn check(
         },
         within(),
         acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-        Arc::new(clock),
+        clock,
         Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem.clone())),
     )?;
-    observe(stream, &host, &probe, &model, parent, child, &mut control).await
+    observe(stream, &host, &probe, &model, parent, child, control).await
 }
 
 async fn observe(
@@ -375,6 +401,8 @@ async fn observe(
     );
 
     deadlines(host, probe, model, parent, child, control).await?;
+    stale_settlement(host, model, parent, child, control).await?;
+    per_call_deadline(host, probe, model, parent, child, control).await?;
     admission(host, probe, model, parent, child).await?;
     parallel(stream, host, probe, model, parent, child).await?;
     model.extend([wait(child)]);
@@ -522,7 +550,7 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "running" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "unknown" }])
     );
     control.advance_to(129)?;
     host.drain(parent).await?;
@@ -535,10 +563,20 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "running" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "unknown" }])
     );
-    assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 4);
+    assert_eq!(
+        probe.reads.swap(0, Ordering::SeqCst),
+        2,
+        "expired waits must not start new observations"
+    );
     host.drain(child).await?;
+    // The parent is idle after its own timeout; the later child settlement
+    // now wakes it through the primitive completion event.
+    model.extend([
+        ScriptedTurn::Text("observed completion after deadline".into()),
+        ScriptedTurn::Text("none".into()),
+    ]);
     host.drain(parent).await?;
     Ok(())
 }
@@ -655,7 +693,7 @@ async fn parallel(
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 2);
     let value = result(model);
     for (index, (path, text)) in [
-        (child, "child releases deferred wait"),
+        (child, "child work complete"),
         (&other, "parallel child answer"),
     ]
     .into_iter()
@@ -664,5 +702,161 @@ async fn parallel(
         assert_eq!(value["settled"][index]["agent"], path.as_str());
         assert_eq!(value["settled"][index]["answer"], text);
     }
+    Ok(())
+}
+
+async fn stale_settlement(
+    host: &AgentHost<MemoryStream>,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+    control: &mut acyclic_actors::local::ClockControl,
+) -> Result {
+    // The preceding controlled deadlines finish at 130. Create a real child
+    // settlement, then admit newer work before the parent consumes its event.
+    let enqueue = |name| match requested(name, child) {
+        Wake::Inbox { record, .. } => record,
+        _ => unreachable!(),
+    };
+    host.send(child, &super::super::user(), &enqueue("first-settlement"))
+        .await?;
+    model.extend([
+        selected(&[child], Some(10), None),
+        ScriptedTurn::Text("first settled answer".into()),
+        ScriptedTurn::Text("none".into()),
+        ScriptedTurn::Text("newer settled answer".into()),
+        ScriptedTurn::Text("none".into()),
+        ScriptedTurn::Text("observed actual settlement".into()),
+        ScriptedTurn::Text("none".into()),
+    ]);
+    deliver(host, parent, requested("wait-current-settlement", parent)).await?;
+    let deadline = Phase::Waiting {
+        deadline_unix_ms: Some(140),
+        input: false,
+    };
+    assert_eq!(host.state(parent).await?.phase, deadline);
+    host.drain(child).await?;
+    host.send(child, &super::super::user(), &enqueue("newer-child-work"))
+        .await?;
+    let requests = model.request_count();
+    control.advance_to(135)?;
+    host.drain(parent).await?;
+    assert_eq!(
+        model.request_count(),
+        requests,
+        "stale event returned an empty wait result"
+    );
+    assert_eq!(
+        host.state(parent).await?.phase,
+        deadline,
+        "re-arm restarted the timeout"
+    );
+    host.drain(child).await?;
+    host.drain(parent).await?;
+    let value = result(model);
+    assert_eq!(value["settled"][0]["answer"], "newer settled answer");
+    assert_eq!(value["unsettled"], serde_json::json!([]));
+    Ok(())
+}
+
+async fn per_call_deadline(
+    host: &AgentHost<MemoryStream>,
+    probe: &Probe,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+    control: &mut acyclic_actors::local::ClockControl,
+) -> Result {
+    let Wake::Inbox { record, .. } = requested("pending-during-deadline", child) else {
+        unreachable!()
+    };
+    host.send(child, &super::super::user(), &record).await?;
+    for (call_at, prepared_at, deadline) in [(200, 210, 230), (300, 350, 330)] {
+        model.extend([
+            selected(&[child], Some(30), None),
+            ScriptedTurn::Text("original call deadline observed".into()),
+            ScriptedTurn::Text("none".into()),
+        ]);
+        let (model_entered, model_observed) = oneshot::channel();
+        let (model_release, model_gate) = oneshot::channel();
+        *probe.model_gate.lock().unwrap() = Some((model_entered, model_gate));
+        let (observing, observed) = oneshot::channel();
+        let (release, gate) = oneshot::channel();
+        *probe.observing.lock().unwrap() = Some(observing);
+        *probe.gate.lock().unwrap() = Some(gate);
+        let mut pending = Box::pin(deliver(
+            host,
+            parent,
+            requested(&format!("timed-call-{call_at}"), parent),
+        ));
+        match futures::future::select(pending.as_mut(), model_observed).await {
+            futures::future::Either::Right((observed, _)) => observed?,
+            futures::future::Either::Left(_) => return Err("model delay was not observed".into()),
+        }
+        // The actor woke before this model delay. The tool starts only now.
+        control.advance_to(call_at)?;
+        model_release
+            .send(())
+            .map_err(|_| "model gate lost its reader")?;
+        match futures::future::select(pending.as_mut(), observed).await {
+            futures::future::Either::Right((observed, _)) => observed?,
+            futures::future::Either::Left(_) => {
+                return Err("tool preparation delay was not observed".into());
+            }
+        }
+        if prepared_at < deadline {
+            control.advance_to(prepared_at)?;
+            release
+                .send(())
+                .map_err(|_| "observation gate lost its reader")?;
+            let state = pending.await?;
+            assert_eq!(
+                state.phase,
+                Phase::Waiting {
+                    deadline_unix_ms: Some(deadline),
+                    input: false
+                },
+                "deadline was anchored to the earlier actor wake or later preparation"
+            );
+            let requests = model.request_count();
+            control.advance_to(deadline - 1)?;
+            host.drain(parent).await?;
+            assert_eq!(
+                model.request_count(),
+                requests,
+                "wait returned before this call's deadline"
+            );
+            control.advance_to(deadline)?;
+            host.drain(parent).await?;
+        } else {
+            control.advance_to(deadline - 1)?;
+            assert!(
+                pending.as_mut().now_or_never().is_none(),
+                "blocked preparation expired early"
+            );
+            control.advance_to(deadline)?;
+            let state = pending.await?;
+            assert!(
+                release.send(()).is_err(),
+                "expired preparation retained its blocked read"
+            );
+            assert_eq!(
+                state.phase,
+                Phase::Idle,
+                "deadline did not interrupt blocked preparation"
+            );
+            assert_eq!(result(model)["unsettled"][0]["phase"], "unknown");
+        }
+        assert_eq!(result(model)["reason"]["kind"], "deadline");
+        assert_eq!(result(model)["settled"], serde_json::json!([]));
+    }
+    model.extend([
+        ScriptedTurn::Text("child work complete".into()),
+        ScriptedTurn::Text("none".into()),
+        ScriptedTurn::Text("parent received completion".into()),
+        ScriptedTurn::Text("none".into()),
+    ]);
+    host.drain(child).await?;
+    host.drain(parent).await?;
     Ok(())
 }

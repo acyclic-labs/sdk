@@ -1,6 +1,6 @@
 //! The executor turn driver: one turn is one executor operation, resumed by identity.
 
-use super::{Result, adopted, id, intent, step_to_rest, steps_to_rest};
+use super::{Result, adopted, id, intent, step_to_rest};
 use acyclic_harness_core::{
     Error as CoreError, OperationId,
     agent::*,
@@ -23,6 +23,22 @@ use std::{
 struct Unused;
 
 impl acyclic_harness_core::agent::TurnOutputs for Unused {
+    fn stage_notice<'a>(
+        &'a self,
+        _: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<FileRef>> {
+        Box::pin(async move {
+            FileRef::new(
+                file("notice.json")?.volume().clone(),
+                "notice.json".into(),
+                "version-1".into(),
+                FileDescriptor::from_bytes(bytes, NOTICE_MEDIA_TYPE, &mut None)?,
+                "notice.json".into(),
+                &mut None,
+            )
+        })
+    }
     fn stage<'a>(
         &'a self,
         _: OperationId,
@@ -123,6 +139,7 @@ struct Script {
     progress: Mutex<VecDeque<ExecutionProgress<TurnOutput>>>,
     failure: Mutex<Option<CoreError>>,
     operations: Mutex<Vec<OperationId>>,
+    publications: Mutex<Vec<OperationId>>,
     effects: Mutex<Vec<TurnEffect>>,
 }
 
@@ -200,6 +217,23 @@ impl Executor for Script {
 struct Host(Arc<Script>, Option<Arc<Goal>>);
 
 impl TurnHost for Host {
+    fn park<'a>(
+        &'a self,
+        _: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async move {
+            self.0.publications.lock().expect("lock").push(operation);
+            Ok(())
+        })
+    }
+    fn settle<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn open_control<'a>(
         &'a self,
         _: &'a AgentState,
@@ -246,6 +280,20 @@ impl TurnHost for Host {
 struct Announcing(Host, Arc<Mutex<Roster>>);
 
 impl TurnHost for Announcing {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        self.0.park(agent, operation)
+    }
+    fn settle<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        self.0.settle(agent, turn)
+    }
     fn open_control<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -653,6 +701,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
         )
         .await?;
         let waiting = intent(&approval_intent(approval));
+        assert_eq!(*script.publications.lock().expect("lock"), vec![approval]);
         assert_eq!(
             first.state.phase,
             Phase::WaitingApproval {
@@ -843,8 +892,9 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
     sends.into_iter().next()
 }
 
-/// Delivers inbox `sequence` until the agent rests, committing each opening
-/// step to `streams` as the actor does, and returns the resting step for the
+/// Delivers inbox `sequence` until the agent rests, as the actor does: each
+/// step that asks to continue at once is committed to every one of `streams`
+/// before its continuation is delivered. Returns the resting step for the
 /// caller to commit.
 async fn settle_committing(
     driver: &ExecutorDriver<Host>,
@@ -855,30 +905,41 @@ async fn settle_committing(
     streams: &[&acyclic_stream::MemoryStream],
 ) -> Result<Step> {
     use acyclic_stream::{CommitOutcome, StreamProviderExt as _};
-    let mut steps = steps_to_rest(
+    let cancellation = acyclic_actors::guest::CancellationToken::new();
+    let mut next = step(
         driver,
         path,
         state,
         (sequence, 0),
         wake,
-        acyclic_actors::guest::CancellationToken::new(),
+        cancellation.clone(),
     )
     .await?;
-    let settled = steps.pop().ok_or("delivery took no step")?;
-    for (index, opening) in steps.iter().enumerate() {
+    let mut index = 0;
+    while next.alarm == Alarm::At(CONTINUE_NOW) {
         for stream in streams {
             let commit = lower(
-                opening,
+                &next,
                 sequence + 1,
-                delivery_key(&opening.state, &format!("goal-{sequence}-{index}"))?,
+                delivery_key(&next.state, &format!("goal-{sequence}-{index}"))?,
             )?;
             assert!(matches!(
                 stream.commit(commit).await?,
                 CommitOutcome::Committed(_)
             ));
         }
+        index += 1;
+        next = step(
+            driver,
+            path,
+            Some(next.state),
+            (sequence, 0),
+            Wake::Alarm,
+            cancellation.clone(),
+        )
+        .await?;
     }
-    Ok(settled)
+    Ok(next)
 }
 
 #[tokio::test]

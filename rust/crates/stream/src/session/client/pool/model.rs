@@ -632,6 +632,7 @@ pub fn verify_node_dials(fault: u8) {
                         ..Default::default()
                     },
                     None,
+                    None,
                 );
                 // Transport internals are outside the concurrency contract.
                 // Keep the real map entry and cancellation path, substituting

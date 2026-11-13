@@ -23,7 +23,7 @@ pub fn check(bytes: &[u8], key: &str) -> Option<String> {
     let canonical = serde_json::json!({
         "key": key,
         "digest": value,
-        "checksum": format!("sha256:{:x}", checksum.finalize()),
+        "checksum": format!("sha256:{}", hex::encode(checksum.finalize())),
     });
     assert!(
         original

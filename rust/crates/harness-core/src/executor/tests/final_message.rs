@@ -1056,10 +1056,16 @@ fn text_parts_keep_interim_text_and_the_final_native_parts() -> Result<()> {
 #[test]
 fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() -> Result<()> {
     let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+        ScriptedEvent::Event(ModelEvent::Reasoning {
+            delta: "loop".into(),
+        }),
         ScriptedEvent::Event(ModelEvent::Content {
             delta: "abandoned".into(),
         }),
         ScriptedEvent::Event(ModelEvent::Restarted),
+        ScriptedEvent::Event(ModelEvent::Reasoning {
+            delta: "retry".into(),
+        }),
         ScriptedEvent::Event(ModelEvent::Wait(crate::model::ModelWait::Started {
             cause: Some(crate::ModelTransportFailure::Status(429)),
             delay: std::time::Duration::from_secs(2),
@@ -1126,6 +1132,49 @@ fn restarted_model_step_discards_abandoned_events_and_replays_the_same_answer() 
     ))?;
     assert_eq!((page.waits.started, page.waits.completed), (1, 1));
     assert_eq!(page.waits.elapsed_ns(), Some(2_000_000_000));
+    // The abandoned attempt's output stays in the step's usage; the completed
+    // attempt's own deltas are left to its provider counters.
+    let usage = page
+        .items
+        .iter()
+        .find(|usage| usage.completed)
+        .expect("the completed call has usage");
+    assert_eq!(
+        usage.abandoned,
+        Some(super::super::ModelAbandonedOutput {
+            attempts: 1,
+            content_bytes: "abandoned".len() as u64,
+            reasoning_bytes: "loop".len() as u64,
+        })
+    );
+    let mut unknown = usage.clone();
+    unknown.abandoned = None;
+    let completion = ModelEvent::Completed {
+        metadata: Value::Null,
+    };
+    assert!(
+        super::super::validate_model_usage(
+            &unknown,
+            input.operation_id,
+            0,
+            ModelPurpose::Response,
+            &completion,
+            None
+        )
+        .is_err(),
+        "a completed record must account its abandoned attempts"
+    );
+    assert!(
+        super::super::validate_model_usage(
+            usage,
+            input.operation_id,
+            0,
+            ModelPurpose::Response,
+            &completion,
+            None
+        )
+        .is_ok()
+    );
     let replay = futures::executor::block_on(executor.execute(input, &journal))?;
     assert_eq!(replay, output);
     assert_eq!(provider.requests().len(), 1);

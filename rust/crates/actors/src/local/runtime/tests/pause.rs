@@ -114,7 +114,12 @@ async fn pause_active_delivery(producer_lost: bool) -> TestResult {
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-finish", &[b"emit", b"emit"]).await?;
     let handler = Arc::new(Gated::new()?);
-    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
     assert!(futures::poll!(delivery.as_mut()).is_pending());
@@ -188,7 +193,12 @@ async fn pause_retained_delivery(committed: bool, settlement_lost: bool) -> Test
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-retained", &[b"emit", b"emit"]).await?;
     let handler = Arc::new(Gated::new()?);
-    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
     assert!(futures::poll!(delivery.as_mut()).is_pending());
@@ -413,7 +423,12 @@ async fn failed_pause_reports_before_held_delivery() -> TestResult {
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-error-delivery", &[b"emit"]).await?;
     let handler = Arc::new(Gated::new()?);
-    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     let (entered, release) = provider.arm(Fault::Load);
     let mut failed = Box::pin(runtime.pause(&address, true));
@@ -469,7 +484,12 @@ async fn completed_unread_failure() -> TestResult {
     let provider = Arc::new(Provider::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-unread", &[b"emit"]).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     let (entered, release) = provider.arm(Fault::Unknown);
     release.send(()).map_err(|_| "lost original provider cut")?;
@@ -521,7 +541,12 @@ async fn active_cleanup_and_queued_controls(
     let address = spawn_with(&store, "pause-owner", &[b"emit"]).await?;
     let unrelated = spawn_with(&store, "pause-unrelated", &[b"emit"]).await?;
     let handler = Arc::new(Gated::new()?);
-    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     runtime.track(unrelated.clone())?;
     let mut delivery = Box::pin(runtime.drain_actor(&address));
@@ -611,6 +636,7 @@ async fn active_cleanup_and_queued_controls(
         Some(1)
     );
     let reopened = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -625,7 +651,12 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
     let provider = Arc::new(Provider::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-cut", &[b"emit"]).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     let (entered, release) = provider.arm(fault);
     let transitions = Arc::new(AtomicUsize::new(0));
     let calls = Arc::clone(&transitions);
@@ -761,6 +792,7 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
         "known failure must progress without resume; settled pause must resume exactly once"
     );
     let reopened = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -778,7 +810,12 @@ async fn replacement_and_producer_loss() -> TestResult {
     let first = store
         .claim(&store.load(&address).await?, 1, key("pause/claim-1")?)
         .await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing slot")?;
     let mut delivery = slot.inner.lock().await;
@@ -804,6 +841,7 @@ async fn replacement_and_producer_loss() -> TestResult {
     // may still be retiring on its original executor; that is not permission
     // for the stale epoch to deliver, nor an immediate hibernation guarantee.
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),

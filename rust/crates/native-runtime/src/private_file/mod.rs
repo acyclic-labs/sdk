@@ -16,6 +16,17 @@ mod windows;
 #[cfg(windows)]
 pub(crate) use windows::user_data_directory;
 
+#[cfg(target_os = "linux")]
+#[allow(
+    unsafe_code,
+    reason = "Linux account lookup and isolated runtime fixture use native OS calls"
+)]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::user_home_directory;
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub use linux::{initialize_isolated_user_runtime, with_isolated_user_runtime};
+
 /// Create a new owner-only regular file, without replacing an existing entry.
 pub fn create(path: &Path) -> io::Result<File> {
     #[cfg(unix)]

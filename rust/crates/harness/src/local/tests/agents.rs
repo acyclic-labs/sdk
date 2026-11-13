@@ -414,7 +414,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                 phase: crate::agent::Phase::WaitingApproval { id, binding },
                 ..
             })) => break (id, binding, delivery),
-            Some(crate::local::Event::Turn(entry)) if entry.inbox == inbox => {
+            Some(crate::local::Event::Turn { sequence, entry }) if entry.inbox == inbox => {
                 let journal = client.execution_page(inbox, 0, false).await?;
                 let failures: Vec<_> = journal
                     .page
@@ -430,7 +430,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                 return Err(Error::Invalid(format!(
                     "input settled before its expected approval: {:?}; {}; original tool failures: {failures:?}",
                     entry.outcome,
-                    client.turn(&entry).await?.answer
+                    client.turn(sequence, &entry).await?.answer
                 )));
             }
             Some(crate::local::Event::Status(StatusRecord {
@@ -1023,7 +1023,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         "settled producer outcome: {:?}",
         entry.outcome
     );
-    let turn = client.turn(&entry).await?;
+    let turn = client.turn(0, &entry).await?;
     assert_eq!(
         (turn.prompt.as_deref(), turn.answer.as_str()),
         (Some("hello"), "done")
@@ -1047,7 +1047,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         return Err(Error::Invalid("the settled input is not a prompt".into()));
     };
     **body = absent(body)?;
-    assert!(client.turn(&output_only).await.is_err());
+    assert!(client.turn(0, &output_only).await.is_err());
     assert_eq!(client.output_text(&output_only).await?, "done");
     output_only.output = absent(&entry.output)?;
     assert!(client.output_text(&output_only).await.is_err());
@@ -2499,6 +2499,20 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     );
     // The model sees the prompt, then the text file as text and the image natively.
     let request = provider.last_request().expect("one model request");
+    let context = super::request_text(&harness, &request).await?;
+    assert!(context.contains("<cwd>.</cwd>"), "{context}");
+    for (_, root, _) in harness
+        .workspace
+        .as_ref()
+        .expect("checkout")
+        .mounts
+        .native_mounts()
+    {
+        assert!(
+            !context.contains(root.to_string_lossy().as_ref()),
+            "model context advertised a host projection path: {context}"
+        );
+    }
     let ModelContent::Parts(parts) = input_content(&request, body)? else {
         return Err(Error::Conflict("the turn input has no attachments".into()));
     };
@@ -2593,8 +2607,8 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
     let prompt = "0123456789abcdef\n".repeat(2 * MAX_AGENT_COMMAND_BYTES / 17 + 1);
     assert!(prompt.len() > 2 * MAX_AGENT_COMMAND_BYTES);
     let inbox = client.send("large", &prompt).await?;
-    let entry = observed.settled(inbox).await?;
-    let read = client.turn(&entry).await?.prompt;
+    let (sequence, entry) = observed.settled_at(inbox).await?;
+    let read = client.turn(sequence, &entry).await?.prompt;
     assert!(read.as_deref() == Some(prompt.as_str()));
     // A resend is the same delivery.
     assert_eq!(client.send("large", &prompt).await?, inbox);
@@ -2687,7 +2701,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         let mut events = conversation.observe(Some(0)).await?;
         let entry = loop {
             match events.next().await? {
-                crate::local::Event::Turn(entry) => break entry,
+                crate::local::Event::Turn { entry, .. } => break entry,
                 crate::local::Event::Status(status)
                     if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
                 {
@@ -2771,7 +2785,8 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
     // Count the original native provider boundary, including the real command
-    // admission. A settlement must add only its one actor observation.
+    // admission. A settlement must add only its original actor and accepted
+    // inbox-cut observation, with no reread of its derived stream tails.
     struct HeadReads(Arc<AtomicUsize>);
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for HeadReads {
         fn on_new_span(
@@ -2869,7 +2884,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             (input, after) = (selected, next);
         }
     }
-    let catalog = |index| -> Result<Vec<crate::context::SkillMetadata>> {
+    let catalog = |index| -> Result<Vec<crate::context::SkillSummary>> {
         let request = provider
             .request(index)
             .ok_or_else(|| Error::NotFound("context request".into()))?;
@@ -2894,7 +2909,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
                     )
             })
             .find_map(|text| {
-                serde_json::from_str::<Vec<crate::context::SkillMetadata>>(text)
+                serde_json::from_str::<Vec<crate::context::SkillSummary>>(text)
                     .ok()
                     .filter(|skills| !skills.is_empty())
             })
@@ -2946,17 +2961,21 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     else {
         return Err(Error::Invalid("spawn did not return its child".into()));
     };
-    let settlement = settled(&harness, &child).await.map(|_| ());
-    if let Err(error) = settlement {
-        return Err(Error::Conflict(format!(
-            "child write did not settle: {error}; model_requests={}; child_state={:?}",
-            provider.request_count(),
-            agents.state(&child).await,
-        )));
-    }
+    let history = settled(&harness, &child).await?;
+    let entry = ConversationEntry::decode(
+        history
+            .last()
+            .ok_or_else(|| Error::NotFound("child task completion".into()))?,
+    )
+    .map_err(agent)?;
+    assert_eq!(
+        entry.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "child task must complete before inspecting its catalog and writes"
+    );
+    let child_state = agents.state(&child).await.map_err(agent)?;
     assert_eq!(provider.request_count(), 2);
     let child_file = publication(&connection, &child, 0).await?;
-    let child_state = agents.state(&child).await.map_err(agent)?;
     let child_project = child_state
         .volumes
         .iter()
@@ -2973,33 +2992,25 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .volume()?;
     assert_ne!(child_scratch, &harness.scratch);
     let child_skills = catalog(0)?;
-    let project_skill = child_skills
+    let child_project_skill = child_skills
         .iter()
         .find(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == child_project
+            skill.name == "context-checkpoint" && skill.description == "Project-specific context"
         })
         .ok_or_else(|| Error::NotFound("child project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, child_project);
+    let child_seed_skill = child_skills
+        .iter()
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description != "Project-specific context"
+        })
+        .ok_or_else(|| Error::NotFound("child seed skill".into()))?;
+    assert_ne!(child_project_skill.id, child_seed_skill.id);
     assert_eq!(
         child_skills
             .iter()
             .filter(|skill| skill.name == "context-checkpoint")
             .count(),
-        2,
-        "configured and built-in sources remain separate pinned entries",
-    );
-    // Built-in skills are read in place from the one shared seed volume.
-    let seed = &harness.seed.0;
-    assert!(
-        child_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
-        })
-    );
-    assert!(
-        child_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
+        2
     );
 
     let mut parent = ObservedConversation::open(&harness).await?;
@@ -3013,22 +3024,20 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_eq!(parent_file.volume(), &project);
     // The second agent must not reuse the first agent's cached private pins.
     let parent_skills = catalog(2)?;
-    let project_skill = parent_skills
+    let parent_project_skill = parent_skills
         .iter()
-        .find(|skill| skill.name == "context-checkpoint" && skill.source.root.volume == project)
-        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, &project);
-    assert!(
-        parent_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description == "Project-specific context"
         })
-    );
-    assert!(
-        parent_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
-    );
+        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
+    let parent_seed_skill = parent_skills
+        .iter()
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description != "Project-specific context"
+        })
+        .ok_or_else(|| Error::NotFound("parent seed skill".into()))?;
+    assert_eq!(parent_seed_skill.id, child_seed_skill.id);
+    assert_ne!(parent_project_skill.id, child_project_skill.id);
     // Project skills differ: the child reads its own forked project.
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
@@ -3066,11 +3075,11 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         connection.execute(&AgentCommand::Root {}).await?;
         let admission_heads = head_reads.load(Ordering::Relaxed) - before;
         let before = head_reads.load(Ordering::Relaxed);
-        let state = agents.state(owner).await.map_err(agent)?;
+        let (state, settlement) = agents.settlement_snapshot(owner).await.map_err(agent)?;
         let state_heads = head_reads.load(Ordering::Relaxed) - before;
         assert!(
             state_heads > 0,
-            "native checkpoint observation was not counted"
+            "native settlement observation was not counted"
         );
         let before = head_reads.load(Ordering::Relaxed);
         let observed = connection
@@ -3081,7 +3090,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
             .await?;
         let observed_heads = head_reads.load(Ordering::Relaxed) - before;
         eprintln!(
-            "settlement head reads: admission={admission_heads}, checkpoint={state_heads}, observed={observed_heads}"
+            "settlement head reads: admission={admission_heads}, snapshot={state_heads}, observed={observed_heads}"
         );
         assert_eq!(
             observed_heads,
@@ -3099,7 +3108,7 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         };
         assert_eq!(
             (settled, statuses, phase),
-            (state.conversation_tail, state.status_tail, state.phase),
+            (state.conversation_tail, state.status_tail, settlement.phase),
             "settlement mixed committed actor cuts"
         );
         if owner == &root {
@@ -3652,7 +3661,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         .runtime;
     let settlement = async |observed: &mut ObservedConversation, inbox| {
         tokio::select! {
-            result = observed.settled(inbox) => result,
+            result = observed.settled_at(inbox) => result,
             result = runtime.completion() => {
                 result?;
                 Err(Error::Storage("agent runtime ended before settlement".into()))
@@ -3660,7 +3669,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         }
     };
     let inbox = client.send("first", "hello").await?;
-    let first = settlement(&mut observed, inbox).await?;
+    let (_, first) = settlement(&mut observed, inbox).await?;
     assert!(first.outcome.is_completed(), "{:?}", first.outcome);
     settled(&harness, &root).await?;
     let mut usage = client.usage_query();
@@ -3751,7 +3760,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let inbox = client
         .restore("refuse", 0, RestoreMode::Both, expected)
         .await?;
-    let refusal = settlement(&mut observed, inbox).await?;
+    let (refusal_at, refusal) = settlement(&mut observed, inbox).await?;
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
     settled(&harness, &root).await?;
     for _ in notice..=inbox {
@@ -3764,7 +3773,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     );
     assert!(
         client
-            .turn(&refusal)
+            .turn(refusal_at, &refusal)
             .await?
             .answer
             .contains("expected project heads changed")
@@ -3930,11 +3939,11 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let inbox = client
         .restore("policy-refusal", 0, RestoreMode::Both, expected.clone())
         .await?;
-    let refusal = settlement(&mut observed, inbox).await?;
+    let (refusal_at, refusal) = settlement(&mut observed, inbox).await?;
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
     assert!(
         client
-            .turn(&refusal)
+            .turn(refusal_at, &refusal)
             .await?
             .answer
             .contains("cannot replace the current access policy")
@@ -4114,7 +4123,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let inherited = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let branched = ConversationEntry::decode(&entries[1]).map_err(agent)?;
     assert!(matches!(branched.input, TurnInput::Brief { .. }));
-    assert_eq!(client.turn(&inherited).await?.answer, "answer 0");
+    assert_eq!(client.turn(0, &inherited).await?.answer, "answer 0");
     let saved =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &child, 1).await?;
     assert_eq!(saved.context.tail, 2);
@@ -4605,16 +4614,16 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         );
     }
     let inherited = ConversationEntry::decode(&source[0]).map_err(agent)?;
-    let shown = selected_branch.turn_at(0, &inherited).await?;
+    let shown = selected_branch.turn(0, &inherited).await?;
     assert_eq!(shown.prompt.as_deref(), Some("first decision"));
     assert_eq!(shown.answer, "at cut");
     let future = ConversationEntry::decode(&source[1]).map_err(agent)?;
     assert!(
-        selected_branch.turn_at(0, &future).await.is_err(),
+        selected_branch.turn(0, &future).await.is_err(),
         "an exact record proof cannot authorize another turn's files"
     );
     assert!(
-        selected_branch.turn_at(1, &future).await.is_err(),
+        selected_branch.turn(1, &future).await.is_err(),
         "a proof beyond the inherited prefix cannot authorize future source files"
     );
     assert!(
@@ -4759,7 +4768,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         crate::local::sessions::fork(&connection, root.clone(), 1, "fork-archived-source").await?;
     assert_eq!(
         Conversation::open(archived_branch)
-            .turn_at(1, &future)
+            .turn(1, &future)
             .await?
             .answer,
         "later"

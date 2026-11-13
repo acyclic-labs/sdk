@@ -43,7 +43,7 @@ pub(super) fn endpoint(directory: &Path) -> io::Result<std::path::PathBuf> {
 /// Linux resolves the short sockaddr through a held directory descriptor, so
 /// even a deeply nested private state path needs no shared-name rendezvous.
 #[cfg(target_os = "linux")]
-pub(super) fn socket_path(path: &Path) -> io::Result<(std::fs::File, std::path::PathBuf)> {
+pub(crate) fn socket_path(path: &Path) -> io::Result<(std::fs::File, std::path::PathBuf)> {
     use std::os::{fd::AsRawFd as _, unix::fs::OpenOptionsExt as _};
     let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;

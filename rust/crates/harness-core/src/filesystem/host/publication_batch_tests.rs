@@ -59,7 +59,7 @@ async fn content_routing_evidence_never_creates_or_overwrites_a_workspace_path()
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = PreparationIo::for_unmeasured(&cancellation)?;
     let (_, fence) = host
-        .authorize_content_write(&root, &grant, "file", false, None, Some(&io))?
+        .authorize_content_write(&root, &grant, "file", true, None, Some(&io))?
         .await?;
     let operation = FilesystemKey::new();
     let before = io.sdk(root.head(&io, &cancellation).await)?.id();
@@ -1069,6 +1069,42 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .await
             .expect_err("an existing destination must refuse the entire publication");
         assert_eq!(collision.code(), crate::wire::ErrorCode::Conflict);
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        let directory = host
+            .put_changes(
+                &volume,
+                &write,
+                &[add("unpublished"), add("nested")],
+                &IdempotencyKey::new("directory-destination")?,
+                Some(64),
+                create_access,
+                None,
+            )?
+            .await
+            .expect_err("a directory cannot be a file destination");
+        assert_eq!(directory.code(), crate::wire::ErrorCode::Invalid);
+        assert!(directory.to_string().contains("path is a directory"));
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        let directory = host
+            .put_content(
+                &volume,
+                &write,
+                "nested",
+                b"replacement",
+                "text/plain",
+                "nested",
+                Some(64),
+                &IdempotencyKey::new("unconditional-directory-destination")?,
+                None,
+                ContentAccess {
+                    ceiling: None,
+                    io: io.as_ref(),
+                },
+            )
+            .await
+            .expect_err("unconditional writes also require a file destination");
+        assert_eq!(directory.code(), crate::wire::ErrorCode::Invalid);
+        assert!(directory.to_string().contains("path is a directory"));
         assert_eq!(host.resolve(&workspace, None).await?, before);
         let deny_parent = |action, path: &str| {
             if action == Action::Create && path == "forbidden" {

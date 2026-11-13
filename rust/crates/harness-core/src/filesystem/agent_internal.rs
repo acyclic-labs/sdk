@@ -59,6 +59,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> TurnOutput
         self.journal.stage(turn, bytes)
     }
 
+    fn stage_notice<'a>(
+        &'a self,
+        turn: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        self.journal.stage_notice(turn, bytes)
+    }
     fn partial(&self, turn: OperationId) -> BoxProviderFuture<'_, Result<String>> {
         self.journal.partial(turn)
     }
@@ -494,6 +501,19 @@ where
         ))
     }
 
+    fn stage_notice<'a>(
+        &'a self,
+        turn: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        Box::pin(self.conversation_file(
+            format!("events/{turn}.json"),
+            "notice.json",
+            IdempotencyKey(format!("turn-notice:{turn}")),
+            bytes,
+            crate::agent::NOTICE_MEDIA_TYPE,
+        ))
+    }
     fn partial(&self, turn: OperationId) -> BoxProviderFuture<'_, Result<String>> {
         Box::pin(async move {
             // The live reply of the turn's newest model dispatch: dispatch

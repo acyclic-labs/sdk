@@ -233,26 +233,6 @@ fn negative_control_detects_retained_default_loss_in_both_entry_points() {
 }
 
 #[test]
-fn negative_control_detects_uncountable_defaults_in_both_entry_points() {
-    for (reload, proposed) in [(false, None), (true, None), (true, Some(1))] {
-        let operations = [(reload, 7, proposed, false)];
-        sequence(&operations);
-        SKIP_DEFAULT_COUNTER.with(|flag| flag.set(true));
-        let detected = std::panic::catch_unwind(|| sequence(&operations));
-        SKIP_DEFAULT_COUNTER.with(|flag| flag.set(false));
-        let panic = detected.expect_err("an uncountable default must fail the same oracle");
-        let text = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .unwrap_or("");
-        assert!(
-            text.contains("catalog transaction preserves its declared default"),
-            "{text}"
-        );
-    }
-}
-
-#[test]
 fn codex_login_route_remains_a_countable_default_without_a_counter() {
     let mut openai = crate::catalog::default_catalog()["openai"].clone();
     openai.token_counter = None;
@@ -306,8 +286,8 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
             counter.adapter = spec.adapter;
         }
     }
-    // Independent counting oracle: an available login is selected only without
-    // an API key; its local counter exists only on the native Responses route.
+    // Independent route oracle: an available login is selected only without
+    // an API key, and it serves only the built-in Responses route.
     let selected_login = login && !key && case / 32 == 2;
     let valid_route = !selected_login || (builtin && responses);
     let accepted = valid_route;
@@ -322,14 +302,18 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
         assert_eq!(
             result.is_ok(),
             accepted,
-            "actual credential selection must supply the default counter: case {case}"
+            "the actually selected credential must serve the default's route: case {case}"
         );
         if accepted {
-            let authenticated = key || selected_login || case / 32 == 0;
+            // Resolution needs no credential; dispatch enforces the policy.
+            let resolved = registry.resolve(registry.default_model());
+            let resolved = resolved.unwrap_or_else(|error| {
+                panic!("an accepted default resolves: case {case}: {error}")
+            });
             assert_eq!(
-                registry.resolve(registry.default_model()).is_ok(),
-                authenticated && valid_route,
-                "resolution agrees with credential and route selection: case {case}"
+                crate::dispatch::authenticated(&resolved),
+                key || selected_login || case / 32 == 0,
+                "dispatch authentication agrees with credential selection: case {case}"
             );
         } else {
             assert_eq!(catalog_snapshot(&registry), before);
@@ -346,17 +330,6 @@ fn every_counting_credential_configuration_is_atomic_in_both_entry_points() {
     }
 }
 
-#[test]
-fn counted_defaults_reject_unusable_login_routes_before_committing() {
-    // Selected login, counter present, custom URL and/or non-Responses adapter.
-    // Cover registration, retained-default reload, and incoming-default reload.
-    for case in [81, 83, 85] {
-        for operation in [(false, None), (true, None), (true, Some(1))] {
-            credential_sequence(case, &[operation]);
-        }
-    }
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
@@ -370,21 +343,22 @@ proptest! {
 }
 
 #[test]
-fn negative_control_detects_assuming_the_codex_counting_exception() {
-    // Both have a built-in Responses route and allow Codex authentication:
-    // one has no login, the other has a login displaced by an API key.
-    for case in [70, 94] {
+fn unusable_login_routes_are_refused_and_skipping_the_check_is_detected() {
+    // Selected login, counter present, custom URL and/or non-Responses adapter.
+    // Cover registration, retained-default reload, and incoming-default reload.
+    for case in [81, 83, 85] {
         for operations in [[(false, None)], [(true, None)], [(true, Some(1))]] {
             credential_sequence(case, &operations);
+            // Negative control: the same oracle detects a commit without the check.
             SKIP_DEFAULT_COUNTER.with(|flag| flag.set(true));
             let detected = std::panic::catch_unwind(|| credential_sequence(case, &operations));
             SKIP_DEFAULT_COUNTER.with(|flag| flag.set(false));
-            let panic = detected.expect_err("assuming a login must fail the credential oracle");
+            let panic = detected.expect_err("an unusable login route must fail the oracle");
             assert!(
                 panic
                     .downcast_ref::<String>()
                     .unwrap()
-                    .contains("actual credential selection must supply the default counter")
+                    .contains("the actually selected credential must serve the default's route")
             );
         }
     }

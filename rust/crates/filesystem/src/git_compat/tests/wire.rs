@@ -45,7 +45,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
     let commands = vec![
         json!("Status"),
         json!({"Diff": {"cached": true}}),
-        json!({"Log": {"maximum": 2}}),
+        json!({"Log": {"maximum": 2, "object": null}}),
         json!({"Show": {"object": "HEAD", "offset": "0"}}),
         json!({"Add": {"paths": ["path"]}}),
         json!({"Commit": {"message": "message", "author": "agent", "authored_at_seconds": 0}}),
@@ -179,7 +179,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
     let outputs = wire_values::<GitCommandOutput>(
         vec![
             json!({"Status": status}),
-            json!({"Commits": [commit]}),
+            json!({"Commits": {"commits": [commit], "next": null}}),
             json!({"Branches": {"current": "main", "branches": [branch]}}),
             json!({"Tags": {"v1": commit.id}}),
             json!({"Committed": commit}),

@@ -76,6 +76,7 @@ impl Source {
 
 #[derive(Default)]
 pub(super) struct Context {
+    pub diff: Option<acyclic_harness::tui::DiffPage>,
     pub approval_status: Option<u64>,
     history: Vec<u64>,
     pub question: Option<(
@@ -86,6 +87,53 @@ pub(super) struct Context {
 }
 
 pub(super) type Panel = QueryPage<Source, Context>;
+
+pub(super) fn present(
+    panel: &mut Panel,
+    columns: u16,
+    wide: bool,
+    theme: acyclic_harness::tui::config::ThemeStyles,
+) {
+    if let Some(diff) = panel.context.diff.as_mut()
+        && let Some(lines) = diff.render(columns, wide, theme)
+    {
+        panel.replace_source(lines);
+    }
+    panel.wrap(columns);
+}
+
+pub(super) fn diff_key(
+    panel: &mut Panel,
+    key: super::KeyCode,
+    columns: u16,
+    wide: bool,
+    theme: acyclic_harness::tui::config::ThemeStyles,
+    top: &mut usize,
+) -> bool {
+    let Some(diff) = panel.context.diff.as_mut() else {
+        return false;
+    };
+    let consumed = match key {
+        super::KeyCode::Tab => diff.select_hunk(false),
+        super::KeyCode::Char(' ') => diff.toggle_hunk(),
+        _ => false,
+    };
+    if consumed {
+        present(panel, columns, wide, theme);
+        // Only the selected hunk has this line attribute; QueryPage preserves
+        // it through the one shared grapheme wrapper. Find it only on input.
+        *top = panel
+            .lines
+            .iter()
+            .position(|line| {
+                line.style
+                    .add_modifier
+                    .contains(super::Modifier::UNDERLINED)
+            })
+            .unwrap_or(0);
+    }
+    consumed
+}
 
 impl Context {
     /// Select by the immutable cut printed on screen, never by a moving row.
@@ -172,18 +220,14 @@ pub(super) async fn load(
             .with_context(Context::default()))
         }
 
-        Source::Diff(cursor) => Ok(diff::query(conversation, rows, cursor, None)
-            .await?
-            .with_context(Context::default())),
+        Source::Diff(cursor) => diff::query(conversation, rows, cursor, None).await,
         Source::AgentDiff(agent, cursor) => {
             let selected = if cursor.is_none() {
                 root.select(agent.clone()).await?
             } else {
                 conversation
             };
-            Ok(diff::query(selected, rows, cursor, Some(agent))
-                .await?
-                .with_context(Context::default()))
+            diff::query(selected, rows, cursor, Some(agent)).await
         }
         Source::Discard(agent, operation) => {
             let selected = root.select(agent).await?;
@@ -257,6 +301,7 @@ pub(super) async fn load(
                 approval_status: None,
                 history: selected,
                 question: None,
+                ..Context::default()
             }))
         }
         Source::Approval {
@@ -316,6 +361,7 @@ pub(super) async fn load(
                 approval_status: Some(status),
                 history: Vec::new(),
                 question: None,
+                ..Context::default()
             }))
         }
     }
@@ -327,6 +373,71 @@ mod tests {
     use acyclic_harness::tui::QueryController;
     use std::{cell::Cell, task::Poll};
     use tokio::sync::oneshot;
+
+    #[test]
+    fn diff_hunk_keys_reveal_selected_wrapped_heading() -> Result<(), Failure> {
+        use acyclic_harness::tui::{
+            DiffPage, PromptInput, Screen, Viewport,
+            key_event::KeyCode,
+            ratatui::{Terminal, backend::TestBackend},
+        };
+        let input = PromptInput::default();
+        for (width, wide) in [(48, false), (172, true)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 12))?;
+            let area = terminal.get_frame().area();
+            let columns = Screen::default().areas(area, &input).overlay_columns();
+            let mut diff = DiffPage::default();
+            diff.file(
+                Some("+literal header".into()),
+                &format!(
+                    "@@ -1 +1 @@\n-old {}\n+new {}\n@@ -80 +80 @@\n-second before\n+second after\n",
+                    "界 e\u{301} 👩‍💻 ".repeat(100),
+                    "界 e\u{301} 👩‍💻 ".repeat(100),
+                ),
+            );
+            let mut context = Context::default();
+            context.diff = Some(diff);
+            let mut panel = QueryPage::new(Vec::new(), None, false).with_context(context);
+            present(&mut panel, columns, wide, input.theme);
+            let mut top = 0;
+            for (key, heading) in [
+                (KeyCode::Tab, "@@ -80 +80 @@"),
+                (KeyCode::Char(' '), "@@ -80 +80 @@"),
+                (KeyCode::Tab, "@@ -1 +1 @@"),
+                (KeyCode::Char(' '), "@@ -1 +1 @@"),
+                (KeyCode::Tab, "@@ -80 +80 @@"),
+            ] {
+                assert!(diff_key(
+                    &mut panel,
+                    key,
+                    columns,
+                    wide,
+                    input.theme,
+                    &mut top
+                ));
+                let painted = terminal.draw(|frame| {
+                    Screen {
+                        overlay: &panel.lines,
+                        overlay_scroll: top,
+                        overlay_title: "Diff",
+                        ..Screen::default()
+                    }
+                    .render(frame, &input, &mut Viewport::default(), 0, 0);
+                })?;
+                let visible = painted
+                    .buffer
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    visible.contains(heading),
+                    "selected diff hunk stayed outside the viewport"
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn approval_review_waits_for_the_last_wrapped_rows_to_be_painted() -> Result<(), Failure> {
@@ -361,6 +472,7 @@ mod tests {
                 approval_status: Some(7),
                 history: Vec::new(),
                 question: None,
+                ..Context::default()
             }),
         );
         let input = PromptInput::default();
@@ -468,6 +580,18 @@ mod tests {
             .await?,
         );
         let conversation = Conversation::open(harness.connect().await?);
+        let loaded = load(
+            conversation.clone(),
+            conversation.clone(),
+            8,
+            Source::Diff(None),
+            Arc::new(acyclic_harness::executor::ModelPrices::default()),
+        )
+        .await?;
+        assert!(
+            loaded.context.diff.is_some(),
+            "the real diff query lost its admitted presentation"
+        );
         let retained = Arc::new(tokio::sync::Mutex::new(
             conversation
                 .diff_query(

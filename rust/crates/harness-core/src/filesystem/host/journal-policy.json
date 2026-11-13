@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": 5,
+  "version": 6,
   "layers": [[{
     "id": "host-custody",
     "effect": "allow",
@@ -56,6 +56,13 @@
     "principal": {"attributes": {}},
     "actions": ["read", "read-history"],
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": ".system/inherited-conversation/**"},
+    "conditions": {}
+  }, {
+    "id": "published-summary",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": ".system/summaries/**"},
     "conditions": {}
   }, {
     "id": "published-tool-output",

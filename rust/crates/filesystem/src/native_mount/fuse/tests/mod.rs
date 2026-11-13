@@ -25,7 +25,7 @@ type MemorySource = super::super::CheckoutMountSource<
 
 mod guest_admission;
 
-fn fuse_fixture_work() -> crate::NativeMaterializationWork {
+pub(super) fn fuse_fixture_work() -> crate::NativeMaterializationWork {
     cache_work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -86,6 +86,7 @@ mod inbox;
 mod lookup_reply;
 mod mount;
 mod native;
+mod owner;
 mod packet_cancellation;
 mod packet_workers;
 pub(super) mod packets;

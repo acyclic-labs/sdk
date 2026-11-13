@@ -48,11 +48,16 @@ Callers must await durability completions before publishing dependent state.
 Write batches reject overlapping ranges before submitting any write, so their
 result does not depend on platform completion order.
 
-The current backend uses bounded completion workers and a separate bounded
-host-operation pool for locks and namespace work without native completion.
-Its owned file operations do not block the caller's async executor, but it is not yet a
-thread-per-core proactor and not every host filesystem operation has moved to
-this boundary. Run the local, non-gating backend baseline with
+Each shared service has one worker per available CPU, without an upper clamp.
+Linux completion ownership also has one dedicated thread per available CPU.
+Native I/O, host callbacks, process I/O, persistence and inherited output retain
+separate services so a blocked consumer cannot occupy its producer. Services
+are created on first use; initialization creates native and host I/O workers.
+Thread creation and its startup cost scale with available CPUs, and OS resource
+failures are returned to the caller. Queue admission supplies backpressure.
+Owned file operations do not block the caller's async executor; host filesystem
+operations without native completion use their shared service.
+Run the local, non-gating backend baseline with
 `cargo test -p acyclic-native-runtime --lib owned_io_backend_baseline -- --ignored --nocapture`.
 It records the OS, architecture, bytes, and native-versus-baseline elapsed time;
 release qualification additionally requires mounted Cargo and Lean workloads.

@@ -230,6 +230,7 @@ async fn unbounded_default_admits_beyond_old_concurrency_with_explicit_credit_co
         let store = Store::new(Arc::clone(&provider), root()?);
         let handler = Arc::new(Gated::new()?);
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             handler.clone(),
             Arc::new(SystemClock),
@@ -283,6 +284,7 @@ async fn finite_drain_shares_admission_and_retains_cancelled_inputs() -> TestRes
         let store = Store::new(Arc::clone(&provider), root()?);
         let handler = Arc::new(Gated::new()?);
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             handler.clone(),
             Arc::new(SystemClock),

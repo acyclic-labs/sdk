@@ -69,6 +69,7 @@ pub(in crate::session::client) fn fixture(
         pool.links.insert(
             node.into(),
             Link {
+                backoff: None,
                 opening_subscription: None,
                 opening_credentials: BTreeMap::new(),
                 observation: None,

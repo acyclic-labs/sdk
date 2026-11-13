@@ -1,3 +1,10 @@
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum HeadDurability {
+    Volatile,
+    Durable,
+    Deferred,
+}
+
 impl MemoryStream {
     pub(crate) async fn follow_inner(
         &self,
@@ -46,7 +53,9 @@ impl MemoryStream {
     ) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        let view = self.capture_heads(&request, false).await?;
+        let view = self
+            .capture_heads(&request, HeadDurability::Volatile)
+            .await?;
         Ok(view)
     }
 
@@ -113,18 +122,18 @@ impl MemoryStream {
 impl MemoryStream {
     /// Captures an already validated request whose minimum cut was awaited
     /// outside any adapter publication lock. There is no boxed inner dispatch.
-    /// `durable` confirms this captured state was durably published; deferred
-    /// providers instead fill their independently captured durability cut.
+    /// Durable providers confirm the captured state. Deferred providers reserve
+    /// later watermark fields without claiming durability during capture.
     pub(crate) async fn capture_heads(
         &self,
         request: &crate::HeadsRequest,
-        durable: bool,
+        durability: HeadDurability,
     ) -> Result<crate::Heads, StreamError> {
         let mut view = self.empty_heads(request);
         view.heads
             .try_reserve_exact(request.paths.len())
             .map_err(|_| StreamError::Capacity)?;
-        self.capture_heads_into(request, durable, &mut view, None)
+        self.capture_heads_into(request, durability, &mut view, None)
             .await?;
         Ok(view)
     }
@@ -143,7 +152,7 @@ impl MemoryStream {
     async fn capture_heads_into(
         &self,
         request: &crate::HeadsRequest,
-        durable: bool,
+        durability: HeadDurability,
         view: &mut crate::Heads,
         _work: CaptureWork<'_>,
     ) -> Result<(), StreamError> {
@@ -177,7 +186,7 @@ impl MemoryStream {
                     path,
                     request.projection,
                     request.durable_through,
-                    durable,
+                    durability == HeadDurability::Durable,
                     _work,
                 )
             };
@@ -198,8 +207,13 @@ impl MemoryStream {
                 .min(request.limit - request.selection_count()?);
         }
         view.snapshot = self.revisions.at(state.decision);
+        let deferred = durability == HeadDurability::Deferred
+            && request.projection != crate::HeadProjection::Tail;
+        let remaining = crate::MAX_COMMAND_BYTES.saturating_sub(
+            crate::wire_codec::requests::heads_len_with_durability(view, deferred),
+        );
         view.children = children
-            .map(|request| children_at(&state, request))
+            .map(|request| children_at(&state, request, remaining))
             .transpose()?;
         if !request.at_least.proven_by(Some(&view.snapshot)) {
             return Err(StreamError::InvalidResponse);
@@ -370,7 +384,11 @@ fn native_last_record(stream: &PathState, work: &Work) -> Result<Option<Record>,
     ))
 }
 
-fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
+fn children_at(
+    state: &State,
+    request: ChildrenPageRequest,
+    remaining: usize,
+) -> Result<ChildrenPage, StreamError> {
     validate_limit(request.limit)?;
     if request.after.as_ref().is_some_and(|after| {
         !request.parent.as_ref().map_or_else(
@@ -406,44 +424,59 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
             &mut paths,
         )?;
     }
-    let has_more = paths.len() > request.limit as usize;
+    let mut has_more = paths.len() > request.limit as usize;
     paths.truncate(request.limit as usize);
+    let count = paths.len();
+    let mut children: Vec<Child> = Vec::new();
+    let mut children_bytes = 0usize;
+    for (index, path) in paths.into_iter().enumerate() {
+        let (tail, tail_record) =
+            projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+        let origin = state.paths.origin(&path)?;
+        let child = Child {
+            path,
+            tail,
+            tail_record,
+            origin,
+        };
+        #[cfg(all(loom, not(target_arch = "wasm32")))]
+        let size =
+            if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes) {
+                child.path.as_str().len()
+            } else {
+                crate::wire_codec::requests::child_len(&child)
+            };
+        #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
+        let size = crate::wire_codec::requests::child_len(&child);
+        let candidate_bytes =
+            children_bytes.saturating_add(crate::wire_codec::requests::block_len(size));
+        let next_after = (has_more || index + 1 < count).then_some(&child.path);
+        if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
+            candidate_bytes,
+            next_after,
+        )) > remaining
+        {
+            if children.is_empty() {
+                return Err(StreamError::LimitExceeded);
+            }
+            has_more = true;
+            break;
+        }
+        children_bytes = candidate_bytes;
+        children.push(child);
+    }
     let next_after = if has_more {
-        paths.last().cloned()
+        children.last().map(|child| child.path.clone())
     } else {
         None
     };
-    let mut page_bytes =
-        64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-    let children = paths
-        .into_iter()
-        .map(|path| {
-            let (tail, tail_record) =
-                projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-            let origin = state.paths.origin(&path)?;
-            let child = Child {
-                path,
-                tail,
-                tail_record,
-                origin,
-            };
-            #[cfg(all(loom, not(target_arch = "wasm32")))]
-            let size =
-                if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
-                {
-                    child.path.as_str().len()
-                } else {
-                    crate::wire_codec::requests::child_len(&child)
-                };
-            #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
-            let size = crate::wire_codec::requests::child_len(&child);
-            page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-            if page_bytes > crate::MAX_COMMAND_BYTES {
-                return Err(StreamError::LimitExceeded);
-            }
-            Ok(child)
-        })
-        .collect::<Result<Vec<_>, StreamError>>()?;
+    if crate::wire_codec::requests::block_len(crate::wire_codec::requests::children_page_len(
+        children_bytes,
+        next_after.as_ref(),
+    )) > remaining
+    {
+        return Err(StreamError::LimitExceeded);
+    }
     let result = ChildrenPage {
         hierarchy_version: state.hierarchy_version,
         children,
@@ -925,8 +958,13 @@ impl MemoryStream {
             ))?;
         }
         work.record(work.meter.check())?;
-        self.capture_heads_into(request, false, &mut output.value, Some(work))
-            .await?;
+        self.capture_heads_into(
+            request,
+            HeadDurability::Volatile,
+            &mut output.value,
+            Some(work),
+        )
+        .await?;
         work.record(work.meter.check())?;
         let (view, allocation) = output.into_parts();
         Ok((view, Some(allocation)))

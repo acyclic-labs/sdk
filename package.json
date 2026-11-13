@@ -28,20 +28,20 @@
   },
   "devDependencies": {
     "@bufbuild/buf": "1.75.0",
-    "@bufbuild/protoc-gen-es": "2.16.0",
-    "@napi-rs/cli": "3.10.9",
+    "@bufbuild/protoc-gen-es": "2.17.0",
+    "@napi-rs/cli": "3.10.12",
     "@noble/hashes": "2.4.0",
     "@types/bun": "1.4.4",
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "ajv": "8.20.0",
     "fast-check": "4.10.2",
     "ignore": "7.0.14",
     "saxes": "6.0.0",
     "typescript": "7.0.2",
     "typescript-parser": "npm:typescript@6.0.3",
-    "@bufbuild/protobuf": "2.16.0",
-    "@connectrpc/connect": "2.2.0",
-    "@connectrpc/connect-node": "2.2.0"
+    "@bufbuild/protobuf": "2.17.0",
+    "@connectrpc/connect": "2.3.0",
+    "@connectrpc/connect-node": "2.3.0"
   },
   "description": "The Acyclic SDK is the open contract and composition layer for building recursive, fork-join agent systems. It contains the Rust harness, public service interfaces, customer-machine implementations, conformance suites, and TypeScript packages.",
   "directories": {
@@ -53,7 +53,7 @@
   "license": "Apache-2.0",
   "type": "commonjs",
   "patchedDependencies": {
-    "@connectrpc/connect@2.2.0": "patches/connect-2.2.0.patch",
-    "@napi-rs/cli@3.10.9": "patches/napi-rs-cli-3.10.9.patch"
+    "@connectrpc/connect@2.3.0": "patches/connect-2.3.0.patch",
+    "@napi-rs/cli@3.10.12": "patches/napi-rs-cli-3.10.12.patch"
   }
 }

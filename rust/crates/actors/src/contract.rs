@@ -83,15 +83,18 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
     }
     if (!request.account_id.is_empty()
         && crate::addressing::AccountId::new(&request.account_id).is_err())
-        || crate::addressing::NamespaceId::validate_deployment(request.name.as_bytes()).is_err()
         || !matches!(request.jurisdiction.as_str(), "" | "eu" | "us" | "fedramp")
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
-            (Some(limits), None) => domain::ActorLimits::try_from(limits.clone()).is_ok(),
+            (Some(limits), None) => {
+                crate::addressing::NamespaceId::validate_deployment(request.name.as_bytes()).is_ok()
+                    && domain::ActorLimits::try_from(limits.clone()).is_ok()
+            }
             (None, Some(limits)) => {
-                limits.cpu_millis > 0
+                crate::addressing::validate_dns_label(request.name.as_bytes()).is_ok()
+                    && limits.cpu_millis > 0
                     && limits.memory_bytes > 0
                     && limits.timeout_millis > 0
                     && request.subscriptions.is_empty()

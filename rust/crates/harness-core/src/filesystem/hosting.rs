@@ -495,6 +495,7 @@ where
         let control_composer: Arc<dyn acyclic_actors::guest::Composer> = composer.clone();
         controls.bind_composer(Arc::downgrade(&control_composer));
         let agents = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             stream,
             within.clone(),
             handler.clone(),
@@ -544,6 +545,7 @@ where
     /// of this binding; the guest owns only delivery execution.
     pub fn hosting(
         mut self,
+        requests: acyclic_actors::guest::Requests,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
         let controls = self.controls.clone();
@@ -555,6 +557,7 @@ where
         // The guest composes the same spawns as this binding's own handler,
         // and roots keep the creation reader its turns use.
         self.agents = Arc::new(self.agents.rehosted(
+            requests,
             handler.clone(),
             self.clock.clone(),
             Some(self.composer.clone()),
@@ -1212,6 +1215,52 @@ where
         .await
     }
 
+    /// The bytes of text staged by [`Self::stage_text`], read under the host's
+    /// journal custody. A staged input is host-private until a committed
+    /// record names it, so host-internal assembly reads it here rather than
+    /// through the agent's own reader. Reads at most `maximum` bytes.
+    ///
+    /// # Errors
+    /// As [`Self::staged_text`], or when the staged file exceeds `maximum`.
+    pub async fn staged_text_bytes(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+        source: &str,
+        maximum: u64,
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let Some(file) = self.staged_text(agent, kind, by, intent, source).await? else {
+            return Ok(None);
+        };
+        let length = file.descriptor().byte_length();
+        if length > maximum {
+            return Err(Error::Record("a staged input exceeds its bound"));
+        }
+        let state = self.agents.state(agent).await?;
+        let (_, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
+        let reader = super::FilesystemContentVerifier::new(
+            Arc::clone(&self.volumes),
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)?;
+        let bytes = crate::conversation::ContentResidencyVerifier::read_range(
+            &*reader,
+            &file,
+            acyclic_fs::ByteRange { offset: 0, length },
+            None,
+            None,
+        )
+        .map_err(turn)?
+        .await
+        .map_err(turn)?;
+        Ok(Some(bytes.to_vec()))
+    }
+
     /// Stages ordered text and immutable file references through the same
     /// sender/intent publication as text input. Every reference must already
     /// be readable under this agent's admission; input cannot grant access.
@@ -1343,16 +1392,9 @@ where
             crate::conversation::journal_volume(self.volumes.provider.clone(), &request.agent)
                 .map_err(turn)?;
         authority.authorize_host_volume(&journal).map_err(turn)?;
-        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
-            crate::conversation::ContentGrant::authorize_agent_volume(
-                &self.issuer.verifier(&mut None).map_err(turn)?,
-                scope,
-                crate::AgentId::from_bytes(path.id_bytes()),
-                &journal,
-                crate::conversation::VolumeOperation::Write,
-                &mut None,
-            )
-            .map_err(turn)?;
+        if self.issuer.native().is_none()
+            && let TurnAdmission::Admitted { scope, .. } = &self.admission
+        {
             self.volumes
                 .authorize_volume_creation(scope, &journal)
                 .map_err(turn)?;

@@ -314,5 +314,7 @@ impl Drop for Registration {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod client;
+#[cfg(any(not(target_arch = "wasm32"), feature = "javascript"))]
+pub(crate) mod framing;
 #[cfg(test)]
 mod tests;

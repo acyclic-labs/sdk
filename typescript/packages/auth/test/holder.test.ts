@@ -10,7 +10,7 @@ const root = new Uint8Array(await readFile(new URL("../../../../rust/codec-fuzz/
 const previous = new Uint8Array(await readFile(new URL("../../../../rust/crates/auth/fuzz/corpus/verifier/root", import.meta.url)));
 const hex = (value: string) => Uint8Array.from(Buffer.from(value, "hex"));
 const state = (): TrustState => ({
-  environment: "test", account: "account", minimumKeyEpoch: 1n,
+  environment: "test", account: "account", minimumKeyEpoch: 1n, notBeforeUnixSeconds: 0n,
   environmentKeys: [hex("8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c")],
   issuerKeys: [hex("8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394")],
   revokedKeyIds: [], revokedBlockIds: [], environmentKeysValidUntil: undefined,
@@ -37,6 +37,12 @@ test("WASM holders preserve signatures, lineage, effective limits and revocation
     expect(() => Capability.verify(previous, trust, 100n)).toThrow();
     let holder = Capability.verify(root, trust, 100n);
     try {
+      const advanced = new TrustSnapshot({ ...state(), notBeforeUnixSeconds: 101n });
+      try {
+        expect(() => Capability.verify(root, advanced, 100n)).toThrow();
+        expect(() => holder.check(advanced, 100n)).toThrow();
+        expect(() => holder.check(advanced, 101n)).not.toThrow();
+      } finally { advanced.free(); }
       for (const id of ids) {
         const child = holder.attenuate([
           { kind: { case: "lineageAppend", value: { ids: [id] } } },
@@ -94,6 +100,7 @@ test("WASM clocks and epochs cannot wrap into valid uint64 values", () => {
     for (const invalid of [-offset, (1n << 64n) + offset]) {
       expect(() => new TrustSnapshot({ ...state(), minimumKeyEpoch: invalid })).toThrow();
       expect(() => new TrustSnapshot({ ...state(), environmentKeysValidUntil: invalid })).toThrow();
+      expect(() => new TrustSnapshot({ ...state(), notBeforeUnixSeconds: invalid })).toThrow();
       const trust = new TrustSnapshot(state());
       try { expect(() => Capability.verify(root, trust, invalid)).toThrow(); }
       finally { trust.free(); }

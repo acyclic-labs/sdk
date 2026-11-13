@@ -21,8 +21,8 @@ mod runtime;
 mod scheduling;
 pub use crate::guest::Subscription;
 pub use runtime::{
-    Clock, ClockControl, ClockError, ControlledClock, DeliveryFailure, Runtime, RuntimeLimits,
-    SystemClock,
+    Clock, ClockControl, ClockError, ControlledClock, DeliveryFailure, PlacementRequests, Runtime,
+    RuntimeLimits, SystemClock,
 };
 pub use scheduling::DEFAULT_SCHEDULING_SHARDS;
 mod sockets;
@@ -86,6 +86,15 @@ pub enum Error {
         /// The sealed publication to pass back to [`Store::submit`].
         publication: Box<PreparedPublish>,
         /// The original uncertain provider response or transport failure.
+        source: StreamError,
+    },
+    /// A terminal was observed, but its durable cut could not be confirmed.
+    /// This retains the original outcome; it is not a refusal of that call.
+    #[error("actor invocation durability is unknown: {source}")]
+    InvocationDurabilityUnknown {
+        /// The observed original terminal, including its result bytes.
+        receipt: Box<crate::call::Receipt>,
+        /// Why its persistence could not be confirmed.
         source: StreamError,
     },
     /// Publication has a terminal outcome, but participant settlement failed.
@@ -155,7 +164,7 @@ impl Error {
             Self::CompletionFailed(_) => "completion_failed",
             Self::Escrow(_) => "escrow",
             Self::Stream(error) => error.code(),
-            Self::Unknown { .. } => "unknown",
+            Self::Unknown { .. } | Self::InvocationDurabilityUnknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
             Self::Conflict => "conflict",
             Self::PreconditionChanged(_) => "precondition_changed",
@@ -363,7 +372,13 @@ impl Snapshot {
             path,
             tail,
             anchor: Some(record.commit_id),
-            unsettled: state.custody,
+            // An inherited publication belongs to its source actor. Only a
+            // record written beyond this fork's inherited prefix can own
+            // custody here; the source still recovers its original intent.
+            unsettled: state.custody
+                && provenance
+                    .as_ref()
+                    .is_none_or(|origin| record.sequence >= origin.inherited.forked_at),
             state: Some(state),
             provenance,
         })
@@ -1443,6 +1458,31 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         self.submit_retained(prepared).await.map(|_| ())
     }
 
+    /// An accepted local frame can still be deferred by its caller or ordered
+    /// without a device flush. Actor acknowledgements require the durable cut.
+    /// A failed flush cannot turn the already accepted publication into refusal.
+    async fn confirm_durable(
+        &self,
+        mut prepared: PreparedPublish,
+    ) -> Result<PreparedPublish, Error> {
+        if let Err(source) = self.confirm_durability().await {
+            prepared.acknowledgement_unknown = true;
+            return Err(Error::Unknown {
+                publication: Box::new(prepared),
+                source,
+            });
+        }
+        Ok(prepared)
+    }
+
+    /// Writers and observers certify the same provider-owned durable prefix.
+    async fn confirm_durability(&self) -> Result<(), StreamError> {
+        if self.provider.context().deferred_durability() {
+            self.provider.durability_barrier().await?;
+        }
+        Ok(())
+    }
+
     /// Submit once and return the exact authored state confirmed by the original
     /// receipt. Foreign publications return None. No post-write read or decode
     /// is needed. Unknown outcomes retain the entire publication in Error::Unknown.
@@ -1516,6 +1556,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     prepared.sealed = true;
                 }
                 let outcome = self.provider.commit(prepared.request.clone()).await;
+                if matches!(&outcome, Ok(CommitOutcome::Committed(_))) {
+                    prepared = self.confirm_durable(prepared).await?;
+                }
                 // A retry refusal cannot undo an earlier attempt that may have applied.
                 if prepared.acknowledgement_unknown {
                     if let Err(source) = &outcome {

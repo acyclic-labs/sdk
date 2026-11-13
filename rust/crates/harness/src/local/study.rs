@@ -597,7 +597,7 @@ async fn trial(
     let mut events = fork.observe(Some(at + 1)).await?;
     let entry = loop {
         match events.next().await? {
-            Event::Turn(entry) => break entry,
+            Event::Turn { entry, .. } => break entry,
             Event::Status(status) => {
                 if let Some(reason) = super::agent_conversation::ended(&status) {
                     return Ok(failed(agent, reason, None));

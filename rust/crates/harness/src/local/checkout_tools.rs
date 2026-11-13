@@ -104,7 +104,7 @@ async fn observe_until<R>(
     let timeout = || {
         Error::process_io(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
-            "timeout_ms elapsed during the checkout call; recovery: retry, or raise timeout_ms",
+            "authenticated scope expired during the checkout call",
         ))
     };
     if clock.now_unix_millis() >= deadline {
@@ -230,7 +230,6 @@ impl CheckoutTools {
 
 struct PreparedCommand {
     control: Option<acyclic_native_runtime::ProcessControl>,
-    admitted: std::time::Instant,
     deadline_unix_ms: Option<u64>,
     invocation: ToolInvocation,
     shell: Option<crate::tools::ShellInput>,
@@ -248,7 +247,6 @@ struct ShellCommand<'a> {
     request: Vec<u8>,
     maximum: usize,
     started: Option<tokio::sync::oneshot::Sender<ToolResult>>,
-    admitted: std::time::Instant,
 }
 
 impl CheckoutTools {
@@ -261,7 +259,6 @@ impl CheckoutTools {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let PreparedCommand {
                 control,
-                admitted,
                 deadline_unix_ms,
                 invocation,
                 shell,
@@ -322,7 +319,6 @@ impl CheckoutTools {
                                 request,
                                 maximum,
                                 started,
-                                admitted,
                             },
                             state,
                             &workspace,
@@ -355,7 +351,6 @@ impl CheckoutTools {
                 request,
                 maximum,
                 started,
-                admitted,
             } = command;
             let execution_grant = context
                 .execution_grant()
@@ -403,7 +398,6 @@ impl CheckoutTools {
                                 invocation.operation_id,
                                 execution_grant,
                                 started,
-                                admitted,
                                 control,
                             ),
                             maximum,
@@ -587,8 +581,6 @@ impl ToolExecutor for CheckoutTools {
         mut invocation: ToolInvocation,
         context: Option<ToolContext>,
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
-        let admitted = std::time::Instant::now();
-        let admitted_unix_ms = self.clock.now_unix_millis();
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
             // Command access is checked once, under the command's own guard:
@@ -639,20 +631,13 @@ impl ToolExecutor for CheckoutTools {
                 });
             let maximum = usize::try_from(maximum).map_err(storage)?;
             let background = shell.as_ref().is_some_and(|input| input.background);
-            // Preserve admission across preparation and background dispatch;
-            // scheduling the worker cannot restart the caller's timeout.
-            let deadline_unix_ms = shell
-                .as_ref()
-                .and_then(|input| input.timeout_ms)
-                .filter(|timeout| *timeout != 0)
-                .map(|timeout| admitted_unix_ms.saturating_add(u64::from(timeout)));
+            // Scope expiry bounds queueing and publication. The command's own
+            // lifetime starts only after checkout and volume preparation.
+            let deadline_unix_ms = Some(self.expiry_unix_ms);
             let (started, launched) = tokio::sync::oneshot::channel();
-            let expiry = deadline_unix_ms.map_or(self.expiry_unix_ms, |deadline| {
-                deadline.min(self.expiry_unix_ms)
-            });
             let control = shell
                 .as_ref()
-                .map(|_| acyclic_native_runtime::ProcessControl::open(expiry))
+                .map(|_| acyclic_native_runtime::ProcessControl::open(self.expiry_unix_ms))
                 .transpose()
                 .map_err(storage)?;
             // Stopping observation stops execution, while the original task
@@ -664,7 +649,6 @@ impl ToolExecutor for CheckoutTools {
             };
             let command = PreparedCommand {
                 control,
-                admitted,
                 deadline_unix_ms,
                 invocation,
                 shell,

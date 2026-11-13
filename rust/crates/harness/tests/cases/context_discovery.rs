@@ -279,6 +279,8 @@ impl Fixture {
             .bootstrap_scope(
                 "journal",
                 &Capabilities::new([
+                    // This scope belongs to the host journal reader/writer.
+                    acyclic_harness::contract::capability::HARNESS_HOST.into(),
                     private.capability(VolumeOperation::Read, &mut None)?,
                     private.capability(VolumeOperation::Write, &mut None)?,
                     self.volume.capability(VolumeOperation::Read, &mut None)?,

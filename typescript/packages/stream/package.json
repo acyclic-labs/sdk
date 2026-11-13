@@ -54,7 +54,7 @@
     "build:native": "node ../../../scripts/build-stream-native.mjs build",
     "stage:native": "node ../../../scripts/build-stream-native.mjs stage",
     "check:native": "node ../../../scripts/build-stream-native.mjs check",
-    "test": "bun run build && bun test test",
+    "test": "bun run build && node ../../../scripts/build-stream-native.mjs build-host && bun test test",
     "test:session-errors": "bun run build && bun test test/session-errors.test.ts",
     "test:grpc:node": "node test/grpc-provider-conformance.mjs --node-only",
     "test:grpc:bun": "node test/grpc-provider-conformance.mjs --bun-only",
@@ -73,13 +73,13 @@
   },
   "dependencies": {
     "@acyclic-labs/actors": "0.2.0",
-    "@bufbuild/protobuf": "2.16.0",
-    "@connectrpc/connect": "2.2.0",
-    "@connectrpc/connect-node": "2.2.0",
+    "@bufbuild/protobuf": "2.17.0",
+    "@connectrpc/connect": "2.3.0",
+    "@connectrpc/connect-node": "2.3.0",
     "@acyclic-labs/auth": "0.2.0"
   },
   "devDependencies": {
-    "@types/node": "26.6.5",
+    "@types/node": "26.6.6",
     "typescript": "7.0.2"
   }
 }

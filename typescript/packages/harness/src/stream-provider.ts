@@ -1,8 +1,18 @@
-import { WasmStream, WasmFollow } from "../generated/wasm/acyclic_harness_wasm.js";
+import { WasmStream, type WasmFollow } from "../generated/wasm/acyclic_harness_wasm.js";
+
+/** Any wasm-bindgen module's canonical provider: class identity is per module,
+ * so a cursor is recognised by shape, never by one module's constructor. */
+type ProviderStream = Pick<WasmStream, "openProviderRequest" | "free">;
+type ProviderCursor = Pick<WasmFollow, "next" | "close" | "free">;
+const isCursor = (value: unknown): value is ProviderCursor =>
+  typeof value === "object" && value !== null && !(value instanceof Uint8Array)
+  && typeof (value as ProviderCursor).next === "function";
 
 const noPreceding = new Uint8Array();
 
-export type ProviderReply<T> = { value: T } | { code: string };
+/** A failure keeps its original refusal, so details such as a not-before
+ * authority time reach the Rust reader unchanged. */
+export type ProviderReply<T> = { value: T } | { code: string; refusal?: unknown };
 export interface StreamProviderCursor {
   next(): Promise<ProviderReply<Uint8Array | null>>;
   close(): void;
@@ -17,19 +27,22 @@ export interface OwnedStreamProviderPort extends StreamProviderPort {
   close(): void;
 }
 
-export function providerFailure(error: unknown): { code: string } {
-  return { code: typeof error === "object" && error !== null && "code" in error
-    && typeof error.code === "string" ? error.code : "unavailable" };
+export function providerFailure(error: unknown): { code: string; refusal?: unknown } {
+  if (typeof error !== "object" || error === null || !("code" in error) || typeof error.code !== "string") {
+    return { code: "unavailable" };
+  }
+  return "refusal" in error && error.refusal !== undefined
+    ? { code: error.code, refusal: error.refusal } : { code: error.code };
 }
 
 /** Transfer one canonical provider into an injected port. Rust owns canonical
  * parsing and cursor state; this adapter makes no request byte snapshots. */
-export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort {
+export function streamProviderPort(stream: ProviderStream): OwnedStreamProviderPort {
   let closed = false;
   const owners = new Set<() => void>();
-  const dispose = (cursor: WasmFollow) => { cursor.close(); cursor.free(); };
+  const dispose = (cursor: ProviderCursor) => { cursor.close(); cursor.free(); };
   const call = async (operation: string, input: Uint8Array, preceding: Uint8Array = noPreceding)
-    : Promise<ProviderReply<Uint8Array | WasmFollow>> => {
+    : Promise<ProviderReply<Uint8Array | ProviderCursor>> => {
     if (closed) return { code: "unavailable" } as const;
     let request: ReturnType<WasmStream["openProviderRequest"]>;
     try { request = stream.openProviderRequest(operation, input, preceding); }
@@ -45,7 +58,7 @@ export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort 
     try {
       const value = await request.next();
       if (closed || value === null) {
-        if (value instanceof WasmFollow) dispose(value);
+        if (isCursor(value)) dispose(value);
         return { code: "unavailable" } as const;
       }
       return { value };
@@ -65,7 +78,7 @@ export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort 
       if (operation !== "read" && operation !== "follow") return { code: "invalid_argument" };
       const opened = await call(operation, input, preceding);
       if ("code" in opened) return opened;
-      if (!(opened.value instanceof WasmFollow)) return { code: "invalid_response" };
+      if (!isCursor(opened.value)) return { code: "invalid_response" };
       const cursor = opened.value;
       let ended = false;
       let pulls = 0;
@@ -80,6 +93,7 @@ export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort 
       owners.add(close);
       return { value: {
         async next() {
+          if (closed) return { code: "unavailable" };
           if (ended) return { value: null };
           ++pulls;
           try {

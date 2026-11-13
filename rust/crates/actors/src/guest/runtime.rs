@@ -1,18 +1,12 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Maximum UTF-8 bytes in textual caller metadata and opaque host handles.
-pub const MAX_GUEST_METADATA_BYTES: usize = 1024;
-
 /// Invalid host metadata representation; never includes credential or handle values.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid guest metadata field: {0}")]
 pub struct GuestMetadataError(pub &'static str);
 
 fn identity(value: &str, field: &'static str) -> Result<(), GuestMetadataError> {
-    if value.len() > MAX_GUEST_METADATA_BYTES {
-        return Err(GuestMetadataError(field));
-    }
     if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
         return Err(GuestMetadataError(field));
     }
@@ -28,6 +22,7 @@ fn handle(version: u32, value: &str) -> Result<(), GuestMetadataError> {
 
 /// Opaque host capability handle, reserved for S1 forwarding/attenuation.
 /// This is neither a bearer token nor a second capability-chain representation.
+/// Hosts own delivery byte budgets; this projection checks representation only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", try_from = "RawHandle")]
 #[non_exhaustive]
@@ -197,7 +192,6 @@ impl RuntimeHandle {
 #[serde(rename_all = "camelCase")]
 struct RawHandle {
     version: u32,
-    #[serde(deserialize_with = "metadata_string")]
     handle: String,
 }
 impl TryFrom<RawHandle> for CallerCapability {
@@ -217,15 +211,11 @@ impl TryFrom<RawHandle> for RuntimeHandle {
 #[serde(rename_all = "camelCase")]
 struct RawCaller {
     account_id: Vec<u8>,
-    #[serde(deserialize_with = "metadata_string")]
     org_id: String,
-    #[serde(deserialize_with = "metadata_string")]
     principal: String,
-    #[serde(deserialize_with = "metadata_string")]
     credential_id: String,
-    #[serde(deserialize_with = "metadata_string")]
     actor_id: String,
-    #[serde(default = "default_namespace", deserialize_with = "metadata_string")]
+    #[serde(default = "default_namespace")]
     namespace: String,
     #[serde(deserialize_with = "expiry_string")]
     expires_at_ms: String,
@@ -276,9 +266,6 @@ fn canonical_expiry(value: &str) -> bool {
     !value.starts_with('0') && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-fn metadata_string<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
-    bounded_string(decoder, MAX_GUEST_METADATA_BYTES)
-}
 fn expiry_string<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
     bounded_string(decoder, 20)
 }

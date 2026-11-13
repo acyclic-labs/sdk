@@ -26,6 +26,14 @@ pub(crate) struct Fixture {
 }
 
 impl Fixture {
+    /// Audience that authenticated this fixture's seeded conversation journal.
+    pub fn audience(&self) -> Authority {
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: self.path.id().into(),
+        }
+    }
+
     pub async fn new(backend: &dyn Backend) -> Result<Self> {
         let storage = backend.fresh().await?;
         let raw = storage.open().await?;
@@ -84,7 +92,7 @@ impl Fixture {
             },
         )?;
         let handler = backend.handler(bound.handler())?;
-        let bound = bound.hosting(handler)?;
+        let bound = bound.hosting(acyclic_actors::guest::Requests::default(), handler)?;
         let RootSubmission::Created(path) = bound
             .create_root(
                 &vectors::intent("create")?,

@@ -30,6 +30,7 @@ pub(super) fn watch_code(error: &crate::watch::NativeWatchError) -> Code {
         | E::StaleVersion
         | E::StaleCursor
         | E::SourceUnavailable
+        | E::WatchCutMismatch
         | E::RescanOwnerMismatch
         | E::RescanAlreadyInProgress
         | E::RescanInProgress => Code::FailedPrecondition,

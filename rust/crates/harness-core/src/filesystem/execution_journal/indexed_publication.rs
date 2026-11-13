@@ -79,7 +79,7 @@ where
         bytes: &OwnedBytes,
         contributions: &[Contribution<'_>],
         io: Option<&PreparationIo>,
-    ) -> Result<Option<(Recovery, acyclic_stream::CommitId)>> {
+    ) -> Result<Option<(Recovery, acyclic_stream::CommitId, u64)>> {
         let operation = summary.operation.ok_or_else(|| invalid(io))?;
         let (model, inputs) = inputs;
         let source_key = super::model_calls::observation_key(event, model, io)?;
@@ -389,7 +389,7 @@ where
                 &mut work,
             )
             .await?;
-        let result = if let Some(commit_id) = committed {
+        let result = if let Some((commit_id, committed_at_micros)) = committed {
             summary.scratch = Some(writer.take_scratch());
             Some((
                 Recovery {
@@ -398,6 +398,7 @@ where
                     indexed: true,
                 },
                 commit_id,
+                committed_at_micros,
             ))
         } else {
             None

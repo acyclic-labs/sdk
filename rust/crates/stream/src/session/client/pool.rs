@@ -208,8 +208,20 @@ impl Pool {
         }
     }
     pub(super) fn receive_frame(&mut self, node: &str, value: impl Into<Frame>) -> bool {
-        match self.receive(node, value.into()) {
-            Ok(()) => true,
+        let value = value.into();
+        let frame = value.wire();
+        let progress = matches!(frame.body, Some(Body::Data(_) | Body::Watermark(_)))
+            && self
+                .routes
+                .get(&frame.channel_id)
+                .is_some_and(|route| route.node == node && route.generation == frame.generation);
+        match self.receive(node, value) {
+            Ok(()) => {
+                if progress && let Some(link) = self.links.get_mut(node) {
+                    link.backoff = None;
+                }
+                true
+            }
             Err(error) => {
                 // A received frame that fails structural validation is terminal.
                 // Transport I/O failures use the reconnect path in `run`.
@@ -409,6 +421,7 @@ impl Pool {
                             placement_epoch: 0,
                         },
                         Some(self.home_channel.clone()),
+                        None,
                     );
                     Ok(())
                 }
@@ -581,7 +594,7 @@ impl Pool {
                 if self.links.contains_key(&destination.node_id) {
                     self.subscribe(id)
                 } else {
-                    self.dial(destination, None);
+                    self.dial(destination, None, None);
                     Ok(())
                 }
             }

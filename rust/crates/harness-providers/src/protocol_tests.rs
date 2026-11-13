@@ -533,9 +533,19 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
         ],
         ..Context::default()
     };
+    let storage = MemoryHarnessStorage::new(acyclic_harness_core::AgentId::new(), 131072).await?;
+    // The compaction summary is a file in the owner's journal. A stock turn
+    // binds the provider to that owner's reader, as `stock_turns` does.
+    let model = provider.model.clone();
+    let provider = acyclic_harness_core::model::ModelProvider::bind_content(
+        &provider,
+        storage.content_bindings().reader,
+        None,
+    )
+    .ok_or_else(|| invalid("provider refused its owner's content reader"))?;
     let executor = StockExecutor::new(
-        provider.model.clone(),
-        Arc::new(provider),
+        model,
+        provider,
         ContextPipeline::default().with(Arc::new(SourceStage::new(
             "history",
             "1",
@@ -545,7 +555,6 @@ async fn context_window_stop_compacts_before_continuing_without_a_count_endpoint
         ToolRegistry::default(),
     )
     .with_compaction_policy(CompactionPolicy::default());
-    let storage = MemoryHarnessStorage::new(acyclic_harness_core::AgentId::new(), 131072).await?;
     let journal = storage.journal();
     let input = TurnInput {
         operation_id: acyclic_harness_core::OperationId::new(),

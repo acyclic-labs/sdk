@@ -50,8 +50,8 @@
     "generated"
   ],
   "dependencies": {
-    "@connectrpc/connect": "2.2.0",
-    "@bufbuild/protobuf": "2.16.0"
+    "@connectrpc/connect": "2.3.0",
+    "@bufbuild/protobuf": "2.17.0"
   },
   "scripts": {
     "build": "bun run generate && bun run build:wasm && tsc -b",

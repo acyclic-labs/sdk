@@ -136,6 +136,7 @@ mod tests {
                     system_fingerprint: None,
                     ttft_ns: None,
                     cache: None,
+                    abandoned: completed.then_some(Default::default()),
                 },
                 &mut emit,
             )?;

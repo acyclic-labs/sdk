@@ -76,8 +76,11 @@ impl DiscoveredContext {
                 "discovered context exceeds message bound",
             ));
         }
+        let listing = crate::executor::with_history_io(io, |work| {
+            super::skills::SkillListing::new(&self.skills, work)
+        })?;
         let skill_bytes = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
+            crate::executor::json::json_byte_length(&listing, limits.render_bytes, work)
         })?;
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
@@ -101,7 +104,7 @@ impl DiscoveredContext {
                     io,
                 )?;
             }
-            self.project_messages(limits, io, count, skill_bytes, &sources)
+            self.project_messages(limits, io, count, skill_bytes, &sources, &listing)
         })
     }
 
@@ -112,6 +115,7 @@ impl DiscoveredContext {
         count: usize,
         skill_bytes: u64,
         sources: &crate::model::InstructionSources<'_>,
+        listing: &super::skills::SkillListing<'_>,
     ) -> Result<Vec<ModelMessage>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io
@@ -131,7 +135,7 @@ impl DiscoveredContext {
                     .push(crate::model::project_instruction(file, Some(io))?);
             }
             if !self.skills.is_empty() {
-                let mut text = skill_text_native(&self.skills, skill_bytes, work)?;
+                let mut text = skill_text_native(listing, skill_bytes, work)?;
                 messages.1.absorb(&mut text.1).map_err(Error::from)?;
                 messages.0.push(ModelMessage {
                     role: ModelRole::System,
@@ -151,7 +155,7 @@ impl DiscoveredContext {
             messages.push(ModelMessage {
                 role: ModelRole::System,
                 content: ModelContent::Text(
-                    serde_json::to_string(&self.skills)
+                    serde_json::to_string(listing)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 ),
             });

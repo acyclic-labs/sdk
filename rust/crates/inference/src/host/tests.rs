@@ -313,7 +313,7 @@ fn rejects_incomplete_receipts_and_sensitive_credentials() -> Result<(), Error> 
     assert!(authorization("").is_err());
     assert!(authorization("line\nbreak").is_err());
     let secret = authorization("secret")?;
-    assert_eq!(secret.as_str(), "Bearer secret");
+    assert_eq!(secret.as_encoded_bytes(), b"Bearer secret");
     Ok(())
 }
 
@@ -349,10 +349,11 @@ fn evaluation_contract_binds_native_output_to_exact_grader_observation() -> Resu
 }
 
 #[tokio::test]
-async fn request_metadata_marks_the_ephemeral_bearer_copy_sensitive() -> Result<(), Error> {
+async fn request_metadata_shares_the_sensitive_bearer_backing() -> Result<(), Error> {
+    let secret = "s".repeat(16 * 1024);
     let client = Inference(Arc::new(Connection {
         channel: Endpoint::from_static("https://localhost").connect_lazy(),
-        authorization: Some(authorization("secret")?),
+        authorization: Some(authorization(&secret)?),
         credential: None,
         client_instance: [1; 16],
     }));
@@ -362,9 +363,14 @@ async fn request_metadata_marks_the_ephemeral_bearer_copy_sensitive() -> Result<
         .get("authorization")
         .ok_or(Error::Invalid("missing authorization"))?;
     assert!(bearer.is_sensitive());
+    let stored = client.0.authorization.as_ref().unwrap();
     assert_eq!(
-        client.0.authorization.as_ref().map(|value| value.as_str()),
-        Some("Bearer secret")
+        bearer.as_encoded_bytes().as_ptr(),
+        stored.as_encoded_bytes().as_ptr()
+    );
+    assert_eq!(
+        bearer.as_encoded_bytes(),
+        format!("Bearer {secret}").as_bytes()
     );
     Ok(())
 }

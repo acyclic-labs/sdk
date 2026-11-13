@@ -1731,7 +1731,12 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
 #[tokio::test]
 async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_turns() -> Result {
     let parent = AgentPath::root(&id(5));
-    let stream = Arc::new(MemoryStream::default());
+    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+    let clock = Arc::new(clock);
+    let stream = Arc::new(MemoryStream::new_with_clock(
+        Default::default(),
+        Arc::new(preparation::JournalClock(clock.clone())),
+    ));
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("parent answer".into()),
         ScriptedTurn::Text("none".into()),
@@ -1741,23 +1746,26 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
         ScriptedTurn::Text("none".into()),
     ]));
     let (host, binding) = private_in(&stream, &parent).await?;
-    let turn_host = Arc::new(FilesystemTurnHost::new(
-        stream.clone(),
-        within(),
-        host.clone(),
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
-        TurnAdmission::LocalRoot,
-        executors(model.clone())?,
-        LIMITS,
-        Default::default(),
-    ));
+    let turn_host = Arc::new(
+        FilesystemTurnHost::new(
+            stream.clone(),
+            within(),
+            host.clone(),
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors(model.clone())?,
+            LIMITS,
+            Default::default(),
+        )
+        .with_clock(clock.clone()),
+    );
     let mut adoption = adopted(id(5));
     adoption.volumes = vec![binding];
     let root_host = committing(&stream, &host, ExecutorDriver::new(turn_host.clone()))?;
@@ -1848,7 +1856,18 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
         "the child's first request lacks its parent's settled turn: {:?}",
         requests[2].messages
     );
-    preparation::check(&stream, &host, &parent, &child).await?;
+    // These completed child turns now publish waking events to the parent.
+    // Consume them through the real host before measuring a new wait call;
+    // otherwise the old events start turns using the next fixture's script.
+    model.extend([
+        ScriptedTurn::Text("observed first child completion".into()),
+        ScriptedTurn::Text("none".into()),
+        ScriptedTurn::Text("observed later child completion".into()),
+        ScriptedTurn::Text("none".into()),
+    ]);
+    root_host.drain(&parent).await?;
+    assert!(settled(&stream, &within(), &parent).await?.settled);
+    preparation::check(&stream, &host, &parent, &child, clock, &mut control).await?;
     Ok(())
 }
 
@@ -2500,6 +2519,20 @@ async fn a_goal_edit_continues_the_committed_turn_without_model_redispatch() -> 
         edit: Arc<Edit>,
     }
     impl<H: TurnHost> TurnHost for EditingHost<H> {
+        fn park<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            operation: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            self.original.park(agent, operation)
+        }
+        fn settle<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            turn: OperationId,
+        ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<()>> {
+            self.original.settle(agent, turn)
+        }
         fn open_control<'a>(
             &'a self,
             agent: &'a AgentState,
