@@ -435,7 +435,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
                 escrow: None,
             },
         )?)?;
-        creation.join(store.activation(&address))?;
+        creation.join(store.activation(&address)?)?;
         store.submit(creation).await?;
         let handler = Arc::new(ExternalPackage {
             package: Package::new()?,
@@ -480,7 +480,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
                 Some(0)
             );
             let mut wake = PreparedPublish::foreign(key("external/explicit-activation")?);
-            wake.join(store.activation(&address))?;
+            wake.join(store.activation(&address)?)?;
             store.submit(wake).await?;
         }
         observe_while_running(

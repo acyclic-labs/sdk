@@ -165,7 +165,9 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
                 },
             )
             .map_err(|error| Error::Actor(Box::new(error)))?,
-        store.activation(&actor),
+        store
+            .activation(&actor)
+            .map_err(|error| Error::Actor(Box::new(error)))?,
     ])
 }
 
