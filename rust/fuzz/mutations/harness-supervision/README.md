@@ -84,12 +84,25 @@ counts as positive progress or as a proved absence of content changes.
 
 The original native capture producer is covered by the shipping
 `supervision::headless_native_edits_count_progress_but_unchanged_rewrites_do_not`
-(`acyclic-plugin --test cli`). Its two real commands make an equal-length edit
-and rewrite identical bytes. Only the edit may admit a second paid goal turn;
-both commands must have returned success and exit code zero.
+(`acyclic-plugin --test cli`). Three independent real-binary scenarios make an
+equal-length edit, rewrite identical bytes after the initial import, and make
+an edit followed by a read-only command. Only the actual edit may admit another
+paid goal turn; clean captures must not borrow progress from the import or the
+earlier edit. Every native command must return success and exit code zero.
 `native-progress-publication.patch` restores capture without its original
 content measurement. The identical regression must fail at
 `native changed=true`, then pass after restoration.
+
+`native-capture-parent.patch` restores the use of a generation's DAG parent in
+place of the capture receipt's actual serial predecessor. The same shipping
+regression must fail at `native changed=false earlier_edit=false` or
+`native changed=true earlier_edit=true`, then pass after restoration. The SDK
+regression `workspace::publication::tests::original_publication_evidence_survives_later_heads_without_workspace_files`
+also recovers a clean receipt after a later edit, requires its actual predecessor
+to have the same generation, and distinguishes that unchanged comparison from
+the genuine later content change. It exercises both synchronous and asynchronous
+authority stores. These are executable proof recipes; a checked patch or a
+registered test alone is not a claim that the mutant was killed.
 
 `native_capture_receipts_keep_original_identity_and_refuse_unavailable_progress`
 uses real journal and filesystem publications to reject an unavailable positive

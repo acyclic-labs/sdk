@@ -646,7 +646,7 @@ async fn headless_original_goal_change_is_healthy_under_no_progress_supervision(
 
 #[tokio::test]
 async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
-    async fn scenario(changed: bool) {
+    async fn scenario(changed: bool, earlier_edit: bool) {
         let fixture = fixture();
         std::fs::write(fixture.workspace.join("progress.txt"), b"before").unwrap();
         let content = if changed { "after!" } else { "before" };
@@ -656,12 +656,26 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
         let command = format!(
             "Set-Content -NoNewline -Path progress.txt -Value '{content}'; Get-Content -Raw progress.txt"
         );
-        let model = model_responses(fixture._directory.path(), vec![
-            tool_response("shell", json!({"command":command}), 0),
+        let mut responses = Vec::new();
+        if earlier_edit {
+            // A subsequent clean receipt must not inherit this edit's DAG
+            // parent and repeatedly claim the same content change.
+            responses.extend([
+                tool_response("shell", json!({"command":command}), 0),
+                ANSWER.into(),
+            ]);
+        }
+        #[cfg(unix)]
+        let clean_command = "cat progress.txt";
+        #[cfg(windows)]
+        let clean_command = "Get-Content -Raw progress.txt";
+        responses.extend([
+            tool_response("shell", json!({"command":if earlier_edit { clean_command } else { &command }}), usize::from(earlier_edit)),
             ANSWER.into(),
-            tool_response("write", json!({"path":"volume:///home/GOAL.md", "content":"---\nstatus: done\n---\nCompleted the objective\n"}), 1),
+            tool_response("write", json!({"path":"volume:///home/GOAL.md", "content":"---\nstatus: done\n---\nCompleted the objective\n"}), 1 + usize::from(earlier_edit)),
             ANSWER.into(),
-        ], "responses").await;
+        ]);
+        let model = model_responses(fixture._directory.path(), responses, "responses").await;
         let mut policy = Policy {
             no_progress_turns: Some(1),
             ..Default::default()
@@ -674,8 +688,8 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
             output.status.code(),
-            Some(if changed { 0 } else { 22 }),
-            "native changed={changed}: {stdout}\n{}",
+            Some(if changed && !earlier_edit { 0 } else { 22 }),
+            "native changed={changed} earlier_edit={earlier_edit}: {stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_str(stdout.trim()).unwrap();
@@ -684,16 +698,19 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
             if changed { 4 } else { 2 },
             "native capture progress dispatched the wrong number of paid requests"
         );
-        let native = requests[1]["input"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["type"] == "function_call_output")
-            .expect("original native result was not delivered");
-        let native: Value = serde_json::from_str(native["output"].as_str().unwrap()).unwrap();
-        assert_eq!(native["success"], true, "native command failed: {native}");
-        assert_eq!(native["exit_code"], 0, "native command failed: {native}");
-        if changed {
+        for request in [1, 3].into_iter().take(if earlier_edit { 2 } else { 1 }) {
+            let native = requests[request]["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|item| item["type"] == "function_call_output")
+                .expect("original native result was not delivered");
+            let native: Value = serde_json::from_str(native["output"].as_str().unwrap()).unwrap();
+            assert_eq!(native["success"], true, "native command failed: {native}");
+            assert_eq!(native["exit_code"], 0, "native command failed: {native}");
+        }
+        if changed && !earlier_edit {
             assert_eq!(result["result"]["kind"], "goal");
             assert_eq!(result["result"]["goal"]["status"], "done");
         } else {
@@ -701,7 +718,11 @@ async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
             assert_eq!(result["result"]["signal"], "no_progress");
         }
     }
-    tokio::join!(scenario(true), scenario(false));
+    tokio::join!(
+        scenario(true, false),
+        scenario(false, false),
+        scenario(true, true)
+    );
 }
 
 #[tokio::test]

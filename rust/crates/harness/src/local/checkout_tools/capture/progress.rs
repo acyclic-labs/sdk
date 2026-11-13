@@ -30,7 +30,7 @@ impl CheckoutTools {
             let key = acyclic_fs::IdempotencyKey::from_bytes(operation.into_bytes());
             let mut original = view
                 .workspace()
-                .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+                .operation_publication(key, None, WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?
                 .value;
@@ -71,17 +71,18 @@ impl CheckoutTools {
                 }
                 original = view
                     .workspace()
-                    .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+                    .operation_publication(key, None, WorkBudget::UNBOUNDED, &cancellation)
                     .await
                     .map_err(storage)?
                     .value;
             }
-            let Some(after) = original else {
+            let Some(publication) = original else {
                 return context
                     .record_native_progress(NativeCaptureEvidence::Unavailable { operation }, None)
                     .await;
             };
             if physical.mounted.is_some() {
+                drop(publication);
                 let work = acyclic_fs::NativeMaterializationWork::new(
                     WorkBudget::UNBOUNDED,
                     &cancellation,
@@ -162,22 +163,17 @@ impl CheckoutTools {
                     .record_native_progress(NativeCaptureEvidence::Unavailable { operation }, None)
                     .await;
             }
-            let (parents, _allocation) = after
-                .parents(WorkBudget::UNBOUNDED, &cancellation)
+            let after = publication.generation();
+            let before = publication
+                .predecessor(WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?
                 .value;
-            let [before] = parents.as_slice() else {
-                return Err(Error::Invalid(
-                    "native DATA receipt has no unique predecessor".into(),
-                ));
+            let Some(before) = before else {
+                return context
+                    .record_native_progress(NativeCaptureEvidence::Unavailable { operation }, None)
+                    .await;
             };
-            let before = view
-                .workspace()
-                .generation(*before, WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map_err(storage)?
-                .value;
             let changed = after
                 .content_changed_from(&before, WorkBudget::UNBOUNDED, &cancellation)
                 .await

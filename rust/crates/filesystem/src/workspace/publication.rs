@@ -8,10 +8,50 @@ mod tests;
 /// It is not a workspace file and never appears in a directory or checkout.
 pub struct OperationPublication<A: 'static, O: 'static> {
     generation: Generation<A, O>,
+    predecessor: Option<(crate::Sequence, crate::Digest)>,
     evidence: Option<Bytes>,
     // Backing drops before this credit. Funded provider bytes retain their
     // own original owner instead of acquiring a second allocation lease.
     _allocation: Option<crate::kernel::RetainedAllocation>,
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> OperationPublication<A, O> {
+    /// Resolves the actual serial predecessor of this publication, fenced by
+    /// its original authority position and digest. An unchanged publication can
+    /// retain its predecessor's generation; that generation's DAG parent is
+    /// not the predecessor of this operation. Workspace creation has none.
+    pub async fn predecessor<W: crate::facade::FsWork>(
+        &self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<Generation<A, O>>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let workspace = &self.generation.workspace;
+        let result = async {
+            accounting.check()?;
+            let Some((position, digest)) = self.predecessor else {
+                return Ok(None);
+            };
+            let id = workspace
+                .volume
+                .fs
+                .workspace_generation_at_position(
+                    &workspace.volume,
+                    position,
+                    digest,
+                    &mut accounting,
+                )
+                .await?;
+            Ok(Some(Generation {
+                workspace: workspace.clone(),
+                id,
+                publication_closure: None,
+            }))
+        }
+        .await;
+        let result = read_core::authorize(workspace, result, &mut accounting, cancellation).await;
+        work.finish(result, &accounting)
+    }
 }
 
 impl<A, O> OperationPublication<A, O> {
@@ -80,6 +120,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                     return Err(error.into());
                 }
             }
+            let predecessor = record
+                .sequence
+                .get()
+                .checked_sub(1)
+                .filter(|position| *position != 0)
+                .map(|position| (crate::Sequence::new(position), record.previous_digest));
             drop(record);
             let allocation = if bytes != 0 {
                 Some(crate::kernel::RetainedAllocation::transfer(
@@ -97,6 +143,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                     id,
                     publication_closure: None,
                 },
+                predecessor,
                 evidence,
                 _allocation: allocation,
             }))
