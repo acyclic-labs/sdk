@@ -8,6 +8,8 @@ use crate::{ProviderPlatform, StreamProvider};
 
 trait Terminal: ProviderPlatform {
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    fn available(&self) -> bool;
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     fn submit(
         self: Box<Self>,
         bytes: Option<u64>,
@@ -16,6 +18,11 @@ trait Terminal: ProviderPlatform {
 }
 
 impl<P: StreamProvider + ?Sized> Terminal for Recording<P> {
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    fn available(&self) -> bool {
+        self.recorder.terminal_available()
+    }
+
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     fn submit(
         self: Box<Self>,
@@ -26,13 +33,43 @@ impl<P: StreamProvider + ?Sized> Terminal for Recording<P> {
     }
 }
 
+struct TerminalGuard(Option<Box<dyn Terminal>>);
+
+impl TerminalGuard {
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    fn submit(
+        mut self,
+        bytes: Option<u64>,
+        result: Outcome,
+    ) -> Result<crate::AppendPending, StreamError> {
+        // Only this consuming method or Drop can take the private terminal.
+        self.0
+            .take()
+            .expect("owned recording retains its sole terminal")
+            .submit(bytes, result)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
+        let _ = self.0.take();
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        if let Some(terminal) = self.0.take()
+            && terminal.available()
+        {
+            let _completion = terminal.submit(None, Outcome::Unsettled);
+        }
+    }
+}
 /// The same admitted recording across an object-safe host boundary. Erasure
 /// allocates only for a subscribed span and retains its original producer.
-/// Dropping without a terminal leaves the original start explicitly unfinished.
+/// Dropping without settlement submits Unsettled to the original executor.
+/// Without an available executor, the original start remains retained.
 pub struct OwnedRecording {
     id: SpanId,
     producer: std::sync::Arc<dyn super::context::Producer>,
-    _terminal: Box<dyn Terminal>,
+    _terminal: TerminalGuard,
 }
 
 impl<P: StreamProvider + ?Sized> Recording<P> {
@@ -41,7 +78,7 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         OwnedRecording {
             id: self.id(),
             producer: self.recorder.clone(),
-            _terminal: Box::new(self),
+            _terminal: TerminalGuard(Some(Box::new(self))),
         }
     }
 }

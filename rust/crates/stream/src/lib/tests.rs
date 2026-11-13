@@ -678,6 +678,58 @@ mod replay_tests {
         );
         Ok(())
     }
+    #[cfg(all(feature = "serde", not(target_arch = "wasm32")))]
+    #[test]
+    fn dropped_owned_span_uses_original_executor_outside_runtime_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let (release, resume) = futures::channel::oneshot::channel::<()>();
+        let trace = Stream::new(
+            Arc::new(Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records: 0,
+                inspect_on_write: false,
+                pause_at: 1,
+                pause_write: Some(Arc::new(std::sync::atomic::AtomicUsize::new(0))),
+                resume_write: Some(std::sync::Mutex::new(Some(resume))),
+            }),
+            "agents/worker/trace",
+        )?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [19; 16]));
+        let recording = runtime
+            .block_on(recorder.start(
+                "original.wait",
+                Mechanism::Wait,
+                None,
+                Some("original_delivery"),
+            ))?
+            .into_owned();
+        // The terminal really suspends; eager completion alone cannot hide a
+        // missing executor after leaving its original runtime scope.
+        drop(recording);
+        assert!(release.send(()).is_ok());
+        runtime.block_on(async {
+            let mut query = TraceQuery::new(
+                trace.follow(0, Default::default()).await?,
+                Default::default(),
+            );
+            query.next().await?;
+            assert!(matches!(
+                query.next().await?,
+                Some(Observation::Completed {
+                    result: Outcome::Unsettled,
+                    ..
+                })
+            ));
+            assert_eq!(trace.tail().await?, 2);
+            Ok::<_, crate::StreamError>(())
+        })?;
+        Ok(())
+    }
     #[cfg(feature = "serde")]
     #[tokio::test]
     async fn observed_dispatch_handoff_cannot_wait_after_original_claim()

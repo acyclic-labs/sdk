@@ -49,6 +49,8 @@ pub struct Recorder<P: ?Sized> {
     origin: Instant,
     next: AtomicU64,
     demand: Option<AtomicUsize>,
+    #[cfg(not(target_arch = "wasm32"))]
+    executor: std::sync::OnceLock<tokio::runtime::Handle>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +83,21 @@ impl<P: ?Sized> Recorder<P> {
         }
     }
 
+    pub(super) fn terminal_available(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.executor.get().is_none()
+                && let Ok(handle) = tokio::runtime::Handle::try_current()
+            {
+                let _ = self.executor.set(handle);
+            }
+            self.executor.get().is_some()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            cfg!(feature = "wasm")
+        }
+    }
     pub(super) fn has_demand(&self) -> bool {
         self.demand
             .as_ref()
@@ -181,6 +198,8 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             origin: Instant::now(),
             next: AtomicU64::new(0),
             demand: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            executor: std::sync::OnceLock::new(),
         }
     }
 
@@ -235,6 +254,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         parent: Option<SpanId>,
         guarantee: Option<&'static str>,
     ) -> Result<Recording<P>, StreamError> {
+        let _ = self.terminal_available();
         let sequence = self
             .next
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
@@ -323,6 +343,12 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         bytes: Option<u64>,
         result: Outcome,
     ) -> Result<crate::AppendPending, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _executor = self
+            .recorder
+            .executor
+            .get()
+            .map(tokio::runtime::Handle::enter);
         let (bytes, idempotency_key) = Recorder::<P>::encode(SpanEvent::Finished {
             id: self.id,
             at_ns: self.recorder.now()?,

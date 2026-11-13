@@ -88,7 +88,7 @@ allocation; followed admission transfers the same SDK recording through
 parent scope. No provider or tool bytes are serialized for tracing. A successful
 tool receipt records success, interruption records cancellation, and pending,
 controlled or receipt-less results remain explicitly unsettled. An error without
-retained cause evidence leaves its original start unfinished. Physical subprocess
+retained cause evidence abandons the owned observation as `Unsettled`. Physical subprocess
 and filesystem hops still require their own observations beneath this boundary.
 Fresh model dispatch and provider reconciliation also use the original journal
 admission and owned recording. `harness.provider_call` encloses the original claim,
@@ -100,7 +100,7 @@ success. Forced model interventions do not fabricate provider-call spans.
 Provider-event suspension uses `harness.provider_event_wait` with the public
 `provider_event_delivery` guarantee. A delivered original event settles that
 wait; stream exhaustion without delivery records `Unsettled`. Original errors
-without retained cause evidence stay unfinished. The terminal append is submitted
+without retained cause evidence abandon their owned wait as `Unsettled`. The terminal append is submitted
 without delaying delivery to the original model loop. These shared spans replace
 the separate native-only `provider-event` wait observations.
 Followed tool failures publish `harness.tool_failure` with a typed failed outcome
@@ -141,8 +141,15 @@ terminal without another suspension. The original snapshot/selection and cursor
 are preserved through `Opened::map_cursor`; an unfollowed open adds no wrapper.
 Each next operation checks the original owner's demand, so a retained cursor adds
 no new spans after final unsubscribe. Reading the active trace source bypasses
-self-observation to prevent diagnostic-query feedback. Errors without retained
-cause evidence and abandoned in-flight observations remain incomplete coverage.
+self-observation to prevent diagnostic-query feedback. Owned observations abandoned without retained
+cause evidence submit `Unsettled`; incomplete admission or publication remains explicit coverage.
+`OwnedRecording` retains one private terminal guard. Explicit finish consumes it;
+dropping an admitted handle without settlement submits `Unsettled` through the
+same original append producer. It never invents a failed cause or physical
+cancellation. Native recorders retain the original runtime handle so terminal
+work can be submitted after leaving that runtime's scope. With no available
+executor or unsuccessful publication, the retained start still identifies missing
+coverage. Raw caller-owned `Recording` values continue to require explicit finish.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

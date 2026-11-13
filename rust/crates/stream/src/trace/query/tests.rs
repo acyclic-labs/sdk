@@ -591,3 +591,59 @@ async fn last_owner_interest_revokes_inherited_producer_during_original_work()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn abandoned_owned_wait_records_unsettled_without_consuming_follow()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{OwnedRecording, Recorder};
+    use futures::StreamExt as _;
+    let provider = Arc::new(MemoryStream::default());
+    let data = crate::Stream::new(provider.clone(), "agents/worker/data")?;
+    data.append(b"before".to_vec(), IdempotencyKey::unique())
+        .await?;
+    let mut records = data.follow(1, Default::default()).await?;
+    let trace = crate::Stream::new(provider, "agents/worker/trace")?;
+    let recorder = Arc::new(Recorder::new(trace.clone(), [18; 16]));
+    let recording = recorder
+        .start(
+            "original.follow",
+            Mechanism::Wait,
+            None,
+            Some("original_record_delivery"),
+        )
+        .await?
+        .into_owned();
+    let admission: crate::BoxProviderFuture<'_, Result<_, crate::StreamError>> =
+        Box::pin(async { Ok(recording) });
+    let mut waiting = Box::pin(OwnedRecording::accompany(Some(admission), records.next()));
+    assert!(futures::poll!(&mut waiting).is_pending());
+    drop(waiting);
+    data.append(b"after".to_vec(), IdempotencyKey::unique())
+        .await?;
+    assert_eq!(
+        records
+            .try_next()
+            .await?
+            .ok_or("original follow lost its record")?
+            .value
+            .as_ref(),
+        b"after"
+    );
+    let mut query = TraceQuery::new(
+        trace.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    query.next().await?;
+    assert!(matches!(
+        query.next().await?,
+        Some(Observation::Completed {
+            result: Outcome::Unsettled,
+            bytes: None,
+            ..
+        })
+    ));
+    assert_eq!(query.active_waits(), 0);
+    assert_eq!(query.totals()[&Mechanism::Wait].unsettled, 1);
+    assert_eq!(trace.tail().await?, 2);
+    Ok(())
+}
