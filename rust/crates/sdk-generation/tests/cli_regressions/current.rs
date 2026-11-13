@@ -18,12 +18,10 @@ fn scenario_failure_leaves_docs_unadmitted() {
         "{}",
         output_message(&result)
     );
-    assert!(
-        fixture
-            .output
-            .join("preview/unadmitted-scenario-failure/sdk-docs-data.v1.json")
-            .exists()
-    );
+    assert!(fixture
+        .output
+        .join("preview/unadmitted-scenario-failure/sdk-docs-data.v1.json")
+        .exists());
     assert!(!fixture.output.join("sdk-docs-versions.v1.json").exists());
 }
 
@@ -240,12 +238,10 @@ fn plugin_source_is_part_of_manifest_closure() {
         &fs::read(fixture.output.join("generation-manifest.v1.json")).unwrap(),
     )
     .unwrap();
-    assert!(
-        generated["sourceFiles"]
-            .get("plugin/src/main.rs")
-            .and_then(Value::as_str)
-            .is_some()
-    );
+    assert!(generated["sourceFiles"]
+        .get("plugin/src/main.rs")
+        .and_then(Value::as_str)
+        .is_some());
     let drift = run_drift(&fixture);
     assert!(drift.status.success(), "{}", output_message(&drift));
 }
@@ -500,9 +496,7 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
             path.file_name().unwrap().to_string_lossy(),
             format!(
                 "profile-{}.json",
-                hex::encode(Sha256::digest(
-                    receipt["profile"].as_str().unwrap().as_bytes()
-                ))
+                hex::encode(Sha256::digest(receipt["profile"].as_str().unwrap().as_bytes()))
             )
         );
         assert!(path.file_name().unwrap().to_string_lossy().len() < 255);
@@ -768,18 +762,16 @@ fn clean_relocated_profile_builds_share_generated_source_content_identity() {
     let directory = fixture_directory();
     let relocated_root = directory.path().join("source");
     let relocated_output = directory.path().join("output");
-    assert!(
-        Command::new(runtime::git())
-            .args([
-                "clone",
-                "--quiet",
-                fixture.root.to_str().unwrap(),
-                relocated_root.to_str().unwrap()
-            ])
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(Command::new(runtime::git())
+        .args([
+            "clone",
+            "--quiet",
+            fixture.root.to_str().unwrap(),
+            relocated_root.to_str().unwrap()
+        ])
+        .status()
+        .unwrap()
+        .success());
     let relocated = Fixture {
         directory,
         root: relocated_root,
