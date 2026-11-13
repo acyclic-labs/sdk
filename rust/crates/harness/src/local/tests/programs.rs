@@ -105,6 +105,18 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         };
         agents::settled(&harness, &worker).await?;
         let first = provider.request_count();
+        let argument = concat!(
+            r#"program-value ' " \ $(touch program-injected); ‘’‚‛"#,
+            "\n🦀"
+        );
+        let call = format!("tools.echo({})", json!({"text": argument}));
+        let invoke = if denied {
+            format!(
+                "export default await (async () => {{ try {{ await {call}; throw new Error('unexpected execution'); }} catch (error) {{ if (error.class !== 'denied') throw error; return 'denied-program'; }} }})();"
+            )
+        } else {
+            format!("export default await {call};")
+        };
         provider.extend([
             code("author", r#"
                 import {write} from 'acyclic';
@@ -118,11 +130,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
                 await write('volume:///home/tools/unselected/program.ts', "throw new Error('unselected program was evaluated');", 'absent');
                 export default 'authored';
             "#),
-            program_code("invoke", if denied {
-                "export default await (async () => { try { await tools.echo({text: 'program-value-🦀'}); throw new Error('unexpected execution'); } catch (error) { if (error.class !== 'denied') throw error; return 'denied-program'; } })();"
-            } else {
-                "export default await tools.echo({text: 'program-value-🦀'});"
-            }),
+            program_code("invoke", &invoke),
             ScriptedTurn::Text("done".into()),
         ]);
         let conversation = Conversation::open(connection.select(worker.clone()).await?);
@@ -157,7 +165,7 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
         if denied {
             assert_eq!(result(&requests[first + 2], "invoke")?, "denied-program");
         } else {
-            echoed(&requests[first + 2], "invoke", "program-value-🦀")?;
+            echoed(&requests[first + 2], "invoke", argument)?;
         }
         let forked_first = provider.request_count();
         provider.extend([
