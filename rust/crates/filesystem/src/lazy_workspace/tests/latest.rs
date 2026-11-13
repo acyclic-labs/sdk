@@ -137,10 +137,7 @@ async fn latest_read_uses_original_native_work_and_rejects_wrong_kinds() {
             &cancellation,
         )
         .unwrap_or_else(|(error, _)| panic!("{error:?}"));
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
+        let mut ctx = KernelAccounting::native(&work, &cancellation);
         let result = root.read_latest("/file.txt", 64, &mut ctx).await;
         if kind == SourceNodeKind::RegularFile {
             let bytes = result.unwrap().bytes;

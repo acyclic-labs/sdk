@@ -53,7 +53,7 @@ extern int acyclic_fs_darwin_mount_write(uintptr_t context, const char *path, ui
 extern int acyclic_fs_darwin_mount_truncate(uintptr_t context, const char *path, uint64_t handle,
                                       int64_t length);
 extern int acyclic_fs_darwin_mount_flush(uintptr_t context, uint64_t handle);
-extern int acyclic_fs_darwin_mount_fsync(uintptr_t context);
+extern int acyclic_fs_darwin_mount_fsync(uintptr_t context, const char *path, uint64_t handle);
 extern int acyclic_fs_darwin_mount_durable_writes(uintptr_t context);
 extern int acyclic_fs_darwin_mount_readdir(uintptr_t context, const char *path, void *buffer,
                                      fuse_fill_dir_t filler, int64_t offset);
@@ -188,10 +188,8 @@ static int bridge_flush(const char *path, struct fuse_file_info *info) {
 }
 
 static int bridge_fsync(const char *path, int data_only, struct fuse_file_info *info) {
-  (void)path;
   (void)data_only;
-  (void)info;
-  return acyclic_fs_darwin_mount_fsync(current_context());
+  return acyclic_fs_darwin_mount_fsync(current_context(), path, file_handle(info));
 }
 
 static int bridge_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset,

@@ -284,15 +284,25 @@ pub(super) fn hash(
     count: u64,
     work: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
+    seal(id, bytes, count, work).map(|_| ())
+}
+
+pub(super) fn seal(
+    id: ObjectId,
+    bytes: &OwnedBytes,
+    count: u64,
+    work: &mut KernelAccounting<'_>,
+) -> Result<acyclic_stream::SealedBytes, crate::FsError> {
     let delta = WorkCounters {
         bytes_hashed: count,
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta)?;
-    let digest = object_digest(bytes);
+    let sealed = acyclic_stream::SealedBytes::new(bytes.clone());
     let completed = work.record_completed(delta);
-    if digest != id.digest {
+    if crate::Digest::from_bytes(*sealed.digest()) != id.digest {
         return Err(ObjectStoreError::Corrupt.into());
     }
-    completed
+    completed?;
+    Ok(sealed)
 }

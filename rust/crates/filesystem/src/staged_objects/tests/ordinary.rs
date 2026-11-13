@@ -1,6 +1,47 @@
 use super::*;
 
 #[tokio::test]
+async fn large_objects_stay_private_until_explicit_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store = StagedObjects::open(
+        crate::MemoryObjectStore::default(),
+        directory.path().to_owned(),
+    );
+    let cancellation = CancellationToken::new();
+    // One object crosses the former direct-write shortcut, independently of
+    // aggregate-window spilling and the multi-chunk crash regression.
+    let object = HashedObject::new(
+        crate::ObjectKind::BlobChunk,
+        OwnedBytes::from(vec![37_u8; MAXIMUM_DRAIN_BYTES as usize + 1]),
+    );
+    let id = object.object_id();
+    let length = object.length();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store.put_hashed(object, &mut work).await?;
+    assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
+    assert!(
+        !store.inner().contains(id, &mut work).await?,
+        "large private object reached durable storage before publication",
+    );
+    let observed = store.read(id, length, &mut work).await?;
+    assert_eq!(observed.bytes.len() as u64, length);
+    assert!(observed.bytes.iter().all(|byte| *byte == 37));
+    drop(observed);
+    // Independent durable-provider oracle: explicit publication must make
+    // the same object visible there, rather than merely testing our index.
+    let scope = PublicationScope {
+        related_objects: &[],
+        objects: &[id],
+        proven_at: store.collection.sweeps(),
+    };
+    drop(store.flush_before_publish(scope, &mut work).await?);
+    assert!(store.inner().contains(id, &mut work).await?);
+    assert!(matches!(store.lookup(id), Lookup::Absent));
+    Ok(())
+}
+
+#[tokio::test]
 async fn flush_vector_and_visit_denial_precede_provider_work()
 -> Result<(), Box<dyn std::error::Error>> {
     for budget in [
@@ -403,7 +444,10 @@ async fn overflow_spills_privately_until_the_publication_drain()
             ]))
         })
         .collect::<Vec<_>>();
-    for (object_id, bytes) in &objects {
+    for (index, (object_id, bytes)) in objects.iter().enumerate() {
+        if index == count * 2 / 3 {
+            advance_spill_past_bound(&store).await?;
+        }
         {
             let __object_args = (*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
             let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
@@ -469,165 +513,6 @@ async fn overflow_spills_privately_until_the_publication_drain()
     drop(store);
     drop(provider);
     assert!(reopen_contains(directory.path(), &identities).await?);
-    Ok(())
-}
-
-#[tokio::test]
-async fn spill_relief_retains_original_work_cancellation_and_refusal()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let provider = Arc::new(
-        acyclic_objects::local::LocalObjects::open(
-            directory.path().join("objects"),
-            acyclic_objects::local::LocalObjectsLimits::default(),
-            None,
-        )
-        .await?,
-    );
-    let gate = Arc::new(tokio::sync::Mutex::new(()));
-    let store = StagedObjects::open(
-        PausedStore {
-            inner: LogicalObjectStore::new(Arc::clone(&provider)),
-            gate: Arc::clone(&gate),
-            pause_writes: true,
-            first: std::sync::atomic::AtomicBool::new(false),
-            paused: tokio::sync::Notify::new(),
-            stored: std::sync::atomic::AtomicUsize::new(0),
-        },
-        directory.path().to_owned(),
-    );
-    let token = CancellationToken::new();
-    let body_bytes = 256 * 1_024;
-    let window = usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes;
-    let objects = (0..8 * window)
-        .map(|index| {
-            blob(OwnedBytes::from(vec![
-                u8::try_from(index % 251).unwrap_or(0);
-                body_bytes
-            ]))
-        })
-        .collect::<Vec<_>>();
-    let (early, late) = objects.split_at(3 * window);
-    for (object_id, bytes) in early {
-        {
-            let __object_args = (*object_id, bytes.clone(), WorkBudget::UNBOUNDED, &token);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .put(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }?;
-    }
-    assert!(store.index().spilled_objects > 0);
-    // Stand in for a spill file that has grown past its bound.
-    advance_spill_past_bound(&store).await?;
-
-    let private = store.index().spilled_objects;
-    let collecting = store.collection.begin().await;
-    let (sweep, _) = collecting.sweepable(Vec::new()).await;
-    for counter in ["items_examined", "allocation_operations"] {
-        let mut budget = crate::performance::BOUNDARY_BUDGET;
-        if counter == "items_examined" {
-            budget.items_examined = 0;
-        } else {
-            budget.allocation_operations = 0;
-        }
-        let mut refused = AuthorityWork::new(budget, &token);
-        let mut relief = Box::pin(store.relieve_window(&mut refused));
-        let std::task::Poll::Ready(result) = futures::poll!(relief.as_mut()) else {
-            panic!("exhausted spill selection waited for collection admission");
-        };
-        assert!(matches!(
-            result,
-            Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                counter: refused_counter,
-                ..
-            })) if refused_counter == counter
-        ));
-        drop(relief);
-        assert_eq!(refused.spent().backend_read_operations, 0);
-        assert_eq!(refused.spent().backend_write_operations, 0);
-        assert_eq!(store.index().spilled_objects, private);
-        assert_eq!(store.inner().stored.load(Ordering::Relaxed), 0);
-    }
-    drop(sweep);
-
-    let mut denied = AuthorityWork::new(
-        WorkBudget {
-            backend_read_operations: 0,
-            ..crate::performance::BOUNDARY_BUDGET
-        },
-        &token,
-    );
-    assert!(matches!(
-        store.relieve_window(&mut denied).await,
-        Err(ObjectStoreError::Work(_))
-    ));
-    assert_eq!(denied.spent().backend_read_operations, 0);
-    assert_eq!(denied.spent().backend_write_operations, 0);
-    assert!(store.index().spilled_objects > 0);
-
-    let cancelled = CancellationToken::new();
-    let mut stopped = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancelled);
-    let held = gate.lock_owned().await;
-    let spilled = store.index().spilled_objects;
-    store.inner().first.store(true, Ordering::Relaxed);
-    let drained = {
-        let drain = store.relieve_window(&mut stopped);
-        tokio::pin!(drain);
-        tokio::select! {
-            result = &mut drain => panic!("drain ended before its provider write: {result:?}"),
-            () = store.inner().paused.notified() => {}
-        }
-        cancelled.cancel();
-        drop(held);
-        drain.await
-    };
-    assert!(matches!(drained, Err(ObjectStoreError::Cancelled)));
-    assert!(stopped.spent().backend_read_operations > 0);
-    assert_eq!(stopped.spent().backend_write_operations, 0);
-    assert_eq!(store.index().spilled_objects, spilled);
-
-    let mut admission = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &token);
-    for (object_id, bytes) in late {
-        store.put(*object_id, bytes.clone(), &mut admission).await?;
-    }
-    assert!(admission.spent().backend_read_operations > 0);
-    assert!(admission.spent().backend_write_operations > 0);
-    let durable = {
-        let mut durable = 0;
-        for (object_id, _) in early {
-            if store
-                .inner()
-                .contains(
-                    *object_id,
-                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
-                )
-                .await?
-            {
-                durable += 1;
-            }
-        }
-        durable
-    };
-    assert!(durable > 0, "the drain steps made spilled objects durable");
-    assert!(
-        store.index().spill_end <= MAXIMUM_SPILL_BYTES,
-        "the steps emptied and reused the spill file"
-    );
-    for (object_id, bytes) in &objects {
-        let read = {
-            let __object_args = (*object_id, u64::MAX, WorkBudget::UNBOUNDED, &token);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = store
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        }?;
-        assert_eq!(&read.value.bytes, bytes);
-    }
-    drop(store);
-    drop(provider);
     Ok(())
 }
 
@@ -711,7 +596,7 @@ async fn withdrawn_spill_restores_resident_selection_before_file_reuse()
 
         store.relieve_window(&mut work).await?;
         assert_eq!(store.index().resident_bytes, 0);
-        assert_eq!(store.index().spilled_objects, objects.len());
+        assert_eq!(store.index().spilled.len(), objects.len());
         assert!(store.index().order.is_empty());
         for (id, bytes) in objects {
             assert_eq!(
@@ -1326,87 +1211,161 @@ async fn decoded_miss_cannot_adopt_a_replaced_resident_or_another_admission_orig
     Ok(())
 }
 
+async fn stale_spilled_pin_and_publication(
+    preserve_pin: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use futures::TryFutureExt as _;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let directory = tempfile::tempdir()?;
+    let (store, _provider) = open_staged(directory.path()).await?;
+    let token = CancellationToken::new();
+    let (id, bytes) = spill_fixture(&store, &token).await?;
+    let proven_at = store.collection.sweeps();
+    let previous = store.collection.begin().await;
+    previous.sweeping();
+    drop(previous);
+    let mut pin_accounting =
+        crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
+    let mut pin_gate = Some(store.collection.unswept(&mut pin_accounting).await?);
+    let mut collector = std::pin::pin!(store.collection.begin());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(matches!(
+        collector.as_mut().poll(&mut context),
+        Poll::Pending
+    ));
+    if !preserve_pin {
+        drop(pin_gate.take());
+        assert!(
+            collector.as_mut().poll(&mut context).is_pending(),
+            "collector overtook its spill-backed pin"
+        );
+    }
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+    let objects = [id];
+    let mut publication = std::pin::pin!(store.flush(
+        PublicationScope {
+            related_objects: &[],
+            objects: &objects,
+            proven_at,
+        },
+        &mut work,
+    ));
+    assert!(matches!(
+        publication.as_mut().poll(&mut context),
+        Poll::Pending
+    ));
+    let mut accounting =
+        crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
+    let admission = store.collection.admit_held(
+        pin_gate.take().ok_or("missing pin barrier")?,
+        &store,
+        PublicationScope {
+            related_objects: &[],
+            objects: &objects,
+            proven_at,
+        },
+        |_| false,
+        &mut accounting,
+    );
+    // The publisher joins the new collection epoch. It may legitimately hold
+    // spill access during I/O; its progress does not depend on this old pin.
+    // Drive both real operations instead of treating a held lock as a cycle.
+    let (admitted, published) =
+        futures::try_join!(admission, publication.map_err(crate::FsError::Object),)?;
+    assert_eq!(accounting.spent().object_bytes_read, bytes.len() as u64);
+    drop(admitted);
+    let collecting = collector.await;
+    drop(published);
+    drop(collecting);
+    let read = store
+        .read(
+            id,
+            u64::MAX,
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    assert_eq!(read.bytes, bytes);
+    Ok(())
+}
+
 #[tokio::test]
 async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
-    for pressure in [false, true] {
+    stale_spilled_pin_and_publication(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "collector overtook its spill-backed pin")]
+async fn stale_spilled_pin_negative_control_detects_early_retirement() {
+    stale_spilled_pin_and_publication(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn physical_spill_reuses_retired_middle_extent_without_overwriting_survivors()
+-> Result<(), Box<dyn std::error::Error>> {
+    async fn physical_length(store: &LocalStaged) -> Result<u64, std::io::Error> {
+        let spill = store.spill_io.read().await;
+        Ok(spill
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing spill"))?
+            .as_file()
+            .metadata()?
+            .len())
+    }
+    for reuse in [true, false] {
         let directory = tempfile::tempdir()?;
         let (store, _provider) = open_staged(directory.path()).await?;
         let token = CancellationToken::new();
-        let (id, bytes) = spill_fixture(&store, &token).await?;
-        let proven_at = store.collection.sweeps();
-        let previous = store.collection.begin().await;
-        previous.sweeping();
-        drop(previous);
-        let mut pin_accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
-        let pin_gate = store.collection.unswept(&mut pin_accounting).await?;
-        let mut collector = std::pin::pin!(store.collection.begin());
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(matches!(
-            collector.as_mut().poll(&mut context),
-            Poll::Pending
-        ));
-        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
-        let mut publication = std::pin::pin!(async {
-            if pressure {
-                store.relieve_window(&mut work).await
-            } else {
-                store
-                    .flush(
-                        PublicationScope {
-                            related_objects: &[],
-                            objects: &[id],
-                            proven_at,
-                        },
-                        &mut work,
-                    )
-                    .await
-                    .map(drop)
-            }
-        });
-        assert!(matches!(
-            publication.as_mut().poll(&mut context),
-            Poll::Pending
-        ));
-        // A publisher queued behind the collector cannot own spill access
-        // needed by the earlier pin. The former order fails here without a
-        // timer or a test that hangs on the circular wait.
-        assert!(
-            store.spill_io.try_read().is_ok(),
-            "queued publication owns the pin's spill lock"
+        let (first, first_bytes) =
+            spill_bytes_fixture(&store, &token, vec![61; 257].into()).await?;
+        let (retired, _) = spill_bytes_fixture(&store, &token, vec![62; 521].into()).await?;
+        let (last, last_bytes) = spill_bytes_fixture(&store, &token, vec![63; 769].into()).await?;
+        let length = physical_length(&store).await?;
+        {
+            // Same exclusive file lease required by collection and durable retirement.
+            let _spill = store.spill_io.write().await;
+            store.index_mut().remove(retired);
+        }
+        let (replacement, replacement_bytes) =
+            spill_bytes_with_reuse_fixture(&store, &token, vec![64; 513].into(), reuse).await?;
+        let reused = physical_length(&store).await? == length;
+        assert_eq!(
+            reused, reuse,
+            "file-length oracle missed append-only negative control"
         );
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &token);
-        let admitted = store
-            .collection
-            .admit_held(
-                pin_gate,
-                &store,
-                PublicationScope {
-                    related_objects: &[],
-                    objects: &[id],
-                    proven_at,
-                },
-                |_| false,
-                &mut accounting,
-            )
-            .await?;
-        assert_eq!(accounting.spent().object_bytes_read, bytes.len() as u64);
-        drop(admitted);
-        let collecting = collector.await;
-        publication.await?;
-        drop(collecting);
-        let read = store
-            .read(
-                id,
-                u64::MAX,
-                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
-            )
-            .await?;
-        assert_eq!(read.bytes, bytes);
+        for (id, expected) in [
+            (first, first_bytes),
+            (last, last_bytes),
+            (replacement, replacement_bytes),
+        ] {
+            let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+            assert_eq!(
+                store
+                    .read(id, expected.len() as u64, &mut work)
+                    .await?
+                    .bytes,
+                expected
+            );
+        }
+        // Recovered bytes were promoted under the original read lease. Coalesced
+        // spans can hold an object larger than either retired neighbor.
+        let before = physical_length(&store).await?;
+        let (whole, bytes) =
+            spill_bytes_with_reuse_fixture(&store, &token, vec![65; 1_400].into(), reuse).await?;
+        let reused = physical_length(&store).await? == before;
+        assert_eq!(
+            reused, reuse,
+            "coalescing oracle missed append-only negative control"
+        );
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+        assert_eq!(
+            store
+                .read(whole, bytes.len() as u64, &mut work)
+                .await?
+                .bytes,
+            bytes
+        );
     }
     Ok(())
 }

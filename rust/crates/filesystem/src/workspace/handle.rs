@@ -61,6 +61,11 @@ impl<A, O> Workspace<A, O> {
     pub const fn limits(&self) -> crate::model::VolumeLimits {
         self.volume.config.limits
     }
+
+    /// The filesystem holding this workspace's authority and objects.
+    pub const fn filesystem(&self) -> &crate::Fs<A, O> {
+        &self.volume.fs
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {

@@ -53,10 +53,7 @@ impl Bindings {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         RetainedArc::new(
             Self::default(),
-            &mut KernelAccounting::NativeOriginal {
-                work: &work,
-                cancellation,
-            },
+            &mut KernelAccounting::native(&work, cancellation),
         )
         .map_err(storage)
     }
@@ -74,7 +71,7 @@ impl Bindings {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut accounting = KernelAccounting::NativeOriginal { work, cancellation };
+        let mut accounting = KernelAccounting::native(work, cancellation);
         if let Some(binding) = entries
             .get(key, &mut accounting)
             .map_err(storage)?

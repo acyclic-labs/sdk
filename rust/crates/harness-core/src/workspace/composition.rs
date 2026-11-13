@@ -11,6 +11,7 @@ use std::{
 };
 
 /// Host-selected published view. `source` remains unopened during composition.
+#[derive(Clone)]
 pub struct VolumeView<T> {
     /// Stable lineage name, also used by `fs --volume`.
     pub name: String,
@@ -34,6 +35,7 @@ pub struct VolumeView<T> {
 
 /// Native-path authority carried by one composed volume binding.
 #[doc(hidden)]
+#[derive(Clone)]
 pub enum NativeRoot {
     /// A physical directory in the composed task root.
     Composed,
@@ -53,12 +55,15 @@ impl NativeRoot {
 }
 
 /// One independently captured source in a task's composed namespace.
+/// Cloning shares its compiled access; a command reroots a clone's native
+/// paths at its own views without recompiling policy.
+#[derive(Clone)]
 pub struct Mount<T> {
     /// Published volume selected by the task binding.
     pub view: VolumeView<T>,
     /// Maximum access anywhere in this mount; paths may be more restrictive.
     pub mode: MountMode,
-    access: PathTrie,
+    access: Arc<PathTrie>,
     /// Host-projected OS root. An absent named root remains logical-only.
     #[doc(hidden)]
     pub native_root: NativeRoot,
@@ -94,6 +99,7 @@ impl<T> Mount<T> {
 }
 
 /// A task's primary view plus lazy named mounts, including the single-volume case.
+#[derive(Clone)]
 pub struct MountTable<T> {
     /// Absolute native process root.
     pub root: PathBuf,
@@ -436,7 +442,7 @@ pub fn compose<T>(
         entry.insert(Some(Mount {
             view,
             mode,
-            access,
+            access: Arc::new(access),
             native_root: if index == 0 {
                 NativeRoot::Composed
             } else {

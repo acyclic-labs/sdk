@@ -8,7 +8,7 @@ use super::{
     visit_record_references,
 };
 use crate::CancellationToken;
-use crate::foundation::GenerationId;
+use crate::foundation::{GenerationId, VolumeId};
 use crate::performance::WorkBudget;
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 
@@ -18,7 +18,13 @@ pub(crate) struct Marker<'a, S> {
     cancellation: &'a CancellationToken,
     marked: HashSet<ObjectId>,
     /// Generations whose whole closure is marked, with their parents.
-    generations: std::collections::HashMap<GenerationId, Vec<GenerationId>>,
+    generations: std::collections::HashMap<GenerationId, GenerationMark>,
+}
+
+struct GenerationMark {
+    volume: VolumeId,
+    parents: Vec<GenerationId>,
+    history: bool,
 }
 
 /// A marking failure: an object a root reaches is missing or undecodable, so nothing may be swept.
@@ -60,7 +66,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         let mut pending = self
             .generations
             .values()
-            .flatten()
+            .flat_map(|mark| mark.parents.iter())
             .copied()
             .collect::<Vec<_>>();
         let mut seen = HashSet::new();
@@ -108,14 +114,54 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         generation: GenerationId,
     ) -> Result<Vec<GenerationId>, MarkError> {
         if let Some(parents) = self.generations.get(&generation) {
-            return Ok(parents.clone());
+            return Ok(parents.parents.clone());
         }
         let root = self.generation_root(generation).await?;
         self.working(&root).await?;
-        self.generations.insert(generation, root.parents.clone());
+        self.generations.insert(
+            generation,
+            GenerationMark {
+                volume: root.volume_id,
+                parents: root.parents.clone(),
+                history: false,
+            },
+        );
         Ok(root.parents)
     }
 
+    /// Retains a private authority's history without retaining foreign fork contents.
+    pub(crate) async fn history(
+        &mut self,
+        volume: VolumeId,
+        generation: GenerationId,
+    ) -> Result<(), MarkError> {
+        let mut pending = vec![generation];
+        while let Some(generation) = pending.pop() {
+            if let Some(mark) = self.generations.get_mut(&generation) {
+                if mark.volume != volume || mark.history {
+                    continue;
+                }
+                mark.history = true;
+                pending.extend(mark.parents.iter().copied());
+                continue;
+            }
+            let root = self.generation_root(generation).await?;
+            if root.volume_id != volume {
+                continue;
+            }
+            self.working(&root).await?;
+            pending.extend(root.parents.iter().copied());
+            self.generations.insert(
+                generation,
+                GenerationMark {
+                    volume,
+                    parents: root.parents,
+                    history: true,
+                },
+            );
+        }
+        Ok(())
+    }
     pub(crate) async fn generation_root(
         &mut self,
         generation: GenerationId,
