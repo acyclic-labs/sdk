@@ -2177,3 +2177,11 @@ actor_codecs/live-update-v1-rpc	743665	71d6c06689e49f08acf5579c86c785897899b0037
 actor_codecs/live-update-v1-compatibility	1116038	f28d9336dc9b6f0782b05224e92e9b079f2b09f3c707d8af7136da104fcc5e9a	live_update::encode::<live::CompatibilityManifest>
 actor_codecs/live-update-v1-publication	1116456	4170216dbbd854469ba352fbe60b0523c7c85a39d13d6708178b7d9061ddca7f	live_update::encode::<live::Publication>
 agent_controls/cancel-without-selected-input	319	f5895cef5e530c1cf3a715200cea6c6aed8eaa1981fbcf7f37ccf6dcbe7b69a9	Captured original public staged cancellation writer; missing original input/conversation selection must be refused
+filesystem_pages/publication-plain-v5	85	e8fe19301a82fa8031101d40acc4406413939f8d4431d0e9a576fea63f5c933d	filesystem::kernel publication v5 writer; fixed original evidence reference
+filesystem_pages/publication-plain-evidence-v5	158	95bbd9e5cd397b438209a28a58ca7dfe75c29100cd1cc76b2e106f02aa06d1a7	filesystem::kernel publication v5 writer; fixed original evidence reference
+filesystem_pages/publication-plain-origin-v5	166	a0e5b8c3b4312f11d4d6ef4a7f2276ab2151da2a86ba38084e2dc759476679f0	filesystem::kernel publication v5 writer; fixed original evidence reference
+filesystem_pages/publication-plain-origin-evidence-v5	239	5c08c3c61b4cd2cb438d71bc0b57dc8af40a8b5bc503ebcfc43ebd2e7ce9b682	filesystem::kernel publication v5 writer; fixed original evidence reference
+filesystem_pages/publication-sealed-v5	165	8e9b22b655cc8a302ee394249ffd55dd894ae00483ff1ef26a8609fe63dccc37	filesystem::kernel publication v5 writer; fixed original evidence reference
+filesystem_pages/publication-sealed-evidence-v5	318	e63e5e941e0a5fdab6c46092d6c898a622575172c9f4408d0301c0551828f3db	filesystem::kernel publication v5 writer; fixed original evidence reference
+filesystem_pages/publication-sealed-origin-v5	326	2be053970b83329fb31000548fc275680c8d39a92266a8c72bfbd973f3efa92c	filesystem::kernel publication v5 writer; fixed original evidence reference
+filesystem_pages/publication-sealed-origin-evidence-v5	479	703eea916b13faead10bfe54eb3d38be201c31897f73031ebcd2cfe7be007b9c	filesystem::kernel publication v5 writer; fixed original evidence reference
