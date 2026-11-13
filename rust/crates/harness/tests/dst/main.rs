@@ -7,7 +7,8 @@ use acyclic_harness::{
     model::Model,
     resources::ProviderRef,
     test_support::{
-        PromptOutcome, ScriptedModelProvider, ScriptedTurn, local_harness_config, prompt_settled,
+        PromptOutcome, ScriptedModelProvider, ScriptedTurn, local_harness_config, open_scripted,
+        prompt_settled,
     },
 };
 use acyclic_native_runtime::testing::DurableWrite;
@@ -250,11 +251,11 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
             .volume(volume.clone())
             .state_directory(directory.join("state")))
         };
-        let harness = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        let harness = Arc::new(entry(open_scripted(config()?)).await?);
         prompt(&harness, "first", "finish this turn", "done").await?;
         let records = agent_records(&harness).await?;
         drop(harness);
-        let reopened = Arc::new(entry(LocalHarness::open(config()?)).await?);
+        let reopened = Arc::new(entry(open_scripted(config()?)).await?);
         let restored = agent_records(&reopened).await?;
         assert_eq!(
             records, restored,
