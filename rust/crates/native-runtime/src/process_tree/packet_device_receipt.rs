@@ -1,6 +1,8 @@
 //! One atomic control receipt for physical packet publication and retirement.
 //! Shared with the static host, without a standard-library dependency.
 
+pub(super) const VERSION: u32 = 2;
+
 pub(super) enum Receipt {
     Retired,
     Published(bool),

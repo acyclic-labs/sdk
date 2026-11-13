@@ -160,7 +160,10 @@ impl Session {
     fn admit(&mut self, queue: Fd) -> Result<(), Errno> {
         let mut body = [0; 12];
         let request = receive_handles(self.control, &mut body)?.ok_or(Errno(sys::EPIPE))?;
-        if request.length != 12 || request.count != 3 || body[4..8] != 1_u32.to_ne_bytes() {
+        if request.length != 12
+            || request.count != 3
+            || body[4..8] != super::packet_device_receipt::VERSION.to_ne_bytes()
+        {
             request.close();
             return Err(Errno(sys::EINVAL));
         }

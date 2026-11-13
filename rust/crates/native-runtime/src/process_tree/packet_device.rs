@@ -71,7 +71,7 @@ impl PacketDevice {
         let (stream, theirs) = UnixStream::pair()?;
         let mut message = [0; 12];
         message[..4].copy_from_slice(&capacity.to_ne_bytes());
-        message[4..8].copy_from_slice(&1_u32.to_ne_bytes());
+        message[4..8].copy_from_slice(&super::packet_device_receipt::VERSION.to_ne_bytes());
         message[8..12].copy_from_slice(&mode.to_ne_bytes());
         runner::send_message(
             &control,
@@ -403,7 +403,12 @@ fn admissions() -> io::Result<Vec<Admission>> {
     use std::os::unix::fs::MetadataExt;
     let namespace =
         |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
-    let name = format!("{}-{}.lock", namespace("mnt")?, namespace("net")?);
+    let name = format!(
+        "v{}-{}-{}.lock",
+        super::packet_device_receipt::VERSION,
+        namespace("mnt")?,
+        namespace("net")?
+    );
     let runtime = std::path::PathBuf::from(format!(
         "/run/user/{}",
         crate::private_file::effective_user()
