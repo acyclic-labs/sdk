@@ -2731,6 +2731,8 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     );
     // The model sees the prompt, then the text file as text and the image natively.
     let request = provider.last_request().expect("one model request");
+    let context = super::request_text(&harness, &request).await?;
+    assert!(context.contains("<cwd>.</cwd>"), "{context}");
     let ModelContent::Parts(parts) = input_content(&request, body)? else {
         return Err(Error::Conflict("the turn input has no attachments".into()));
     };

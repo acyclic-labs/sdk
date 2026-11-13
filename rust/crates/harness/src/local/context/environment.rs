@@ -12,8 +12,11 @@ pub(super) fn gather(
     model: &str,
     platform: &crate::native_environment::PlatformPolicy,
 ) -> crate::Result<crate::context::EnvironmentFacts> {
+    // Tools resolve task-relative paths. Keep the host directory only for
+    // native executable discovery, never as a path to copy into another task.
+    let task_cwd = cwd.map(|_| Path::new("."));
     let mut facts: crate::context::EnvironmentFacts =
-        crate::native_environment::checkout(cwd, now_unix_millis, model, platform).into();
+        crate::native_environment::checkout(task_cwd, now_unix_millis, model, platform).into();
     if let (Some(cwd), crate::native_environment::PlatformPolicy::Native) = (cwd, platform) {
         let environment =
             crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)
