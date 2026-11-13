@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": 6,
+  "version": 7,
   "layers": [[{
     "id": "host-custody",
     "effect": "allow",
