@@ -883,19 +883,16 @@ fn validate_reply(
             },
         ) => {
             page.validate().map_err(|_| CommandError::Invalid)?;
-            if bytes > request.bytes() as usize || page.entries.len() > request.items() as usize {
+            if bytes > request.bytes() as usize || page.examined > request.items() {
                 return Err(CommandError::Capacity);
             }
-            if (page.has_more && page.entries.is_empty())
-                || generation
-                    .as_ref()
-                    .is_some_and(|selected| selected != &page.generation)
+            if generation
+                .as_ref()
+                .is_some_and(|selected| selected != &page.generation)
                 || after_generation.as_ref() == Some(&page.generation)
-                || request.cursor().is_some_and(|after| {
-                    page.entries
-                        .first()
-                        .is_some_and(|entry| entry.name.as_str() <= after)
-                })
+                || request
+                    .cursor()
+                    .is_some_and(|after| page.next.as_deref() == Some(after))
             {
                 return Err(CommandError::Invalid);
             }

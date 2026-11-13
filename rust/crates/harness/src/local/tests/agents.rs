@@ -1197,11 +1197,35 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .write_text("/directory-b", "second")
         .await
         .map_err(agent)?;
+    harness
+        .files
+        .apply(
+            &crate::filesystem::workspace_ref(
+                entry.output.volume().provider().clone(),
+                &entry.output.volume().storage_name(&mut None)?,
+            )?,
+            None,
+            &[
+                crate::filesystem::WorkspaceMutation::CreateDirectory {
+                    path: "/listing".into(),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/listing/a".into(),
+                    bytes: b"first".to_vec().into(),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/listing/b".into(),
+                    bytes: b"second".to_vec().into(),
+                },
+            ],
+            &crate::IdempotencyKey::new("directory-credit-fixture")?,
+        )
+        .await?;
     // The same authenticated session selects a directory and its original
     // generation, then continues only at that immutable generation.
     let page =
         |after| acyclic_harness_client::AgentPageRequest::new(1, 64 * 1024, after).map_err(agent);
-    let first = client.directory_page("", None, page(None)?).await?;
+    let first = client.directory_page("listing", None, page(None)?).await?;
     assert_eq!(first.entries.len(), 1);
     assert!(first.has_more);
     private
@@ -1213,7 +1237,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let selected = AgentCommand::Directory {
         agent: root.clone(),
         target: crate::conversation::DirectoryTarget::Private {},
-        path: String::new(),
+        path: "listing".into(),
         generation: Some(first.generation.clone()),
         after_generation: None,
         page: page(None)?,
@@ -1228,7 +1252,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let credit = u32::try_from(encoded.len()).map_err(agent)?;
     let bounded = client
         .directory_page(
-            "",
+            "listing",
             Some(&first.generation),
             acyclic_harness_client::AgentPageRequest::new(128, credit, None).map_err(agent)?,
         )
@@ -1239,7 +1263,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert!(
         client
             .directory_page(
-                "",
+                "listing",
                 Some(&first.generation),
                 acyclic_harness_client::AgentPageRequest::new(128, credit - 1, None)
                     .map_err(agent)?,
@@ -1249,7 +1273,11 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     let last = &first.entries[0].name;
     let second = client
-        .directory_page("", Some(&first.generation), page(first.next.clone())?)
+        .directory_page(
+            "listing",
+            Some(&first.generation),
+            page(first.next.clone())?,
+        )
         .await?;
     assert_eq!(second.generation, first.generation);
     assert_eq!(second.entries.len(), 1);
@@ -1269,7 +1297,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let continued = acyclic_harness_client::AgentCommand::Directory {
         agent: root.clone(),
         target: crate::conversation::DirectoryTarget::Private {},
-        path: String::new(),
+        path: "listing".into(),
         generation: Some(first.generation.clone()),
         after_generation: None,
         page: page(first.next.clone())?,
@@ -1309,7 +1337,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     assert_eq!(
         client
-            .directory_page("", None, page(first.next.clone())?)
+            .directory_page("listing", None, page(first.next.clone())?)
             .await?
             .generation,
         first.generation,

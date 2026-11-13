@@ -53,7 +53,7 @@ impl Conversation {
     }
 
     /// Read visible private names. Continue with the returned immutable
-    /// generation and the last child name as the exclusive cursor.
+    /// generation and the opaque `next` cursor, including after empty pages.
     ///
     /// # Errors
     /// Original credential, policy, source or shared reply validation failure.

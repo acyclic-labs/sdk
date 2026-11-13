@@ -27,7 +27,7 @@ pub struct DirectoryQuery<'a> {
     pub generation: Option<&'a GenerationRef>,
     /// Wait for the selected volume's original publication after this cut.
     pub after_generation: Option<&'a GenerationRef>,
-    /// Exclusive child name in this directory's immutable selection.
+    /// Opaque `next` continuation in this directory's immutable selection.
     pub after_name: Option<&'a str>,
     /// Row credit; continuation splits work without a directory-size ceiling.
     pub maximum_entries: u32,
