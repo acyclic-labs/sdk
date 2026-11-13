@@ -62,6 +62,16 @@ async fn workspace_directory_follows_commits_and_keeps_its_original_cut_and_scop
         )?)
         .await?,
     );
+    let unhosted = harness.bound()?;
+    let expected = AgentPath::root(&crate::agent::AgentId::from_bytes(
+        harness.root.into_bytes(),
+    ));
+    assert!(matches!(
+        unhosted.agents().state(&expected).await,
+        Err(crate::agent::Error::NoSuchAgent)
+    ));
+    assert!(harness.agents.get().is_none());
+    drop(unhosted);
     let (agents, root) = harness.agents().await?;
     let root = root.clone();
     let state = agents.state(&root).await.map_err(agent)?;
@@ -202,6 +212,22 @@ async fn workspace_directory_follows_commits_and_keeps_its_original_cut_and_scop
         "directory-reroot",
     )
     .await?;
+    let passive = harness.bound()?;
+    let (bytes, length) = passive
+        .read_path(
+            &root,
+            DirectoryTarget::Primary {},
+            "opaque.data",
+            &first.generation,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 64 * 1024,
+            },
+        )
+        .await
+        .map_err(agent)?;
+    assert_eq!(bytes.as_ref(), b"original bytes");
+    assert_eq!(length, 14);
     for target in [
         DirectoryTarget::Primary {},
         DirectoryTarget::Workspace { id: primary.id },
