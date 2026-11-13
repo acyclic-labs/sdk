@@ -254,7 +254,7 @@ impl<'io> StockExecution<'io> {
                 )?
                 .map(|(context, capability)| (tool, context, capability)),
             None if self
-                .stock
+                .origin
                 .epoch_tools
                 .as_ref()
                 .is_some_and(|tools| tools.iter().any(|tool| tool.name == invocation.name))

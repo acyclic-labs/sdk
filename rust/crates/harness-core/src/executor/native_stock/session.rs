@@ -1,6 +1,8 @@
 use super::*;
 
 pub(in crate::executor) struct StockExecution<'a> {
+    /// The immutable prefix composition, independent of per-step bindings.
+    pub(in crate::executor) origin: &'a StockExecutor,
     pub(in crate::executor) stock: ExecutionConfiguration<'a>,
     pub(in crate::executor) configuration: Option<&'a Arc<dyn StepConfiguration>>,
     pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
@@ -75,6 +77,7 @@ pub(in crate::executor) struct ResolvedCompaction<'a> {
 impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self {
+            origin: stock,
             stock: ExecutionConfiguration::Borrowed(stock),
             configuration: stock.step_configuration.as_ref(),
             context: stock
@@ -101,7 +104,7 @@ impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn context_pipeline(&self) -> &ContextPipeline {
         self.summary
             .as_ref()
-            .map_or(&self.stock.context, |pipeline| pipeline)
+            .map_or(&self.origin.context, |pipeline| pipeline)
     }
     pub(in crate::executor) fn compaction_policy(
         &self,
@@ -163,7 +166,7 @@ impl<'a> StockExecution<'a> {
         if self.summary.is_some() {
             None
         } else {
-            self.stock.inherited_prefix.as_ref()
+            self.origin.inherited_prefix.as_ref()
         }
     }
 }

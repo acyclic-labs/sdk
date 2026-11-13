@@ -659,7 +659,8 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 /// returning, so replay never substitutes current files for an admitted cut.
 /// The selected executor includes its provider, native declarations, sampling,
 /// context capacity and reasoning profile. It cannot replace the running
-/// execution's journal or original task authority.
+/// execution's journal, original task authority, context epoch or inherited
+/// prefix. Instruction changes enter through ordinary appended source records.
 pub trait StepConfiguration: acyclic_stream::ProviderPlatform {
     /// Selects an immutable configuration, or retains the preceding one.
     /// Implementations use `io` for preparation and retain any owned result
