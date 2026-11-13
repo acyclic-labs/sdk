@@ -254,6 +254,17 @@ pub enum Error {
         #[source]
         source: acyclic_stream::StreamError,
     },
+    /// A client's exchange with the server of its agent tree failed. Only a
+    /// typed cause constructs it, so the transport, session or owner failure
+    /// stays the source chain that diagnostics and spans walk.
+    #[error("storage failure: {step}{source}")]
+    Exchange {
+        /// The client step that failed.
+        step: ExchangeStep,
+        /// The original cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// Native process creation, capture, or hook configuration IO failed.
     #[error("process: {0}")]
     Process(#[from] crate::ProcessError),
@@ -541,6 +552,65 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
     }
 }
 
+/// What a failed client exchange was doing, rendered before its cause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExchangeStep {
+    /// The exchange itself; the cause names everything.
+    Session,
+    /// A named connection step.
+    Step(&'static str),
+    /// A command of this kind.
+    Command(&'static str),
+}
+
+impl std::fmt::Display for ExchangeStep {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Session => Ok(()),
+            Self::Step(step) => write!(output, "{step}: "),
+            Self::Command(kind) => write!(output, "{kind} command: "),
+        }
+    }
+}
+
+/// Classify a lazy-source cause by what it proves. A path that is absent, is
+/// a directory or is not a directory is the request's definitive refusal, not
+/// a storage outcome to reconcile; provider, record and accounting failures stay
+/// storage. The match is exhaustive so a new cause is classified on purpose.
+fn lazy_source_error_code(source: &acyclic_fs::LazyWorkspaceError) -> ErrorCode {
+    use acyclic_fs::LazyWorkspaceError as Lazy;
+    match source {
+        Lazy::WorkspaceCause(source) => Error::workspace_error_code(source),
+        Lazy::Filesystem(source) => filesystem_error_code(source),
+        Lazy::NotFound => ErrorCode::NotFound,
+        Lazy::NamespacePath(_)
+        | Lazy::NotDirectory
+        | Lazy::NotRegularFile
+        | Lazy::TooLarge
+        | Lazy::InvalidPageBound => ErrorCode::Invalid,
+        Lazy::UnsupportedNode => ErrorCode::Unsupported,
+        Lazy::Concurrent | Lazy::StaleSource | Lazy::StaleCursor | Lazy::StaleIdentity => {
+            ErrorCode::Conflict
+        }
+        Lazy::Cancelled => ErrorCode::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        Lazy::NativeWork(cause) => native_work_error_code(cause),
+        Lazy::Demand(_)
+        | Lazy::Store(_)
+        | Lazy::OriginalSnapshotUnavailable
+        | Lazy::SourcePageCleanup { .. } => ErrorCode::Storage,
+        #[cfg(not(target_arch = "wasm32"))]
+        Lazy::NativeLedgerMismatch
+        | Lazy::NativeRecordIo(..)
+        | Lazy::NativeRecordJson(..)
+        | Lazy::NativeRecordOwnershipConflict(..)
+        | Lazy::NativeRecordContextTransaction(..)
+        | Lazy::NativeRecordCorrupt(..)
+        | Lazy::NativeRecordMaterializationInProgress
+        | Lazy::NativeRecordIntegrity => ErrorCode::Storage,
+    }
+}
+
 /// Wire classification of a retained Machines cause.
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
     use crate::wire::ErrorCode;
@@ -609,11 +679,11 @@ impl Error {
             | WorkspaceError::ChangedPathLimit
             | WorkspaceError::EmptyContentSet
             | WorkspaceError::NotFork
-            | WorkspaceError::ContentLengthOverflow
-            | WorkspaceError::Work(_)
-            | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
+            | WorkspaceError::ContentLengthOverflow => ErrorCode::Invalid,
             WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
-            WorkspaceError::Engine(_) => ErrorCode::Storage,
+            WorkspaceError::Engine(_)
+            | WorkspaceError::Work(_)
+            | WorkspaceError::WorkMerge { .. } => ErrorCode::Storage,
         }
     }
 
@@ -733,6 +803,18 @@ impl Error {
         })
     }
 
+    /// A failed client exchange, retaining `source` as its cause.
+    #[must_use]
+    pub fn exchange(
+        step: ExchangeStep,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Exchange {
+            step,
+            source: Box::new(source),
+        }
+    }
+
     /// Stable wire classification from which every adapter derives its status.
     #[must_use]
     pub fn code(&self) -> crate::wire::ErrorCode {
@@ -785,6 +867,7 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_)
             | Self::StreamFollow { .. }
+            | Self::Exchange { .. }
             | Self::Allocation(_)
             | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process(crate::ProcessError::NotFound { .. }) => ErrorCode::NotFound,
@@ -818,9 +901,10 @@ impl Error {
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeSource { source, .. } => lazy_source_error_code(source),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
-            | Self::NativeSource { .. }
             | Self::NativeDrivenJoin { .. }
             | Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(not(target_arch = "wasm32"))]
@@ -830,10 +914,6 @@ impl Error {
             Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeBoundary { code, .. } => *code,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeConstruction { .. } => ErrorCode::Storage,
         }
     }
 
@@ -880,6 +960,7 @@ impl Error {
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
                 | Self::StreamFollow { .. }
+                | Self::Exchange { .. }
                 | Self::Cancelled
                 | Self::Boundary {
                     code: crate::wire::ErrorCode::Indeterminate | crate::wire::ErrorCode::Cancelled,
@@ -1001,14 +1082,12 @@ impl Error {
             return true;
         }
         // A retained workspace cause is model feedback only as a definitive
-        // refusal; exhausted work stays a harness failure despite its Invalid code.
+        // refusal. Its canonical classification keeps exhausted work in Storage,
+        // including when a lazy source wraps the same workspace cause.
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::NativeWorkspace { source, .. } = self {
             use crate::wire::ErrorCode;
-            return !matches!(
-                **source,
-                acyclic_fs::WorkspaceError::Work(_) | acyclic_fs::WorkspaceError::WorkMerge { .. }
-            ) && matches!(
+            return matches!(
                 Self::workspace_error_code(source),
                 ErrorCode::Invalid
                     | ErrorCode::NotFound
@@ -1016,7 +1095,29 @@ impl Error {
                     | ErrorCode::Unauthorized
             );
         }
+        // A lazy source's definitive refusal (an absent path, a directory read
+        // as a file) is the request's error; exhausted native work is not.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Self::NativeSource { source, .. } = self {
+            return !matches!(**source, acyclic_fs::LazyWorkspaceError::NativeWork(_))
+                && matches!(
+                    lazy_source_error_code(source),
+                    ErrorCode::Invalid
+                        | ErrorCode::NotFound
+                        | ErrorCode::Conflict
+                        | ErrorCode::Unauthorized
+                        | ErrorCode::Unsupported
+                );
+        }
         !self.is_native_failure() || matches!(self, Self::Process(_))
+    }
+
+    /// Whether this failure of an accepted tool call is its definitive, model
+    /// visible result. Every tool path settles a call by this one predicate;
+    /// any other failure ends the delivery for reconciliation.
+    #[must_use]
+    pub fn settles_tool_call(&self) -> bool {
+        !self.leaves_effect_uncertain() && self.is_tool_failure()
     }
 
     /// Mark a fixed rejection at a checked model-input boundary. Allocation,
@@ -1076,6 +1177,7 @@ impl Error {
             | Self::InteractionRejected(_)
             | Self::Storage(_)
             | Self::StreamFollow { .. }
+            | Self::Exchange { .. }
             | Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
             | Self::UnsupportedRecordVersion(_)
@@ -1490,7 +1592,16 @@ impl From<acyclic_fs::LazyWorkspaceError> for Error {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            Self::Storage(source.to_string())
+            let message = source.to_string();
+            match lazy_source_error_code(&source) {
+                ErrorCode::NotFound => Self::NotFound(message),
+                ErrorCode::Invalid => Self::Invalid(message),
+                ErrorCode::Conflict => Self::Conflict(message),
+                ErrorCode::Unsupported => Self::Unsupported(message),
+                ErrorCode::Unauthorized => Self::Unauthorized(message),
+                ErrorCode::Cancelled => Self::Cancelled,
+                _ => Self::Storage(message),
+            }
         }
     }
 }

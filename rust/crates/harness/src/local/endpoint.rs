@@ -4,7 +4,7 @@
 //! serves one over gRPC. Every frontend drives either through the same
 //! [`super::agent_conversation::Conversation`].
 use super::{LocalHarness, storage};
-use crate::{Error, Result, agent::AgentPath};
+use crate::{Error, ExchangeStep, Result, agent::AgentPath};
 use acyclic_harness_client::{
     AgentCommand, AgentControls, AgentExchangeError, AgentReply, CommandError, PreparedCommand,
 };
@@ -33,8 +33,21 @@ pub struct Connection {
     pub(super) _host: Option<Arc<LocalHarness>>,
 }
 
-fn exchange(error: impl std::fmt::Display) -> Error {
-    Error::Storage(error.to_string())
+/// The client's cause together with the one its in-process owner retained.
+#[derive(Debug, thiserror::Error)]
+enum OwnerFailure<E: std::error::Error + 'static> {
+    #[error("{client}; {owner}")]
+    Stream {
+        client: E,
+        #[source]
+        owner: acyclic_stream::LocalStreamFailure,
+    },
+    #[error("{client}; {owner}")]
+    Runtime {
+        #[source]
+        client: E,
+        owner: String,
+    },
 }
 
 impl Connection {
@@ -59,7 +72,9 @@ impl Connection {
                 }
             }))
             .await
-            .map_err(exchange)?;
+            .map_err(|error| {
+                Error::exchange(ExchangeStep::Step("connect to the local owner"), error)
+            })?;
         let credential = credential
             .get()
             .ok_or_else(|| Error::Storage("local connection did not bootstrap".into()))?;
@@ -70,7 +85,9 @@ impl Connection {
             acyclic_auth::credential::CredentialProvider::transport_identity(),
         );
         Self::bind(
-            client.session_client().map_err(exchange)?,
+            client.session_client().map_err(|error| {
+                Error::exchange(ExchangeStep::Step("open the local owner session"), error)
+            })?,
             bytes,
             None,
             false,
@@ -125,18 +142,35 @@ impl Connection {
     /// An `unavailable` reply names no cause: the in-process owner adds the
     /// one it retained, its stream's poison or else the Actors runtime failure
     /// that closed the session's lifetime.
-    pub(super) fn stream_failure(&self, error: impl std::fmt::Display) -> Error {
-        let cause = self._host.as_ref().and_then(|host| {
-            host.agent_stream
+    pub(super) fn stream_failure(
+        &self,
+        error: impl std::error::Error + Send + Sync + 'static,
+    ) -> Error {
+        if let Some(host) = &self._host {
+            if let Some(owner) = host
+                .agent_stream
                 .as_ref()
                 .and_then(|stream| stream.failure())
-                .map(|cause| cause.to_string())
-                .or_else(|| host.agents.get()?.runtime.failure())
-        });
-        match cause {
-            Some(cause) => Error::Storage(format!("{error}; {cause}")),
-            None => exchange(error),
+            {
+                return Error::exchange(
+                    ExchangeStep::Session,
+                    OwnerFailure::Stream {
+                        client: error,
+                        owner,
+                    },
+                );
+            }
+            if let Some(owner) = host.agents.get().and_then(|host| host.runtime.failure()) {
+                return Error::exchange(
+                    ExchangeStep::Session,
+                    OwnerFailure::Runtime {
+                        client: error,
+                        owner,
+                    },
+                );
+            }
         }
+        Error::exchange(ExchangeStep::Session, error)
     }
 
     /// Executes `command` once on this connection's tree.
@@ -146,7 +180,7 @@ impl Connection {
     pub async fn execute(&self, command: &AgentCommand) -> Result<AgentReply> {
         exchanged(&self.controls, command)
             .await
-            .map_err(exchange)?
+            .map_err(|error| Error::exchange(ExchangeStep::Session, error))?
             .map_err(|error| self.command_failure(command, error))
     }
 
@@ -161,7 +195,7 @@ impl Connection {
         ) {
             Error::Refused(format!("{} command: {error}", command.kind()))
         } else {
-            exchange(format_args!("{} command: {error}", command.kind()))
+            Error::exchange(ExchangeStep::Command(command.kind()), error)
         }
     }
 
@@ -186,7 +220,7 @@ impl Connection {
             .controls
             .select(agent.clone())
             .await
-            .map_err(exchange)?;
+            .map_err(|error| Error::exchange(ExchangeStep::Step("select agent"), error))?;
         Ok(Self {
             session: controls.observation_session(),
             controls: Arc::new(controls),
@@ -273,8 +307,10 @@ impl Connection {
                 .await
             }
         }
-        .map_err(exchange)?;
-        let session = client.session_client().map_err(exchange)?;
+        .map_err(|error| Error::exchange(ExchangeStep::Step("connect to the endpoint"), error))?;
+        let session = client.session_client().map_err(|error| {
+            Error::exchange(ExchangeStep::Step("open the endpoint session"), error)
+        })?;
         Self::bind(session, credential, None, false).await
     }
 
@@ -288,10 +324,14 @@ impl Connection {
     ) -> Result<Self> {
         session
             .register_credential(CREDENTIAL, credential.into())
-            .map_err(exchange)?;
+            .map_err(|error| {
+                Error::exchange(ExchangeStep::Step("register the session credential"), error)
+            })?;
         let (controls, tools) = AgentControls::discover(session.clone(), CREDENTIAL)
             .await
-            .map_err(|error| exchange(format_args!("discover agent binding: {error}")))?;
+            .map_err(|error| {
+                Error::exchange(ExchangeStep::Step("discover agent binding"), error)
+            })?;
         let AgentReply::Root { agent: root } = execute(&controls, &AgentCommand::Root {}).await?
         else {
             return Err(Error::Conflict("the endpoint named no root".into()));
@@ -310,8 +350,8 @@ impl Connection {
 async fn execute(controls: &AgentControls, command: &AgentCommand) -> Result<AgentReply> {
     exchanged(controls, command)
         .await
-        .map_err(exchange)?
-        .map_err(exchange)
+        .map_err(|error| Error::exchange(ExchangeStep::Session, error))?
+        .map_err(|error| Error::exchange(ExchangeStep::Session, error))
 }
 
 /// A command's exchange with its failure still typed. `Err` is a command
@@ -422,7 +462,7 @@ impl LocalHarness {
                 .controls
                 .select(agent.clone())
                 .await
-                .map_err(exchange)?;
+                .map_err(|error| Error::exchange(ExchangeStep::Step("select agent"), error))?;
             Ok(Connection {
                 session: controls.observation_session(),
                 controls: Arc::new(controls),

@@ -1,6 +1,6 @@
 use super::*;
 use crate::local::{
-    Event, Observer,
+    Event, Observer, storage,
     tests::{text, volume, volume_config},
 };
 use acyclic_stream::{
@@ -18,7 +18,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     use acyclic_stream::{ChildrenPageRequest, FollowRequest};
     use futures::StreamExt as _;
 
-    let directory = tempfile::tempdir().map_err(exchange)?;
+    let directory = tempfile::tempdir().map_err(storage)?;
     let project = volume(directory.path()).await?;
     let provider = crate::local::tests::scripted([
         crate::test_support::ScriptedTurn::Text("child output".into()),
@@ -61,9 +61,9 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         .bound()
         .client_credential(server.root(), server.resource(), local.clock.clone())
         .await
-        .map_err(exchange)?;
+        .map_err(storage)?;
     let credential = acyclic_auth::credential::capability_text(&credential.credential);
-    let changes = server.bound().changes().map_err(exchange)?;
+    let changes = server.bound().changes().map_err(storage)?;
     let composition = crate::server::Hosted::new(
         server,
         local.clock.clone(),
@@ -73,7 +73,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     .with_completion(hosted.runtime.completion());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(exchange)?;
+        .map_err(storage)?;
     let (ready, endpoint) = tokio::sync::oneshot::channel();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let mut serving = tokio::spawn(crate::server::serve(
@@ -87,14 +87,14 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         },
     ));
     let checked = async {
-        let (endpoint, credential) = endpoint.await.map_err(exchange)?;
+        let (endpoint, credential) = endpoint.await.map_err(storage)?;
         let remote = acyclic_stream::grpc::Client::connect_loopback(&endpoint, &credential)
             .await
-            .map_err(exchange)?;
-        let session = remote.session_client().map_err(exchange)?;
+            .map_err(storage)?;
+        let session = remote.session_client().map_err(storage)?;
         let connection = Connection::bind(
             session.clone(),
-            acyclic_auth::credential::capability_from_text(&credential).map_err(exchange)?,
+            acyclic_auth::credential::capability_from_text(&credential).map_err(storage)?,
             None,
             false,
         )
@@ -106,7 +106,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             let AgentReply::Spawned { agent: child, .. } = connection
                 .execute(&AgentCommand::Spawn {
                     parent: parent.clone(),
-                    id: crate::agent::IntentId::try_from(intent).map_err(exchange)?,
+                    id: crate::agent::IntentId::try_from(intent).map_err(storage)?,
                     brief: crate::model::ModelContent::Text("answer".into()),
                     role: "worker".into(),
                 })
@@ -117,7 +117,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             let page = session
                 .children_page(
                     ChildrenPageRequest {
-                        parent: Some(parent.children().map_err(exchange)?),
+                        parent: Some(parent.children().map_err(storage)?),
                         after: None,
                         hierarchy_version: None,
                         limit: 1,
@@ -126,9 +126,9 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                     CREDENTIAL,
                 )
                 .await
-                .map_err(exchange)?;
+                .map_err(storage)?;
             assert_eq!(page.children.len(), 1);
-            assert_eq!(page.children[0].path, child.inbox().map_err(exchange)?);
+            assert_eq!(page.children[0].path, child.inbox().map_err(storage)?);
             let selected = connection.select(child.clone()).await?;
             eprintln!("remote tree: selected {intent} {child}");
             assert_eq!(selected.root(), &child);
@@ -139,11 +139,11 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 session.clone(),
                 observation,
                 acyclic_harness_client::AgentBinding::new(&selected.controls.binding_bytes())
-                    .map_err(exchange)?,
+                    .map_err(storage)?,
             );
             let root_request = observer_commands
-                .prepare(PreparedCommand::new(&AgentCommand::Root {}).map_err(exchange)?)
-                .map_err(exchange)?;
+                .prepare(PreparedCommand::new(&AgentCommand::Root {}).map_err(storage)?)
+                .map_err(storage)?;
             assert!(matches!(
                 observer_commands.execute(&root_request).await,
                 Err(AgentExchangeError::Session(StreamError::AccessDenied))
@@ -156,23 +156,23 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 } else {
                     selected.controls.observe(selection)
                 }
-                .map_err(exchange)?;
+                .map_err(storage)?;
                 let controls = observer.controls(
                     acyclic_harness_client::AgentBinding::new(&selected.controls.binding_bytes())
-                        .map_err(exchange)?,
+                        .map_err(storage)?,
                 );
                 assert_eq!(controls.observation_credential(), observation);
                 let request = controls
-                    .prepare(PreparedCommand::new(&AgentCommand::Root {}).map_err(exchange)?)
-                    .map_err(exchange)?;
+                    .prepare(PreparedCommand::new(&AgentCommand::Root {}).map_err(storage)?)
+                    .map_err(storage)?;
                 assert!(matches!(
-                    controls.execute(&request).await.map_err(exchange)?,
+                    controls.execute(&request).await.map_err(storage)?,
                     AgentReply::Root { .. }
                 ));
                 let mut status_seen = false;
                 let mut turn_seen = false;
                 while !status_seen || !turn_seen {
-                    let event = observer.next().await.map_err(exchange)?;
+                    let event = observer.next().await.map_err(storage)?;
                     eprintln!("remote tree: {intent}, all={all}: {event:?}");
                     match event {
                         acyclic_harness_client::AgentEvent::Status { agent, .. } => {
@@ -203,23 +203,23 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                     ..Default::default()
                 })
                 .await
-                .map_err(exchange)?;
+                .map_err(storage)?;
             // Adoption publishes the first status; the turn's own status
             // event announces its committed conversation entry.
             let mut status = acyclic_stream::records_only(
                 session
-                    .follow(FollowRequest::new(child.status().map_err(exchange)?, 0))
+                    .follow(FollowRequest::new(child.status().map_err(storage)?, 0))
                     .await
-                    .map_err(exchange)?,
+                    .map_err(storage)?,
             );
             loop {
                 let record = status
                     .next()
                     .await
                     .ok_or_else(|| Error::Conflict("child status ended".into()))?
-                    .map_err(exchange)?;
+                    .map_err(storage)?;
                 crate::agent::codec_fuzz::check(&record.value);
-                let status = crate::agent::StatusRecord::decode(&record.value).map_err(exchange)?;
+                let status = crate::agent::StatusRecord::decode(&record.value).map_err(storage)?;
                 if status.conversation > 0 {
                     break;
                 }
@@ -234,19 +234,19 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             let mut conversation = acyclic_stream::records_only(
                 session
                     .follow(FollowRequest::new(
-                        child.conversation().map_err(exchange)?,
+                        child.conversation().map_err(storage)?,
                         0,
                     ))
                     .await
-                    .map_err(exchange)?,
+                    .map_err(storage)?,
             );
             let record = conversation
                 .next()
                 .await
                 .ok_or_else(|| Error::Conflict("child conversation ended".into()))?
-                .map_err(exchange)?;
+                .map_err(storage)?;
             crate::agent::codec_fuzz::check(&record.value);
-            let entry = crate::agent::ConversationEntry::decode(&record.value).map_err(exchange)?;
+            let entry = crate::agent::ConversationEntry::decode(&record.value).map_err(storage)?;
             assert!(matches!(
                 selected
                     .execute(&AgentCommand::Read {
@@ -262,7 +262,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         }
         assert_eq!(
             session
-                .follow(FollowRequest::new(foreign.status().map_err(exchange)?, 0))
+                .follow(FollowRequest::new(foreign.status().map_err(storage)?, 0))
                 .await
                 .err()
                 .map(|error| error.category()),
@@ -272,7 +272,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             session
                 .children_page(
                     ChildrenPageRequest {
-                        parent: Some(foreign.children().map_err(exchange)?),
+                        parent: Some(foreign.children().map_err(storage)?),
                         after: None,
                         hierarchy_version: None,
                         limit: 1,
@@ -300,14 +300,14 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     };
     let checked = tokio::select! {
         result = &mut serving => {
-            result.map_err(exchange)?.map_err(exchange)?;
+            result.map_err(storage)?.map_err(storage)?;
             return Err(Error::Conflict("server stopped before tree observation completed".into()));
         },
         checked = checked => checked,
     };
     let _ = stop.send(());
     eprintln!("remote tree: stopping server, result={checked:?}");
-    serving.await.map_err(exchange)??;
+    serving.await.map_err(storage)??;
     checked
 }
 
@@ -316,7 +316,7 @@ struct Cut(AtomicBool);
 #[tokio::test]
 async fn selected_session_delivers_peer_input_back_to_directory_root() -> Result<()> {
     use crate::local::agent_conversation::{Conversation, Sent, Settlement};
-    let directory = tempfile::tempdir().map_err(exchange)?;
+    let directory = tempfile::tempdir().map_err(storage)?;
     let project = volume(directory.path()).await?;
     let provider = text();
     let harness = Arc::new(
@@ -364,7 +364,7 @@ async fn selected_session_delivers_peer_input_back_to_directory_root() -> Result
 
 #[tokio::test]
 async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(exchange)?;
+    let directory = tempfile::tempdir().map_err(storage)?;
     let project = volume(directory.path()).await?;
     let provider = text();
     let harness = Arc::new(
@@ -385,22 +385,22 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     }
     let reader = connection.session.read_provider();
     let head = reader
-        .head(connection.root.status().map_err(exchange)?)
+        .head(connection.root.status().map_err(storage)?)
         .await;
     let page = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
-            parent: Some(connection.root.children().map_err(exchange)?),
+            parent: Some(connection.root.children().map_err(storage)?),
             after: None,
             hierarchy_version: None,
             limit: 16,
-            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?),
         })
         .await;
     assert!(
         head.is_ok() && page.is_ok(),
         "head: {head:?}; page: {page:?}"
     );
-    assert!(page.map_err(exchange)?.children.is_empty());
+    assert!(page.map_err(storage)?.children.is_empty());
     let conversation = super::super::agent_conversation::Conversation::open(connection.clone());
     let mut tree = conversation.tree()?;
     tree.view.set_viewport(1, 0, 16);
@@ -410,7 +410,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
             .view
             .reader_ref()
             .cache()
-            .listing(&connection.root.children().map_err(exchange)?, 0)
+            .listing(&connection.root.children().map_err(storage)?, 0)
             .is_some_and(|listing| listing.fresh && listing.children.is_empty())
         {
             break;
@@ -421,7 +421,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     let child = match connection
         .execute(&acyclic_harness_client::AgentCommand::Spawn {
             parent: connection.root.clone(),
-            id: crate::agent::IntentId::try_from("reader-child").map_err(exchange)?,
+            id: crate::agent::IntentId::try_from("reader-child").map_err(storage)?,
             role: "worker".into(),
             brief: crate::model::ModelContent::Text("exercise the enrolled child listing".into()),
         })
@@ -434,14 +434,14 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     eprintln!("tree reader: child spawn committed");
     let populated = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
-            parent: Some(connection.root.children().map_err(exchange)?),
+            parent: Some(connection.root.children().map_err(storage)?),
             after: None,
             hierarchy_version: None,
             limit: 16,
-            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?),
         })
         .await
-        .map_err(exchange)?;
+        .map_err(storage)?;
     assert_eq!(populated.children.len(), 1, "{populated:?}");
     assert_eq!(populated.children[0].path.as_str(), child.as_str());
     eprintln!("tree reader: populated scoped page observed");
@@ -553,7 +553,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
     eprintln!("tree reader: authored private UI followed; managed outputs refused");
     let outside = AgentPath::root(&crate::agent::AgentId::from_bytes([0; 16]));
     assert_eq!(
-        reader.head(outside.status().map_err(exchange)?).await,
+        reader.head(outside.status().map_err(storage)?).await,
         Err(StreamError::AccessDenied)
     );
     let directory_connection = harness.connect_sessions().await?;
@@ -563,31 +563,31 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
         .session
         .read_provider()
         .children_page(acyclic_stream::ChildrenPageRequest {
-            parent: Some(session.root.children().map_err(exchange)?),
+            parent: Some(session.root.children().map_err(storage)?),
             after: None,
             hierarchy_version: None,
             limit: 16,
-            tail_stream: Some(StreamPath::new("conversation").map_err(exchange)?),
+            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?),
         })
         .await
-        .map_err(exchange)?;
+        .map_err(storage)?;
     assert!(page.children.is_empty());
     assert_eq!(
-        reader.head(session.root.status().map_err(exchange)?).await,
+        reader.head(session.root.status().map_err(storage)?).await,
         Err(StreamError::AccessDenied)
     );
     // The primitive filters broad discovery to authorized children. A directory
     // owner can discover both roots; this original tree credential sees only its own.
     let page = reader
         .children_page(acyclic_stream::ChildrenPageRequest {
-            parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(exchange)?),
+            parent: Some(StreamPath::new(crate::agent::AGENTS).map_err(storage)?),
             after: None,
             hierarchy_version: None,
             limit: 16,
             tail_stream: None,
         })
         .await
-        .map_err(exchange)?;
+        .map_err(storage)?;
     assert_eq!(page.children.len(), 1);
     assert_eq!(page.children[0].path.as_str(), connection.root.as_str());
     assert!(page.next_after.is_none());
@@ -617,16 +617,36 @@ async fn terminal(observer: &mut Observer) -> Error {
     }
 }
 
+/// The full cause chain of a typed exchange failure, which stays storage.
 fn message(error: Error) -> String {
-    let Error::Storage(message) = error else {
-        panic!("expected original storage classification, got {error:?}");
+    assert_eq!(error.code(), crate::wire::ErrorCode::Storage, "{error:?}");
+    let Error::Exchange { .. } = &error else {
+        panic!("expected a typed exchange failure, got {error:?}");
     };
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        message = format!("{message}: {cause}");
+        source = cause.source();
+    }
     message
+}
+
+fn provider_message(error: Error, expected: acyclic_stream::LocalStreamFailure) -> String {
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        if let Some(retained) = cause.downcast_ref::<acyclic_stream::LocalStreamFailure>() {
+            assert_eq!(*retained, expected);
+            return message(error);
+        }
+        source = cause.source();
+    }
+    panic!("exchange lost the typed provider cause: {error:?}");
 }
 
 #[tokio::test]
 async fn local_commands_and_observation_report_the_original_provider_failure() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(exchange)?;
+    let directory = tempfile::tempdir().map_err(storage)?;
     let project = volume(directory.path()).await?;
     let provider = text();
     let harness = Arc::new(
@@ -697,14 +717,11 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         .as_ref()
         .ok_or_else(|| Error::Invalid("missing original provider".into()))?;
     let cut = Arc::new(Cut(AtomicBool::new(false)));
-    stream
-        .cut_persistence(cut.clone())
-        .await
-        .map_err(exchange)?;
+    stream.cut_persistence(cut.clone()).await.map_err(storage)?;
     assert_eq!(
         stream
             .append(AppendRequest {
-                path: StreamPath::new("failure/report").map_err(exchange)?,
+                path: StreamPath::new("failure/report").map_err(storage)?,
                 records: vec![bytes::Bytes::from_static(b"unaccepted").into()],
                 if_tail: None,
                 idempotency_key: IdempotencyKey::unique(),
@@ -713,64 +730,69 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         Err(StreamError::Unavailable)
     );
     assert!(cut.0.load(Ordering::SeqCst));
-    let cause = stream
+    let original = stream
         .failure()
-        .ok_or_else(|| Error::Invalid("original failure was lost".into()))?
-        .to_string();
+        .ok_or_else(|| Error::Invalid("original failure was lost".into()))?;
+    let cause = original.to_string();
     // Use the serving codec on the real provider failure, then the exact
     // command projection used by execute; neither delivery order is guessed.
     let host_result = host_files
         .await
         .map(|snapshot| AgentReply::ClientFiles { snapshot });
     let encoded =
-        acyclic_harness_client::encode_agent_reply(&host_result, &files).map_err(exchange)?;
+        acyclic_harness_client::encode_agent_reply(&host_result, &files).map_err(storage)?;
     let refusal = acyclic_harness_client::decode_agent_reply(&encoded, &files)
-        .map_err(exchange)?
+        .map_err(storage)?
         .expect_err("failed host query returned client files");
     let refusal = AgentExchangeError::Control(refusal);
     assert_eq!(refusal.code(), "unavailable");
-    let refused = message(connection.command_failure(&files, refusal));
+    let refused = provider_message(connection.command_failure(&files, refusal), original);
     assert!(
         refused.contains(&cause),
         "host refusal lost original provider cause: {refused}"
     );
-    let closed = message(connection.command_failure(
-        &files,
-        AgentExchangeError::Session(StreamError::Unavailable),
-    ));
+    let closed = provider_message(
+        connection.command_failure(
+            &files,
+            AgentExchangeError::Session(StreamError::Unavailable),
+        ),
+        original,
+    );
     assert!(
         closed.contains(&cause),
         "session close lost cause: {closed}"
     );
-    let files_error = message(
+    let files_error = provider_message(
         waiting_files
             .await
             .err()
             .ok_or_else(|| Error::Invalid("closed producer answered client files".into()))?,
+        original,
     );
     assert!(
         files_error.contains(&cause),
         "client files lost original provider cause: {files_error}"
     );
-    let command = message(
+    let command = provider_message(
         connection
             .execute(&AgentCommand::Root {})
             .await
             .err()
             .ok_or_else(|| Error::Invalid("failed provider answered command".into()))?,
+        original,
     );
     assert!(
         command.contains(&cause),
         "command lost original provider cause: {command}"
     );
-    let observed = message(terminal(&mut observer).await);
+    let observed = provider_message(terminal(&mut observer).await, original);
     assert!(
         observed.contains(&cause),
         "observation lost original provider cause: {observed}"
     );
     let projected = loop {
         match projected.next_projected().await {
-            Err(error) | Ok((Err(error), _)) => break message(error),
+            Err(error) | Ok((Err(error), _)) => break provider_message(error, original),
             Ok(_) => {}
         }
     };

@@ -8,7 +8,7 @@ use super::{
     tool_output::{LiveKind, OutputTail, read_newest},
 };
 use crate::{
-    Error, Result,
+    Error, ExchangeStep, Result,
     agent::{AgentPath, ConversationEntry, StatusRecord},
 };
 use acyclic_harness_client::{
@@ -245,7 +245,7 @@ impl Observer {
                     resource,
                     cause: WireSessionError::Stream(source),
                 } => Error::StreamFollow { resource, source },
-                error => storage(error),
+                error => Error::exchange(ExchangeStep::Session, error),
             }
         }
     }
