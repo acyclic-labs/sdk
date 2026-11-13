@@ -1102,6 +1102,10 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
         .await?;
     let parent = root.id();
     let root = root.into_owned();
+    assert_eq!(
+        root.within_sync(|| resource.now_unix_seconds())?,
+        signed::NOW
+    );
     for (path, allowed) in [("records", true), ("outside", false)] {
         let path = StreamPath::new(path)?;
         let result = root.within_sync(|| authority.bind(&slots, 0, &path, Default::default(), 1));
@@ -1148,7 +1152,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     let mut succeeded = 0;
     let mut unsettled = 0;
     let mut locks = 0;
-    while settled != 8 {
+    while settled != 9 {
         let Some(event) = query.next().await? else {
             return Err("diagnostic source ended".into());
         };
@@ -1165,6 +1169,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
                     | "stream.resource_authorize"
                     | "stream.credential_snapshot"
                     | "stream.credential_renewal"
+                    | "stream.resource_policy_clock"
             ));
             assert_eq!(start.parent, Some(parent));
             let credential = start.name.starts_with("stream.credential_");
@@ -1172,6 +1177,8 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
                 start.mechanism,
                 if credential {
                     Mechanism::Lock
+                } else if start.name == "stream.resource_policy_clock" {
+                    Mechanism::ProviderCall
                 } else {
                     Mechanism::AuthCheck
                 }
@@ -1183,6 +1190,8 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
                     "current_trust_credential_and_resource_admission"
                 } else if start.name == "stream.credential_renewal" {
                     "atomic_renewal_preserves_account_principal_and_grants"
+                } else if start.name == "stream.resource_policy_clock" {
+                    "authenticated_trust_snapshot_with_monotonic_protected_time"
                 } else if credential {
                     "atomic_credential_snapshot_against_renewal"
                 } else {
@@ -1203,7 +1212,7 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
             settled += 1;
         }
     }
-    assert_eq!((succeeded, unsettled, locks), (5, 3, 4));
+    assert_eq!((succeeded, unsettled, locks), (6, 3, 4));
     root.finish_submitted(None, Outcome::Succeeded)?;
     Ok(())
 }
