@@ -64,9 +64,19 @@ failure (not a compiler error), reverse the patch, and require the same test to
 pass. The library test uses `-p acyclic-harness-core --lib`; the actor test uses
 `-p acyclic-harness-core --test main`. Both use
 `--features test-support,acyclic-fs/test-support` and an exact nextest selector.
-`filesystem::hosting::journal_tests::call_output_uses_the_journal_without_granting_tools_its_writer`
+`filesystem::hosting::journal::tests::call_output_uses_the_journal_without_granting_tools_its_writer`
 also proves the physical completion publication's original identity and replay
 through the shared output publisher.
 The same real-actor test publishes output and completion for a different call
 into the shared journal and requires the original actor's state stream to remain
 unchanged. Its own output and physical completion still deliver normally.
+
+The native-cut point comparison is exercised by
+`native_mount::lazy::tests::publication::original_publication_retains_both_logical_cuts_after_cleanup_and_later_writes`
+in `acyclic-fs --lib`. It distinguishes equal-length edits, creation and removal
+from an unchanged source promotion, then repeats the original comparison after
+source removal and a later write. `native-content-generation.patch` substitutes
+authored-generation equality for logical content equality; the unchanged test
+must fail at `source promotion with unchanged bytes counted as a content change`.
+Restore the patch and require the same regression to pass. This point proof
+does not claim a complete source-alias diff or a completed shell progress bridge.
