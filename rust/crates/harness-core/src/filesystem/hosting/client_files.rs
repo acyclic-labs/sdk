@@ -362,7 +362,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 if !requested.contains(&value.path.as_str())
                     || value.input.stream != source
                     || value.input.sequence >= through
-                    || value.text.len() as u64 > self.maximum_bytes
+                    || self
+                        .maximum_bytes
+                        .is_some_and(|maximum| value.text.len() as u64 > maximum)
                     || files.get(&value.path).is_none_or(Option::is_some)
                 {
                     return Err(Error::Record("file view returned an invalid selection"));
