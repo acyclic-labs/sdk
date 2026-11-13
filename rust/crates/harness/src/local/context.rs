@@ -379,11 +379,13 @@ impl LocalHarness {
                 let cwd = if !super::open::uses_native_execution(&self.tools)? {
                     None
                 } else if selected.is_none() || workspace.mounted.is_none() {
-                    Some(workspace.path.as_path())
+                    workspace.native_cwd()?
                 } else {
                     selected_mount
                         .as_ref()
-                        .map(|mounted| mounted.path.as_path())
+                        .map(|mounted| mounted.native_cwd())
+                        .transpose()?
+                        .flatten()
                 };
                 manifest.environment = Some(environment::gather(
                     cwd,

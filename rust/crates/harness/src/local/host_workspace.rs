@@ -394,10 +394,8 @@ impl HostWorkspace {
 }
 
 fn native_cwd(workspace: &LocalWorkspace) -> Result<PathBuf> {
-    let primary = workspace.mounts.named(None)?.1;
     workspace
-        .mounts
-        .native_root_for(primary)
+        .native_cwd()?
         .map(Path::to_path_buf)
         .ok_or_else(|| Error::Unauthorized("host primary has no native projection".into()))
 }

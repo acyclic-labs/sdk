@@ -143,6 +143,11 @@ pub(super) fn attach_operation(task: TaskId) -> acyclic_fs::OperationId {
 }
 
 impl LocalWorkspace {
+    /// The selected native cwd, independent of the whole-volume capture path.
+    pub(in crate::local) fn native_cwd(&self) -> Result<Option<&Path>> {
+        Ok(self.mounts.native_root_for(self.mounts.named(None)?.1))
+    }
+
     pub(super) async fn mount_options(
         &self,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,

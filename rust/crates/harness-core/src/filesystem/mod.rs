@@ -98,7 +98,7 @@ pub mod native_process;
 pub use native_process::NativeProcessObserver;
 mod workspace_access;
 pub use workspace_access::{
-    WorkspaceAccess, require_unrestricted_volume_access, require_unrestricted_workspace_read,
+    WorkspaceAccess, require_unrestricted_volume_access, require_workspace_subtree_read,
 };
 mod native_capture_bounds;
 mod native_contract;
