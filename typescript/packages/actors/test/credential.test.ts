@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import fc from "fast-check";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CredentialCache, CredentialSnapshot, credentialProvider } from "../src/credential.js";
+import { CredentialCache, CredentialSnapshot, credentialProvider } from "@acyclic-labs/auth/credential";
 import { ActorsClient, type ActorsRustClient } from "../src/client.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
