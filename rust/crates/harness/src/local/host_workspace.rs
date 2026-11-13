@@ -40,7 +40,6 @@ pub struct HostWorkspace {
     agent: AgentPath,
     owner: Arc<dyn ViewOwner>,
     mount_root: Arc<HeldRoot>,
-    project: VolumeRef,
     signed: Scope,
     verifier: crate::core::AuthorityVerifier,
     scope: crate::runtime::RuntimeScope,
@@ -95,7 +94,6 @@ impl HostWorkspace {
             signed: signed.copy(&mut None)?,
             verifier: verifier.clone(),
             mount_root: Arc::new(admitted_mount_root),
-            project,
             _native_volumes: Vec::new(),
         };
         result.verify().await?;
@@ -312,7 +310,6 @@ impl HostWorkspace {
             agent: child.clone(),
             owner: child_owner,
             mount_root: Arc::clone(&self.mount_root),
-            project,
             scope: crate::runtime::RuntimeScope::new(
                 signed.capabilities().clone(),
                 Default::default(),
@@ -329,26 +326,20 @@ impl HostWorkspace {
     /// Fails once the owner lost the view, its volume grants, or its root.
     pub(super) async fn verify(&self) -> Result<()> {
         self.owner.verify().await?;
-        for (volume, operation) in std::iter::once(&self.project)
-            .chain(
-                self.workspace
-                    .mounts
-                    .mounts()
-                    .filter(|(relative, _)| !relative.is_empty())
-                    .map(|(_, mount)| &mount.view.volume),
-            )
-            .flat_map(|volume| {
-                [VolumeOperation::Read, VolumeOperation::Write].map(|operation| (volume, operation))
-            })
-        {
-            if !self
-                .signed
-                .capabilities()
-                .contains(&volume.capability(operation, &mut None)?)
-            {
-                return Err(Error::Unauthorized(
-                    "host workspace project is not granted".into(),
-                ));
+        for (_, mount) in self.workspace.mounts.mounts() {
+            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+                if operation == VolumeOperation::Write && mount.mode.read_only() {
+                    continue;
+                }
+                if !self
+                    .signed
+                    .capabilities()
+                    .contains(&mount.view.volume.capability(operation, &mut None)?)
+                {
+                    return Err(Error::Unauthorized(
+                        "host workspace volume is not granted".into(),
+                    ));
+                }
             }
         }
         if self.workspace.root_identity()? != self.workspace.identity {

@@ -315,6 +315,74 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             .allowed
     );
     {
+        let project_read = harness
+            .project
+            .capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+        let project_write = harness
+            .project
+            .capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+        let signer = harness
+            .root_authority
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("test signing custody".into()))?;
+        let read_only_signed = signer.bootstrap_scope(
+            "read-only-project",
+            &crate::Capabilities::new(
+                signed
+                    .capabilities()
+                    .iter()
+                    .filter(|capability| *capability != project_write.as_str()),
+            ),
+            Some(selected_agent),
+            &mut None,
+        )?;
+        let read_only_authority = authority.for_scope(&read_only_signed)?;
+        let selected = workspace
+            .bound_task_view(
+                view().await?,
+                &harness.project,
+                &read_only_primary,
+                &AgentOwner,
+                &read_only_authority,
+            )
+            .await?;
+        let host = crate::local::host_workspace::HostWorkspace::attach(
+            Arc::clone(&selected),
+            crate::agent::AgentPath::root(&selected_agent),
+            &read_only_signed,
+            &harness.verifier,
+            selected.held_task_mount_root()?,
+        )
+        .await?;
+        host.verify().await?;
+        assert_eq!(
+            std::fs::read(host.host_cwd().join("host-note")).map_err(storage)?,
+            b"selected host write"
+        );
+        let denied = signer.bootstrap_scope(
+            "missing-project-read",
+            &crate::Capabilities::new(
+                read_only_signed
+                    .capabilities()
+                    .iter()
+                    .filter(|capability| *capability != project_read.as_str()),
+            ),
+            Some(selected_agent),
+            &mut None,
+        )?;
+        assert!(matches!(
+            crate::local::host_workspace::HostWorkspace::attach(
+                Arc::clone(&selected),
+                crate::agent::AgentPath::root(&selected_agent),
+                &denied,
+                &harness.verifier,
+                selected.held_task_mount_root()?,
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+    }
+    {
         let selected = &second;
         let path = "bound-note";
         let tools = Arc::new(
