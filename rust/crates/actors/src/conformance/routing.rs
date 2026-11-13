@@ -197,6 +197,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         request,
     };
     let journal = StreamPath::new(format!("{root}/sender-journal")).map_err(Error::from)?;
+    let call = crate::call::CallPath::new(&root, "send").map_err(violation)?;
     let missing = StreamPath::new(format!("{root}/missing-admission")).map_err(Error::from)?;
     let mut publish = CommitRequest {
         deadline_unix_millis: None,
@@ -209,6 +210,9 @@ pub async fn storage<P: StreamProvider + ?Sized>(
                     records: vec!["sender effect".into()],
                 }],
             ),
+            call.request("send".into(), crate::escrow::Escrow::new(None))
+                .map_err(violation)?
+                .into(),
         ],
         idempotency_key: key(&root, "sender-step")?,
     };
@@ -298,6 +302,51 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             .is_empty(),
         "lost account receipt advanced local outbox progress",
     )?;
+    let completion = |relay_seq: u64| -> Result<Vec<CommitEffect>, crate::route::Error> {
+        let accepted = crate::call::Accepted {
+            executor: "account-router".into(),
+            fence: None,
+        };
+        Ok(vec![
+            call.accept(&accepted, true)
+                .map_err(|_| crate::route::Error::InvalidRecord)?
+                .into(),
+            call.settle(
+                None,
+                &crate::call::Outcome::Ok(relay_seq.to_le_bytes().to_vec().into()),
+            )
+            .map_err(|_| crate::route::Error::InvalidRecord)?
+            .into(),
+        ])
+    };
+    for soft in [false, true] {
+        let blocked_completion = crate::route::forward(provider, &paths, &source, async |_| {
+            let mut effects = completion(0)?;
+            effects[1].conditions.push(CommitCondition::Present {
+                path: StreamPath::new(format!("{root}/missing-completion-guard"))?,
+            });
+            effects[1].soft = soft;
+            Ok(effects)
+        })
+        .await;
+        require(
+            matches!(
+                (&blocked_completion, soft),
+                (
+                    Err(crate::route::Error::Actor(crate::local::Error::Conflict)),
+                    false
+                ) | (Err(crate::route::Error::InvalidRecord), true)
+            ),
+            "outbox acknowledgement ignored a completion guard",
+        )?;
+        require(
+            values(provider, paths.outbox_cursor(&source).map_err(Error::from)?)
+                .await?
+                .is_empty()
+                && values(provider, call.settled().clone()).await?.is_empty(),
+            "failed completion partially published its receipt or outbox acknowledgement",
+        )?;
+    }
     let forward = crate::route::forward(provider, &paths, &source, async |record| {
         if record != envelope {
             return Err(crate::route::Error::InvalidRecord);
@@ -305,10 +354,13 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         let destination = Placement::read(provider, &paths, &record.to)
             .await?
             .ok_or(crate::route::Error::InvalidRecord)?;
-        record
+        let routed = record
             .publish_relay(provider, &paths, &destination.node, Vec::new())
             .await?;
-        Ok(())
+        let Routed::Relayed { relay_seq, .. } = routed else {
+            return Err(crate::route::Error::InvalidRecord);
+        };
+        completion(relay_seq)
     });
     until_ack(
         provider,
@@ -317,6 +369,37 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         forward,
     )
     .await?;
+    let completed = provider
+        .head(call.log().clone())
+        .await
+        .map_err(Error::from)?;
+    let acknowledged = provider
+        .head(paths.outbox_cursor(&source).map_err(Error::from)?)
+        .await
+        .map_err(Error::from)?;
+    let completed = completed
+        .last
+        .ok_or_else(|| violation("missing call receipt"))?;
+    require(
+        completed.commit_id
+            == acknowledged
+                .last
+                .ok_or_else(|| violation("missing outbox ack"))?
+                .commit_id
+            && matches!(crate::call::Entry::decode(&completed).map_err(violation)?,
+                crate::call::Entry::Terminal(crate::call::Outcome::Ok(value)) if value.as_ref() == 0u64.to_le_bytes())
+            && provider
+                .tail(call.log().clone())
+                .await
+                .map_err(Error::from)?
+                == 4
+            && provider
+                .tail(call.settled().clone())
+                .await
+                .map_err(Error::from)?
+                == 1,
+        "relay receipt and outbox progress were not committed exactly once together",
+    )?;
     let mut foreign_source = envelope.clone();
     foreign_source.source = placement.node.clone();
     let source_path = paths.outbox(&source).map_err(Error::from)?;

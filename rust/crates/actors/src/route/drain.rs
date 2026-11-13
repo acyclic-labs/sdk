@@ -30,7 +30,7 @@ pub async fn drain<P, D>(
     account: &P,
     paths: &Paths,
     node: &NodeId,
-    deliver: D,
+    mut deliver: D,
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
@@ -40,7 +40,10 @@ where
         account,
         paths.relay(node)?,
         paths.relay_cursor(node)?,
-        deliver,
+        async |envelope| {
+            deliver(envelope).await?;
+            Ok(Vec::new())
+        },
     )
     .await
 }
@@ -50,6 +53,12 @@ where
 /// the committed relay receipt (or durable rejection Notice). No local cursor
 /// advances while admission waits for credit or a transport is unavailable.
 /// A reopened forwarder resubmits the identical envelope after a lost receipt.
+/// The callback returns sender-local completion effects, such as the original
+/// call journal's terminal receipt. They commit with the outbox cursor, so an
+/// acknowledged publication cannot lose its caller's result on restart. Their
+/// conditions retain the ordinary call cancellation and settlement rules.
+/// Completion effects must be hard: a skipped receipt must not acknowledge
+/// the outbox. They must not mutate the forwarder's cursor subtree.
 pub async fn forward<P, D>(
     local: &P,
     paths: &Paths,
@@ -58,7 +67,7 @@ pub async fn forward<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<(), Error>,
+    D: AsyncFnMut(Envelope) -> Result<Vec<CommitEffect>, Error>,
 {
     consume(
         local,
@@ -82,7 +91,7 @@ async fn consume<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<(), Error>,
+    D: AsyncFnMut(Envelope) -> Result<Vec<CommitEffect>, Error>,
 {
     let (mut next, mut cursor_tail) = match account.head(cursor_path.clone()).await {
         Ok(head) => {
@@ -108,7 +117,10 @@ where
         if record.sequence != next {
             return Err(Error::InvalidRecord);
         }
-        deliver(Envelope::decode(&record.value)?).await?;
+        let completion = deliver(Envelope::decode(&record.value)?).await?;
+        if completion.iter().any(|effect| effect.soft) {
+            return Err(Error::InvalidRecord);
+        }
         let following = next.checked_add(1).ok_or(Error::InvalidRecord)?;
         let mut key = Sha256::new();
         key.update(b"acyclic.actors.route.ack.v1\0");
@@ -117,7 +129,7 @@ where
             key.update(part);
         }
         key.update(next.to_le_bytes());
-        let request = CommitRequest {
+        let mut request = CommitRequest {
             deadline_unix_millis: None,
             idempotency_key: IdempotencyKey::new(key.finalize().to_vec())?,
             effects: vec![CommitEffect::hard(
@@ -138,6 +150,7 @@ where
                 }],
             )],
         };
+        request.effects.extend(completion);
         match account.commit(request).await? {
             CommitOutcome::Committed(_) => {
                 next = following;
