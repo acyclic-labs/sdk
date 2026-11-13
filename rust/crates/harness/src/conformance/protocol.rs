@@ -3,7 +3,7 @@
 use crate::conformance::{Backend, Result};
 use acyclic_harness_client::{
     AgentBinding, AgentCommand, AgentControlFailure, AgentPageRequest, AgentReply, PreparedCommand,
-    encode_agent_reply,
+    ReadTarget, encode_agent_reply,
 };
 use acyclic_harness_core::{
     agent::{
@@ -11,7 +11,6 @@ use acyclic_harness_core::{
         StatusRecord,
     },
     approvals::ApprovalPolicy,
-    conversation::FileRef,
     interaction::ApprovalBinding,
     model::{ModelContent, ModelEvent, ToolCall},
     tool::ToolDefinition,
@@ -77,12 +76,6 @@ pub trait Endpoint: ProviderPlatform {
     fn drain<'a>(&'a self, agent: &'a AgentPath) -> BoxProviderFuture<'a, Result>;
     /// The same storage the real host reads and publishes to.
     fn provider(&self) -> Arc<dyn StreamProvider>;
-    /// Read a settled output through the host's admitted content reader.
-    fn read_file<'a>(
-        &'a self,
-        agent: &'a AgentPath,
-        file: &'a FileRef,
-    ) -> BoxProviderFuture<'a, Result<Vec<u8>>>;
     /// Actual executions of the shared internal fixture tool.
     fn effects(&self) -> BoxProviderFuture<'_, Result<u64>>;
 }
@@ -98,6 +91,23 @@ pub async fn call(
     invocation
         .send(|invocation| endpoint.exchange(invocation))
         .await
+}
+
+async fn read(endpoint: &dyn Endpoint, agent: &AgentPath, target: ReadTarget) -> Result<Vec<u8>> {
+    let reply = call(
+        endpoint,
+        &AgentCommand::Read {
+            agent: agent.clone(),
+            target,
+            offset: 0,
+        },
+    )
+    .await??;
+    let (bytes, length) = reply.content()?;
+    if bytes.len() as u64 != length {
+        return Err("the shared protocol payload was truncated".into());
+    }
+    Ok(bytes)
 }
 
 async fn records(
@@ -252,10 +262,34 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         {
             return Err("wrong-prompt reply did not report agent_conflict".into());
         }
-        let output: serde_json::Value =
-            serde_json::from_slice(&endpoint.read_file(&root, &entry.output).await?)?;
+        let output_bytes = read(
+            endpoint,
+            &root,
+            ReadTarget::Conversation {
+                sequence: conversation[0].sequence,
+                file: entry.output.clone(),
+            },
+        )
+        .await?;
+        entry.output.descriptor().verify(&output_bytes, &mut None)?;
+        let output: serde_json::Value = serde_json::from_slice(&output_bytes)?;
         if output.get("text").and_then(serde_json::Value::as_str) != Some(REPLY) {
             return Err("the guest's immutable reply differs".into());
+        }
+        if call(
+            endpoint,
+            &AgentCommand::Read {
+                agent: root.clone(),
+                target: ReadTarget::File {
+                    file: entry.output.clone(),
+                },
+                offset: 0,
+            },
+        )
+        .await?
+        .is_ok()
+        {
+            return Err("an ordinary file read acquired hidden journal authority".into());
         }
         observations::verify(endpoint, &root, entry.inbox).await?;
         let AgentReply::Approvals { items, next } = call(endpoint, &approvals).await?? else {
