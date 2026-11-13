@@ -136,6 +136,10 @@ impl Error {
                 raw_details,
                 message,
             } => {
+                metadata.cause = refusal
+                    .as_ref()
+                    .and_then(|refusal| refusal.cause())
+                    .cloned();
                 metadata.refusal = refusal.and_then(|refusal| refusal.original().cloned());
                 metadata.message = message;
                 metadata.grpc_code = Some(grpc_code);
@@ -148,7 +152,8 @@ impl Error {
                         detail.component,
                         detail.reason,
                         detail.request_id,
-                    );
+                    )
+                    .or(metadata.cause);
                 }
                 metadata.raw_details = Some(raw_details);
             }
@@ -788,6 +793,70 @@ mod tests {
                 detail.as_ref().map(|value| value.code)
             );
             assert_eq!(metadata.service_message, detail.map(|value| value.message));
+        }
+    }
+
+    #[test]
+    fn foreign_metadata_retains_header_attribution_without_original_status_parts() {
+        use acyclic_auth::refusal::{Canonical, Cause, Refusal};
+        let header_cause = Cause::new("actor.owner", "unavailable");
+        let body_cause = Cause::new("actor.delivery", "interrupted");
+        let parts = Refusal::encode(
+            Some(&Refusal::caused(header_cause.clone())),
+            Canonical {
+                code: 14,
+                message: "owner unavailable",
+                details: &[],
+                owned: &[],
+                cause_is_embedded: false,
+            },
+        );
+        for body in 0..3 {
+            let details = match body {
+                0 => Vec::new(),
+                _ => wire::Error {
+                    code: wire::ErrorCode::DependencyUnavailable as i32,
+                    message: "delivery unavailable".into(),
+                    component: if body == 2 {
+                        body_cause.component.clone()
+                    } else {
+                        String::new()
+                    },
+                    reason: if body == 2 {
+                        body_cause.reason.clone()
+                    } else {
+                        String::new()
+                    },
+                    request_id: if body == 2 {
+                        body_cause.request_id.clone()
+                    } else {
+                        String::new()
+                    },
+                }
+                .encode_to_vec(),
+            };
+            let status = tonic::Status::with_details_and_metadata(
+                tonic::Code::Unavailable,
+                &parts.message,
+                details.into(),
+                tonic::metadata::MetadataMap::from_headers(parts.metadata.clone()),
+            );
+            let error = Error::from(status);
+            let metadata = error.metadata();
+            assert!(
+                metadata.refusal.is_none(),
+                "canonical status parts must not hide the regression"
+            );
+            let expected = if body == 2 {
+                &body_cause
+            } else {
+                &header_cause
+            };
+            assert_eq!(metadata.cause.as_ref(), Some(expected));
+            assert_eq!(
+                serde_json::to_value(metadata).unwrap()["cause"],
+                serde_json::to_value(expected).unwrap()
+            );
         }
     }
 
