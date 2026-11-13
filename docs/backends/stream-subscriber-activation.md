@@ -96,6 +96,30 @@ state. Batch membership is validated before delivery; arbitrary user records
 cannot forge internal ready descriptors. Retention pins batch membership and
 input until consumption/durable handoff allows event-driven collection.
 
+## Dynamic interests replace the transitional startup mechanism
+
+#3555 adds a transitional per-shard marker at
+`{root}/_interests/<shard>/<actor>` and pages those markers at host startup to
+wake dormant actors holding dynamic interests. This mechanism is temporary:
+#3697 must subsume it completely, not keep it as recovery insurance.
+
+Dynamic interest creation, replacement and removal register/unregister the
+corresponding exact source subscriptions in Stream authority state, atomically
+with the actor's interest/cursor state. A dormant interest holder needs no live
+follow or marker. Any producer's append to its registered source carries its
+activation in the same Stream decision, even if that producer knows nothing
+about actors or interests. Existing catch-up and generation fencing apply when
+interests change concurrently with append, hibernation or placement.
+
+On host restart, recover only assigned ready-feed partition checkpoints and
+consume durable batches; do not enumerate interest holders to reconstruct
+subscriptions or synthesize wakes. Registrations already survive in Stream
+authority state. An append while the host is stopped leaves a durable activation
+obligation that the ready feed delivers after restart. An append after a dormant
+holder's host has started must wake it without requiring another startup.
+Normal paging of a committed activation batch is delivery work, not a startup
+scan of actors, interests or registration sets.
+
 ## Tests
 
 Drive production registration and commit transitions in deterministic simulation
@@ -109,6 +133,18 @@ the dormant-subscriber orphan assertion must fail. Shared conformance covers
 every provider; a counted append with 1 versus 100,000 registered subscribers
 must perform the same additional authority lookups/writes and bounded allocation.
 
+Add a production-core DST/exhaustive case registering a dynamic interest, making
+its actor dormant with no live follow, then appending through a plain Stream
+producer with no hand-paired wake. Prove the holder activates and consumes that
+input both with the host running and with append during host downtime followed
+by restart. Exercise interest replacement/removal and hibernation/placement cuts.
+The harness must refuse or count enumeration of `_interests`, actor roots and
+subscription registries during startup: expected count is zero, independent of
+1 versus 100,000 dormant holders. Permit assigned ready-feed checkpoint reads
+and bounded delivery paging only. Remove core activation insertion as a negative
+control; the dormant-interest orphan assertion must fail without a startup scan
+or manual producer wake rescuing it. Run this guarantee in shared conformance.
+
 ## Area cleanup / removals
 
 Delete hand-paired producer activations in actors local/invoke, disposition,
@@ -118,6 +154,13 @@ Audit their current locations after #3555 lands. Keep explicit activation for
 placement, alarm, resume or other control work without appended subscribed input.
 Remove duplicate wake records, producer subscriber lookups and any redundant
 reverse cache; keep cursor, placement, deadline and custody guarantees.
+
+Delete #3555's entire `{root}/_interests/<shard>/<actor>` marker path, marker
+writes/reads/codecs and host-startup paging/wake reconstruction, including tests
+that exist only for that removed workaround. Do not retain an empty compatibility
+path, fallback scan, timer or migration. Keep dynamic-interest delivery, cursor
+and hibernation guarantees, now supplied by the shared Stream registration and
+atomic activation mechanism. List these removals explicitly in the final PR.
 
 Draft decision to confirm during implementation: reuse #3555's durable ready
 feed/dispatcher by extending its event representation, rather than add another
