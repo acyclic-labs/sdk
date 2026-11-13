@@ -249,6 +249,7 @@ case "$lane" in
       harness_tests -p acyclic-harness-core --features model-checking \
         --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --gate
+    bash scripts/qualify-tui-diff.sh
     sdk_workspace nextest --all-features --locked
     ;;
   docs|generation)

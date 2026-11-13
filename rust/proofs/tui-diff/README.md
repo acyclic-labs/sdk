@@ -1,5 +1,8 @@
 # Admitted diff presentation controls
 
+`bash scripts/qualify-tui-diff.sh` runs all three unchanged regressions and
+their production mutations. The normal CI qualification invokes this command.
+
 Run on the qualified execution target, against the named source SHA. No control
 is product code or a feature switch. Apply each patch only in that job's source
 copy, run its exact existing regression, require an assertion failure in that
