@@ -375,6 +375,8 @@ impl StockExecutor {
     }
 
     /// Carries the original admitted context into one bound stock execution.
+    /// Checks task authority here; model-summary resources are admitted at
+    /// model entry, independently of host-selected tool execution.
     pub fn with_task_context(
         mut self,
         context: &crate::runtime::TaskContext,
@@ -388,7 +390,7 @@ impl StockExecutor {
             self.provider = provider;
         }
         self.task_context = Some((Arc::new(context), execution_operation));
-        StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
+        StockExecution::ordinary(&self).verify_task_authority_binding(execution_operation)?;
         Ok(self)
     }
 }

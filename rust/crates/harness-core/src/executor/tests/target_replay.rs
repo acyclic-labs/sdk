@@ -482,7 +482,14 @@ impl TargetResolver for Devices {
 // reply at the device boundary. Changing a roster cannot change that claim.
 #[tokio::test]
 async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<()> {
-    for (name, alias) in [("shell", None), ("shell", Some("user:ana")), ("fs", None)] {
+    for (name, alias, retained_alias) in [
+        ("shell", None, false),
+        ("shell", Some("user:ana"), false),
+        ("fs", None, false),
+        ("shell", None, true),
+        ("shell", Some("user:ana"), true),
+        ("fs", None, true),
+    ] {
         for state in ["online", "offline", "absent"] {
             let absent = state == "absent";
             let scope = RuntimeScope::new(
@@ -574,6 +581,22 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
             if let Some(alias) = alias {
                 invocation.arguments["target"] = alias.into();
             }
+            let pinned = if retained_alias {
+                let capability = executor.tool_binding(name)?.expect("original capability");
+                let mut definition = capability.definition.clone();
+                definition.name = "retained-command".into();
+                assert!(executor.tool_binding(&definition.name)?.is_none());
+                let binding = Arc::new(crate::tools::native::alias(
+                    definition,
+                    capability,
+                    invocation.arguments.clone(),
+                    None,
+                )?);
+                invocation.name = binding.definition.name.clone();
+                Some(binding)
+            } else {
+                None
+            };
             let journal = Journal::default();
             let first = executor
                 .clone()
@@ -584,7 +607,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                     &journal,
                     operation,
                     0,
-                    (invocation.clone(), None),
+                    (invocation.clone(), pinned.clone()),
                     0,
                     &mut messages,
                     &mut Vec::new(),
@@ -629,7 +652,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                     &journal,
                     operation,
                     0,
-                    (invocation.clone(), None),
+                    (invocation.clone(), pinned.clone()),
                     0,
                     &mut messages,
                     &mut Vec::new(),
@@ -647,7 +670,7 @@ async fn started_workspace_call_keeps_its_device_after_home_changes() -> Result<
                         &journal,
                         operation,
                         0,
-                        (invocation, None),
+                        (invocation, pinned),
                         0,
                         &mut messages,
                         &mut Vec::new(),
