@@ -84,15 +84,15 @@ impl SupervisionFeed {
         {
             Ok(records) => records,
             Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(feed.connection.stream_failure(error)),
+            Err(error) => return Err(self.0.connection.stream_failure(error)),
         };
         records
             .try_next()
             .await
-            .map_err(failed)?
+            .map_err(|error| self.0.connection.stream_failure(error))?
             .map(|record| {
-                let event: crate::supervision::Event =
-                    serde_json::from_slice(&record.value).map_err(failed)?;
+                let event: crate::supervision::Event = serde_json::from_slice(&record.value)
+                    .map_err(|error| self.0.connection.stream_failure(error))?;
                 if event.version != 1
                     || event.agent != *self.0.connection.root()
                     || event.run.is_some()
