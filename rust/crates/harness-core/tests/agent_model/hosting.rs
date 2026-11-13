@@ -550,7 +550,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
         let agent_failure = bound
             .agents()
             .runtime()
-            .delivery_failure(&bound.agents().actor(&agent)?)?;
+            .unavailable(&bound.agents().actor(&agent)?)?;
         let exercise = async {
             if completion == 3 {
                 let failure = agent_failure.await;

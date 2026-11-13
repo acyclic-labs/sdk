@@ -1996,7 +1996,9 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn actor_failure(&self, agent: AgentPath) -> BoxProviderFuture<'static, StreamError> {
+    /// Ends an agent's unbounded follows when its actor becomes unavailable,
+    /// never on one failed attempt: a retryable attempt keeps every follow.
+    fn actor_unavailable(&self, agent: AgentPath) -> BoxProviderFuture<'static, StreamError> {
         let server = self.this.clone();
         Box::pin(async move {
             let Some(server) = server.upgrade() else {
@@ -2007,7 +2009,7 @@ where
                 Ok(actor) => actor,
                 Err(error) => return StreamError::unavailable_with_cause(&error),
             };
-            let failure = match actors.runtime().delivery_failure(&actor) {
+            let failure = match actors.runtime().unavailable(&actor) {
                 Ok(failure) => failure,
                 Err(error) => return StreamError::unavailable_with_cause(&error),
             };
@@ -2038,7 +2040,7 @@ where
         if self.within_tree(&agent).is_err() {
             return None;
         }
-        Some(self.actor_failure(agent))
+        Some(self.actor_unavailable(agent))
     }
 
     fn target(

@@ -310,7 +310,7 @@ where
             let failed = self
                 .agents
                 .runtime()
-                .delivery_failure(&self.agents.actor(agent)?)
+                .unavailable(&self.agents.actor(agent)?)
                 .map_err(|error| {
                     Error::Stream(acyclic_stream::StreamError::unavailable_with_cause(&error))
                 })?;
@@ -446,7 +446,7 @@ where
                 let failed = self
                     .agents
                     .runtime()
-                    .delivery_failure(&self.agents.actor(agent)?)
+                    .unavailable(&self.agents.actor(agent)?)
                     .map_err(|error| {
                         Error::Stream(acyclic_stream::StreamError::unavailable_with_cause(&error))
                     })?;

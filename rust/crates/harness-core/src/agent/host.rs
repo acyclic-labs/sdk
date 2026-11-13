@@ -371,7 +371,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     pub async fn wait_for_input(&self, agent: &AgentPath, input: u64) -> Result<(), Error> {
         let failed = self
             .runtime
-            .delivery_failure(&self.actor(agent)?)
+            .unavailable(&self.actor(agent)?)
             .map_err(actor_error)?;
         let failed = std::pin::pin!(failed);
         let mut failed = failed;
@@ -394,7 +394,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
                 }
                 futures::future::Either::Right((cause, _)) => {
                     // A publication that settled this particular input wins
-                    // over a later failed delivery of another input.
+                    // over the actor becoming unavailable afterwards.
                     if self.input_progress(agent, input).await?.settled {
                         return Ok(());
                     }

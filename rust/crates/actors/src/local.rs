@@ -162,6 +162,43 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether a later attempt at the same retained input may decide it: an
+    /// undecided or backpressured outcome, a changed cut or guard, a pause or
+    /// an early alarm. Such a failure says nothing about the actor's
+    /// availability; every other failure makes it unavailable
+    /// (see [`Runtime::unavailable`]). Exhaustive, so each new failure is
+    /// classified where it is declared.
+    #[must_use]
+    pub fn retryable(&self) -> bool {
+        match self {
+            Self::Stream(error) => {
+                error.uncertain() || matches!(error.category(), StreamError::Capacity)
+            }
+            Self::Handler(failure) => matches!(
+                failure,
+                GuestError::Pending(_) | GuestError::PreconditionChanged
+            ),
+            Self::CallSettled { .. }
+            | Self::Unknown { .. }
+            | Self::InvocationDurabilityUnknown { .. }
+            | Self::Conflict
+            | Self::PreconditionChanged(_)
+            | Self::Paused
+            | Self::AlarmNotDue { .. } => true,
+            Self::Call(_)
+            | Self::InvocationTerminated { .. }
+            | Self::Clock(_)
+            | Self::CompletionStopped
+            | Self::CompletionFailed(_)
+            | Self::Escrow(_)
+            | Self::Settlement { .. }
+            | Self::PreconditionUnchanged
+            | Self::InvocationFailed { .. }
+            | Self::Deleted
+            | Self::Invalid(_) => false,
+        }
+    }
+
     /// Stable, path-free telemetry category. Unknown effects remain unknown.
     pub fn kind(&self) -> &'static str {
         match self {

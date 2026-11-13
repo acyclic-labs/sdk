@@ -34,8 +34,8 @@ async fn failed_external_sources_notify_only_their_actor_without_stopping_dispat
         );
         let affected = ActorReference::new(b"account", b"agents", b"affected")?;
         let unrelated = ActorReference::new(b"account", b"agents", b"unrelated")?;
-        let failed = runtime.delivery_failure(&affected)?;
-        let mut healthy = runtime.delivery_failure(&unrelated)?;
+        let failed = runtime.unavailable(&affected)?;
+        let mut healthy = runtime.unavailable(&unrelated)?;
         let selected = Selection {
             subscription: Subscription {
                 path: source,
