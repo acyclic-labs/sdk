@@ -209,3 +209,15 @@ fail at `another turn's pending measurement bypassed no-progress settlement`.
 the unchanged regression's exact assertion, reverse and require that regression
 to pass again. Execution remains pending. This query-boundary proof is separate
 from qualification of native process completion through the shipping binary.
+
+The shipping `acyclic-plugin --test cli` regression
+`supervision::headless_configured_morph_chat_preserves_usage_and_process_credentials`
+uses a configured Morph catalog entry and a real local Chat Completions HTTP
+endpoint. Complete trailer usage must stop a spending, unchanged turn through
+`no_progress`; missing trailer usage must instead preserve unknown spending and
+stop at the owner's token reservation. Each authenticated case admits exactly
+one model request with the Chat wire shape and process-only credential. The
+missing-credential control admits no request. The same persisted-artifact and
+output credential scan is shared with the root/worker configuration regression.
+These are real binary/input controls, not a claim of live service qualification.
+New execution remains pending.

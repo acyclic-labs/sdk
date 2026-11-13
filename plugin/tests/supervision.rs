@@ -519,6 +519,115 @@ async fn headless_spend_stops_at_the_configured_reservation() {
 }
 
 #[tokio::test]
+async fn headless_configured_morph_chat_preserves_usage_and_process_credentials() {
+    const KEY: &str = "fixture-morph-chat-process-key";
+    for (credential, measured) in [(false, true), (true, true), (true, false)] {
+        let fixture = fixture();
+        let authentication = Arc::new(Mutex::new(Vec::new()));
+        let observed = authentication.clone();
+        let model = model_with(fixture._directory.path(), "chat", move |headers, _, _| {
+            observed.lock().unwrap().push(
+                headers.get("authorization").is_some_and(|header| {
+                    header.as_bytes() == b"Bearer fixture-morph-chat-process-key"
+                }),
+            );
+            let usage = if measured {
+                format!("data: {}\n\n", json!({
+                    "choices":[], "usage":{"prompt_tokens":64,"completion_tokens":2,"total_tokens":66}
+                }))
+            } else { String::new() };
+            format!(
+                "data: {}\n\ndata: {}\n\n{usage}data: [DONE]\n\n",
+                json!({"choices":[{"delta":{"content":"Work remains."},"finish_reason":null}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"stop"}]}),
+            )
+        }).await;
+        let mut catalog: Value =
+            serde_json::from_slice(&std::fs::read(&model.catalog).unwrap()).unwrap();
+        catalog["morph"]["authentication"] = json!("api_key");
+        std::fs::write(&model.catalog, serde_json::to_vec(&catalog).unwrap()).unwrap();
+        let plugins = task_plugins(&fixture);
+        let goal = fixture._directory.path().join("morph-goal.md");
+        let policy_file = fixture._directory.path().join("morph-policy.json");
+        std::fs::write(&goal, "Finish the task with the configured provider.\n").unwrap();
+        let mut policy = Policy {
+            no_progress_turns: Some(1),
+            ..Default::default()
+        };
+        policy.reservation.tokens = Some(10_000);
+        policy.actions.insert(Kind::NoProgress, Action::Stop);
+        policy.actions.insert(Kind::Spend, Action::Stop);
+        std::fs::write(&policy_file, serde_json::to_vec(&policy).unwrap()).unwrap();
+        let mut command = graphcoder_command(&fixture);
+        command
+            .env_remove("MORPH_API_KEY")
+            .arg("--settings-root")
+            .arg(&fixture.settings)
+            .arg("--catalog")
+            .arg(&model.catalog)
+            .arg("--home-file")
+            .arg(&plugins)
+            .args(["--model", "morph/morph-kimik31", "run", "--goal"])
+            .arg(&goal)
+            .arg("--policy")
+            .arg(&policy_file);
+        if credential {
+            command.env("MORPH_API_KEY", KEY);
+        }
+        let output = capture(command, "").await;
+        if !credential {
+            assert!(!output.status.success());
+            assert_eq!(
+                model.generated(),
+                0,
+                "missing Morph credential dispatched paid work"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("model provider API key is unavailable"),
+                "missing Morph credential was not refused before dispatch"
+            );
+        } else {
+            let expected = if measured {
+                Kind::NoProgress
+            } else {
+                Kind::Spend
+            };
+            assert_eq!(
+                output.status.code(),
+                Some(if measured { 22 } else { 25 }),
+                "configured Morph chat lost original usage supervision: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["result"]["kind"], "terminal");
+            assert_eq!(
+                result["result"]["signal"],
+                expected.name(),
+                "missing Chat usage became a measured zero or complete usage was lost"
+            );
+            assert_eq!(authentication.lock().unwrap().as_slice(), &[true]);
+            let requests = model.requests.lock().unwrap();
+            assert_eq!(
+                requests.len(),
+                1,
+                "Morph terminal signal redispatched paid work"
+            );
+            assert_eq!(requests[0]["model"], "morph-kimik31");
+            assert!(requests[0]["messages"].is_array());
+            assert!(
+                requests[0].get("input").is_none(),
+                "configured Chat used the Responses wire shape"
+            );
+            assert_eq!(requests[0]["stream_options"]["include_usage"], true);
+        }
+        assert_no_fixture_credentials(&fixture, &output, &[KEY]);
+        model.close().await;
+    }
+}
+
+#[tokio::test]
 async fn headless_repeated_model_output_stops_across_goal_turns() {
     terminal_script(
         vec![ANSWER.into()],
@@ -902,7 +1011,12 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
         1
     );
     drop(requests);
-    for key in [ROOT_KEY, WORKER_KEY] {
+    assert_no_fixture_credentials(&fixture, &output, &[ROOT_KEY, WORKER_KEY]);
+    model.close().await;
+}
+
+fn assert_no_fixture_credentials(fixture: &Fixture, output: &Output, keys: &[&str]) {
+    for key in keys {
         assert!(
             !output
                 .stdout
@@ -925,7 +1039,7 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
                 directories.push(entry.path());
             } else if kind.is_file() {
                 let bytes = std::fs::read(entry.path()).unwrap();
-                for key in [ROOT_KEY, WORKER_KEY] {
+                for key in keys {
                     assert!(
                         !bytes
                             .windows(key.len())
@@ -936,5 +1050,4 @@ async fn headless_role_models_and_mixed_catalog_use_only_process_credentials() {
             }
         }
     }
-    model.close().await;
 }
