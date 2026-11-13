@@ -128,7 +128,7 @@ pub async fn compose_result(
     fold(path, layers, tree, base, None, cache()).await
 }
 
-struct Evidence {
+pub(super) struct Evidence {
     layers: Vec<LayerInput>,
     modules: Vec<ModuleCut>,
     identity: blake3::Hasher,
