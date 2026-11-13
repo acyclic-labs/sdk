@@ -105,11 +105,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
                 return Ok(snapshot);
             }
             let provider = self.agents.provider();
-            let minimum = snapshot.cut.revision.clone();
+            let wait_minimum = snapshot.cut.revision.clone();
             let mut waiting = sources
                 .into_iter()
                 .map(|(path, from)| {
-                    let minimum = minimum.clone();
+                    let minimum = wait_minimum.clone();
                     async move {
                         let updates = provider
                             .follow(acyclic_stream::FollowRequest {
