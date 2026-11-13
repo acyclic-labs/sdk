@@ -63,17 +63,21 @@ async fn stop_checks_writes_from_settlement_continuations() -> Result<()> {
             ]));
         }
         let provider = scripted(turns);
-        let harness = Arc::new(
-            LocalHarness::open(
-                checkout_config(&workspace, (model()?, provider.clone()))?
-                    .workspace_mounting(crate::local::WorkspaceMounting::Physical)
-                    .settings(
-                        crate::native_settings::SettingsConfig::new(&workspace, &home)
-                            .codex_home(home.join(".codex")),
-                    ),
-            )
-            .await?,
+        let temporary_homes = crate::native_settings::test_support::temporary_home_allocations();
+        let config = crate::test_support::local_harness_config_with_settings(
+            &workspace,
+            (model()?, provider.clone()),
+            crate::native_settings::SettingsConfig::new(&workspace, &home)
+                .codex_home(home.join(".codex")),
+        )
+        .compaction(crate::context::CompactionPolicy::Disabled)
+        .workspace_mounting(crate::local::WorkspaceMounting::Physical);
+        assert_eq!(
+            crate::native_settings::test_support::temporary_home_allocations(),
+            temporary_homes,
+            "explicit settlement settings allocated an unused temporary home"
         );
+        let harness = Arc::new(LocalHarness::open(config).await?);
         let mut observed = ObservedConversation::open(&harness).await?;
         let entry = observed.send("task", "Finish the task").await?;
         if !repair {

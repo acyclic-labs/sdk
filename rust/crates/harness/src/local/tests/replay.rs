@@ -64,6 +64,15 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
     // Identical fixture inputs include identities, not just prompt text. Drive
     // the original scheduler and entropy boundary; never normalize requests.
     let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    schedule.set_process_provider(|_, _, _| {
+        Err(acyclic_native_runtime::ProcessCaptureFailure {
+            error: std::io::Error::other("logical replay attempted a native command"),
+            status: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            cleanup_completed: true,
+        })
+    });
     let mut running = Box::pin(schedule.scope(async {
         let directory = tempfile::tempdir().map_err(agent)?;
         let project = volume(directory.path()).await?;
@@ -98,6 +107,13 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
             () = schedule.drained() => break,
         }
     }
+    assert!(
+        schedule
+            .trace()
+            .iter()
+            .all(|event| !event.starts_with("process:")),
+        "logical replay requested unrelated native process capture"
+    );
     result
 }
 
