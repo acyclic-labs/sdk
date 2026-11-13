@@ -45,10 +45,12 @@ numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
 unavailable prompt. Credential contents never enter diagnostics.
 
-The current owner.v6 record admits external native preparation and host-owned
-journals with read-only selected inputs, and retains the same store-owned seed
-reference. If that record is absent but owner.json,
-owner.v2, owner.v3, owner.v4 or owner.v5 exists, both opening and explicit deletion
+The current owner.v7 record admits external native preparation, host-owned
+journals and pinned hook configurations with read-only selected inputs, and
+retains the same store-owned seed reference. If that record is absent but
+owner.json,
+owner.v2, owner.v3, owner.v4, owner.v5 or owner.v6 exists, both opening and
+explicit deletion
 return Error::Conflict with: local state at <dir> uses an older format; remove
 that directory to start fresh. Refusal happens before decoding the older
 record or accessing credentials, and leaves its bytes unchanged. There is
@@ -56,7 +58,10 @@ no compatible reader, migration, adoption, or silent key regeneration.
 This refusal precedes filesystem attachment, lazy discovery and checkout
 capture: a v3 owner can retain interrupted v5 target/backup data inside the
 checkout, a v4 owner can retain interaction records in an authored volume, and
-a v5 owner retains the earlier journal policy.
+a v5 owner retains the earlier journal policy, and a v6 owner retains per-turn
+hook configuration on a private volume. Reopening that turn with a different
+publisher could select new settings, so admission refuses the old format before
+attaching any filesystem.
 Finish or discard that recovery using its original runtime before
 starting fresh. A former recovery basename in a workspace with current state
 is an ordinary authored name; admission never probes or filters it.

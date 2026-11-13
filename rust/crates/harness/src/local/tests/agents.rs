@@ -2283,6 +2283,9 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     // Crash: the turn is still waiting on the model when the harness drops.
     drop(observed);
     drop(harness);
+    // The interrupted turn keeps its pinned configuration even when the live
+    // settings remove the hook before its owner reopens.
+    std::fs::write(home.join(".claude/settings.json"), br#"{"hooks":{}}"#).map_err(agent)?;
     let resumed = Arc::new(
         ScriptedModelProvider::new([crate::test_support::ScriptedTurn::Text("done".into())])
             .with_context_capacity(super::capacity())
@@ -2331,6 +2334,80 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
         .ok_or_else(|| Error::NotFound("private volume".into()))?
         .volume()?;
+    // Configuration is a host publication on the journal; replay selects the
+    // original receipt, not the now-empty live settings or the private volume.
+    let bound = harness.agents.get().unwrap().server().bound();
+    let journal = crate::conversation::journal_volume(private.provider().clone(), &root.id())?;
+    let scope = harness
+        .root_authority
+        .as_ref()
+        .expect("hook fixture owns its signing custody")
+        .bootstrap_scope(
+            "hook-snapshot-inspection",
+            &crate::Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+                journal.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                journal.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(crate::AgentId::from_bytes(root.id_bytes())),
+            &mut None,
+        )?;
+    let content = crate::runtime::ContentBindings {
+        reader: crate::filesystem::FilesystemContentVerifier::new(
+            harness.files.clone(),
+            &harness.verifier,
+            &scope,
+            harness.limits.file_bytes,
+            None,
+        )?,
+        writer: Some(crate::filesystem::FilesystemContentPublisher::new(
+            harness.files.clone(),
+            &journal,
+            &harness.verifier,
+            &scope,
+            harness.limits.file_bytes,
+            None,
+        )?),
+        volume: journal,
+    };
+    let configuration_operation = crate::local::context::publication_operation(
+        b"acyclic.local.turn-hooks/v1\0",
+        &turn.into_bytes(),
+    );
+    let (configuration, _) = content
+        .writer
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("hook journal publisher".into()))?
+        .observe_staged_once(
+            configuration_operation,
+            None,
+            harness.limits.file_bytes,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let configuration =
+        configuration.ok_or_else(|| Error::NotFound("original hook configuration".into()))?;
+    assert_eq!(configuration.volume(), &content.volume);
+    assert_ne!(configuration.volume(), private);
+    assert_eq!(configuration.path(), format!("config/hooks/{turn}.json"));
+    let bytes = content
+        .reader
+        .read(
+            &configuration,
+            configuration.descriptor().byte_length(),
+            None,
+            None,
+        )?
+        .await?;
+    assert!(
+        !serde_json::from_slice::<crate::hooks::Hooks>(&bytes)
+            .map_err(agent)?
+            .is_empty()
+    );
+    assert!(matches!(
+        bound.read_file(&root, &configuration, 0, configuration.descriptor().byte_length()).await,
+        Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
+    ));
     assert_eq!(names(&harness, private, "hooks").await?, [turn.to_string()]);
     let recorded = names(&harness, private, &format!("hooks/{turn}")).await?;
     let [outcome, marker] = recorded.as_slice() else {

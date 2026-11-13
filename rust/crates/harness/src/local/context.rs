@@ -294,7 +294,7 @@ impl LocalHarness {
         };
         hooks.append(self.plugin_set.rules.clone());
         let bytes = hooks.encode(self.limits.file_bytes)?;
-        let path = format!("inputs/{turn}.hooks.json");
+        let path = format!("config/hooks/{turn}.json");
         let staged = publisher
             .stage_once(
                 operation,

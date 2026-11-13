@@ -1,5 +1,5 @@
-//! Configured lifecycle hooks of one agent turn. The turn's context manifest
-//! carries the hook configuration; prompt events run once before the model
+//! Configured lifecycle hooks of one agent turn. The host's journal pins
+//! the hook configuration; prompt events run once before the model
 //! sees the turn, and tool and stop events run in the stock loop.
 use super::*;
 use crate::{
@@ -17,15 +17,17 @@ impl StockExecutor {
     /// outcome, keeping its context. Their context precedes the turn; a block
     /// fails the turn when it runs, before any model request. Hooks bind per
     /// turn, outside the frozen context epoch: they are behaviour, not prefix.
+    /// The source reader retains host custody only for loading this pinned
+    /// configuration; hook commands keep the original task context and scope.
     pub async fn with_agent_hooks(
         self,
         context: &TaskContext,
         turn: OperationId,
         prompt: &ModelContent,
         session: OperationId,
-        source: Option<&FileRef>,
+        source: Option<(&FileRef, &dyn crate::conversation::ContentResidencyVerifier)>,
     ) -> Result<Self> {
-        let Some(source) = source else {
+        let Some((source, reader)) = source else {
             return Ok(self);
         };
         if source.descriptor().media_type() != Hooks::MEDIA_TYPE {
@@ -33,7 +35,15 @@ impl StockExecutor {
                 "hook configuration has the wrong media type".into(),
             ));
         }
-        let bytes = context.read_file(source, None).await?;
+        context.scope().limits().validate_file(source, &mut None)?;
+        let (bytes, _hold) = crate::conversation::verified_content_bytes(
+            reader,
+            source,
+            context.scope().limits().file_bytes,
+            None,
+            None,
+        )
+        .await?;
         let mut digest = blake3::Hasher::new_derive_key("acyclic.agent.hooks/v1");
         digest.update(blake3::hash(&bytes).as_bytes());
         let rules: Hooks = serde_json::from_slice(&bytes)
