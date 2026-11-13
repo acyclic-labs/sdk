@@ -28,7 +28,8 @@ impl StockExecution<'_> {
         revision: String,
     ) -> Result<StockExecution<'_>> {
         Ok(StockExecution {
-            stock: std::borrow::Cow::Borrowed(self.stock.as_ref()),
+            stock: ExecutionConfiguration::Borrowed(&self.stock),
+            configuration: None,
             context: self.context,
             io: self.io,
             summary: Some(ContextPipeline::summary_source(source, revision, self.io)?),

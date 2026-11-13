@@ -1,7 +1,8 @@
 use super::*;
 
 pub(in crate::executor) struct StockExecution<'a> {
-    pub(in crate::executor) stock: std::borrow::Cow<'a, StockExecutor>,
+    pub(in crate::executor) stock: ExecutionConfiguration<'a>,
+    pub(in crate::executor) configuration: Option<&'a Arc<dyn StepConfiguration>>,
     pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) io: Option<&'a PreparationIo>,
     pub(in crate::executor) summary: Option<ContextPipeline>,
@@ -17,6 +18,21 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) request_cache:
         tokio::sync::Mutex<crate::executor::retained_request::RequestCache<'a>>,
     pub(in crate::executor) content_admission: crate::executor::ExecutionJournalCacheId,
+}
+
+pub(in crate::executor) enum ExecutionConfiguration<'a> {
+    Borrowed(&'a StockExecutor),
+    Shared(Arc<StockExecutor>),
+}
+
+impl std::ops::Deref for ExecutionConfiguration<'_> {
+    type Target = StockExecutor;
+    fn deref(&self) -> &StockExecutor {
+        match self {
+            Self::Borrowed(stock) => stock,
+            Self::Shared(stock) => stock,
+        }
+    }
 }
 
 /// One writer entrance for an execution and its borrowed summary sessions.
@@ -59,7 +75,8 @@ pub(in crate::executor) struct ResolvedCompaction<'a> {
 impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self {
-            stock: std::borrow::Cow::Borrowed(stock),
+            stock: ExecutionConfiguration::Borrowed(stock),
+            configuration: stock.step_configuration.as_ref(),
             context: stock
                 .task_context
                 .as_ref()
