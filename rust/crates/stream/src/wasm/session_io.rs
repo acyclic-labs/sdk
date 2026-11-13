@@ -76,20 +76,28 @@ fn failure(error: JsValue) -> transport::Failure {
         .ok()
         .and_then(|value| value.as_bool())
         == Some(true);
-    let error = match Reflect::get(&error, &"refusal".into()) {
-        Ok(refusal) if refusal.is_undefined() => Reflect::get(&error, &"code".into())
+    let error = coded(&error).unwrap_or(StreamError::Unavailable);
+    transport::Failure { error, transient }
+}
+
+/// The Stream error a JavaScript failure carries: its original refusal when
+/// present, so details such as a not-before authority time survive, otherwise
+/// its canonical code. `None` when it carries neither.
+pub(crate) fn coded(error: &JsValue) -> Option<StreamError> {
+    match Reflect::get(error, &"refusal".into()) {
+        Ok(refusal) if refusal.is_undefined() => Reflect::get(error, &"code".into())
             .ok()
             .and_then(|code| code.as_string())
             .as_deref()
-            .and_then(StreamError::from_code)
-            .unwrap_or(StreamError::Unavailable),
-        Ok(refusal) => acyclic_auth::refusal::javascript::parts(&refusal, |view| {
-            crate::javascript_bytes::snapshot(view, |_| Ok(())).map(|(bytes, ())| bytes)
-        })
-        .map_or(StreamError::Unavailable, wire_codec::status::status_owned),
-        Err(_) => StreamError::Unavailable,
-    };
-    transport::Failure { error, transient }
+            .and_then(StreamError::from_code),
+        Ok(refusal) => Some(
+            acyclic_auth::refusal::javascript::parts(&refusal, |view| {
+                crate::javascript_bytes::snapshot(view, |_| Ok(())).map(|(bytes, ())| bytes)
+            })
+            .map_or(StreamError::Unavailable, wire_codec::status::status_owned),
+        ),
+        Err(_) => None,
+    }
 }
 impl Connection {
     fn call(&self, method_name: &str, value: &JsValue) -> Result<JsFuture, transport::Failure> {
