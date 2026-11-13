@@ -67,6 +67,35 @@ impl Tree for Metered<'_> {
     }
 }
 
+struct EntryHashCut<'a> {
+    tree: Metered<'a>,
+    before: &'a std::sync::atomic::AtomicU64,
+}
+
+impl Tree for EntryHashCut<'_> {
+    fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        Some(self.tree.io)
+    }
+
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+        if path.ends_with("/main.ps1") {
+            self.before.store(
+                self.tree
+                    .io
+                    .original_native_work()
+                    .unwrap()
+                    .receipt()
+                    .bytes_hashed,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+        self.tree.read(path)
+    }
+}
+
 #[tokio::test]
 async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation() -> Result<()> {
     let mut files = Files::program("tools/count");
@@ -126,14 +155,69 @@ async fn repeated_program_loads_keep_each_receivers_allocation_and_cancellation(
     assert_eq!(tight.live_allocation_bytes(), baseline);
     let receiver = make_work(16 * 1024 * 1024, &cancel)?;
     let receiver_io = crate::filesystem::PreparationIo::from_native_work(&receiver)?;
+    let entry_hash_cut = std::sync::atomic::AtomicU64::new(u64::MAX);
     let second = load_program(
-        &Metered {
-            files: &files,
-            io: &receiver_io,
+        &EntryHashCut {
+            tree: Metered {
+                files: &files,
+                io: &receiver_io,
+            },
+            before: &entry_hash_cut,
         },
         "tools/count",
     )
     .await?;
+    let before_entry = entry_hash_cut.load(std::sync::atomic::Ordering::SeqCst);
+    assert_ne!(
+        before_entry,
+        u64::MAX,
+        "the original native entry was not read"
+    );
+    assert!(
+        receiver.receipt().bytes_hashed - before_entry
+            >= files.files["tools/count/main.ps1"].len() as u64,
+        "entry hashing escaped the receiving operation"
+    );
+    let limited = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 16 * 1024 * 1024,
+            bytes_hashed: before_entry,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let limited_io = crate::filesystem::PreparationIo::from_native_work(&limited)?;
+    let limited_cut = std::sync::atomic::AtomicU64::new(u64::MAX);
+    let error = load_program(
+        &EntryHashCut {
+            tree: Metered {
+                files: &files,
+                io: &limited_io,
+            },
+            before: &limited_cut,
+        },
+        "tools/count",
+    )
+    .await
+    .expect_err("a cached manifest cannot fund hashing its native entries");
+    assert_ne!(
+        limited_cut.load(std::sync::atomic::Ordering::SeqCst),
+        u64::MAX,
+        "hash allowance refused before the native entry boundary"
+    );
+    assert!(matches!(
+        error,
+        Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "bytes_hashed",
+                    ..
+                }
+            ),
+            ..
+        }
+    ));
     assert_eq!(first.definition, second.definition);
     let retained = second.custody.as_ref().unwrap().bytes();
     assert!(retained >= 65536);

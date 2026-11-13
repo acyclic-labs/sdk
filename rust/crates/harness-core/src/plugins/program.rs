@@ -288,15 +288,26 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         }
     }
     let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.program.v1");
-    identity.update(&evaluated.digest);
+    let mut update = |bytes: &[u8]| -> Result<()> {
+        let delta = acyclic_fs::WorkCounters {
+            bytes_hashed: bytes.len() as u64,
+            ..Default::default()
+        };
+        if let Some(io) = tree.preparation_io() {
+            io.charged(delta)?;
+        }
+        identity.update(bytes);
+        Ok(())
+    };
+    update(&evaluated.digest)?;
     let mut native = None;
     for (form, entry) in [
         ("sh", &manifest.value.entry.sh),
         ("ps1", &manifest.value.entry.ps1),
     ] {
-        identity.update(form.as_bytes());
+        update(form.as_bytes())?;
         let Some(entry) = entry else {
-            identity.update(&[0]);
+            update(&[0])?;
             continue;
         };
         crate::executor::with_history_io(tree.preparation_io(), |work| {
@@ -316,11 +327,11 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
             .ok_or_else(|| Error::NotFound(script_path.clone()))?;
         let script = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid(format!("{script_path}: entry is not UTF-8")))?;
-        identity.update(&[1]);
-        identity.update(&(entry.len() as u64).to_be_bytes());
-        identity.update(entry.as_bytes());
-        identity.update(&(bytes.len() as u64).to_be_bytes());
-        identity.update(&bytes);
+        update(&[1])?;
+        update(&(entry.len() as u64).to_be_bytes())?;
+        update(entry.as_bytes())?;
+        update(&(bytes.len() as u64).to_be_bytes())?;
+        update(&bytes)?;
         if (form == "ps1") == cfg!(windows) {
             native = Some(crate::executor::stock_string_copy(script, io)?);
         }
