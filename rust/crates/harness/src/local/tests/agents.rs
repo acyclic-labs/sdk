@@ -5618,6 +5618,61 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
     assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
     assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
+    // A later failed delivery cannot revoke the warm-up's committed results,
+    // including queries whose caller permits waiting for new progress.
+    hosted
+        .agents()
+        .wait_for_input(&root, warmup)
+        .await
+        .map_err(agent)?;
+    for command in [
+        acyclic_harness_client::AgentCommand::Usage {
+            agent: root.clone(),
+            input: warmup,
+            after: 0,
+            wait: true,
+            observed_children: Some(0),
+        },
+        acyclic_harness_client::AgentCommand::Events {
+            agent: root.clone(),
+            input: warmup,
+            after: 0,
+            wait: true,
+        },
+    ] {
+        match connection.execute(&command).await? {
+            acyclic_harness_client::AgentReply::Usage {
+                page: Some(_),
+                settled: true,
+                ..
+            }
+            | acyclic_harness_client::AgentReply::Events {
+                page: Some(_),
+                settled: true,
+                ..
+            } => {}
+            other => {
+                return Err(Error::Invalid(format!(
+                    "saved warm-up result lost: {other:?}"
+                )));
+            }
+        }
+    }
+    // Client::read is a bounded Follow on the same physical Session. Its
+    // terminal must not inherit the failed live producer's diagnostic.
+    let mut saved = connection
+        .session
+        .read(ReadRequest {
+            path: root.conversation().map_err(agent)?,
+            from: 0,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(agent)?;
+    assert!(saved.try_next().await.map_err(agent)?.is_some());
+    assert!(saved.try_next().await.map_err(agent)?.is_none());
     if let Some((stop, serving)) = transport {
         let _ = stop.send(());
         serving.await.map_err(agent)??;
