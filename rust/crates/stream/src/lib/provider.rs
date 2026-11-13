@@ -94,6 +94,25 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         )
     }
 
+    /// Reserves `root` as an ephemeral subtree held by the returned lease.
+    /// `root` must be absent, outside every other lease, beneath a present
+    /// parent (or top-level). A write publishing only beneath `root` is then
+    /// atomic, conditioned, idempotent and observable like any other, but
+    /// lives only in this process's memory: never journalled or flushed,
+    /// never listed by a children page, never in a snapshot. A write that
+    /// publishes durably may name no ephemeral path at all, so it is refused
+    /// with `InvalidArgument`, as is one mixing scopes or leases. Dropping or
+    /// settling the lease removes the whole subtree, and its followers then
+    /// observe `NotFound`; process death removes it too. Providers that
+    /// cannot hold one in process report `Unsupported`.
+    async fn lease_ephemeral(&self, _root: StreamPath) -> Result<EphemeralLease, StreamError> {
+        acyclic_observability::operation!(
+            "acyclic.stream.lease_ephemeral",
+            StreamError::code,
+            || Err(StreamError::Unsupported)
+        )
+    }
+
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,
@@ -137,4 +156,58 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         &self,
         commit_id: CommitId,
     ) -> std::result::Result<CommittedEnvelope, StreamError>;
+}
+
+/// Custody of one ephemeral subtree; see [`StreamProvider::lease_ephemeral`].
+/// Dropping it releases the subtree without blocking.
+#[must_use = "dropping the lease releases its subtree"]
+pub struct EphemeralLease {
+    root: StreamPath,
+    release: Option<BoxProviderFuture<'static, Result<(), StreamError>>>,
+}
+
+impl EphemeralLease {
+    /// A lease whose `release` removes the subtree at `root` exactly once.
+    pub fn new(
+        root: StreamPath,
+        release: BoxProviderFuture<'static, Result<(), StreamError>>,
+    ) -> Self {
+        Self {
+            root,
+            release: Some(release),
+        }
+    }
+
+    /// The leased subtree root.
+    #[must_use]
+    pub fn root(&self) -> &StreamPath {
+        &self.root
+    }
+
+    /// Releases the subtree and waits until it is gone.
+    pub async fn settle(mut self) -> Result<(), StreamError> {
+        match self.release.take() {
+            Some(release) => release.await,
+            None => Ok(()),
+        }
+    }
+}
+
+impl std::fmt::Debug for EphemeralLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EphemeralLease")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for EphemeralLease {
+    fn drop(&mut self) {
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        if let Some(release) = self.release.take() {
+            crate::runtime::PlatformExecutor
+                .spawn_owned(futures::FutureExt::map(release, |_released| ()));
+        }
+    }
 }

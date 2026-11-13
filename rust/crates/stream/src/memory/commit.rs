@@ -12,6 +12,8 @@ struct CommitPublication {
     envelope: CommittedEnvelope,
     result: CommitOutcome,
     namespace: Namespace,
+    /// The accepted commit time, once bound.
+    time: u64,
     resident: Allocation,
     output_claim: Allocation,
     _scratch: Allocation,
@@ -44,6 +46,7 @@ impl CommitPlan {
     ) -> Result<CommitPublication, StreamError> {
         let namespace = stage_namespace(state, self.paths, self.histories, &self.envelope, build)?;
         Ok(CommitPublication {
+            time: self.envelope.committed_at_micros,
             envelope: self.envelope,
             result: self.result,
             namespace,
@@ -64,6 +67,7 @@ impl CommitPublication {
         if let CommitOutcome::Committed(receipt) = &mut self.result {
             receipt.committed_at_micros = time;
         }
+        self.time = time;
         Ok(time)
     }
 
@@ -73,21 +77,28 @@ impl CommitPublication {
         probe: &mut impl FnMut(u64),
         key: IdempotencyKey,
         digest: [u8; 32],
-        time: u64,
-        retained: RetainedFactRef,
+        scope: &Scope,
+        retained: Option<RetainedFactRef>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        install_namespace(state, self.namespace, &self.envelope)?;
-        state.decision += 1;
-        state.last_committed_at_micros = time;
-        retain(
-            state,
-            probe,
-            None,
-            Some(key),
-            digest,
-            IdempotencyOutcome::Commit(self.envelope),
-            (self.resident, retained),
-        );
+        install_namespace(state, self.namespace, &self.envelope, scope)?;
+        state.advance(scope, self.time);
+        let result = IdempotencyOutcome::Commit(self.envelope);
+        if let Some(retained) = retained {
+            retain(
+                state,
+                probe,
+                None,
+                Some(key),
+                digest,
+                result,
+                (self.resident, retained),
+            );
+        } else {
+            let index = state.decision;
+            state
+                .ephemeral
+                .retain(scope, &key, digest, result, index, self.resident);
+        }
         Ok((self.result, self.output_claim))
     }
 }
@@ -494,15 +505,17 @@ impl MemoryStream {
         >,
         StreamError,
     > {
-        if let Some(replay) = self.replay(state, request.idempotency_key.as_bytes())? {
-            if replay.digest != digest {
+        let scope = state.ephemeral.commit_scope(request)?;
+        if let Some((replayed, result, index)) =
+            self.replay_in(state, &scope, request.idempotency_key.as_bytes())?
+        {
+            if *replayed != digest {
                 return Err(StreamError::IdempotencyMismatch);
             }
-            let IdempotencyOutcome::Commit(result) = &replay.result else {
+            let IdempotencyOutcome::Commit(result) = result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            let (receipt, mut claim) =
-                self.replayed(request, result, self.revisions.at(replay.index))?;
+            let (receipt, mut claim) = self.replayed(request, result, self.revisions.at(index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
             return Ok(Decision::Returned((
                 commit_projection(CommitOutcome::Committed(receipt), envelope)?,
@@ -581,20 +594,22 @@ impl MemoryStream {
                 }
             }),
         )?;
-        admit_replay(state, self.limits)?;
+        let durable = matches!(scope, Scope::Durable);
+        if durable {
+            admit_replay(state, self.limits)?;
+        }
         reserve_coordinated(state, &applied, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.admit_codec(0, 0, identity_bytes()))?;
         }
-        let commit_id = commit_identity(decision, digest);
+        let (decision, commit_id) = state.identity(&scope, digest)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        let retained = self.reserve_retained(state)?;
+        let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
         let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
         drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;
@@ -621,13 +636,15 @@ impl MemoryStream {
                 if let Some(envelope) = &mut envelope {
                     bind_envelope(envelope, commit_id, time);
                 }
-                let retained = self.install_retained(state, retained)?;
+                let retained = retained
+                    .map(|retained| self.install_retained(state, retained))
+                    .transpose()?;
                 let (outcome, allocation) = publication.publish(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),
                     request.idempotency_key.clone(),
                     digest,
-                    time,
+                    &scope,
                     retained,
                 )?;
                 Ok((commit_projection(outcome, envelope)?, allocation))
@@ -867,6 +884,9 @@ fn stage_namespace(
                 #[cfg(not(all(loom, not(target_arch = "wasm32"))))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
+                // No fork carries another lease's ephemeral subtree.
+                let subtree =
+                    Namespace::excluded(&subtree, &state.ephemeral.nested(&fork.source)?, build)?;
                 origin = Some(ForkMarker {
                     source: fork.source.clone(),
                     snapshot: subtree.clone(),
@@ -890,8 +910,10 @@ fn install_namespace(
     state: &mut State,
     next: Namespace,
     envelope: &CommittedEnvelope,
+    scope: &Scope,
 ) -> Result<(), StreamError> {
-    if next.len() != state.paths.len() {
+    // Ephemeral paths are never listed, so they never move the hierarchy.
+    if matches!(scope, Scope::Durable) && next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }
     state.path_bytes = next.bytes();
@@ -947,11 +969,20 @@ fn install_namespace(
             signals.changed.send_replace(tail);
             crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
-        state.record_count += fact_records(fact).len();
-        state.payload_bytes += fact_records(fact)
+        let records = fact_records(fact).len();
+        let payload_bytes = fact_records(fact)
             .iter()
             .map(|record| record.payload_bytes())
             .sum::<usize>();
+        state.record_count += records;
+        state.payload_bytes += payload_bytes;
+        // A release returns exactly what its subtree was charged.
+        if let Scope::Ephemeral(root) = scope
+            && let Some(lease) = state.ephemeral.roots.get_mut(root)
+        {
+            lease.records += records;
+            lease.payload_bytes += payload_bytes;
+        }
     }
     Ok(())
 }

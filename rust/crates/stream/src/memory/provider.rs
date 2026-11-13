@@ -216,6 +216,9 @@ fn head_at(
     durable: bool,
     _work: CaptureWork<'_>,
 ) -> Result<Option<crate::PathHead>, StreamError> {
+    // An ephemeral path has no persistence to claim.
+    let durable = durable && state.ephemeral.root_of(path.as_str()).is_none();
+    let through = through.filter(|_| state.ephemeral.root_of(path.as_str()).is_none());
     state
         .paths
         .get(path)
@@ -268,23 +271,28 @@ fn namespace_page(
     lower: Option<&str>,
     parent: Option<&StreamPath>,
     limit: usize,
+    hidden: &Ephemeral,
     out: &mut Vec<StreamPath>,
 ) -> Result<(), StreamError> {
     let Some(edge) = index else {
         return Ok(());
     };
     if lower.is_none_or(|after| edge.name.text.as_str() > after) {
-        namespace_page(&edge.left, lower, parent, limit, out)?;
+        namespace_page(&edge.left, lower, parent, limit, hidden, out)?;
         if out.len() == limit {
             return Ok(());
         }
-        out.push(StreamPath::new(parent.map_or_else(
+        let path = StreamPath::new(parent.map_or_else(
             || edge.name.text.to_string(),
             |parent| format!("{}/{}", parent.as_str(), edge.name.text),
-        ))?);
+        ))?;
+        // A lease root is never listed, so neither is anything beneath it.
+        if !hidden.roots.contains_key(&path) {
+            out.push(path);
+        }
     }
     if out.len() < limit {
-        namespace_page(&edge.right, lower, parent, limit, out)?;
+        namespace_page(&edge.right, lower, parent, limit, hidden, out)?;
     }
     Ok(())
 }
@@ -391,6 +399,12 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
         .as_ref()
         .map_or(Some(&state.paths.roots), |parent| {
             state.paths.node(parent).map(|node| &node.children)
+        })
+        .filter(|_| {
+            request
+                .parent
+                .as_ref()
+                .is_none_or(|parent| state.ephemeral.root_of(parent.as_str()).is_none())
         });
     let lower = request
         .after
@@ -403,6 +417,7 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
             lower,
             request.parent.as_ref(),
             request.limit as usize + 1,
+            &state.ephemeral,
             &mut paths,
         )?;
     }
@@ -457,6 +472,19 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
 impl StreamProvider for MemoryStream {
     fn context(&self) -> crate::ProviderContext<'_> {
         crate::ProviderContext::new(&self.operation_claims).with_process_exclusion()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn lease_ephemeral(
+        &self,
+        root: StreamPath,
+    ) -> Result<crate::EphemeralLease, StreamError> {
+        acyclic_observability::async_operation!(
+            "acyclic.stream.lease_ephemeral",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            self.lease_ephemeral_inner(root)
+        )
     }
 
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {

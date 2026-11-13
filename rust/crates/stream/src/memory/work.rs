@@ -113,6 +113,8 @@ impl MemoryStream {
     /// branch the fork excludes moves it too, refusing conservatively.
     /// Commits anywhere else in the store never move it. Both native
     /// providers compare this one cut before and after the guard.
+    /// Lease release is also counted because removing ephemeral paths can
+    /// otherwise make a tail sum return to a previous value.
     #[cfg(not(target_arch = "wasm32"))]
     fn guard_cut_locked(
         &self,
@@ -139,6 +141,7 @@ impl MemoryStream {
         Ok(GuardCut {
             replayed,
             tails,
+            released: state.ephemeral.released,
             subtrees,
             _allocation: allocation,
         })
@@ -308,6 +311,7 @@ fn inspect<T>(meter: &Arc<dyn NativeReadMeter>, lookup: impl FnOnce() -> T) -> s
 pub(crate) struct GuardCut {
     replayed: bool,
     tails: u128,
+    released: u64,
     subtrees: Vec<Option<Arc<NamespaceNode>>>,
     _allocation: Allocation,
 }
@@ -316,6 +320,7 @@ pub(crate) struct GuardCut {
 impl PartialEq for GuardCut {
     fn eq(&self, other: &Self) -> bool {
         self.replayed == other.replayed
+            && self.released == other.released
             && self.tails == other.tails
             && self.subtrees.len() == other.subtrees.len()
             && self
