@@ -127,6 +127,27 @@ impl<'a> StockExecution<'a> {
                     | ExecutionEvent::ModelInline { usage: Some(_), .. }
             )
         });
+        if recorded.is_empty()
+            && let Some(next) = step.checked_add(1)
+            && !self
+                .step_records(journal, input.operation_id, next, false, Some(1), |event| {
+                    matches!(
+                        event,
+                        ExecutionEvent::ModelStarted {
+                            purpose: ModelPurpose::Response,
+                            ..
+                        }
+                    )
+                })
+                .await?
+                .1
+                .is_empty()
+        {
+            // The worker already passed this boundary without admitting a
+            // review. Replay must preserve that original scheduling choice,
+            // even when an earlier review now completes synchronously.
+            return Ok(());
+        }
         if state.ready.is_some() && !completed {
             return Ok(());
         }

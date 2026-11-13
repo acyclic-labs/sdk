@@ -340,6 +340,123 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
 }
 
 #[tokio::test]
+async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Result<()> {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (seen, gate) = (started.clone(), release.clone());
+    let dispatches = AtomicUsize::new(0);
+    let response = |tokens| {
+        ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+            metadata: json!({"usage":{"prompt_tokens":tokens,"completion_tokens":1}}),
+        })])
+    };
+    let decision = |tokens| {
+        ScriptedTurn::Text(
+            json!({"version":1,"summary":null,"review_at_input_tokens":tokens}).to_string(),
+        )
+    };
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            response(4_000),
+            decision(5_000),
+            response(9_000),
+            response(10_000),
+            decision(16_000),
+        ])
+        .with_context_capacity(crate::context::ModelContextCapacity {
+            context_tokens: 65_536,
+            output_tokens: Some(4096),
+        })
+        .with_token_counter(fixture_token_count)
+        .with_dispatch_observer(move |_| {
+            let (seen, gate) = (seen.clone(), gate.clone());
+            let index = dispatches.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if index == 1 {
+                    seen.notify_one();
+                    gate.notified().await;
+                }
+                Ok(())
+            })
+        }),
+    );
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "selected".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_automatic_compaction()?;
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal_owner = storage.journal();
+    let journal = journal_owner.as_ref();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        max_steps: None,
+        input: ModelContent::Text("Continue the task.".into()),
+        selected_context: None,
+    };
+    let prior = vec![
+        ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("Earlier evidence.".repeat(200)),
+        },
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content: ModelContent::Text("Retain the findings.".into()),
+        },
+    ];
+    let execution = StockExecution::ordinary(&executor);
+    let worker = async {
+        for step in 0..3 {
+            let events = execution.model_step(journal, &input, step, &prior).await?;
+            execution
+                .request_context_review(journal, &input, step, &prior, original_metadata(&events))
+                .await?;
+            match step {
+                0 => started.notified().await,
+                1 => {
+                    assert!(execution.review.state.lock().await.active);
+                    release.notify_one();
+                    execution.review.completed.notified().await;
+                }
+                _ => execution.review.completed.notified().await,
+            }
+        }
+        Ok(ExecutionProgress::Ready(()))
+    };
+    execution
+        .with_context_review(journal, &input, worker)
+        .await?;
+    assert_eq!(provider.request_count(), 5);
+    let reopened = StockExecution::ordinary(&executor);
+    let replay = async {
+        for step in 0..3 {
+            let events = reopened.model_step(journal, &input, step, &prior).await?;
+            reopened
+                .request_context_review(journal, &input, step, &prior, original_metadata(&events))
+                .await?;
+            let state = reopened.review.state.lock().await;
+            assert!(
+                !state.active && state.queued.is_none(),
+                "replay admitted a new review at step {step}"
+            );
+            assert_eq!(state.review_at, if step == 2 { 16_000 } else { 5_000 });
+            assert_eq!(
+                provider.request_count(),
+                5,
+                "replay dispatched new paid work"
+            );
+        }
+        Ok(ExecutionProgress::Ready(()))
+    };
+    reopened
+        .with_context_review(journal, &input, replay)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn invalid_context_decisions_preserve_history_and_original_admissions() -> Result<()> {
     for decision in [
         "not JSON".to_owned(),
