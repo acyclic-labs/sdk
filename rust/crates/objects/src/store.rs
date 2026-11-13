@@ -1037,6 +1037,31 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
     }
 
+    /// Flushes and verifies while the original collection exclusion remains held.
+    async fn flush_locked(
+        &self,
+        only: Option<&[Digest]>,
+        _gate: &tokio::sync::RwLockReadGuard<'_, ()>,
+    ) -> Result<(), Error> {
+        acyclic_observability::async_operation!(
+            "acyclic.objects.flush",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.issued().await?;
+                self.flush_blobs(only, Vec::new()).await?;
+                // A blob collected since its put is not durable however flushed.
+                for digest in only.into_iter().flatten() {
+                    match self.blob(digest).await? {
+                        Some(envelope) if envelope.dying.is_none() => {}
+                        _ => return Err(ErrorCode::MissingReference.into()),
+                    }
+                }
+                Ok(())
+            }
+        )
+    }
+
     /// Makes durable, in one batch with `keys`, every unflushed blob version
     /// in the closure of `only`, or every one. The walk stops at a blob
     /// outside the set: it is durable with everything it references, since a
@@ -1729,17 +1754,23 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         references: Vec<Digest>,
     ) -> Result<Put, Error> {
         self.issued().await?;
-        let _gate = self.state.gate.read().await;
+        let gate = &self.state.gate.read().await;
         let put = self.publish_blob(body, references).await?;
-        crate::provider::flush_put(self, &put).await?;
+        crate::provider::flush_put(&put, |digest| async move {
+            self.flush_locked(Some(&[digest]), gate).await
+        })
+        .await?;
         Ok(put)
     }
 
     async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
         self.issued().await?;
-        let _gate = self.state.gate.read().await;
+        let gate = &self.state.gate.read().await;
         let put = self.publish_manifest(manifest).await?;
-        crate::provider::flush_put(self, &put).await?;
+        crate::provider::flush_put(&put, |digest| async move {
+            self.flush_locked(Some(&[digest]), gate).await
+        })
+        .await?;
         Ok(put)
     }
 
@@ -1753,7 +1784,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         if let Err(error) = self.issued().await {
             return requests.into_iter().map(|_| Err(error.clone())).collect();
         }
-        let _gate = self.state.gate.read().await;
+        let gate = &self.state.gate.read().await;
         let mut outcomes = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
             requests.into_iter(),
@@ -1764,28 +1795,16 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         )
         .await;
         let Ok(()) = driven;
-        crate::provider::flush_puts(self, &mut outcomes).await;
+        crate::provider::flush_puts(&mut outcomes, |digests| async move {
+            self.flush_locked(Some(&digests), gate).await
+        })
+        .await;
         outcomes
     }
 
     async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.flush",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                self.issued().await?;
-                self.flush_blobs(only, Vec::new()).await?;
-                // A blob collected since its put is not durable however flushed.
-                for digest in only.into_iter().flatten() {
-                    match self.blob(digest).await? {
-                        Some(envelope) if envelope.dying.is_none() => {}
-                        _ => return Err(ErrorCode::MissingReference.into()),
-                    }
-                }
-                Ok(())
-            }
-        )
+        let gate = self.state.gate.read().await;
+        self.flush_locked(only, &gate).await
     }
 
     async fn get(
