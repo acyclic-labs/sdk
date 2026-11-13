@@ -143,7 +143,7 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
         }
         let result = run(
             ShellInput {
-                command: r#"test "$TMPDIR" = "$ACYCLIC_VOLUME_HOME/tmp" && printf scratch > "$TMPDIR/receipt""#.into(),
+                command: r#"test "$HOME" = "$ACYCLIC_VOLUME_HOME" && test "$TMPDIR" = "$HOME/tmp" && printf scratch > "$TMPDIR/receipt""#.into(),
                 cwd: None,
                 timeout_ms: None,
                 background: false,
