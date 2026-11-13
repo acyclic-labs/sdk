@@ -120,6 +120,35 @@ async fn sealed_spills_stay_private_until_explicit_publication()
             .bytes,
         stored
     );
+    let small_payload = OwnedBytes::from_static(b"resident sealed value");
+    let small = staged
+        .prepare_hashed(
+            HashedObject::new(ObjectKind::BlobChunk, small_payload.clone()),
+            &mut work,
+        )
+        .await?;
+    let small_id = small.object_id();
+    let small_stored = small.stored_bytes().clone();
+    staged.put_hashed(small, &mut work).await?;
+    let requests = [
+        acyclic_fs::ObjectReadRequest {
+            object_id: small_id,
+            maximum_bytes: small_payload.len() as u64,
+        },
+        acyclic_fs::ObjectReadRequest {
+            object_id: id,
+            maximum_bytes: payload.len() as u64,
+        },
+    ];
+    let (decoded, decoded_custody) = staged.read_many(&requests, &mut work).await?;
+    assert_eq!(decoded[0].bytes, small_payload);
+    assert_eq!(decoded[1].bytes, payload);
+    drop((decoded, decoded_custody));
+    let (physical, physical_custody) = staged.read_many_stored(&requests, &mut work).await?;
+    assert_eq!(physical[0].bytes, small_stored);
+    assert_eq!(physical[1].bytes, stored);
+    drop((physical, physical_custody));
+    assert!(!durable.contains(small_id, &mut work).await?);
     // Importing exact stored bytes must use the same private admission path.
     staged.put_stored(id, stored, &mut work).await?;
     assert!(
@@ -129,7 +158,7 @@ async fn sealed_spills_stay_private_until_explicit_publication()
     let hold = staged
         .flush_before_publish(
             acyclic_fs::PublicationScope {
-                objects: &[id],
+                objects: &[id, small_id],
                 proven_at: staged.collection_sweeps(),
             },
             &mut work,

@@ -526,3 +526,96 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     assert!(!retained.path().exists());
     Ok(())
 }
+
+// Both callbacks begin before either is joined. The negative control gives
+// them independent command candidates, so the survivor oracle must see a lost
+// mutation even though both writes themselves returned success.
+async fn concurrent_command_first_writes(shared: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "concurrent-command-promotion",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    workspace.write_text("/left", "original").await?;
+    workspace.write_text("/right", "original").await?;
+    let origin = workspace.head(&work, &cancellation).await?.id();
+    let destination = tempfile::tempdir()?;
+    let command = private_command(&workspace, &work, destination.path(), false).await?;
+    let independent = if shared {
+        None
+    } else {
+        Some(private_command(&workspace, &work, destination.path(), false).await?)
+    };
+    let left = crate::native_mount::adapter::tests::native_test_path("left");
+    let right = crate::native_mount::adapter::tests::native_test_path("right");
+    let handles = [
+        command.source.open_file(&left)?,
+        independent
+            .as_ref()
+            .unwrap_or(&command)
+            .source
+            .open_file(&right)?,
+    ];
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|threads| -> Result<(), Box<dyn std::error::Error>> {
+        let tasks = handles.map(|handle| {
+            let barrier = &barrier;
+            let work = &work;
+            threads.spawn(move || {
+                barrier.wait();
+                handle.write_range_with_meter(
+                    0,
+                    crate::kernel::OwnedSourceChunk::claimed(
+                        acyclic_stream::OwnedBytes::from_static(b"updated!"),
+                        0,
+                    ),
+                    false,
+                    work,
+                )
+            })
+        });
+        for task in tasks {
+            task.join().map_err(|_| "first-write callback panicked")??;
+        }
+        Ok(())
+    })?;
+    assert_eq!(workspace.head(&work, &cancellation).await?.id(), origin);
+    for path in [&left, &right] {
+        assert_eq!(
+            command.source.read_range(path, 0, 8)?.as_ref(),
+            b"updated!",
+            "concurrent first writes lost a mutation"
+        );
+    }
+    let (fork, custody) = command
+        .complete_private_command()
+        .await?
+        .ok_or("missing fork")?;
+    for path in ["/left", "/right"] {
+        assert_eq!(
+            fork.read(path, 8, &work, &cancellation).await?.as_ref(),
+            b"updated!"
+        );
+    }
+    custody.settle().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_command_first_writes_share_one_candidate()
+-> Result<(), Box<dyn std::error::Error>> {
+    concurrent_command_first_writes(true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "concurrent first writes lost a mutation")]
+async fn concurrent_command_first_writes_negative_control_detects_split_candidates() {
+    concurrent_command_first_writes(false).await.unwrap();
+}
