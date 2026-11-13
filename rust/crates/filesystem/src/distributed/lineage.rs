@@ -50,9 +50,18 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 records,
                 [genesis.into(), encoded],
             )?;
-            // Sequence one is intrinsically addressable. Its authenticated
-            // record carries the operation identity and atomic commit identity,
-            // so it needs no separate operation-locator record.
+            // Sequence one is intrinsically addressable, but every creation
+            // still locates its operation: the operation index then exists
+            // durably beside every volume, so an ephemeral fork's locators
+            // are always fresh paths beneath a present parent.
+            let effect = crate::distributed::composition::hard_effect(request, work)?;
+            self.locate_operation_in(
+                authority,
+                &record,
+                &mut effect.conditions,
+                &mut effect.mutations,
+                work,
+            )?;
             generation
         } else {
             work.append_record(&mut request.effects[0].mutations, records, [genesis])?;
@@ -323,7 +332,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut request = CommitRequest {
             deadline_unix_millis: None,
             effects: crate::distributed::composition::funded_effect(
-                acyclic_stream::CommitEffect::hard(work.vec(9)?, work.vec(9)?),
+                acyclic_stream::CommitEffect::hard(work.vec(10)?, work.vec(10)?),
                 work,
             )?,
             idempotency_key: work.key(
@@ -558,6 +567,75 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
     }
 
+    /// Creates an ephemeral fork's authority under a lease taken first, so
+    /// its creation commit is ephemeral as a whole: the authority subtree is
+    /// the lease root, and its fresh changes stream and operation locator are
+    /// adopted. Nothing it writes is journalled, and no retention record is
+    /// made: the lease's owner holds the base.
+    pub(super) async fn ephemeral_records(
+        &self,
+        fork: crate::EphemeralForkCommit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<acyclic_stream::EphemeralLease, AuthorityStoreError> {
+        let actor = self.actor(fork.destination, work)?;
+        let journal = actor.lease(work).await?;
+        let revision = actor.begin(journal)?;
+        work.check()?;
+        let lineage = match fork.lineage {
+            Some(source) if source.lineage == crate::GenerationFork::PublishedPrefix => {
+                let (lineage, tail) = self
+                    .resolve_source_fork_point(source.authority, source.generation, work)
+                    .await?;
+                Some((lineage, tail, source.generation))
+            }
+            _ => None,
+        };
+        let lease = self
+            .provider
+            .lease_ephemeral(self.placement.stream_path(fork.destination, "")?)
+            .await
+            .map_err(map_stream_error)?;
+        let mut request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: crate::distributed::composition::funded_effect(
+                acyclic_stream::CommitEffect::hard(work.vec(10)?, work.vec(10)?),
+                work,
+            )?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"workspace-fork-ephemeral\0",
+                &[
+                    &fork.destination.into_bytes(),
+                    &fork.creation.operation_id.into_bytes(),
+                ],
+            )?,
+        };
+        let projection = self.creation_request(
+            &mut request,
+            fork.destination,
+            Epoch::GENESIS,
+            Some(&fork.creation),
+            lineage,
+            work,
+        )?;
+        let outcome = self
+            .commit(request, None, work, None::<&mut ()>)
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))?;
+        if !work.is_native() {
+            work.release_request()?;
+        }
+        let CommitOutcome::Committed(envelope) = &outcome.0 else {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "an ephemeral fork's destination already exists",
+            ));
+        };
+        actor
+            .complete(revision, projection.seal(envelope.commit_id), work)
+            .await?;
+        Ok(lease)
+    }
+
     fn prepare_fork_records(
         &self,
         fork: &WorkspaceForkCommit,
@@ -575,7 +653,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut request = CommitRequest {
             deadline_unix_millis: None,
             effects: crate::distributed::composition::funded_effect(
-                acyclic_stream::CommitEffect::hard(work.vec(18)?, work.vec(17)?),
+                acyclic_stream::CommitEffect::hard(work.vec(20)?, work.vec(19)?),
                 work,
             )?,
             idempotency_key: work.key(

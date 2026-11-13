@@ -17,6 +17,14 @@ type Evidence = Option<crate::kernel::HistoricalGenerationEvidence>;
 
 /// An [`AsyncObjectStore`] behind a trait object; see the module docs.
 pub trait DynObjectStore: ProviderPlatform {
+    /// See [`AsyncObjectStore::restore_hashed`].
+    fn dyn_restore_hashed(
+        &self,
+        object_id: ObjectId,
+        stored: OwnedBytes,
+        maximum: u64,
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<HashedObject, ObjectStoreError>;
     /// See [`AsyncObjectStore::requires_child_first_publication`].
     fn dyn_requires_child_first_publication(&self) -> bool;
     /// See [`AsyncObjectStore::maximum_reference_bytes`].
@@ -120,6 +128,15 @@ pub trait DynObjectStore: ProviderPlatform {
 }
 
 impl<T: AsyncObjectStore> DynObjectStore for T {
+    fn dyn_restore_hashed(
+        &self,
+        object_id: ObjectId,
+        stored: OwnedBytes,
+        maximum: u64,
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<HashedObject, ObjectStoreError> {
+        self.restore_hashed(object_id, stored, maximum, context)
+    }
     fn dyn_requires_child_first_publication(&self) -> bool {
         self.requires_child_first_publication()
     }
@@ -251,6 +268,15 @@ impl<T: AsyncObjectStore> DynObjectStore for T {
 // backend's own behaviour rather than the contract's defaults. The async
 // blocks name the call's two borrows, which one boxed lifetime cannot.
 impl AsyncObjectStore for dyn DynObjectStore {
+    fn restore_hashed(
+        &self,
+        object_id: ObjectId,
+        stored: OwnedBytes,
+        maximum: u64,
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<HashedObject, ObjectStoreError> {
+        self.dyn_restore_hashed(object_id, stored, maximum, context)
+    }
     fn requires_child_first_publication(&self) -> bool {
         self.dyn_requires_child_first_publication()
     }

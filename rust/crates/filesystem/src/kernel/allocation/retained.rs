@@ -15,6 +15,7 @@ pub use shared::{RetainedArc, RetainedWeak};
 pub(crate) struct OwnedAccounting {
     state: OwnedAccountingState,
     cancellation: crate::CancellationToken,
+    construction: crate::collection::ConstructionRoots,
 }
 
 /// Private operation lifetime retained by an owned authority continuation.
@@ -130,6 +131,7 @@ impl ReadAccounting {
                 work,
                 budget,
                 cancellation,
+                ..
             } => Ok(Self {
                 state: ReadAccountingState::Standalone(StandaloneReadAccounting {
                     allocations,
@@ -142,7 +144,9 @@ impl ReadAccounting {
                 Err(crate::FsError::AccountingHandoffActive)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work, cancellation } => Ok(Self {
+            KernelAccounting::NativeOriginal {
+                work, cancellation, ..
+            } => Ok(Self {
                 state: ReadAccountingState::Native(work.clone()),
                 cancellation: cancellation.clone(),
             }),
@@ -179,11 +183,13 @@ impl OwnedAccounting {
             return Ok(Self {
                 state: OwnedAccountingState::Native(work.authority_publication_view(&lifetime)?),
                 cancellation: lifetime.cancellation().clone(),
+                construction: std::mem::take(accounting.construction_roots()),
             });
         }
         Ok(Self {
             state: Self::take_standalone(accounting)?,
             cancellation: lifetime.cancellation().clone(),
+            construction: std::mem::take(accounting.construction_roots()),
         })
     }
 
@@ -211,7 +217,7 @@ impl OwnedAccounting {
     }
 
     pub(crate) fn borrow(&mut self) -> KernelAccounting<'_> {
-        match &mut self.state {
+        let accounting = match &mut self.state {
             OwnedAccountingState::Standalone(state) => {
                 let StandaloneAccounting {
                     allocations,
@@ -230,13 +236,18 @@ impl OwnedAccounting {
             OwnedAccountingState::Native(work) => {
                 KernelAccounting::native(work, &self.cancellation)
             }
-        }
+        };
+        accounting.with_construction(&mut self.construction)
     }
 
     pub(crate) fn restore(
         self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
+        // A caller must not create another construction after handing off this branch.
+        if !accounting.construction_roots().is_empty() {
+            return Err(crate::FsError::AccountingHandoffActive);
+        }
         match self.state {
             OwnedAccountingState::Standalone(state) => {
                 let Retained { value, allocation } = state;
@@ -256,7 +267,7 @@ impl OwnedAccounting {
                 caller_ledger.resume(allocations)?;
                 *caller_work = work;
                 caller_work.verify(budget)?;
-                Ok(())
+                Ok::<(), crate::FsError>(())
             }
             #[cfg(not(target_arch = "wasm32"))]
             OwnedAccountingState::Native(work) => {
@@ -268,7 +279,9 @@ impl OwnedAccounting {
                 }
                 Ok(())
             }
-        }
+        }?;
+        *accounting.construction_roots() = self.construction;
+        Ok(())
     }
 }
 

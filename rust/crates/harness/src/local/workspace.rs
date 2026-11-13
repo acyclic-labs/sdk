@@ -59,10 +59,11 @@ pub(super) struct MountedVolume {
     pub(super) options: Option<acyclic_fs::MountOptions>,
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
-    /// Native execution scopes currently using `native`.
+    /// Host sessions currently using `native`.
     pub(super) users: StateArc<projection::Users>,
-    /// Serializes preflight synchronization of the selected projection.
-    pub(super) execution: StateArc<AsyncMutex<()>>,
+    /// Keeps the shared native instance serving command views running, so a
+    /// command's view is a namespace entry, never an OS mount and unmount.
+    pub(super) shared_views: tokio::sync::OnceCell<acyclic_fs::SharedViewInstance>,
     // Retires the exact index entry after this physical source's fields.
     _binding: Option<acyclic_fs::kernel::allocation::ErasedRetainedArc>,
 }
@@ -572,10 +573,7 @@ async fn lazy_view(
         store,
         &work,
     )?;
-    let mut accounting = KernelAccounting::NativeOriginal {
-        work: &work,
-        cancellation: &cancellation,
-    };
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
     let name = volume.storage_name(&mut None)?;
     let id = filesystem.workspace_id(&name).map_err(storage)?;
     let original = store
