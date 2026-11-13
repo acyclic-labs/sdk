@@ -302,15 +302,21 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
         io: &io,
     };
     let registry = crate::tools::defaults()?;
-    let shell = Arc::new(
+    let shell = Arc::clone(
         registry
-            .get(crate::tools::shell::PLATFORM.name, None, None)?
-            .unwrap()
-            .clone(),
+            .get_shared(crate::tools::shell::PLATFORM.name, None, None)?
+            .unwrap(),
     );
+    let mut native = registry.clone();
+    crate::tools::native::bind(&mut native, crate::model::NativeToolProfile::Openai)?;
+    let declaration = Arc::clone(native.get_shared("shell", None, None)?.unwrap());
     let program = load_program(&tree, "tools/count").await?;
     let retained = program.custody.as_ref().unwrap().bytes();
-    let tool = program.bind(Arc::clone(&shell))?;
+    let tool = program.bind(declaration)?;
+    assert!(
+        Arc::ptr_eq(tool.executor.capability().unwrap(), &shell),
+        "authored binding must retain the original capability, not copy its metadata"
+    );
     for arguments in [
         serde_json::json!({"text": "$(touch injected); ' \" \\ \n 🦀", "nested": [null, {"__proto__": "data"}]}),
         serde_json::json!([null, "$(touch injected)", {"text": "🦀"}]),

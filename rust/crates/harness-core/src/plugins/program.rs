@@ -93,29 +93,8 @@ impl LoadedProgram {
             ));
         }
         let mut custody = self.custody;
-        let io = custody
-            .as_ref()
-            .map(|custody| crate::filesystem::PreparationIo::from_native_work(custody.work()))
-            .transpose()?;
         let shell = match shell.executor.capability() {
-            Some(capability) => {
-                if let Some(io) = &io {
-                    let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<
-                        crate::tool::Tool,
-                    >()?;
-                    io.retain_owned(bytes)?;
-                    io.allocation_attempt(bytes)?;
-                }
-                std::sync::Arc::new(crate::tool::Tool {
-                    definition: crate::model::clone_tool_definition(
-                        &capability.definition,
-                        io.as_ref(),
-                    )?,
-                    executor: std::sync::Arc::clone(&capability.executor),
-                    projection: std::sync::Arc::clone(&capability.projection),
-                    hook_names: capability.hook_names,
-                })
-            }
+            Some(capability) => std::sync::Arc::clone(capability),
             None => shell,
         };
         if shell.definition.name != crate::tools::shell::PLATFORM.name {
@@ -225,10 +204,6 @@ impl LoadedProgram {
             custody.release(temporary_bytes)?;
             if let Some(mut incoming) = template_custody {
                 custody.absorb(&mut incoming)?;
-            }
-            if let Some(io) = io {
-                let bytes = io.owned_bytes()?;
-                custody.absorb(&mut io.into_native_custody(bytes)?)?;
             }
         }
         crate::tools::native::alias(self.definition, shell, template, custody)
