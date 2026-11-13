@@ -1,7 +1,7 @@
 impl LocalStream {
     fn guarded_commit<T, C, E, F, Fut>(
         &self,
-        request: CommitRequest,
+        mut request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
@@ -50,7 +50,7 @@ impl LocalStream {
                 publication_scope(async move {
                     let _input = input;
                     let result = {
-                        let replay = match provider.has_replay(&request.idempotency_key).await {
+                        let replay = match provider.pin_replay(&request.idempotency_key).await {
                             Ok(replay) => replay,
                             Err(error) => {
                                 return work
@@ -58,12 +58,28 @@ impl LocalStream {
                                     .map(|result| result.map_err(E::from));
                             }
                         };
+                        let replay = match replay {
+                            Some(pin) => {
+                                let ephemeral = pin.ephemeral;
+                                match provider.project_pinned_replay(&mut request, &pin, accepted) {
+                                    Ok((outcome, allocation)) => {
+                                        Some((outcome, allocation, ephemeral))
+                                    }
+                                    Err(error) => {
+                                        return work
+                                            .finish(Err(error))
+                                            .map(|result| result.map_err(E::from));
+                                    }
+                                }
+                            }
+                            None => None,
+                        };
                         // A cached success runs no guard and returns its
                         // receipt, so it observes no cut. An unguarded Commit
                         // observes nothing before its locked plan, which
                         // rechecks its key.
                         let cut = match &reads {
-                            Some(reads) if !replay => {
+                            Some(reads) if replay.is_none() => {
                                 match provider.guard_cut(&request, reads).await {
                                     Ok(cut) => Some(cut),
                                     Err(error) => {
@@ -75,7 +91,9 @@ impl LocalStream {
                             }
                             _ => None,
                         };
-                        if !replay && let Err(error) = before().await {
+                        if replay.is_none()
+                            && let Err(error) = before().await
+                        {
                             return Ok(Err(error));
                         }
                         let visibility = stream.inner.visibility.write().await;
@@ -94,6 +112,12 @@ impl LocalStream {
                         let publication = stream.inner.publication.write().await;
                         let mut result = async {
                             stream.check_available()?;
+                            if let Some((outcome, allocation, ephemeral)) = replay {
+                                if !ephemeral {
+                                    stream.require_accepted::<true>()?;
+                                }
+                                return Ok((outcome, allocation));
+                            }
                             let command = if accepted {
                                 WriteRequest::CommitAccepted(request)
                             } else {

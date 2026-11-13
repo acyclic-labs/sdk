@@ -38,8 +38,9 @@ pub enum LaunchFailure<H> {
         /// The original handler, already retired with cleanup completed.
         handler: H,
     },
-    /// The original owner rejected the launch before spawn. Preserve its
-    /// typed error, including cancellation and a dropped control producer.
+    /// The original owner, or the execution grant's preparation, rejected the
+    /// launch before spawn. Preserve its typed error, including cancellation,
+    /// a dropped control producer and an execution refusal.
     Control {
         /// The owner's original error.
         error: io::Error,
@@ -195,7 +196,7 @@ impl CaptureRequest {
     }
 
     fn start<H: CaptureHandler, O: Owner<H>>(
-        self,
+        mut self,
         mut handler: H,
         owner: O,
     ) -> Result<O::Output, LaunchFailure<H>> {
@@ -225,11 +226,24 @@ impl CaptureRequest {
             pump::retire(&mut handler, true, Some(&error));
             return Err(LaunchFailure::Control { error, handler });
         }
-        match self.schedule {
+        // Grant preparation precedes spawn: its refusal is definitive and
+        // keeps its typed cause. Only the spawn itself can be indeterminate.
+        if let Some(grant) = &self.execution_grant
+            && let Err(error) = ProcessTree::prepare_granted(&mut self.command, grant, None)
+        {
+            pump::retire(&mut handler, true, Some(&error));
+            return Err(LaunchFailure::Control { error, handler });
+        }
+        // A relative timeout starts here, at launch: no wait before the
+        // process exists counts against it.
+        #[cfg(test)]
+        tests::preparation_finished();
+        let schedule = self.schedule.launched();
+        match schedule {
             CaptureSchedule::Deadline(deadline) if capture_now() >= deadline => {
                 return refused(io::ErrorKind::TimedOut.into(), handler);
             }
-            CaptureSchedule::Overflow => {
+            CaptureSchedule::FromLaunch(_) | CaptureSchedule::Overflow => {
                 return refused(io::ErrorKind::InvalidInput.into(), handler);
             }
             CaptureSchedule::Unbounded | CaptureSchedule::Deadline(_) => {}
@@ -250,7 +264,7 @@ impl CaptureRequest {
             let answered = crate::testing::capture_process(
                 crate::testing::ProcessCapture {
                     command: &command,
-                    schedule: self.schedule,
+                    schedule,
                     maximum: self.maximum_output_bytes,
                     input: self.input.as_ref(),
                 },
@@ -261,12 +275,9 @@ impl CaptureRequest {
                 return Ok(owner.answered(CaptureOutcome::new(handler, result)));
             }
         }
-        let tree = match (&self.execution_grant, &self.custody) {
-            (Some(grant), custody) => {
-                ProcessTree::spawn_granted(command, grant, custody.as_deref())
-            }
-            (None, Some(custody)) => ProcessTree::spawn_in_custody(&mut command, custody),
-            (None, None) => ProcessTree::spawn(&mut command),
+        let tree = match &self.custody {
+            Some(custody) => ProcessTree::spawn_in_custody(&mut command, custody),
+            None => ProcessTree::spawn(&mut command),
         };
         let tree = match tree {
             Ok(tree) => tree,
@@ -280,7 +291,7 @@ impl CaptureRequest {
         };
         Ok(owner.tree(
             tree,
-            self.schedule,
+            schedule,
             self.maximum_output_bytes,
             self.input,
             handler,

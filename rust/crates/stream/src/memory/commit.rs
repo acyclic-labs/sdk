@@ -12,9 +12,16 @@ struct CommitPublication {
     envelope: CommittedEnvelope,
     result: CommitOutcome,
     namespace: Namespace,
+    /// The accepted commit time, once bound.
+    time: u64,
     resident: Allocation,
     output_claim: Allocation,
     _scratch: Allocation,
+}
+
+enum PublicationRetention<'a> {
+    Durable(RetainedFactRef),
+    Ephemeral(&'a MemoryStream, EphemeralRetention),
 }
 
 impl CommitPlan {
@@ -40,10 +47,19 @@ impl CommitPlan {
     fn stage(
         self,
         state: &State,
+        durable: bool,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<CommitPublication, StreamError> {
-        let namespace = stage_namespace(state, self.paths, self.histories, &self.envelope, build)?;
+        let namespace = stage_namespace(
+            state,
+            self.paths,
+            self.histories,
+            &self.envelope,
+            durable,
+            build,
+        )?;
         Ok(CommitPublication {
+            time: self.envelope.committed_at_micros,
             envelope: self.envelope,
             result: self.result,
             namespace,
@@ -59,11 +75,19 @@ impl CommitPublication {
         &mut self,
         state: &State,
         at_millis: Option<u64>,
+        scope: &Scope,
     ) -> Result<u64, StreamError> {
-        let time = bind_acceptance(&mut self.namespace, &mut self.envelope, state, at_millis)?;
+        let time = bind_acceptance(
+            &mut self.namespace,
+            &mut self.envelope,
+            state,
+            at_millis,
+            scope,
+        )?;
         if let CommitOutcome::Committed(receipt) = &mut self.result {
             receipt.committed_at_micros = time;
         }
+        self.time = time;
         Ok(time)
     }
 
@@ -73,21 +97,45 @@ impl CommitPublication {
         probe: &mut impl FnMut(u64),
         key: IdempotencyKey,
         digest: [u8; 32],
-        time: u64,
-        retained: RetainedFactRef,
+        scope: &Scope,
+        retained: PublicationRetention<'_>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        install_namespace(state, self.namespace, &self.envelope)?;
-        state.decision += 1;
-        state.last_committed_at_micros = time;
-        retain(
-            state,
-            probe,
-            None,
-            Some(key),
-            digest,
-            IdempotencyOutcome::Commit(self.envelope),
-            (self.resident, retained),
-        );
+        install_namespace(state, self.namespace, &self.envelope, scope)?;
+        state.advance(scope, self.time);
+        let result = IdempotencyOutcome::Commit(self.envelope);
+        match retained {
+            PublicationRetention::Durable(retained) => {
+                retain(
+                    state,
+                    probe,
+                    None,
+                    Some(key),
+                    digest,
+                    result,
+                    (self.resident, retained),
+                );
+            }
+            PublicationRetention::Ephemeral(stream, retention) => {
+                let index = state.decision;
+                state.ephemeral.retain(
+                    stream,
+                    scope,
+                    retention,
+                    RetainedFact {
+                        namespace: Default::default(),
+                        previous: None,
+                        replay: Some(key.0),
+                        next: Default::default(),
+                        digest,
+                        result,
+                        envelope: None,
+                        index,
+                        _allocation: self.resident,
+                        _header: None,
+                    },
+                );
+            }
+        }
         Ok((self.result, self.output_claim))
     }
 }
@@ -495,15 +543,17 @@ impl MemoryStream {
         >,
         StreamError,
     > {
-        if let Some(replay) = self.replay(state, request.idempotency_key.as_bytes())? {
-            if replay.digest != digest {
+        let scope = state.ephemeral.commit_scope(&state.paths, request)?;
+        if let Some((replayed, result, index)) =
+            self.replay_in(state, request.idempotency_key.as_bytes())?
+        {
+            if *replayed != digest {
                 return Err(StreamError::IdempotencyMismatch);
             }
-            let IdempotencyOutcome::Commit(result) = &replay.result else {
+            let IdempotencyOutcome::Commit(result) = result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            let (receipt, mut claim) =
-                self.replayed(request, result, self.revisions.at(replay.index))?;
+            let (receipt, mut claim) = self.replayed(request, result, self.revisions.at(index))?;
             let envelope = self.selected_envelope(result, accepted, &mut claim)?;
             return Ok(Decision::Returned((
                 commit_projection(CommitOutcome::Committed(receipt), envelope)?,
@@ -522,7 +572,12 @@ impl MemoryStream {
             }
         };
         check_deadline()?;
-        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
+        let durable = matches!(scope, Scope::Durable);
+        let mut probes = if durable {
+            self.replay_insertion_probes(request.idempotency_key.as_bytes())?
+        } else {
+            ReplayProbes::default()
+        };
         let (conflicts, output_claim) =
             self.vector(crate::preparation::hard_conditions(request))?;
         // The receipt carries the skipped soft effects, so their claim joins
@@ -582,20 +637,24 @@ impl MemoryStream {
                 }
             }),
         )?;
-        admit_replay(state, self.limits)?;
+        if durable {
+            admit_replay(state, self.limits)?;
+        }
         reserve_coordinated(state, &applied, self.limits)?;
-        self.reserve_commit_index(&mut probes)?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+        if durable {
+            self.reserve_commit_index(&mut probes)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.admit_codec(0, 0, identity_bytes()))?;
         }
-        let commit_id = commit_identity(decision, digest);
+        let (decision, commit_id) = state.identity(&scope, digest)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        let retained = self.reserve_retained(state)?;
+        let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
+        let ephemeral = self.reserve_ephemeral(&scope, &request.idempotency_key)?;
         let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
         drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;
@@ -610,6 +669,7 @@ impl MemoryStream {
         let bytes = envelope_payload_bytes(&plan.envelope);
         let mut publication = plan.stage(
             state,
+            durable,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
@@ -618,17 +678,26 @@ impl MemoryStream {
                 if !durable {
                     check_deadline()?;
                 }
-                let time = publication.bind_acceptance(state, at_millis)?;
+                let time = publication.bind_acceptance(state, at_millis, &scope)?;
                 if let Some(envelope) = &mut envelope {
                     bind_envelope(envelope, commit_id, time);
                 }
-                let retained = self.install_retained(state, retained)?;
+                let retained = match retained {
+                    Some(retained) => {
+                        PublicationRetention::Durable(self.install_retained(state, retained)?)
+                    }
+                    None => PublicationRetention::Ephemeral(
+                        self,
+                        ephemeral
+                            .unwrap_or_else(|| unreachable!("leased write reserves its indexes")),
+                    ),
+                };
                 let (outcome, allocation) = publication.publish(
                     state,
                     &mut |items| self.record_replay_probe(&mut probes, items),
                     request.idempotency_key.clone(),
                     digest,
-                    time,
+                    &scope,
                     retained,
                 )?;
                 Ok((commit_projection(outcome, envelope)?, allocation))
@@ -749,6 +818,7 @@ fn bind_acceptance(
     envelope: &mut CommittedEnvelope,
     state: &State,
     at_millis: Option<u64>,
+    scope: &Scope,
 ) -> Result<u64, StreamError> {
     let Some(at_millis) = at_millis else {
         return Ok(envelope.committed_at_micros);
@@ -757,11 +827,23 @@ fn bind_acceptance(
     if time == envelope.committed_at_micros {
         return Ok(time);
     }
+    let canonical = matches!(scope, Scope::Durable) && namespace.canonical.is_some();
     for fact in &envelope.mutations {
         if fact_records(fact).is_empty() {
             continue;
         }
         let path = crate::request::fact_path(fact);
+        if canonical {
+            // The canonical spine owns the same new batch. Withdraw its
+            // bounded aliases while binding that original batch once.
+            let roots = namespace
+                .canonical
+                .as_mut()
+                .ok_or(StreamError::Unavailable)?;
+            let data = Namespace::unpublished_in(roots, path)?;
+            data.history = None;
+            data.prefix = [None, None];
+        }
         let data = namespace.unpublished_path(path)?;
         let History::Batch { records, .. } =
             Arc::get_mut(data.history.as_mut().ok_or(StreamError::Unavailable)?)
@@ -793,6 +875,18 @@ fn bind_acceptance(
                 });
             }
         }
+        if canonical {
+            let data = namespace.unpublished_path(path)?;
+            let history = data.history.clone();
+            let prefix = data.prefix.clone();
+            let roots = namespace
+                .canonical
+                .as_mut()
+                .ok_or(StreamError::Unavailable)?;
+            let data = Namespace::unpublished_in(roots, path)?;
+            data.history = history;
+            data.prefix = prefix;
+        }
     }
     bind_envelope(envelope, envelope.commit_id, time);
     Ok(time)
@@ -800,6 +894,12 @@ fn bind_acceptance(
 
 impl Namespace {
     fn unpublished_path(&mut self, path: &StreamPath) -> Result<&mut PathState, StreamError> {
+        Self::unpublished_in(&mut self.roots, path)
+    }
+    fn unpublished_in<'a>(
+        roots: &'a mut Index,
+        path: &StreamPath,
+    ) -> Result<&'a mut PathState, StreamError> {
         fn select<'a>(
             mut index: &'a mut Index,
             name: &str,
@@ -818,10 +918,7 @@ impl Namespace {
             }
         }
         let mut parts = path.as_str().split('/');
-        let mut node = select(
-            &mut self.roots,
-            parts.next().ok_or(StreamError::InvalidArgument)?,
-        )?;
+        let mut node = select(roots, parts.next().ok_or(StreamError::InvalidArgument)?)?;
         for part in parts {
             node = select(&mut node.children, part)?;
         }
@@ -834,20 +931,29 @@ fn stage_namespace(
     paths: Vec<(StreamPath, PathState)>,
     histories: Vec<PreparedHistory>,
     envelope: &CommittedEnvelope,
+    durable: bool,
     build: &mut NamespaceBuilder<'_>,
 ) -> Result<Namespace, StreamError> {
-    let changed_at = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+    let changed_at = state
+        .decision
+        .checked_add(u64::from(durable))
+        .ok_or(StreamError::Capacity)?;
     let mut next = state.paths.clone();
     for (path, data) in paths {
-        next.put_data(&path, data, None, changed_at, build)?;
+        next.put_data(&path, data, None, changed_at, durable, build)?;
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
         let mut origin = None;
         let (path, tail) = match fact {
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => {
-                let subtree = state
-                    .paths
+                let published = state.paths.canonical();
+                let source = if state.ephemeral.root_of(fork.source.as_str()).is_some() {
+                    &state.paths
+                } else {
+                    &published
+                };
+                let subtree = source
                     .node(&fork.source)
                     .ok_or(StreamError::NotFound)?
                     .clone();
@@ -876,14 +982,19 @@ fn stage_namespace(
                     commit_id: envelope.commit_id,
                     decision: state.decision.checked_add(1).ok_or(StreamError::Capacity)?,
                 });
-                next.put(&fork.destination, subtree, changed_at, build)?;
+                next.put(
+                    &fork.destination,
+                    subtree,
+                    durable.then_some(changed_at),
+                    build,
+                )?;
                 (&fork.destination, fork.tail)
             }
         };
         // Root prefix and histories are derived from the same old cut even
         // when this envelope also appends to the source.
         let data = fact_data(&state.paths, fact, history, tail)?;
-        next.put_data(path, data, origin, changed_at, build)?;
+        next.put_data(path, data, origin, changed_at, durable, build)?;
     }
     Ok(next)
 }
@@ -892,8 +1003,10 @@ fn install_namespace(
     state: &mut State,
     next: Namespace,
     envelope: &CommittedEnvelope,
+    scope: &Scope,
 ) -> Result<(), StreamError> {
-    if next.len() != state.paths.len() {
+    // Ephemeral paths are never durable, so they never move the hierarchy.
+    if matches!(scope, Scope::Durable) && next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }
     state.path_bytes = next.bytes();
@@ -902,6 +1015,7 @@ fn install_namespace(
     // created. Range over subscribers, never over the inherited subtree.
     for fact in &envelope.mutations {
         let path = crate::request::fact_path(fact);
+        state.ephemeral.adopt(scope, &previous, path);
         if previous.get(path).is_some() {
             continue;
         }
@@ -947,11 +1061,20 @@ fn install_namespace(
             let _ = signals.changed.notify();
             crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
-        state.record_count += fact_records(fact).len();
-        state.payload_bytes += fact_records(fact)
+        let records = fact_records(fact).len();
+        let payload_bytes = fact_records(fact)
             .iter()
             .map(|record| record.payload_bytes())
             .sum::<usize>();
+        state.record_count += records;
+        state.payload_bytes += payload_bytes;
+        // A release returns exactly what its subtree was charged.
+        if let Scope::Ephemeral(root) = scope
+            && let Some(lease) = state.ephemeral.roots.get_mut(root)
+        {
+            lease.records += records;
+            lease.payload_bytes += payload_bytes;
+        }
     }
     Ok(())
 }

@@ -65,12 +65,12 @@ impl MemoryStream {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         let state = self.state.read().await;
         Ok(self
-            .replay(&state, idempotency_key.as_bytes())?
-            .map(|replay| IdempotencyObservation {
+            .replay_in(&state, idempotency_key.as_bytes())?
+            .map(|(digest, result, index)| IdempotencyObservation {
                 idempotency_key,
-                request_digest: replay.digest,
-                outcome: replay.result.clone(),
-                revision: Some(self.revisions.at(replay.index)),
+                request_digest: *digest,
+                outcome: result.clone(),
+                revision: Some(self.revisions.at(index)),
             }))
     }
 
@@ -227,6 +227,7 @@ impl MemoryStream {
                     request.projection,
                     request.durable_through,
                     durability == HeadDurability::Durable,
+                    &state.ephemeral,
                     _work,
                 )
             };
@@ -248,11 +249,12 @@ impl MemoryStream {
             crate::wire_codec::requests::heads_len_with_durability(view, deferred),
         );
         view.children = if let Some(children) = &request.children {
+            let published = paths.canonical();
             let limit = children
                 .limit
                 .min(request.limit - request.selection_count()?);
             Some(children_at(
-                paths, hierarchy, children, limit, remaining, _work, allocation,
+                &published, hierarchy, children, limit, remaining, _work, allocation,
             )?)
         } else {
             None
@@ -270,8 +272,13 @@ fn head_at(
     projection: crate::HeadProjection,
     through: Option<u64>,
     durable: bool,
+    private: &Ephemeral,
     _work: CaptureWork<'_>,
 ) -> Result<Option<crate::PathHead>, StreamError> {
+    // A private view has no durable prefix, including at a captured revision.
+    let leased = private.root_of(path.as_str()).is_some();
+    let durable = durable && !leased;
+    let through = through.filter(|_| !leased);
     paths
         .observation_with(path, || {
             #[cfg(not(target_arch = "wasm32"))]
@@ -647,6 +654,24 @@ impl StreamProvider for MemoryStream {
         crate::ProviderContext::new(&self.operation_claims).with_process_exclusion()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn lease_ephemeral(
+        &self,
+        root: StreamPath,
+    ) -> Result<crate::EphemeralLease, StreamError> {
+        acyclic_observability::async_operation!(
+            "acyclic.stream.lease_ephemeral",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            self.lease_ephemeral_inner(root)
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn is_ephemeral(&self, path: &StreamPath) -> Result<bool, StreamError> {
+        Ok(self.ephemeral_mask(std::slice::from_ref(path)).await == [true])
+    }
+
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         acyclic_observability::async_operation!(
             "acyclic.stream.heads",
@@ -930,39 +955,50 @@ impl crate::NativeStreamProvider for MemoryStream {
     ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
         let accepted = matches!(&request, crate::WriteRequest::CommitAccepted(_));
         match request {
-            crate::WriteRequest::Append(request) => Work::start(
-                meter,
-                crate::native::span!("acyclic.stream.append"),
-                |work, completion| {
-                    completion.observe_output(
-                        async move {
-                            let provider = self.with_context(Arc::clone(&work));
-                            let existing = provider.has_replay(&request.idempotency_key).await;
-                            let existing = match existing {
-                                Ok(existing) => existing,
-                                Err(error) => return work.finish(Err(error)),
-                            };
-                            if !existing
-                                && let Err(error) = work.reserve_write(
+            crate::WriteRequest::Append(request) => {
+                Work::start(
+                    meter,
+                    crate::native::span!("acyclic.stream.append"),
+                    |work, completion| {
+                        completion.observe_output(
+                            async move {
+                                let provider = self.with_context(Arc::clone(&work));
+                                let existing = provider.pin_replay(&request.idempotency_key).await;
+                                let existing = match existing {
+                                    Ok(existing) => existing,
+                                    Err(error) => return work.finish(Err(error)),
+                                };
+                                if let Some(pin) = existing {
+                                    let _input = match provider.append_claim(&request) {
+                                        Ok(input) => input,
+                                        Err(error) => return work.finish(Err(error)),
+                                    };
+                                    return work.finish(
+                                        provider.project_pinned_append(&request, &pin).map(
+                                            |outcome| (crate::WriteOutcome::Append(outcome), None),
+                                        ),
+                                    );
+                                }
+                                if let Err(error) = work.reserve_write(
                                     request
                                         .records
                                         .iter()
                                         .map(AppendRecord::payload_bytes)
                                         .sum(),
-                                )
-                            {
-                                return work.finish(Err(error));
-                            }
-                            work.finish(provider.append_inner(request).await.map(
-                                |(outcome, allocation)| {
-                                    (crate::WriteOutcome::Append(outcome), allocation)
-                                },
-                            ))
-                        },
-                        |result| crate::native::outcome(result, StreamError::code),
-                    )
-                },
-            ),
+                                ) {
+                                    return work.finish(Err(error));
+                                }
+                                work.finish(provider.append_inner(request).await.map(
+                                    |(outcome, allocation)| {
+                                        (crate::WriteOutcome::Append(outcome), allocation)
+                                    },
+                                ))
+                            },
+                            |result| crate::native::outcome(result, StreamError::code),
+                        )
+                    },
+                )
+            }
             crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
                 self.guarded_commit(
                     request,
@@ -1017,32 +1053,18 @@ impl MemoryStream {
                             let digest = provider.digest(&mut request).map_err(E::from)?;
                             let cut = {
                                 let state = provider.state.read().await;
-                                if let Some(replay) = provider
-                                    .replay(&state, request.idempotency_key.as_bytes())
+                                if let Some((replayed, result, index)) = provider
+                                    .replay_in(&state, request.idempotency_key.as_bytes())
                                     .map_err(E::from)?
                                 {
-                                    if replay.digest != digest {
-                                        return Err(E::from(StreamError::IdempotencyMismatch));
-                                    }
-                                    let IdempotencyOutcome::Commit(value) = &replay.result else {
-                                        return Err(E::from(StreamError::IdempotencyMismatch));
-                                    };
-                                    let (receipt, mut claim) = provider
-                                        .replayed(
+                                    return provider
+                                        .project_replayed_commit(
                                             &request,
-                                            value,
-                                            provider.revisions.at(replay.index),
+                                            digest,
+                                            (replayed, result, index),
+                                            accepted,
                                         )
-                                        .map_err(E::from)?;
-                                    let envelope = provider
-                                        .selected_envelope(value, accepted, &mut claim)
-                                        .map_err(E::from)?;
-                                    return commit_projection(
-                                        CommitOutcome::Committed(receipt),
-                                        envelope,
-                                    )
-                                    .map(|outcome| (outcome, claim))
-                                    .map_err(E::from);
+                                        .map_err(E::from);
                                 }
                                 // An unguarded Commit observes nothing before
                                 // its locked plan, which rechecks its key.
@@ -1235,17 +1257,19 @@ impl MemoryStream {
     ) -> crate::NativeStreamResult<Option<IdempotencyObservation>> {
         let state = self.state.read().await;
         let replay = inspect(&meter, || {
-            state.replay(key.as_bytes(), |items| meter.examine(items, 0))
+            state.lookup_replay(key.as_bytes(), |items| meter.examine(items, 0))
         })??;
         let output = match replay {
-            Some(replay) => crate::native::clone_outcome(&replay.result, &meter)?.map(|outcome| {
-                Some(IdempotencyObservation {
-                    idempotency_key: key,
-                    request_digest: replay.digest,
-                    outcome,
-                    revision: Some(self.revisions.at(replay.index)),
+            Some((digest, result, index)) => {
+                crate::native::clone_outcome(result, &meter)?.map(|outcome| {
+                    Some(IdempotencyObservation {
+                        idempotency_key: key,
+                        request_digest: *digest,
+                        outcome,
+                        revision: Some(self.revisions.at(index)),
+                    })
                 })
-            }),
+            }
             None => crate::NativeStreamOutput::new(None, ReadAllocation::empty(&meter)),
         };
         meter.check()?;

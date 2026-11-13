@@ -4,7 +4,6 @@
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
-    object_digest,
 };
 use crate::{AsyncObjectStore, AuthorityWork, WorkCounters, WorkError};
 use acyclic_objects::{Blobs, ByteRange, Error, Object, Put, wire};
@@ -150,6 +149,17 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     }
 }
 impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore<P, S> {
+    fn restore_hashed(
+        &self,
+        id: ObjectId,
+        stored: OwnedBytes,
+        maximum: u64,
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<crate::HashedObject, ObjectStoreError> {
+        self.restore_prepared(id, stored, maximum, &mut context.accounting())
+            .map_err(crate::async_storage::object_error)
+    }
+
     fn requires_child_first_publication(&self) -> bool {
         true
     }

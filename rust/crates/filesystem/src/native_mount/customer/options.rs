@@ -54,6 +54,7 @@ pub struct MountOptions {
     pub(crate) writable: bool,
     pub(crate) subdirectory: std::borrow::Cow<'static, str>,
     pub(crate) publication: MountPublication,
+    pub(crate) private_command: bool,
     pub(super) work: Option<NativeMaterializationWork>,
     pub(super) callback_guard: Option<Arc<dyn super::super::NativeMountCallbackGuard>>,
     pub(super) native_original: Option<NativeMaterializationWork>,
@@ -154,6 +155,7 @@ impl MountOptions {
             writable: true,
             subdirectory: std::borrow::Cow::Borrowed("/"),
             publication: MountPublication::CloseAndSync,
+            private_command: false,
             work: None,
             callback_guard: None,
             native_original: None,
@@ -195,12 +197,11 @@ impl MountOptions {
         }
     }
 
-    /// Selects the native backend for an issued task view. Linux and Windows
-    /// share an instance; Darwin retains its existing per-view native session.
+    /// Selects the shared native instance for an issued task view on every OS.
     /// This choice stays below the common task-view API used by every host.
     #[must_use]
     pub(crate) const fn for_task_view(mut self) -> Self {
-        self.shared = cfg!(any(target_os = "linux", windows));
+        self.shared = cfg!(any(target_os = "linux", target_os = "macos", windows));
         self
     }
 
@@ -223,6 +224,16 @@ impl MountOptions {
     #[must_use]
     pub const fn publication(mut self, publication: MountPublication) -> Self {
         self.publication = publication;
+        self
+    }
+
+    /// Keeps this view on the authorized source until its first mutation.
+    /// Mutations use one private ephemeral fork and require explicit verified
+    /// completion; abandoning the view discards them.
+    #[must_use]
+    pub const fn private_command(mut self) -> Self {
+        self.private_command = true;
+        self.publication = MountPublication::Manual;
         self
     }
 
