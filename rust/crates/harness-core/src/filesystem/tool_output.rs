@@ -15,7 +15,7 @@ pub struct AgentObservation {
     /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
     /// `{resource}/{turn}`.
     pub resource: String,
-    /// Sealed credential to read and follow the agent's conversation and status and to
+    /// Sealed credential to follow the agent's inbox, conversation and status and to
     /// list and read under `resource`, bound to the agent's audience; it lives
     /// no longer than the agent's scope and is revoked with it.
     pub credential: Vec<u8>,
@@ -173,6 +173,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             } else {
                 agent.conversation()
             })?;
+            let inbox = stream(agent.inbox())?;
             let status = stream(agent.status())?;
             let children = stream(agent.children())?;
             let diagnostics = stream(crate::agent::Diagnostic::directory(agent))?;
@@ -197,6 +198,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             } else {
                 vec![
                     (observed.as_str(), false, follow),
+                    (inbox.as_str(), false, follow),
                     (status.as_str(), false, follow),
                     (membership.as_str(), tree, follow),
                     (resource.as_str(), true, read),
