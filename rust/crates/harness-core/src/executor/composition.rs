@@ -1,6 +1,43 @@
 use super::*;
 
 impl StockExecutor {
+    /// Retains only the complete model/tool selection for a later step. This
+    /// cannot replace the running turn's context, authority or journal.
+    /// Shared storage uses the supplied original preparation owner.
+    pub fn into_step_binding(self, io: Option<&PreparationIo>) -> Result<Arc<StepBinding>> {
+        let attempt = io.map(PreparationIo::scoped).transpose()?;
+        let storage = attempt.as_ref();
+        let bytes = acyclic_fs::shared_allocation_bytes::<StepBinding>().map_err(|_| {
+            stock_boundary(
+                storage,
+                crate::wire::ErrorCode::Invalid,
+                "step binding storage overflows",
+            )
+        })?;
+        crate::executor::with_history_io(storage, |work| -> Result<()> {
+            if let Some(work) = work.as_deref_mut() {
+                work.retain_owned(bytes)?;
+                work.allocation_attempt(bytes)?;
+            }
+            Ok(())
+        })?;
+        let custody = storage.map(|io| io.take_owned_custody(bytes)).transpose()?;
+        Ok(Arc::new(StepBinding {
+            model: self.model,
+            sampling: self.sampling,
+            resolved_sampling: self.resolved_sampling,
+            provider: self.provider,
+            tools: self.tools,
+            #[cfg(not(target_arch = "wasm32"))]
+            hooks: self.hooks,
+            #[cfg(not(target_arch = "wasm32"))]
+            after_hooks: self.after_hooks,
+            #[cfg(not(target_arch = "wasm32"))]
+            prompt_block: self.prompt_block,
+            _custody: custody,
+        }))
+    }
+
     /// Applies a host-admitted complete configuration before each model step.
     /// The source pins its original file selection in this execution's journal;
     /// model and tool dispatch continue through the same stock engine.

@@ -2,8 +2,8 @@ use super::*;
 
 pub(in crate::executor) struct StockExecution<'a> {
     /// The immutable prefix composition, independent of per-step bindings.
-    pub(in crate::executor) origin: &'a StockExecutor,
-    pub(in crate::executor) stock: ExecutionConfiguration<'a>,
+    pub(in crate::executor) stock: &'a StockExecutor,
+    pub(in crate::executor) selected: Option<Arc<StepBinding>>,
     pub(in crate::executor) configuration: Option<&'a Arc<dyn StepConfiguration>>,
     pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) io: Option<&'a PreparationIo>,
@@ -20,21 +20,6 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) request_cache:
         tokio::sync::Mutex<crate::executor::retained_request::RequestCache<'a>>,
     pub(in crate::executor) content_admission: crate::executor::ExecutionJournalCacheId,
-}
-
-pub(in crate::executor) enum ExecutionConfiguration<'a> {
-    Borrowed(&'a StockExecutor),
-    Shared(Arc<StockExecutor>),
-}
-
-impl std::ops::Deref for ExecutionConfiguration<'_> {
-    type Target = StockExecutor;
-    fn deref(&self) -> &StockExecutor {
-        match self {
-            Self::Borrowed(stock) => stock,
-            Self::Shared(stock) => stock,
-        }
-    }
 }
 
 /// One writer entrance for an execution and its borrowed summary sessions.
@@ -75,10 +60,57 @@ pub(in crate::executor) struct ResolvedCompaction<'a> {
 }
 
 impl<'a> StockExecution<'a> {
+    pub(in crate::executor) fn selected_model(&self) -> &Model {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.model, |selected| &selected.model)
+    }
+    pub(in crate::executor) fn selected_provider(&self) -> &Arc<dyn ModelProvider> {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.provider, |selected| &selected.provider)
+    }
+    pub(in crate::executor) fn selected_tools(&self) -> &ToolRegistry {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.tools, |selected| &selected.tools)
+    }
+    pub(in crate::executor) fn selected_sampling(&self) -> Option<crate::model::ModelSampling> {
+        self.selected
+            .as_ref()
+            .map_or(self.stock.sampling, |selected| selected.sampling)
+    }
+    pub(in crate::executor) fn selected_sampling_cache(
+        &self,
+    ) -> &once_cell::sync::OnceCell<crate::model::ModelSampling> {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.resolved_sampling, |selected| {
+                &selected.resolved_sampling
+            })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::executor) fn selected_hooks(&self) -> &Option<Arc<crate::hooks::BoundHooks>> {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.hooks, |selected| &selected.hooks)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::executor) fn selected_after_hooks(&self) -> &[crate::plugins::AfterHook] {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.after_hooks, |selected| &selected.after_hooks)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::executor) fn selected_prompt_block(&self) -> &Option<String> {
+        self.selected
+            .as_ref()
+            .map_or(&self.stock.prompt_block, |selected| &selected.prompt_block)
+    }
     pub(in crate::executor) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self {
-            origin: stock,
-            stock: ExecutionConfiguration::Borrowed(stock),
+            stock,
+            selected: None,
             configuration: stock.step_configuration.as_ref(),
             context: stock
                 .task_context
@@ -104,7 +136,7 @@ impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn context_pipeline(&self) -> &ContextPipeline {
         self.summary
             .as_ref()
-            .map_or(&self.origin.context, |pipeline| pipeline)
+            .map_or(&self.stock.context, |pipeline| pipeline)
     }
     pub(in crate::executor) fn compaction_policy(
         &self,
@@ -166,7 +198,7 @@ impl<'a> StockExecution<'a> {
         if self.summary.is_some() {
             None
         } else {
-            self.origin.inherited_prefix.as_ref()
+            self.stock.inherited_prefix.as_ref()
         }
     }
 }

@@ -56,7 +56,7 @@ impl StockExecution<'_> {
         response: Option<&ToolResult>,
         retained_only: bool,
     ) -> Result<Option<HookOutput>> {
-        let Some(hooks) = &self.stock.hooks else {
+        let Some(hooks) = self.selected_hooks() else {
             return Ok(Some(HookOutput::default()));
         };
         // Matching normalizes native declarations and owns request JSON.
@@ -77,7 +77,7 @@ impl StockExecution<'_> {
         };
         if hooks
             .rules
-            .commands(event, input, &self.stock.tools)?
+            .commands(event, input, self.selected_tools())?
             .next()
             .is_none()
         {
@@ -101,7 +101,7 @@ impl StockExecution<'_> {
                 (&hooks.rules, hooks.manifest),
                 event,
                 input,
-                &self.stock.tools,
+                self.selected_tools(),
                 context,
                 retained_only || self.stock.reconciliation_only,
             )
@@ -124,10 +124,10 @@ impl StockExecution<'_> {
         (prompt, target): (String, Option<&crate::agent::TargetRecord>),
         started: bool,
     ) -> Result<Option<tool_execution::PolicyStop>> {
-        let hooks =
-            self.stock.hooks.as_ref().ok_or_else(|| {
-                Error::Invalid("hook approval has no pinned configuration".into())
-            })?;
+        let hooks = self
+            .selected_hooks()
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("hook approval has no pinned configuration".into()))?;
         let task = TaskId::from_bytes(operation.into_bytes());
         let identity = crate::hooks::effects::approval_identity(hooks.manifest);
         let ((approval, request), _hold) = tool_approval_request(
@@ -154,7 +154,7 @@ impl StockExecution<'_> {
         step: u32,
         active: bool,
     ) -> Result<Option<HookOutput>> {
-        let Some(hooks) = &self.stock.hooks else {
+        let Some(hooks) = self.selected_hooks() else {
             return Ok(None);
         };
         let event = HookEvent::only(HookSite::TurnEnd)?;
@@ -165,7 +165,7 @@ impl StockExecution<'_> {
         let input = HookInput::Fields(&fields);
         if hooks
             .rules
-            .commands(event, input, &self.stock.tools)?
+            .commands(event, input, self.selected_tools())?
             .next()
             .is_none()
         {
@@ -197,7 +197,7 @@ impl StockExecution<'_> {
                 (&hooks.rules, hooks.manifest),
                 event,
                 input,
-                &self.stock.tools,
+                self.selected_tools(),
                 context,
                 self.stock.reconciliation_only,
             )
