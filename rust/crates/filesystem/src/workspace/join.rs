@@ -226,18 +226,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinBuilde
             } else {
                 None
             };
+            // A join composed onto a later head was planned against the head
+            // its origin records, which its fingerprint binds.
             let target_authority_head = if let Some(commit) = original {
-                crate::Head {
-                    epoch: commit.epoch,
-                    sequence: crate::Sequence::new(
-                        commit
-                            .sequence
-                            .get()
-                            .checked_sub(1)
-                            .ok_or(WorkspaceError::IncompatibleWorkspace)?,
-                    ),
-                    digest: commit.previous_digest,
-                }
+                crate::facade::original_publication(&commit, &mut accounting)?.0
             } else {
                 let (id, head) = self
                     .target

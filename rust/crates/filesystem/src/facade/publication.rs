@@ -735,24 +735,39 @@ fn original_publication_head(
     record: &DurableCommit,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Head, FsError> {
+    original_publication(record, accounting).map(|(head, _)| head)
+}
+
+/// The request a committed publication was planned as: the head it expected
+/// and, when it was composed onto a later head, the candidate generation it
+/// carried then. A composed publication records both as its origin, and its
+/// fingerprint binds them; any other was committed as planned, onto its
+/// predecessor, with the generation it records.
+pub(crate) fn original_publication(
+    record: &DurableCommit,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(Head, Option<ObjectId>), FsError> {
     let decoded = crate::kernel::decode_publication_evidence_with_accounting(
         &record.payload,
         record.payload.len() as u64,
         None,
         accounting,
     )?;
-    Ok(decoded.origin.map_or(
-        Head {
-            epoch: record.epoch,
-            sequence: Sequence::new(
-                record
-                    .sequence
-                    .get()
-                    .checked_sub(1)
-                    .ok_or(FsError::InvalidAuthorityHistory)?,
-            ),
-            digest: record.previous_digest,
-        },
-        |origin| origin.expected,
-    ))
+    Ok(match decoded.origin {
+        Some(origin) => (origin.expected, Some(origin.generation_root)),
+        None => (
+            Head {
+                epoch: record.epoch,
+                sequence: Sequence::new(
+                    record
+                        .sequence
+                        .get()
+                        .checked_sub(1)
+                        .ok_or(FsError::InvalidAuthorityHistory)?,
+                ),
+                digest: record.previous_digest,
+            },
+            None,
+        ),
+    })
 }

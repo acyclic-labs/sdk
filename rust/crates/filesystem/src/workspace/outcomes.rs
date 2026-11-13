@@ -41,7 +41,12 @@ pub enum WorkspaceDelete {
 /// Atomic join application preconditions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ApplyOptions {
-    /// Exact target generation that must still be current.
+    /// Target generation the join was planned against. Where the authority
+    /// composes independent publications (atomic group commit, without a
+    /// reservation permit), a target that moved only on keys the join does
+    /// not write composes the join onto its new head, and a change to any key
+    /// the join writes returns `StaleTarget`. Elsewhere any target move
+    /// returns `StaleTarget`.
     pub if_target: GenerationId,
     /// Stable identity reused only for an exact retry.
     pub idempotency_key: IdempotencyKey,
@@ -55,7 +60,9 @@ pub enum JoinOutcome<A: 'static, O: 'static> {
     AlreadyApplied(JoinApplication<A, O>),
     /// Source changes were already represented by the target.
     NoChanges(Generation<A, O>),
-    /// Target changed after planning; no join was published.
+    /// The target moved after planning, on a key the join writes, or on any
+    /// key where the authority does not compose publications; no join was
+    /// published.
     StaleTarget(Generation<A, O>),
     /// Exact conflicts prevented candidate publication.
     Conflicted {

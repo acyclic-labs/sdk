@@ -268,6 +268,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             if generation != witness.result_generation.object_id() {
                 return Ok(false);
             }
+            // A join composed onto a later head keeps the fingerprint of the
+            // candidate it planned, which its origin records.
+            let (_, composed) = original_publication(commit, &mut accounting)?;
             let hashing = WorkCounters {
                 bytes_hashed: super::join_request::workspace_join_context_bytes(
                     witness.source_generation,
@@ -289,7 +292,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 epoch: witness.expected_head.epoch,
                 expected: witness.expected_head,
                 operation_id: witness.operation_id,
-                generation_root: witness.result_generation.object_id(),
+                generation_root: composed.unwrap_or(generation),
             };
             let mut unbounded;
             let fingerprint_accounting = if standalone {

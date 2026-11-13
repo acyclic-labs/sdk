@@ -266,6 +266,7 @@ pub(crate) use publication::PublicationClosure;
 pub(crate) use publication::VerifiedPublication;
 pub(crate) use publication::closure_limits;
 use publication::durable_head;
+pub(crate) use publication::original_publication;
 #[cfg(not(target_arch = "wasm32"))]
 use read_accounting::native_pinned_allocation;
 pub(crate) use read_accounting::readonly_cleanup_standalone;
