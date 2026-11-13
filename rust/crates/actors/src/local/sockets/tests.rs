@@ -5,7 +5,7 @@ use crate::local::{Runtime, SystemClock};
 use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
 use acyclic_stream::runtime::PlatformExecutor;
 use acyclic_stream::session::{ActorSocket, Client, testing};
-use acyclic_stream::{BoxProviderFuture, LocalStream, MemoryStream};
+use acyclic_stream::{BoxProviderFuture, CommitOutcome, LocalStream, MemoryStream};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
