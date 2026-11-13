@@ -501,6 +501,7 @@ where
                 }
                 return Ok(AppendObservation {
                     accepted,
+                    committed_at_micros: None,
                     #[cfg(feature = "research")]
                     sequence: accepted.then_some(*sequence),
                 });
@@ -539,7 +540,7 @@ where
                     retained_io,
                 )
                 .await?;
-            if let Some((recovery, commit_id)) = committed {
+            if let Some((recovery, commit_id, committed_at_micros)) = committed {
                 #[cfg(feature = "test-support")]
                 tracing::trace!(target: "acyclic_harness::journal_work",
                     journal_appends = 1_u64, journal_append_bytes = bytes.len() as u64,
@@ -556,6 +557,7 @@ where
                 drop(retry_hold);
                 return Ok(AppendObservation {
                     accepted: true,
+                    committed_at_micros: Some(committed_at_micros),
                     #[cfg(feature = "research")]
                     sequence: Some(sequence),
                 });
@@ -574,6 +576,7 @@ use crate::executor::stock_boundary;
 
 pub(super) struct AppendObservation {
     pub(super) accepted: bool,
+    pub(super) committed_at_micros: Option<u64>,
     #[cfg(feature = "research")]
     pub(super) sequence: Option<u64>,
 }
@@ -582,6 +585,7 @@ impl AppendObservation {
     fn refused() -> Self {
         Self {
             accepted: false,
+            committed_at_micros: None,
             #[cfg(feature = "research")]
             sequence: None,
         }

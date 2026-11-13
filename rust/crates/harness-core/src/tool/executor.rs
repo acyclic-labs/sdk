@@ -70,6 +70,16 @@ pub type ToolPreparationFuture<'a> =
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Bounds reversible preparation from the original durable call start.
+    /// The result reports expiry without claiming that unobserved work settled.
+    /// The shared executor drops preparation when the host clock reaches it.
+    fn preparation_timeout(
+        &self,
+        _invocation: &ToolInvocation,
+    ) -> Result<Option<(u64, ToolResult)>> {
+        Ok(None)
+    }
+
     /// Classify an already validated completion at its original producer.
     /// Result JSON cannot independently supply a trusted record marker.
     fn record_kind(

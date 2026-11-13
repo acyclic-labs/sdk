@@ -23,6 +23,22 @@ use std::{
 struct Unused;
 
 impl acyclic_harness_core::agent::TurnOutputs for Unused {
+    fn stage_notice<'a>(
+        &'a self,
+        _: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<FileRef>> {
+        Box::pin(async move {
+            FileRef::new(
+                file("notice.json")?.volume().clone(),
+                "notice.json".into(),
+                "version-1".into(),
+                FileDescriptor::from_bytes(bytes, NOTICE_MEDIA_TYPE, &mut None)?,
+                "notice.json".into(),
+                &mut None,
+            )
+        })
+    }
     fn stage<'a>(
         &'a self,
         _: OperationId,

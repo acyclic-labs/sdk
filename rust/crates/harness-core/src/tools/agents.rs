@@ -778,7 +778,13 @@ impl AgentTool {
                 stranded.join(", ")
             ))));
         }
-        if released.is_none() && need != 0 {
+        // A settlement delivery may precede newer accepted child work. Only
+        // input and the original deadline can release an unmet condition.
+        let interrupted = matches!(
+            released.as_ref(),
+            Some(crate::agent::WaitReason::Deadline | crate::agent::WaitReason::Input { .. })
+        );
+        if !interrupted && need != 0 {
             return Ok(ToolPreparation::Deferred(crate::agent::Until {
                 operation: Some(operation),
                 input: on_input,
@@ -934,6 +940,35 @@ fn sent_result(sent: crate::agent::SentMessage) -> ToolResult {
 }
 
 impl ToolExecutor for AgentTool {
+    fn preparation_timeout(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<(u64, ToolResult)>> {
+        if self.name != "wait" {
+            return Ok(None);
+        }
+        let Ok(input) = WaitAgentInput::deserialize(&invocation.arguments) else {
+            return Ok(None);
+        };
+        Ok(input.timeout_ms.map(|timeout| {
+            let unsettled: Vec<_> = input
+                .agents
+                .iter()
+                .map(|name| json!({"name": name, "phase": "unknown"}))
+                .collect();
+            (
+                timeout,
+                ToolResult {
+                    value: json!({
+                        "settled": [], "unsettled": unsettled, "sent": [],
+                        "unobserved_sent": input.sent,
+                        "reason": {"kind": "deadline"}
+                    }),
+                },
+            )
+        }))
+    }
+
     fn requires_effect_commit(&self, result: &ToolResult) -> bool {
         self.name == "send" && result.value.get("status").and_then(Value::as_str) == Some("queued")
     }

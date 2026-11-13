@@ -548,6 +548,8 @@ pub struct Until {
     /// Milliseconds after the committing step at which the turn resumes
     /// regardless; `None` waits for the condition alone.
     pub timeout_ms: Option<u64>,
+    /// Absolute deadline anchored to the original deferred tool start, when present.
+    pub deadline_unix_ms: Option<u64>,
     /// Also resume on inbox input; used by reply-or-alarm waits.
     pub input: bool,
 }
@@ -575,6 +577,7 @@ impl Until {
             replies: Vec::new(),
             need,
             timeout_ms: None,
+            deadline_unix_ms: None,
             input: false,
         }
     }
@@ -588,6 +591,7 @@ impl Until {
             replies: Vec::new(),
             need: 1,
             timeout_ms: Some(timeout_ms),
+            deadline_unix_ms: None,
             input: false,
         }
     }
@@ -601,6 +605,7 @@ impl Until {
             replies: Vec::new(),
             need: 1,
             timeout_ms,
+            deadline_unix_ms: None,
             input: true,
         }
     }
@@ -618,6 +623,8 @@ impl Until {
 pub struct WaitResume {
     /// Unrelated calls cannot consume this invocation's release.
     pub operation: crate::OperationId,
+    /// Original absolute deadline, retained when a stale settlement re-arms the call.
+    pub deadline_unix_ms: Option<u64>,
     /// Absent until the selected event occurs.
     pub reason: Option<WaitReason>,
 }
@@ -1698,8 +1705,23 @@ async fn run<T: TurnDriver + ?Sized>(
             None,
         ),
         Wait::Until(until) => {
+            let deadline = state
+                .wait_resume
+                .as_ref()
+                .filter(|resume| Some(resume.operation) == until.operation)
+                .map_or_else(
+                    || {
+                        until.deadline_unix_ms.or_else(|| {
+                            until
+                                .timeout_ms
+                                .map(|timeout| now_unix_ms.saturating_add(timeout))
+                        })
+                    },
+                    |resume| resume.deadline_unix_ms,
+                );
             state.wait_resume = until.operation.map(|operation| WaitResume {
                 operation,
+                deadline_unix_ms: deadline,
                 reason: None,
             });
             // Only an open child can still settle; one already done has and
@@ -1715,9 +1737,6 @@ async fn run<T: TurnDriver + ?Sized>(
             }
             let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
             let need = until.need.saturating_sub(settled);
-            let deadline = until
-                .timeout_ms
-                .map(|timeout| now_unix_ms.saturating_add(timeout));
             let sleep = until.awaited.is_empty() && until.replies.is_empty();
             let reachable = open.len().saturating_add(until.replies.len());
             let input = until.input;

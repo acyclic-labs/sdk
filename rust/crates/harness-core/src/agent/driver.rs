@@ -218,6 +218,13 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
         bytes: &'a [u8],
     ) -> BoxFuture<'a, crate::Result<FileRef>>;
 
+    /// Stages a primitive Notice once under this turn's immutable identity.
+    /// The actor publishes its file reference with the settled conversation.
+    fn stage_notice<'a>(
+        &'a self,
+        turn: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, crate::Result<FileRef>>;
     /// The answer `turn` streamed before it was cancelled, which its
     /// cancelled entry keeps; empty where the host streams none.
     fn partial(&self, turn: OperationId) -> BoxFuture<'_, crate::Result<String>> {
@@ -933,6 +940,45 @@ fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
     Ok(outs)
 }
 
+async fn settlement_notice(
+    agent: &AgentState,
+    outputs: &dyn TurnOutputs,
+    entry: &ConversationEntry,
+) -> Result<Option<Out>, Error> {
+    let Some(parent) = &agent.parent else {
+        return Ok(None);
+    };
+    if entry.input.context().is_some() || matches!(entry.outcome, TurnOutcome::Cancelled) {
+        return Ok(None);
+    }
+    let turn = turn_id(agent, &entry.input)?;
+    let notice = crate::conversation::wire::Notice {
+        source: agent.path.to_string(),
+        kind: "child.settled".into(),
+        body: serde_json::json!({
+            "child": agent.path,
+            "turn": turn,
+            "output": entry.output,
+            "outcome": entry.outcome,
+            "branch": agent.path,
+        }),
+        wake: true,
+        coalesce_key: None,
+    };
+    let bytes =
+        crate::contract::canonical_json_bytes(&notice).map_err(|error| host_error(error.into()))?;
+    let notice = outputs
+        .stage_notice(turn, &bytes)
+        .await
+        .map_err(host_error)?;
+    Ok(Some(Out::Send {
+        to: parent.clone(),
+        record: InboxRecord::Notice {
+            id: IntentId::try_from(format!("child-settled:{turn}"))?,
+            notice: super::NoticePayload::Waking(Box::new(notice)),
+        },
+    }))
+}
 /// The exact immutable delta originally selected by this turn.
 fn announced(open: &OpenTurn) -> Vec<super::AnnouncedDocument> {
     open.announcements.clone()
@@ -1015,6 +1061,24 @@ async fn settle_effects(
     open: &OpenTurn,
     mut step: TurnStep,
 ) -> Result<TurnStep, Error> {
+    if agent.parent.is_some()
+        && let Some(bytes) = step.outs.iter().find_map(|out| match out {
+            Out::Conversation(bytes) => Some(bytes),
+            _ => None,
+        })
+    {
+        let entry = ConversationEntry::decode(bytes)?;
+        // Continuing goals publish their completion only with the final turn.
+        if (entry.goal.is_none()
+            || step
+                .outs
+                .iter()
+                .any(|out| matches!(out, Out::GoalCompleted { .. })))
+            && let Some(notice) = settlement_notice(agent, &*open.outputs, &entry).await?
+        {
+            step.outs.push(notice);
+        }
+    }
     if let Some(effects) = &open.effects {
         let mut outs = super::effect_outs(agent, effects.recorded().await.map_err(host_error)?);
         outs.append(&mut step.outs);

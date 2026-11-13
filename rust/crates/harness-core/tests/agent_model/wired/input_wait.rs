@@ -24,7 +24,12 @@ fn wait(id: &str, timeout: Option<u64>) -> ScriptedTurn {
 async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() -> Result {
     for (answer, reserved) in [(true, 0), (false, 0), (true, MAX_QUEUED + 2)] {
         let path = AgentPath::root(&id(226));
-        let stream = Arc::new(MemoryStream::default());
+        let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+        let clock = Arc::new(clock);
+        let stream = Arc::new(MemoryStream::new_with_clock(
+            Default::default(),
+            Arc::new(super::preparation::JournalClock(clock.clone())),
+        ));
         let (filesystem, binding) = private_in(&stream, &path).await?;
         let mut turns = vec![
             ScriptedTurn::Text("reply body".into()),
@@ -69,14 +74,14 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             Arc::new(executors),
             LIMITS,
             acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
-        );
-        let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+        )
+        .with_clock(clock.clone());
         let host = AgentHost::with_spawn_volumes(
             stream.clone(),
             ExecutorDriver::new(turn_host),
             within(),
             acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-            Arc::new(clock),
+            clock,
             Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem)),
         )?;
         let mut adoption = adopted(path.id());
