@@ -149,6 +149,9 @@ mod native_identity;
     )
 ))]
 mod native_ownership;
+#[cfg(all(target_os = "linux", feature = "fuzzing"))]
+#[doc(hidden)]
+pub use acyclic_native_runtime::receive_packet_device_reply_for_test;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use native_ownership::codec_fuzz as native_ownership_codec;
 #[cfg(not(target_arch = "wasm32"))]

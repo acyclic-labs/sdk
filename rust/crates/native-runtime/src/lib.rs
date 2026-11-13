@@ -49,6 +49,8 @@ pub mod obs;
 mod process_tree;
 #[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 pub use process_tree::fuzz_runner_request;
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+pub use process_tree::receive_packet_device_reply_for_test;
 #[cfg(windows)]
 mod windows;
 #[cfg(all(unix, not(target_os = "linux")))]

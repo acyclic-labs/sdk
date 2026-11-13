@@ -1,6 +1,5 @@
 use super::*;
 use proptest::prelude::*;
-use rustix::net::ReturnFlags;
 use std::{cell::Cell, sync::OnceLock};
 
 std::thread_local! {
@@ -106,10 +105,6 @@ fn real_helper_spawn_never_forks_at_n_and_two_n_and_pre_exec_fails_that_bound() 
     Ok(())
 }
 
-fn descriptor() -> OwnedFd {
-    File::open("/dev/null").unwrap().into()
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     // Normal unmount happens once; only permission refusal admits the helper.
@@ -148,14 +143,6 @@ proptest! {
             prop_assert_eq!(std::panic::catch_unwind(|| assert!(equal)).is_ok(), !broken);
         }
     }
-    #[test]
-    fn reply_requires_one_descriptor_nonempty_payload_and_complete_control(count in 0usize..5, bytes in 0usize..6, truncated in any::<bool>()) {
-        let flags = if truncated { ReturnFlags::CTRUNC } else { ReturnFlags::empty() };
-        let files = (0..count).map(|_| descriptor()).collect::<Vec<_>>();
-        let result = reply::one_device(bytes, flags, files.into_iter());
-        prop_assert_eq!(result.is_ok(), count == 1 && bytes > 0 && !truncated);
-        if let Err(error) = result { prop_assert_eq!(error.kind(), io::ErrorKind::InvalidData); }
-    }
 }
 
 #[test]
@@ -164,43 +151,20 @@ fn helper_spawn_and_socket_custody() -> io::Result<()> {
     // until exec. Finish that control before opening the custody oracle's flock
     // descriptions, so the control itself cannot keep a rejected fd alive.
     real_helper_spawn_never_forks_at_n_and_two_n_and_pre_exec_fails_that_bound()?;
-    for count in 0u8..5 {
+    for count in 0u8..17 {
         for length in [0, 1, 5, 32] {
             let mut input = vec![count];
             input.resize(length + 1, b'x');
-            reply::check::check(&input);
+            reply_check::check(&input);
         }
     }
     proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(64))
         .run(&proptest::collection::vec(any::<u8>(), 0..40), |input| {
-            reply::check::check(&input);
+            reply_check::check(&input);
             Ok(())
         })
         .expect("descriptor roundtrip/custody property");
     Ok(())
-}
-
-#[test]
-fn accepting_the_first_of_two_descriptors_fails_the_same_reply_property() {
-    for broken in [false, true] {
-        let run = || {
-            reply::one_device(
-                1,
-                ReturnFlags::empty(),
-                vec![descriptor(), descriptor()].into_iter(),
-            )
-        };
-        let result = if broken {
-            reply::accepting_extra(run)
-        } else {
-            run()
-        };
-        let rejected = result.is_err();
-        assert_eq!(
-            std::panic::catch_unwind(|| assert!(rejected)).is_ok(),
-            !broken
-        );
-    }
 }
 
 #[test]
