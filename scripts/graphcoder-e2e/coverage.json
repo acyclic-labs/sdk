@@ -148,6 +148,8 @@
       "cases": [
         "instructions-and-skills",
         "skill-invocation",
+        "evals-projection-plain",
+        "evals-projection-git",
         "evals-to-skill-plain",
         "evals-to-skill-git",
         "file-mention",
