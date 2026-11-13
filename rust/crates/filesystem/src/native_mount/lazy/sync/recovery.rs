@@ -43,13 +43,12 @@ where
                 .has_retained_operation()
                 .then(|| checkout.retained_operation_id())
         };
-        if let Some(requested) = publication.operation
-            && (remembered.is_some_and(|(operation, _)| operation != requested)
-                || retained.is_some_and(|operation| operation != requested))
-        {
-            return Err(MountSourceError::Stale.into());
-        }
-        if let Some(operation) = retained {
+
+        if let Some(operation) = retained.filter(|operation| {
+            publication
+                .operation
+                .is_none_or(|requested| requested == *operation)
+        }) {
             let proof = remembered.and_then(|(_, proof)| proof).or(selected
                 .filter(|(_, _, requested)| *requested == operation)
                 .and(selected_proof));
@@ -127,6 +126,12 @@ where
             }
         }
 
+        if let Some(requested) = publication.operation
+            && (remembered.is_some_and(|(operation, _)| operation != requested)
+                || retained.is_some_and(|operation| operation != requested))
+        {
+            return Err(MountSourceError::Stale.into());
+        }
         if publication.operation.is_some()
             && requested.is_none()
             && remembered.is_none()
