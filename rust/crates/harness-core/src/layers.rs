@@ -139,7 +139,8 @@ pub struct PinnedLayer {
 }
 
 impl PinnedLayer {
-    pub(crate) fn validate(&self) -> crate::Result<()> {
+    /// Checks the original volume and generation provider binding.
+    pub fn validate(&self) -> crate::Result<()> {
         self.volume.validate(&mut None)?;
         self.generation.validate(&mut None)?;
         if self.volume.provider() != self.generation.as_resource().provider() {

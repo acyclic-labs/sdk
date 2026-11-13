@@ -1,6 +1,6 @@
-//! `agent.ts` at session start: the seed's and the home's modules fold over
+//! `agent.ts` at session start: the six original sources fold over
 //! the model the session was started with; the result selects the model and
-//! its sampling. Each home version's outcome is recorded as an
+//! its sampling. Each source cut's outcome is recorded as an
 //! [`Admission`](crate::config::Admission) in the journal.
 use super::*;
 use crate::config::{self, Admission, AdmissionStatus, AgentConfig, Sampling};
@@ -24,10 +24,12 @@ pub(super) struct Volumes<'a> {
     pub(super) signed: &'a Scope,
     pub(super) home: &'a VolumeRef,
     pub(super) journal: &'a VolumeRef,
+    pub(super) seed: (&'a VolumeRef, &'a crate::resources::GenerationRef),
+    pub(super) configuration: &'a [Option<crate::layers::PinnedLayer>; 4],
     pub(super) maximum_bytes: Option<u64>,
 }
 
-/// One session admission's pinned home over the seed; `sys/` only in the seed.
+/// One session admission's pinned home and issuer sources; `sys/` only in the seed.
 /// Every settings entry point borrows this tree and its original read grant.
 pub(super) struct Tree<'a> {
     volumes: &'a Volumes<'a>,
@@ -36,21 +38,12 @@ pub(super) struct Tree<'a> {
     io: Option<&'a crate::executor::PreparationIo>,
 }
 
+type SourceFiles = [Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>; 5];
+
 impl Tree<'_> {
     pub(super) async fn model_selection(&self, base: &str) -> Result<String> {
-        let home = self.home(config::AGENT).await?;
-        let layers = [
-            Layer {
-                name: "seed",
-                generation: "",
-                bytes: crate::seed::file(config::AGENT),
-            },
-            Layer {
-                name: "home",
-                generation: home.as_ref().map_or("", |(file, _)| file.version()),
-                bytes: home.as_ref().map(|(_, bytes)| bytes.as_ref()),
-            },
-        ];
+        let sources = self.sources(config::AGENT).await?;
+        let layers = self.layers(config::AGENT, &sources);
         let (value, _) = config::compose(
             config::AGENT,
             &layers,
@@ -58,11 +51,90 @@ impl Tree<'_> {
             serde_json::json!({"model": base}),
         )
         .await?;
-        let settings: AgentConfig = serde_json::from_value(value.into_unbounded()?)
-            .map_err(|error| Error::Invalid(format!("{}: {error}", config::AGENT)))?;
-        Ok(settings.model)
+        Ok(value.decode::<AgentConfig>()?.into_unbounded()?.model)
     }
 
+    async fn source(
+        &self,
+        layer: &crate::layers::PinnedLayer,
+        path: &str,
+    ) -> Result<Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>> {
+        let read = crate::executor::with_history_io(self.io, |work| {
+            ContentGrant::verify_directory_read(
+                self.volumes.verifier,
+                self.volumes.signed,
+                &layer.volume,
+                "",
+                work,
+            )
+        })?;
+        Ok(self
+            .volumes
+            .files
+            .read_private_path_indexed(
+                &layer.volume,
+                &read,
+                path,
+                Some(&layer.generation),
+                self.volumes.maximum_bytes,
+                ContentAccess {
+                    io: self.io,
+                    ..ContentAccess::default()
+                },
+            )
+            .await?
+            .map(|(file, bytes, _)| (file, bytes)))
+    }
+
+    async fn sources(&self, path: &str) -> Result<SourceFiles> {
+        let mut sources = std::array::from_fn(|_| None);
+        for (index, layer) in self.volumes.configuration.iter().enumerate() {
+            if let Some(layer) = layer {
+                sources[index] = self.source(layer, path).await?;
+            }
+        }
+        sources[4] = self.home(path).await?;
+        Ok(sources)
+    }
+
+    fn layers<'a>(&self, path: &str, sources: &'a SourceFiles) -> [Layer<'a>; 6] {
+        std::array::from_fn(|index| {
+            if index == 0 {
+                Layer {
+                    name: crate::layers::SEED,
+                    generation: "",
+                    bytes: crate::seed::file(path),
+                }
+            } else {
+                let source = sources[index - 1].as_ref();
+                Layer {
+                    name: crate::layers::ORDER[index],
+                    generation: source.map_or("", |(file, _)| file.version()),
+                    bytes: source.map(|(_, bytes)| bytes.as_ref()),
+                }
+            }
+        })
+    }
+
+    pub(super) fn cut(&self) -> Result<blake3::Hash> {
+        let issuers = self.volumes.configuration.each_ref().map(|layer| {
+            layer
+                .as_ref()
+                .map(|layer| (&layer.volume, &layer.generation))
+        });
+        crate::executor::with_history_io(self.io, |work| {
+            crate::executor::json::canonical_json_digest(
+                &(
+                    self.volumes.seed,
+                    issuers,
+                    (self.volumes.home, &self.generation),
+                ),
+                None,
+                work,
+            )
+            .map(blake3::Hash::from_bytes)
+        })
+    }
     async fn home(
         &self,
         path: &str,
@@ -99,18 +171,22 @@ impl config::Tree for Tree<'_> {
             if !crate::layers::layered(path) {
                 return Ok(seed());
             }
-            Ok(match self.home(path).await? {
-                Some((_, bytes)) if is_off(&bytes) => None,
-                Some((_, bytes)) => Some(bytes),
-                None => seed(),
-            })
+            if let Some((_, bytes)) = self.home(path).await? {
+                return Ok((!is_off(&bytes)).then_some(bytes));
+            }
+            for layer in self.volumes.configuration.iter().rev().flatten() {
+                if let Some((_, bytes)) = self.source(layer, path).await? {
+                    return Ok((!is_off(&bytes)).then_some(bytes));
+                }
+            }
+            Ok(seed())
         })
     }
 }
 
-/// The settings `agent.ts` selects over `started`, recording the home
-/// module's admission. Invalid or rejected enforcement settings refuse the
-/// session; the seed applies only when the home module is absent.
+/// The six-source settings fold selects over `started`, recording admission
+/// under the original complete cut. Invalid or rejected content refuses the
+/// session; operational source errors cannot select a lower layer.
 pub(super) async fn admit(
     tree: &Tree<'_>,
     agent: AgentId,
@@ -119,30 +195,18 @@ pub(super) async fn admit(
     base_model: Option<&str>,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
-    let seed = Layer {
-        name: "seed",
-        generation: "",
-        bytes: crate::seed::file(config::AGENT),
-    };
-    let home = tree.home(config::AGENT).await?;
-    let Some((file, bytes)) = home else {
-        return settle(&[seed], tree, started, resolve, base_model)
+    let sources = tree.sources(config::AGENT).await?;
+    let layers = tree.layers(config::AGENT, &sources);
+    let Some((file, _)) = sources.iter().rev().flatten().next() else {
+        return settle(&layers, tree, started, resolve, base_model)
             .await
             .map_err(Refused::seed);
     };
-    let version = file.version();
-    let layers = [
-        seed,
-        Layer {
-            name: "home",
-            generation: version,
-            bytes: Some(&bytes),
-        },
-    ];
+    let cut = tree.cut()?.to_hex();
     admitted(
         tree.volumes,
         agent,
-        (config::AGENT, version),
+        (config::AGENT, cut.as_str(), file.version()),
         settle(&layers, tree, started, resolve, base_model).await,
         clock,
     )
@@ -209,7 +273,7 @@ impl<'a> Tree<'a> {
 async fn admitted<T>(
     volumes: &Volumes<'_>,
     agent: AgentId,
-    version: (&str, &str),
+    version: (&str, &str, &str),
     result: std::result::Result<T, Refused>,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<T> {
@@ -222,12 +286,12 @@ async fn admitted<T>(
     result.map_err(Refused::cause)
 }
 
-/// Records the outcome of the home's `path` at `version` in the journal,
-/// once per version.
+/// Records the selected file version's outcome under the complete original
+/// configuration cut, so issuer edits cannot overwrite another cut's outcome.
 async fn record(
     volumes: &Volumes<'_>,
     agent: AgentId,
-    (path, version): (&str, &str),
+    (path, cut, version): (&str, &str, &str),
     (status, error): (AdmissionStatus, Option<String>),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<()> {
@@ -240,7 +304,7 @@ async fn record(
     };
     let bytes =
         serde_json::to_vec(&admission).map_err(|error| Error::Invalid(error.to_string()))?;
-    let record = format!("live/agents/{agent}/admissions/{path}/{version}.json");
+    let record = format!("live/agents/{agent}/admissions/{path}/{cut}/{version}.json");
     volumes
         .files
         .put_content(
@@ -258,7 +322,7 @@ async fn record(
             "admission",
             volumes.maximum_bytes,
             &crate::IdempotencyKey::new(format!(
-                "admission:{agent}:{path}:{version}:{}",
+                "admission:{agent}:{path}:{cut}:{version}:{}",
                 blake3::hash(&bytes)
             ))?,
             None,
@@ -292,36 +356,25 @@ pub(super) async fn plugins(
         generation: "",
         bytes: Some(selection.as_bytes()),
     };
-    let seed = Layer {
-        name: "seed",
-        generation: "",
-        bytes: crate::seed::file(MANIFEST),
-    };
-    let seeded = |error: Error| match error {
-        Error::Invalid(reason) => {
-            Error::Invalid(format!("the seed's plugins are not admissible: {reason}"))
-        }
-        error => error,
-    };
-    let Some((file, bytes)) = tree.home(MANIFEST).await? else {
-        return Ok(load_result(tree, &[seed, session], &enabler)
+    let sources = tree.sources(MANIFEST).await?;
+    let original = tree.layers(MANIFEST, &sources);
+    let layers: [Layer<'_>; 7] =
+        std::array::from_fn(|index| if index == 6 { session } else { original[index] });
+    let Some((file, _)) = sources.iter().rev().flatten().next() else {
+        return Ok(load_result(tree, &layers, &enabler)
             .await?
-            .map_err(seeded)?);
+            .map_err(|error| match error {
+                Error::Invalid(reason) => {
+                    Error::Invalid(format!("the seed's plugins are not admissible: {reason}"))
+                }
+                error => error,
+            })?);
     };
-    let version = file.version();
-    let layers = [
-        seed,
-        Layer {
-            name: "home",
-            generation: version,
-            bytes: Some(&bytes),
-        },
-        session,
-    ];
+    let cut = tree.cut()?.to_hex();
     admitted(
         tree.volumes,
         agent,
-        (MANIFEST, version),
+        (MANIFEST, cut.as_str(), file.version()),
         load_result(tree, &layers, &enabler)
             .await?
             .map_err(Refused::evaluated),
@@ -329,7 +382,6 @@ pub(super) async fn plugins(
     )
     .await
 }
-
 /// Configuration refusals have a recorded status. Operational failures retain
 /// their original typed cause and cannot become an admission record.
 #[derive(Debug)]
@@ -582,6 +634,8 @@ mod tests {
             signed: &harness.signed,
             home: &harness.scratch,
             journal: &harness.journal,
+            seed: (&harness.seed.0, &harness.seed.1),
+            configuration: harness.harness.issuer_configuration(),
             maximum_bytes: None,
         };
         let refused = Tree::new(&volumes, crate::config::AGENT, None)
@@ -658,6 +712,8 @@ mod tests {
             signed: &harness.signed,
             home: &harness.scratch,
             journal: &harness.journal,
+            seed: (&harness.seed.0, &harness.seed.1),
+            configuration: harness.harness.issuer_configuration(),
             maximum_bytes: None,
         };
         let layers = [Layer {
@@ -744,6 +800,8 @@ mod tests {
             signed: &harness.signed,
             home: &harness.scratch,
             journal: &harness.journal,
+            seed: (&harness.seed.0, &harness.seed.1),
+            configuration: harness.harness.issuer_configuration(),
             maximum_bytes: None,
         };
         let original = Tree::new(&volumes, crate::config::AGENT, None).await?;
