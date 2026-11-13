@@ -114,7 +114,14 @@ pub(super) async fn run_with_filesystem<
             }
         }
     }
-    check_provider(&case.expect, &provider, storage.content_reader()).await?;
+    check_provider(
+        &case.expect,
+        &provider,
+        storage.content_reader(),
+        storage.volume(),
+        journal.as_ref(),
+    )
+    .await?;
     check_events(&case.expect, journal.as_ref(), operation).await?;
     check_files(&case.expect.files, &storage).await?;
     Ok(Outcome { storage, operation })
@@ -286,6 +293,8 @@ async fn check_provider(
     expected: &Expectations,
     provider: &ScriptedModelProvider,
     reader: &dyn acyclic_harness::conversation::ContentResidencyVerifier,
+    private: &acyclic_harness::conversation::VolumeRef,
+    journal: &dyn acyclic_harness::executor::ExecutionJournal,
 ) -> TestResult {
     if provider.remaining() != 0 {
         return Err(format!("{} unused scripted turns", provider.remaining()).into());
@@ -338,11 +347,15 @@ async fn check_provider(
                 let file = files
                     .next()
                     .ok_or_else(|| format!("request_files[{index}][{file_index}]: missing file"))?;
-                // Request sources retain their own owner; the journal grants
-                // only its private payloads, not arbitrary model input files.
-                let actual = reader
-                    .read(file, file.descriptor().byte_length(), None, None)?
-                    .await?;
+                // Original inputs and derived backstops retain distinct
+                // owners. Neither reader may substitute for the other.
+                let actual = if file.volume() == private {
+                    reader
+                        .read(file, file.descriptor().byte_length(), None, None)?
+                        .await?
+                } else {
+                    journal.load(file, None)?.await?
+                };
                 if actual.as_ref() != expected.as_bytes() {
                     return Err(format!(
                         "request_files[{index}][{file_index}]: expected {expected:?}, got {:?}",
