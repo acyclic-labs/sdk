@@ -1112,6 +1112,10 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     let records = journal.replay(operation, 0, 1, None)?.await?;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].event, event);
+    let staged = journal
+        .stage(operation, "trace-content", b"raw", "text/plain", None)?
+        .await?;
+    assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"raw");
     let changed = watching.await?;
     assert!(
         bound.trace_recorder(&agent)?.is_none(),
@@ -1125,17 +1129,51 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     )?;
     assert_eq!(value["coveredFrom"], 0);
     assert_eq!(value["coveredThrough"], 2);
-    assert_eq!(value["activeSpans"], 0);
-
-    let completed = bound.files(&agent, root, &trace_paths, None).await?;
+    let source = crate::client_files::trace::source(&agent)?;
+    let through = bound.agents.provider().tail(source.clone()).await?;
+    let all_path = format!("live/agents/self/trace/0/{through}.json");
+    let completed = bound.files(&agent, root, &[all_path.clone()], None).await?;
     let value: serde_json::Value = serde_json::from_str(
-        &completed.files[&requested]
+        &completed.files[&all_path]
             .as_ref()
             .ok_or("completed trace absent")?
             .text,
     )?;
-    assert_eq!(value["coveredThrough"], 2);
-    assert_eq!(value["mechanisms"]["io"]["completed"], 1);
-    assert_eq!(value["activeSpans"], 0);
+    assert_eq!(value["coveredThrough"], through);
+    assert!(
+        value["mechanisms"]["commit"]["known_bytes"]
+            .as_u64()
+            .unwrap()
+            >= 3
+    );
+    assert!(value["mechanisms"]["io"]["known_bytes"].as_u64().unwrap() >= 3);
+    let stream = acyclic_stream::Stream::new(bound.agents.provider().clone(), source.as_str())?;
+    let mut query = acyclic_stream::trace::TraceQuery::new(
+        stream.read(0, u32::try_from(through)?).await?,
+        Default::default(),
+    );
+    let mut original = std::collections::BTreeMap::new();
+    while let Some(observation) = query.next().await? {
+        if let acyclic_stream::trace::Observation::Completed {
+            start,
+            bytes,
+            result,
+            ..
+        } = observation
+        {
+            let expected = match start.name.as_str() {
+                "harness.execution_replay_page" => (None, "authenticated_execution_prefix"),
+                "harness.private_stage" => (Some(3), "authenticated_private_publication"),
+                "harness.private_load" => (Some(3), "authenticated_immutable_content"),
+                _ => continue,
+            };
+            assert_eq!(start.parent, None);
+            assert_eq!(start.guarantee.as_deref(), Some(expected.1));
+            assert_eq!(bytes, expected.0);
+            assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
+            assert!(original.insert(start.name, ()).is_none());
+        }
+    }
+    assert_eq!(original.len(), 3);
     Ok(())
 }
