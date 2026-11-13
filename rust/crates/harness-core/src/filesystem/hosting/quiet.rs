@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub(super) const PREFIX: &str = "tool-quiet-";
 pub(super) const ACTIVITY: &str = "job-output";
+pub(super) const RESULT: &str = "job-result";
 pub(super) const LIFECYCLE: &str = "job-lifecycle";
 pub(super) const CLOSED: &str = "job-closed";
 
@@ -59,6 +60,12 @@ fn checkpoint(state: &State) -> Result<Checkpoint, Error> {
 
 pub(super) fn key(id: &str, checkpoint: Option<&Checkpoint>) -> Result<Option<Bytes>, Error> {
     match id {
+        RESULT => {
+            let state = state(checkpoint)?;
+            Ok(Some(
+                crate::runtime::tool_output_path(state.execution, state.call, "result.json").into(),
+            ))
+        }
         ACTIVITY => {
             let state = state(checkpoint)?;
             Ok(Some(
@@ -131,6 +138,13 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
     let subscriptions = [
         (
             ACTIVITY.into(),
+            Subscription {
+                path: output.clone(),
+                cursor: 0,
+            },
+        ),
+        (
+            RESULT.into(),
             Subscription {
                 path: output,
                 cursor: 0,
@@ -217,6 +231,20 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
         return Err(Error::Record("quiet lifecycle identity"));
     }
     let mut retired = closed || matches!(job.event, tool_jobs::Event::Finished);
+    if !retired {
+        let source = delivery
+            .subscriptions
+            .get(RESULT)
+            .ok_or(Error::Record("quiet result subscription"))?;
+        retired = latest(
+            store,
+            source.path.clone(),
+            key(RESULT, original)?,
+            &mut effects,
+        )
+        .await?
+        .is_some();
+    }
     if !retired {
         let source = delivery
             .subscriptions

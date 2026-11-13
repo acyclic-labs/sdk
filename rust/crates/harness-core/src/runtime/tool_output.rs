@@ -20,7 +20,7 @@ pub struct ToolOutputActivity {
 
 /// Exact filesystem key followed by the original job's alarm actor.
 pub fn tool_output_activity_path(turn: OperationId, call: OperationId) -> String {
-    format!("tools/{turn}/{call}/activity.json")
+    tool_output_path(turn, call, "activity.json")
 }
 
 /// Shared publication core for tool output on any content backend. Native

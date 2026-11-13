@@ -445,7 +445,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             self.0.load(Ordering::SeqCst)
         }
     }
-    for finish in [false, true] {
+    for finish in [0, 1, 2] {
         let commit_clock = Arc::new(CommitClock(AtomicU64::new(100)));
         let stream = Arc::new(MemoryStream::new_with_clock(
             MemoryLimits::default(),
@@ -623,12 +623,28 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 queries.read_signal(Kind::Stuck).await?.is_none(),
                 "old alarm ignored fresh output"
             );
-            if finish {
+            if finish == 1 {
                 // Completion may be committed while its delivery is still queued.
                 stream.append(AppendRequest { path: jobs.clone(), records: vec![AppendRecord {
                     value: serde_json::to_vec(&serde_json::json!({"version":1,"call":call,"event":{"kind":"finished"}}))?.into(),
                     headers: RecordHeaders::new(vec![call.into_bytes().to_vec().into()], vec![])?,
                 }], if_tail: None, idempotency_key: IdempotencyKey::new("quiet-finish")? }).await?;
+            }
+            if finish == 2 {
+                publisher
+                    .stage_once(
+                        OperationId::from_bytes([239; 16]),
+                        &acyclic_harness_core::runtime::tool_output_path(
+                            execution,
+                            call,
+                            "result.json",
+                        ),
+                        b"{\"success\":true,\"exit_code\":0}",
+                        "application/json",
+                        "result.json",
+                        ContentAccess::default(),
+                    )?
+                    .await?;
             }
             // B starts after A's tool admission; A's later pause still owns resume.
             let independent = OperationId::from_bytes([237; 16]);
@@ -660,7 +676,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 Some(independent)
             );
             time.advance_to(115)?;
-            if finish {
+            if finish != 0 {
                 wait(&mut states, None, true).await?;
                 assert!(
                     queries.read_signal(Kind::Stuck).await?.is_none(),

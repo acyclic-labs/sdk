@@ -444,7 +444,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 0,
                 call_id.clone(),
                 "shell".into(),
-                serde_json::json!({"command":command,"yield_time_ms":index+1,"max_output_tokens":100+index}),
+                serde_json::json!({"command":command,"yield_time_ms":index+1,"max_output_tokens":100+index,"background":true}),
                 None,
             )?;
             let invocation = crate::executor::stage_json(
@@ -462,12 +462,44 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
             .await?;
             let started = ExecutionEvent::ToolStarted {
                 step: 0,
-                call_id,
+                call_id: call_id.clone(),
                 invocation,
                 publication: None,
             };
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?
+                .await?;
+            let result = crate::executor::stage_json(
+                &journal,
+                operation,
+                &format!("launch-{index}"),
+                &crate::tool::ToolResult {
+                    value: serde_json::json!({"background":true}),
+                },
+                None,
+            )
+            .await?;
+            let projection = crate::executor::stage_json(
+                &journal,
+                operation,
+                &format!("launch-view-{index}"),
+                &serde_json::json!({"text":"launched"}),
+                None,
+            )
+            .await?;
+            journal
+                .append(
+                    operation,
+                    &format!("launched-{index}"),
+                    &ExecutionEvent::ToolCompleted {
+                        step: 0,
+                        call_id,
+                        result,
+                        projection,
+                        record_kind: None,
+                    },
+                    None,
+                )?
                 .await?;
             // The original ToolStarted producer, not a hand-authored jobs
             // record, must retain the scheduler's configured clock domain.
@@ -475,7 +507,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 .read(acyclic_stream::ReadRequest {
                     path: crate::supervision::tool_jobs::path(&agent)?,
                     from: index as u64,
-                    limit: 1,
+                    limit: 2,
                     key: None,
                     at_least: Default::default(),
                 })
@@ -493,6 +525,10 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                     ..
                 }
             ));
+            assert!(
+                futures::TryStreamExt::try_next(&mut jobs).await?.is_none(),
+                "launch receipt retired the original quiet watch"
+            );
             // Exact original replay is one admission, even after its decision.
             journal
                 .append(operation, &format!("check-{index}"), &started, None)?
@@ -524,8 +560,13 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
 
 #[tokio::test]
 async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors() -> Result<()> {
-    for (same_error, exact_command) in [(false, true), (true, true), (true, false)] {
-        let repeated = same_error && exact_command;
+    for (same_error, exact_command, same_cwd) in [
+        (false, true, true),
+        (true, true, true),
+        (true, false, true),
+        (true, true, false),
+    ] {
+        let repeated = same_error && exact_command && same_cwd;
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let run = OperationId::new();
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([58; 16]));
@@ -557,7 +598,7 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                 0,
                 call_id.clone(),
                 "shell".into(),
-                serde_json::json!({"command":command,"yield_time_ms":index + 1,"max_output_tokens":100 + index}),
+                serde_json::json!({"command":command,"cwd":if same_cwd {"project".into()} else {format!("project-{index}")},"yield_time_ms":index + 1,"max_output_tokens":100 + index}),
                 None,
             )?;
             let invocation = crate::executor::stage_json(

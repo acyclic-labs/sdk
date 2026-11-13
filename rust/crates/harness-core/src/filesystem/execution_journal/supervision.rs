@@ -48,12 +48,25 @@ impl Serialize for Arguments<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        // A shell's exact program bytes define repetition. Capture and
-        // scheduling options cannot turn the same check into another check.
-        match self.command {
-            Some(command) => serializer.serialize_str(command),
-            None => self.value.serialize(serializer),
+        // Preserve execution inputs, including cwd, target and lifetime.
+        // Only capture and return-scheduling options leave the check unchanged.
+        if self.command.is_none() {
+            return self.value.serialize(serializer);
         }
+        let Some(arguments) = self.value.as_object() else {
+            return self.value.serialize(serializer);
+        };
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(None)?;
+        for (name, value) in arguments {
+            if !matches!(
+                name.as_str(),
+                "yield_time_ms" | "max_output_tokens" | "background"
+            ) {
+                map.serialize_entry(name, value)?;
+            }
+        }
+        map.end()
     }
 }
 
@@ -339,6 +352,11 @@ where
                 let (result, _result_hold) =
                     crate::executor::load_json::<crate::tool::ToolResult>(self, result, io).await?;
                 let value = &result.value;
+                if value.get("background").and_then(serde_json::Value::as_bool) == Some(true) {
+                    // The original result file, not the launch receipt, ends
+                    // the job's existing quiet watch.
+                    return Ok(None);
+                }
                 let failed = value.get("success").and_then(serde_json::Value::as_bool)
                     == Some(false)
                     || value

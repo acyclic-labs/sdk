@@ -1,12 +1,18 @@
 //! Host output uses the journal without changing ordinary tool authority.
 use super::*;
 
+/// Original output key inside one invocation. Callers validate relative names
+/// before publication; deriving this key grants no output authority.
+pub fn tool_output_path(turn: OperationId, call: OperationId, name: &str) -> String {
+    format!("tools/{turn}/{call}/{name}")
+}
+
 impl ToolContext {
     // Only this private, short-lived context carries the output owner's grant.
     // Callers choose a relative name inside this call, never a volume or turn.
     pub(super) fn output_context(&self, name: &str) -> Result<(Self, OperationId, String)> {
         crate::conversation::validate_content_path(name, &mut None)?;
-        let path = format!("tools/{}/{}/{name}", self.turn_id(), self.operation_id());
+        let path = tool_output_path(self.turn_id(), self.operation_id(), name);
         let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.tool-output/v1");
         hash.update(&self.operation_id().into_bytes());
         hash.update(path.as_bytes());
