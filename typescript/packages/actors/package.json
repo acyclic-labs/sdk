@@ -14,10 +14,6 @@
   },
   "type": "module",
   "exports": {
-    "./credential": {
-      "types": "./dist/credential.d.ts",
-      "default": "./dist/credential.js"
-    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
@@ -29,10 +25,6 @@
     "./client": {
       "default": "./dist/client.js",
       "types": "./dist/client.d.ts"
-    },
-    "./addressing": {
-      "types": "./dist/addressing.d.ts",
-      "default": "./dist/addressing.js"
     }
   },
   "types": "./dist/index.d.ts",

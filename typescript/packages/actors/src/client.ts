@@ -3,7 +3,7 @@ import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { observed, resolveObserver, type AcyclicObserver } from "@acyclic-labs/auth/observe";
-import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "./credential.js";
+import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import {
   canonicalSemantic,
   requireBigIntCodec,

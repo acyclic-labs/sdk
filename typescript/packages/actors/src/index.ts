@@ -6,7 +6,7 @@ export * from "./guest.js";
 export { GuestActivation } from "./guest-host.js";
 export { openGuestResponse, type GuestResponseFrame } from "./fetch-response.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/auth/observe";
-export { credentialProvider, type CredentialProvider, type CredentialOptions } from "./credential.js";
+export { credentialProvider, type CredentialProvider, type CredentialOptions } from "@acyclic-labs/auth/credential";
 
 export * from "./namespace.js";
 export * from "./durable.js";
