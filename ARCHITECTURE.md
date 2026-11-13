@@ -32,24 +32,21 @@ The dependency graph is one way:
    cross-family adapter boundaries. Provider-specific types remain feature-gated
    out of the pure/WASM harness core.
 
-The root `proto/` schemas and Stream's crate-local schema feed Buf.
-Actors and Workers have candidate v1 schemas under `proto/` and Rust contract
-crates. Their generated TypeScript bindings follow the same pipeline; their
-hosted services must qualify against those contracts before availability is
-claimed.
-`buf.gen.yaml` generates Rust bindings and ESM-ready JavaScript plus
-declarations into an uncommitted `generated/` scratch tree. `bun run generate`
-builds each family descriptor and copies the bindings straight into the crates'
-`src/generated/` and each published package's `generated/proto/` (the only
-committed copies), using `scripts/generated-bindings.mjs` for descriptors,
-compatibility digests, and package paths. Crates that compile their schema in
-`build.rs` (Filesystem, Harness, Inference, Stream) commit no Rust bindings.
-Filesystem carries Harness messages because its generated schema imports them.
+The versioned modules in `buf.yaml` are the canonical schema inputs.
+Hosted services must qualify against their public contracts before availability
+is claimed. `buf.gen.yaml` configures ESM-ready JavaScript and declaration
+generation; Rust crates compile their schema bindings through `build.rs`.
+`bun run generate` runs the schema and Rust contract producers, using
+`scripts/generated-bindings.mjs` for descriptors, compatibility digests and
+package destinations. Package `generated/proto/`, generated Rust source and
+WASM bindings are ignored build outputs, not committed copies. Publication
+generates those outputs before packaging them.
 Rust-owned TypeScript contracts (limits, routes, enum maps) are
 rendered by `scripts/generate-contracts.mjs` from one Cargo build.
-`bun run check:generated` compares fresh Buf output and descriptors with the
-committed crate and package copies. Rust WASM exports are built from the Rust
-crates and packaged beside the TypeScript facades. Every family package's `./proto` export points directly to its
+`node scripts/check-generated.mjs` regenerates ignored products from current
+source and checks tracked projections, contract baselines and the public RPC
+matrix. Rust WASM exports are built from the Rust crates and packaged beside
+the TypeScript facades. A package's `./proto` export points directly to its
 generated module. Handwritten TypeScript should provide idiomatic APIs and
 runtime boundaries, not duplicate protobuf message definitions.
 
