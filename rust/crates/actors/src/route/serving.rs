@@ -9,6 +9,7 @@ use crate::{
 };
 use acyclic_stream::{
     BoxProviderFuture, IdempotencyKey, StreamError, StreamPath, StreamProvider,
+    StreamProviderExt as _,
     runtime::Executor,
     session::{
         CallAuthorization, CallInput, CallProvider, CallTarget, PreparedSocketOpen, SocketProvider,

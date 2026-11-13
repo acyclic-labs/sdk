@@ -66,12 +66,49 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         .map_err(storage)?;
     let credential = acyclic_auth::credential::capability_text(&credential.credential);
     let changes = server.bound().changes().map_err(storage)?;
+    struct PeerScopeRequired(Arc<AtomicBool>);
+    impl acyclic_actors::route::AdmissionPolicy for PeerScopeRequired {
+        fn authorize(
+            &self,
+            _: &acyclic_stream::session::CallAuthorization,
+            _: &acyclic_actors::route::Envelope,
+        ) -> std::result::Result<(), StreamError> {
+            self.0.store(true, Ordering::SeqCst);
+            Err(StreamError::AccessDenied)
+        }
+        fn prepare<'a>(
+            &'a self,
+            _: &'a acyclic_stream::session::CallAuthorization,
+            _: &'a acyclic_actors::route::Envelope,
+            _: Option<&'a acyclic_actors::route::Placement>,
+        ) -> acyclic_stream::BoxProviderFuture<
+            'a,
+            std::result::Result<acyclic_actors::route::Admission, acyclic_actors::route::Error>,
+        > {
+            self.0.store(true, Ordering::SeqCst);
+            Box::pin(async { Err(StreamError::AccessDenied.into()) })
+        }
+    }
+    let peer_policy_entered = Arc::new(AtomicBool::new(false));
+    let routing = acyclic_actors::route::AccountNode::open(
+        server.bound().within().account().clone(),
+        server.bound().agents().provider().clone(),
+        acyclic_actors::route::Paths::new(StreamPath::new("account/routing").map_err(storage)?),
+        Arc::new(PeerScopeRequired(peer_policy_entered.clone())),
+        acyclic_actors::domain::ActorLimits::default(),
+        Arc::new(acyclic_actors::local::SystemClock),
+        Arc::new(acyclic_stream::runtime::PlatformExecutor),
+    )
+    .await
+    .map_err(storage)?;
+    let route_sender = server.bound().within().clone();
     let composition = crate::server::Hosted::new(
         server,
         local.clock.clone(),
         local.clone(),
         Some(Arc::new(changes)),
     )
+    .with_account_routing(routing)
     .with_completion(hosted.runtime.completion());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -102,6 +139,30 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         )
         .await?;
         let root = connection.root().clone();
+        let node = acyclic_actors::route::NodeId::new(b"source").map_err(storage)?;
+        let message = acyclic_actors::route::Envelope {
+            source: node.clone(),
+            sender: route_sender.clone(),
+            to: route_sender.clone(),
+            request: acyclic_stream::CommitRequest {
+                deadline_unix_millis: None,
+                effects: Vec::new(),
+                idempotency_key: IdempotencyKey::new(b"not-a-peer-call".to_vec())
+                    .map_err(storage)?,
+            },
+        };
+        // The real endpoint selected the relay and node socket products, then
+        // refused this tree credential before parsing the missing message or
+        // entering application policy. Agent commands and queries still work.
+        assert!(
+            matches!(acyclic_actors::route::admit(&session, CREDENTIAL, &message, 4096).await,
+            Err(acyclic_actors::route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
+        );
+        assert!(
+            matches!(acyclic_actors::route::open_link(&session, CREDENTIAL, route_sender.account().as_bytes(), &node).await,
+            Err(acyclic_actors::route::Error::Stream(error)) if error.category() == StreamError::AccessDenied)
+        );
+        assert!(!peer_policy_entered.load(Ordering::SeqCst));
         eprintln!("remote tree: authenticated {root}");
         let mut parent = root.clone();
         for intent in ["child", "grandchild"] {
