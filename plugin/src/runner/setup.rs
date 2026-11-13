@@ -118,10 +118,13 @@ fn base_selection(
     model: Option<&str>,
 ) -> Result<String, Failure> {
     let role = acyclic_harness::templates::root()?.model;
-    let configured = model.map(str::to_owned).or(settings(args)?
-        .map(|settings| settings.configured_model())
-        .transpose()?
-        .flatten());
+    let configured = match model {
+        Some(model) => Some(model.to_owned()),
+        None => settings(args)?
+            .map(|settings| settings.configured_model())
+            .transpose()?
+            .flatten(),
+    };
     Ok(
         acyclic_harness::templates::resolve_model(role.as_deref(), configured.as_deref())
             .unwrap_or_else(|| registry.default_model())
