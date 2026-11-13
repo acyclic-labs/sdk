@@ -90,7 +90,7 @@ where
             crate::executor::preparation_format(format_args!("journal-{}", digest.to_hex()), work)
         })?)?;
         let path = crate::executor::with_history_io(io, |work| {
-            // Stock publication binds JSON bytes to the original operation key
+            // Stock publication binds bytes to the original operation key
             // with one BLAKE3 suffix. The result kind precedes that suffix.
             let kind_key = idempotency_key
                 .rsplit_once(':')
@@ -98,6 +98,34 @@ where
                     suffix.len() == 64 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
                 })
                 .map_or(idempotency_key, |(key, _)| key);
+            if let Some(text) = kind_key.strip_prefix("model-live:") {
+                if let Some((dispatch, rest)) = text.split_once(':')
+                    && let Some((rest, kind)) = rest.rsplit_once(':')
+                    && let Some((rest, item)) = rest.rsplit_once(':')
+                    && let Some((_, step)) = rest.rsplit_once(':')
+                    && matches!(kind, "reply" | "reasoning" | "restart")
+                {
+                    let invalid = || {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "model text identity is invalid",
+                        )
+                    };
+                    let dispatch = uuid::Uuid::parse_str(dispatch).map_err(|_| invalid())?;
+                    let step: u32 = step.parse().map_err(|_| invalid())?;
+                    let item: u64 = item.parse().map_err(|_| invalid())?;
+                    return crate::executor::preparation_format(
+                        format_args!(
+                            "{}{}/{step:010}-{dispatch}/{kind}/{item:020}-{}.txt",
+                            InternalContentClass::ModelText.prefix(),
+                            self.turn_operation(operation_id),
+                            digest.to_hex()
+                        ),
+                        work,
+                    );
+                }
+            }
             if kind_key.starts_with("tool:") && kind_key.ends_with(":result") {
                 return crate::executor::preparation_format(
                     format_args!(
@@ -163,7 +191,11 @@ where
                 &path,
                 bytes,
                 media_type,
-                "execution.json",
+                if media_type.starts_with("text/") {
+                    "execution.txt"
+                } else {
+                    "execution.json"
+                },
                 Some(super::MAXIMUM_PAYLOAD_BYTES),
                 &key,
                 payload_class(&path),
@@ -362,35 +394,11 @@ where
                     }
                 }
                 if matches!(event, ExecutionEvent::Model { .. }) {
-                    if reference.descriptor().media_type() != "application/json" {
-                        return Err(canonical_boundary(
-                            io,
-                            crate::wire::ErrorCode::Storage,
-                            "model observation is not JSON",
-                        ));
-                    }
-                    model = Some(match io {
-                        Some(io) => {
-                            let parsed = io.decode(
-                                std::marker::PhantomData::<ModelEvent>,
-                                bytes,
-                                crate::wire::ErrorCode::Storage,
-                            )?;
-                            let _canonical_hold;
-                            let canonical =
-                                io.encode(&parsed.0, super::MAXIMUM_PAYLOAD_BYTES, true)?;
-                            _canonical_hold = io.guard_bytes(&canonical)?;
-                            if canonical.as_ref() != bytes {
-                                return Err(canonical_boundary(
-                                    Some(io),
-                                    crate::wire::ErrorCode::Storage,
-                                    "execution journal JSON is not canonical",
-                                ));
-                            }
-                            crate::filesystem::retain_decoded(parsed)?
-                        }
-                        None => decode_json::<ModelEvent>(bytes, None)?.0,
-                    });
+                    model = Some(crate::executor::decode_model_payload(
+                        reference.descriptor().media_type(),
+                        bytes,
+                        io,
+                    )?);
                 }
             }
             if let ExecutionEvent::Model {
@@ -632,6 +640,8 @@ where
 pub(super) fn payload_class(path: &str) -> InternalContentClass {
     if path.starts_with(InternalContentClass::ToolResult.prefix()) {
         InternalContentClass::ToolResult
+    } else if path.starts_with(InternalContentClass::ModelText.prefix()) {
+        InternalContentClass::ModelText
     } else {
         InternalContentClass::Execution
     }

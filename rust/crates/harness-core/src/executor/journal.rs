@@ -95,12 +95,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
-    /// Host-owned live output beside this turn's retained tool results.
-    /// Journals without file observation leave live publication disabled.
-    fn live_reply(&self, _operation: OperationId) -> Result<Option<LiveReply>> {
-        Ok(None)
-    }
-
     /// The agent's durable inbox at the next model boundary. This binding is
     /// independent of cancellation and never observes tools while they run.
     fn model_boundary(&self) -> Option<&dyn crate::agent::ModelBoundary> {

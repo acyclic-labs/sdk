@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::wire::ErrorCode::Unsupported;
-use futures::{FutureExt as _, future::Either};
+use futures::future::Either;
 
 #[cfg(test)]
 #[path = "dispatch_size_tests.rs"]
@@ -233,11 +233,11 @@ impl StockExecution<'_> {
             // Only a fresh provider generation streams; a continuation replays.
             let live = publish_reply && continuation.is_none() && purpose == ModelPurpose::Response;
             let mut clock = super::model_usage::CallClock::unknown();
-            let stream = if let Some(continuation) = continuation {
+            let (stream, source) = if let Some(continuation) = continuation {
                 {
                     _continuation_hold = self.hold_continuation(&continuation)?;
                 }
-                Either::Left(continuation.into_iter())
+                (Either::Left(continuation.into_iter()), None)
             } else {
                 {
                     _continuation_hold = None;
@@ -245,7 +245,7 @@ impl StockExecution<'_> {
                 if started {
                     return Err(self.unreconciled_attempt(input.operation_id));
                 }
-                let attempt =
+                let (attempt, source) =
                     super::phase::claim(super::phase::Publication::ModelDispatch.observe(
                         input.operation_id,
                         step,
@@ -277,7 +277,7 @@ impl StockExecution<'_> {
                 };
                 #[cfg(target_arch = "wasm32")]
                 let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
-                Either::Right(generated)
+                (Either::Right(generated), live.then_some(source))
             };
             let observed = self
                 .record_model_events(
@@ -292,7 +292,7 @@ impl StockExecution<'_> {
                     },
                     stock_active_model_events(replayed, io)?,
                     &mut admission,
-                    (stream, live),
+                    (stream, source),
                     #[cfg(feature = "research")]
                     phase,
                 )
@@ -482,7 +482,7 @@ impl StockExecution<'_> {
         turn: (u32, ModelStepScope<'_>, &str),
         request: &crate::model::PreparedModelRequest,
         phase: &mut DispatchPhase,
-    ) -> Result<phase::ProviderAttempt> {
+    ) -> Result<(phase::ProviderAttempt, OperationId)> {
         let _writer = self.journal_writes.lock().await;
         let (step, scope, purpose_key) = turn;
         let purpose = scope.purpose;
@@ -515,11 +515,9 @@ impl StockExecution<'_> {
         // A claim acquires the dispatch: its key names this attempt, so a
         // racer at the same tail is refused instead of recognised as a retry
         // and dispatching the model a second time. Settlements stay stable.
+        let claim = OperationId::new();
         let claim_key = with_history_io(io, |work| {
-            preparation_format(
-                format_args!("{purpose_key}:{step}:claim:{}", OperationId::new()),
-                work,
-            )
+            preparation_format(format_args!("{purpose_key}:{step}:claim:{claim}"), work)
         })?;
         let reference = if purpose == ModelPurpose::Response {
             self.stage_response_request(journal, input, step, request)
@@ -557,7 +555,7 @@ impl StockExecution<'_> {
         {
             boundary.admitted(input.operation_id, step).await?;
         }
-        Ok(attempt)
+        Ok((attempt, claim))
     }
 
     async fn record_model_events(
@@ -566,12 +564,12 @@ impl StockExecution<'_> {
         call: ObservedCall<'_>,
         mut observed: Vec<ModelEvent>,
         admission: &mut ModelEventAdmission,
-        (stream, live): (
+        (stream, source): (
             Either<
                 std::vec::IntoIter<ModelEvent>,
                 impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
             >,
-            bool,
+            Option<OperationId>,
         ),
         #[cfg(feature = "research")] phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
@@ -588,43 +586,19 @@ impl StockExecution<'_> {
         let step = dispatch.step;
         let purpose_key = model_purpose_key(purpose);
         let io = self.io;
-        let reply = if live {
-            journal.live_reply(operation_id)?
-        } else {
-            None
-        };
-        let mut text = reply.as_ref().map(LiveReply::dispatch);
         {
             let mut stream = stream;
             loop {
-                // Stage the text so far whenever the provider pauses.
                 let next = match &mut stream {
                     Either::Left(continuation) => continuation.next().map(Ok),
-                    Either::Right(stream) => match (stream.next().now_or_never(), text.as_mut()) {
-                        (Some(next), _) => next,
-                        (None, Some(text)) => {
-                            text.flush().await?;
-                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                        }
-                        (None, None) => {
-                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                        }
-                    },
+                    Either::Right(stream) => {
+                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                    }
                 };
                 let Some(event) = next else {
                     break;
                 };
-                let event = match event {
-                    Ok(event) => event,
-                    Err(error) => {
-                        // An error can follow text without a transport pause.
-                        // Retain that original prefix before settling the turn.
-                        if let Some(text) = text.as_mut() {
-                            text.flush().await?;
-                        }
-                        return Err(error);
-                    }
-                };
+                let event = event?;
                 #[cfg(feature = "research")]
                 clock.observe(&event);
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })
@@ -634,8 +608,12 @@ impl StockExecution<'_> {
                     .then(|| clock.completed_at())
                     .flatten();
                 let index = admission.count;
-                let key = with_history_io(io, |work| {
-                    preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
+                let key = with_history_io(io, |work| match source {
+                    Some(source) => preparation_format(
+                        format_args!("model-live:{source}:{purpose_key}:{step}:{index}"),
+                        work,
+                    ),
+                    None => preparation_format(format_args!("{purpose_key}:{step}:{index}"), work),
                 })?;
                 stock_push_model_event(&mut observed, event, io)?;
                 let event = observed.last().ok_or_else(|| {
@@ -654,12 +632,6 @@ impl StockExecution<'_> {
                     && let Some(next) = continuation.next()
                 {
                     admission.validate_next(&next, self.stock.limits, io)?;
-                }
-                if let Some(text) = text.as_mut() {
-                    text.observe(event);
-                    if matches!(event, ModelEvent::Restarted | ModelEvent::Completed { .. }) {
-                        text.flush().await?;
-                    }
                 }
                 let usage = match event {
                     ModelEvent::Completed { metadata } => {
@@ -897,7 +869,7 @@ mod tests {
                     },
                     Vec::new(),
                     &mut admission,
-                    (Either::Right(futures::stream::iter(events.map(Ok))), false),
+                    (Either::Right(futures::stream::iter(events.map(Ok))), None),
                     #[cfg(feature = "research")]
                     &mut DispatchPhase::new(),
                 )

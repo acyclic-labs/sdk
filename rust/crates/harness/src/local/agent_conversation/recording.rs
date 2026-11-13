@@ -14,15 +14,13 @@ struct Input {
 }
 
 impl Input {
-    fn event(&mut self, bytes: Vec<u8>) -> Result<()> {
-        let terminal = matches!(
-            serde_json::from_slice(&bytes).map_err(failed)?,
-            ModelEvent::Completed { .. }
-        );
+    fn event(&mut self, event: ModelEvent) -> Result<()> {
+        let terminal = matches!(event, ModelEvent::Completed { .. });
         let Some((_, _, call)) = self.started.as_mut() else {
             return Err(Error::Storage("model event precedes its admission".into()));
         };
-        call.events.push(bytes);
+        call.events
+            .push(crate::contract::canonical_json_bytes(&event)?);
         if terminal {
             self.completed.extend(self.started.take());
         }
@@ -137,12 +135,20 @@ async fn observe(
                 },
             ));
         }
-        ExecutionEvent::ModelInline { event, .. } => calls.event(event.as_bytes().to_vec())?,
-        ExecutionEvent::ModelWait { observation, .. } => calls.event(
-            crate::contract::canonical_json_bytes(&ModelEvent::Wait(*observation))?,
-        )?,
-        ExecutionEvent::Model { .. } => {
-            calls.event(payload(ExecutionPayloadField::Event).await?)?
+        ExecutionEvent::ModelInline { event, .. } => {
+            calls.event(serde_json::from_str(event).map_err(failed)?)?
+        }
+        ExecutionEvent::ModelWait { observation, .. } => {
+            calls.event(ModelEvent::Wait(*observation))?
+        }
+        ExecutionEvent::Model { event, .. } => {
+            let bytes = payload(ExecutionPayloadField::Event).await?;
+            event.descriptor().verify(&bytes, &mut None)?;
+            calls.event(crate::executor::decode_model_payload(
+                event.descriptor().media_type(),
+                &bytes,
+                None,
+            )?)?
         }
         ExecutionEvent::ToolCompleted { step, call_id, .. } => {
             let result: ToolResult =

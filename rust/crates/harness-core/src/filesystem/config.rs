@@ -52,6 +52,8 @@ pub(crate) enum InternalContentClass {
     Execution,
     /// The original validated tool result, readable through tool-output observation.
     ToolResult,
+    /// Original model text, shared by replay and live output observation.
+    ModelText,
     /// Settled turn outputs, inherited by an agent's forks.
     Conversation,
 }
@@ -68,6 +70,8 @@ impl InternalContentClass {
                 !crate::conversation::is_internal_path(path)
                     && path != "tools/.results"
                     && !path.starts_with(Self::ToolResult.prefix())
+                    && path != "tools/.model"
+                    && !path.starts_with(Self::ModelText.prefix())
             }
         };
         if permitted {
@@ -90,6 +94,7 @@ impl InternalContentClass {
             Self::Interaction => ".system/interactions/",
             Self::Execution => ".system/execution/",
             Self::ToolResult => "tools/.results/",
+            Self::ModelText => "tools/.model/",
             Self::Conversation => ".system/inherited-conversation/",
         }
     }

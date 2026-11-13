@@ -496,23 +496,35 @@ where
 
     fn partial(&self, turn: OperationId) -> BoxProviderFuture<'_, Result<String>> {
         Box::pin(async move {
-            // The live reply of the turn's newest model dispatch: dispatch
-            // directories are time-ordered names, reply chunks zero-padded
-            // sequence names, so name order is staging order.
+            // The newest model step's original text. Directory names start
+            // with its admitted step, not the random dispatch identity; chunk
+            // names start with the provider event sequence.
             let head = self
                 .volume_head(&self.public_volume, &self.public_grant)
                 .await?;
-            let turn = format!("/{}/{turn}", super::TOOL_OUTPUT);
+            let turn = format!("/{}{turn}", InternalContentClass::ModelText.prefix());
             for dispatch in Self::list_at(&head, &turn).await?.iter().rev() {
+                let restarts = Self::list_at(&head, &format!("{turn}/{dispatch}/restart")).await?;
+                let restart = restarts
+                    .last()
+                    .and_then(|name| name.split_once('-'))
+                    .map(|(index, _)| index);
                 let reply = format!("{turn}/{dispatch}/reply");
                 let cancellation = CancellationToken::new();
                 let mut chunks = InternalDirectory::new(&head, Cow::Borrowed(&reply));
                 let mut text = Vec::new();
-                let mut found = false;
+                let mut found = restart.is_some();
                 while let Some(page) = chunks.next(&cancellation).await? {
                     found |= !page.entries.is_empty();
                     for entry in &page.entries {
                         let chunk = filename(entry.name.as_bytes())?;
+                        if restart.is_some_and(|restart| {
+                            chunk
+                                .split_once('-')
+                                .is_some_and(|(index, _)| index <= restart)
+                        }) {
+                            continue;
+                        }
                         if let Some(bytes) =
                             Self::read_at(&head, &format!("{reply}/{chunk}"), None).await?
                         {
