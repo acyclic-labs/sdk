@@ -279,17 +279,19 @@ impl StockExecution<'_> {
                     .io
                     .map(|io| io.guard_owned(key.capacity() as u64))
                     .transpose()?;
-                phase::run(journal, self.io, || async {
-                    journal
-                        .append(
-                            input.operation_id,
-                            &key,
-                            &ExecutionEvent::ModelOutput { step, digest },
-                            self.io,
-                        )?
-                        .await
-                })
-                .await?;
+                let completion = phase::PreparedPhase::new(journal, self.io)?;
+                completion
+                    .run(async {
+                        journal
+                            .append(
+                                input.operation_id,
+                                &key,
+                                &ExecutionEvent::ModelOutput { step, digest },
+                                self.io,
+                            )?
+                            .await
+                    })
+                    .await?;
                 if let Some(control) = journal.supervision().await? {
                     return Ok(ExecutionProgress::Controlled(control));
                 }
