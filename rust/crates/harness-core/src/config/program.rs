@@ -96,28 +96,46 @@ impl ProgramTrigger {
 
     /// Checks selector syntax. The source is independently resolved and
     /// authorized by its host before subscribing; this grants no authority.
-    pub fn validate(&self) -> crate::Result<()> {
-        match self {
-            Self::Lifecycle {
-                event: HookEvent::FileChanged | HookEvent::StreamRecord,
-            } => Err(crate::Error::Invalid(
-                "source events require a file or stream selector".into(),
-            )),
-            Self::Lifecycle { .. } => Ok(()),
-            Self::File { volume, prefix, .. } => {
-                if volume.is_empty() || volume.trim() != volume || volume.contains('\0') {
-                    return Err(crate::Error::Invalid(
-                        "hook volume address is invalid".into(),
-                    ));
-                }
-                if !prefix.is_empty() {
-                    crate::conversation::validate_content_path(prefix, &mut None)?;
-                }
-                Ok(())
+    /// `io` is the original source preparation, including cancellation and
+    /// typed refusal ownership. `None` is reserved for an unbounded host.
+    pub fn validate(&self, io: Option<&crate::filesystem::PreparationIo>) -> crate::Result<()> {
+        crate::executor::with_history_io(io, |work| {
+            if let Some(work) = work.as_deref_mut() {
+                work.check_cancellation()?;
             }
-            Self::Stream { path, .. } => acyclic_stream::StreamPath::validate(path)
-                .map_err(|_| crate::Error::Invalid("hook stream path is invalid".into())),
-        }
+            match self {
+                Self::Lifecycle {
+                    event: HookEvent::FileChanged | HookEvent::StreamRecord,
+                } => Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "source events require a file or stream selector",
+                )),
+                Self::Lifecycle { .. } => Ok(()),
+                Self::File { volume, prefix, .. } => {
+                    if volume.is_empty() || volume.trim() != volume || volume.contains('\0') {
+                        return Err(crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "hook volume address is invalid",
+                        ));
+                    }
+                    if !prefix.is_empty() {
+                        crate::conversation::validate_content_path(prefix, work)?;
+                    }
+                    Ok(())
+                }
+                Self::Stream { path, .. } => {
+                    acyclic_stream::StreamPath::validate(path).map_err(|_| {
+                        crate::executor::stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "hook stream path is invalid",
+                        )
+                    })
+                }
+            }
+        })
     }
 }
 

@@ -231,6 +231,7 @@ async fn hook_manifests_pin_source_selectors_and_refuse_invalid_or_cross_kind_so
         "{kind: 'lifecycle', event: 'FileChanged'}",
         "{kind: 'lifecycle', event: 'StreamRecord'}",
         "{kind: 'file', volume: 'volume:///project', prefix: '../src', from: 'now'}",
+        "{kind: 'file', volume: ' ', prefix: 'src', from: 'now'}",
         "{kind: 'stream', path: '', from: 'start'}",
     ] {
         tree.files.insert(
@@ -240,6 +241,34 @@ async fn hook_manifests_pin_source_selectors_and_refuse_invalid_or_cross_kind_so
         assert!(
             load_program(&tree, "hooks/count").await.is_err(),
             "{replacement}"
+        );
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: 16 * 1024 * 1024,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let error = load_program(
+            &Metered {
+                files: &tree,
+                io: &io,
+            },
+            "hooks/count",
+        )
+        .await
+        .expect_err("bounded source validation must retain its original refusal boundary");
+        assert!(
+            matches!(
+                error,
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "{replacement}: {error:?}"
         );
     }
     let mut tool = Files::program("tools/count");

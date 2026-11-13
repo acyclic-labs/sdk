@@ -231,7 +231,7 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
     }
     match (kind, &manifest.value.on) {
         ("tools", None) => {}
-        ("hooks", Some(selector)) => selector.validate()?,
+        ("hooks", Some(selector)) => selector.validate(io)?,
         _ => {
             return Err(Error::Invalid(format!(
                 "{path}: tools omit on; hooks require on"
