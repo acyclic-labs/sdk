@@ -112,16 +112,38 @@ pub(super) struct Index {
     pub(super) drained_at: u64,
 }
 
+/// Progress belongs to one collection pass, rather than the mutable free set.
+pub(super) struct FreePages {
+    after: Option<(u64, u64)>,
+    remaining: usize,
+}
+
 impl Index {
-    /// A bounded page in the existing best-fit order. The caller holds the
-    /// spill lease through deallocation so these extents cannot be reused.
-    pub(super) fn free_page(&self, after: Option<(u64, u64)>, limit: usize) -> Vec<(u64, u64)> {
+    pub(super) fn free_pages(&self) -> FreePages {
+        FreePages {
+            after: None,
+            remaining: self.free.len(),
+        }
+    }
+
+    /// A bounded page in the existing best-fit order, spending only the work
+    /// captured at pass creation. The caller holds the spill lease through
+    /// deallocation so these extents cannot be reused.
+    pub(super) fn free_page(&self, pages: &mut FreePages, limit: usize) -> Vec<(u64, u64)> {
         use std::ops::Bound::{Excluded, Unbounded};
-        self.free
-            .range((after.map_or(Unbounded, Excluded), Unbounded))
-            .take(limit)
+        let page: Vec<_> = self
+            .free
+            .range((pages.after.map_or(Unbounded, Excluded), Unbounded))
+            .take(limit.min(pages.remaining))
             .copied()
-            .collect()
+            .collect();
+        pages.remaining -= page.len();
+        if let Some(&last) = page.last() {
+            pages.after = Some(last);
+        } else {
+            pages.remaining = 0;
+        }
+        page
     }
 
     pub(super) fn lookup(&self, object_id: ObjectId) -> Lookup {
@@ -371,6 +393,65 @@ impl Index {
             }
             None => {}
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn free_range_collection_finishes_while_a_producer_keeps_coalescing_holes() {
+    for erase_budget in [false, true] {
+        let mut index = Index::default();
+        let mut medium = Vec::new();
+        let mut victims = Vec::new();
+        for byte in 1..=17 {
+            let object = HashedObject::new(crate::ObjectKind::BlobChunk, vec![byte; 64].into());
+            let bytes = object.stored_bytes().clone();
+            medium.extend_from_slice(&bytes);
+            victims.push((object.object_id(), bytes));
+            index.admit_resident(object).unwrap();
+        }
+        index.order.clear();
+        index.mark_spilled(&victims, 0, medium.len() as u64);
+        index.remove(victims[0].0);
+        let mut pages = index.free_pages();
+        let initial_work = pages.remaining;
+        let mut visited = 0;
+        loop {
+            let page = index.free_page(&mut pages, 1);
+            if page.is_empty() {
+                break;
+            }
+            for (length, offset) in page {
+                medium[offset as usize..(offset + length) as usize].fill(0);
+                visited += 1;
+            }
+            // The producer retires a neighboring extent between every page.
+            // Its larger coalesced hole sorts after the collector's cursor.
+            if visited < victims.len() - 1 {
+                index.remove(victims[visited].0);
+                if erase_budget {
+                    // Negative control: let producer work extend the pass.
+                    pages.remaining += 1;
+                }
+            }
+            for (&(offset, id), &length) in &index.spilled {
+                let original = &victims
+                    .iter()
+                    .find(|(candidate, _)| *candidate == id)
+                    .unwrap()
+                    .1;
+                assert_eq!(
+                    &medium[offset as usize..(offset + length) as usize],
+                    original.as_slice()
+                );
+            }
+        }
+        assert_eq!(
+            visited <= initial_work,
+            !erase_budget,
+            "producer-driven work escaped the collection-pass bound"
+        );
+        assert!(index.spilled.contains_key(&(16 * 64, victims[16].0)));
     }
 }
 

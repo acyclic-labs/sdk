@@ -162,7 +162,9 @@ impl<S> StagedObjects<S> {
         // cancelled after submission, a later reuse is still ordered after it.
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
-            let mut after = None;
+            // Concurrent read promotions may keep extending/coalescing the
+            // free index. They cannot extend this pass's work indefinitely.
+            let mut pages = self.index().free_pages();
             loop {
                 let spill = accounting.wait_for(self.spill_io.write()).await?;
                 let Some(file) = spill.as_ref() else { break };
@@ -171,10 +173,11 @@ impl<S> StagedObjects<S> {
                     if index.spilled.is_empty() {
                         break;
                     }
-                    index.free_page(after, PAGE)
+                    index.free_page(&mut pages, PAGE)
                 };
-                let Some(&last) = ranges.last() else { break };
-                after = Some(last);
+                if ranges.is_empty() {
+                    break;
+                }
                 let operation = file
                     .control_async(
                         move |file, meter| {
