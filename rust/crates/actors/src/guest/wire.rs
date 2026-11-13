@@ -846,7 +846,7 @@ mod tests {
             now_unix_ms: u64::MAX,
             record: Some(acyclic_stream::Record {
                 sequence: u64::MAX,
-                value: record.clone(),
+                value: record.clone().into(),
                 commit_id: CommitId::from_bytes([9; 32]),
                 committed_at_micros: u64::MAX,
                 headers: Default::default(),
