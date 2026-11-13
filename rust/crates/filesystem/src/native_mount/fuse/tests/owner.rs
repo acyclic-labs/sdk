@@ -76,7 +76,15 @@ fn killed_owner_with_pending_request_retires_without_fusectl()
     }
     let temporary = tempfile::tempdir()?;
     let output = Command::new("unshare")
-        .args(["--mount", "--net", "--propagation", "private", "--"])
+        .args([
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--net",
+            "--propagation",
+            "private",
+            "--",
+        ])
         .arg(std::env::current_exe()?)
         .args([OWNER_TEST, "--exact", "--nocapture"])
         .env(OWNER_CASE, "controller")
