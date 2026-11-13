@@ -269,7 +269,7 @@ pub(crate) fn compact_context(
         } else {
             summary.output.clone()
         };
-        result.messages.push(ModelMessage {
+        let mut summary = Some(ModelMessage {
             role: ModelRole::Assistant,
             content: ModelContent::Part(ModelContentPart::File {
                 file,
@@ -277,6 +277,14 @@ pub(crate) fn compact_context(
             }),
         });
         for (position, (message, selected)) in context.messages.iter().zip(&selected).enumerate() {
+            // The summary follows the leading system messages, which are always
+            // retained: they stay the request's header, so a compacted request
+            // keeps the cached system prefix on every route.
+            if message.role != ModelRole::System
+                && let Some(summary) = summary.take()
+            {
+                result.messages.push(summary);
+            }
             if !*selected {
                 continue;
             }
@@ -291,6 +299,9 @@ pub(crate) fn compact_context(
                 &message.content,
                 &mut quota,
             )?);
+        }
+        if let Some(summary) = summary {
+            result.messages.push(summary);
         }
         retire_vector(groups, &mut quota)?;
         retire_vector(selected, &mut quota)?;

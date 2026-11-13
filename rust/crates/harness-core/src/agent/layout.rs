@@ -280,6 +280,13 @@ impl AgentPath {
         id_bytes(self.id_text())
     }
 
+    /// The identity bytes of this agent's tree root, shared by every child
+    /// and descendant, without allocation or ancestry traversal.
+    #[must_use]
+    pub fn root_id_bytes(&self) -> [u8; 16] {
+        id_bytes(&self.text[AGENTS.len() + 1..][..ID_HEX])
+    }
+
     fn id_text(&self) -> &str {
         &self.text[self.text.len() - ID_HEX..]
     }

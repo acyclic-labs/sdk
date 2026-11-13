@@ -1902,3 +1902,109 @@ fn pure_agent_admission_has_no_mint_and_intersects_the_actual_private_owner() ->
     assert!(AdmittedAgent::verify(&issuer, &admission, &path, &volumes).is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn a_local_agent_reads_what_its_journal_publishes_and_nothing_private() -> Result<()> {
+    // A compacted request projects its summary through the turn's own reader.
+    // The local grant set holds the journal read every admitted agent holds,
+    // so the journal policy alone decides each path, as it does when hosted.
+    let path = AgentPath::root(&crate::agent::AgentId::from_bytes([214; 16]));
+    let owner = crate::AgentId::from_bytes(path.id_bytes());
+    let provider = ProviderRef::new(
+        "summaries".into(),
+        "filesystem".into(),
+        "1".into(),
+        &mut None,
+    )?;
+    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    let issuer = AuthorityRoot::new(
+        "summaries",
+        [215; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "summaries".into(),
+        },
+    );
+    let private = private_volume(provider.clone(), &path.id())?;
+    let journal = crate::conversation::journal_volume(provider, &path.id())?;
+    host.create_volume(&private).await?;
+    host.create_volume(&journal).await?;
+    let volumes = [WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        private.clone(),
+    )];
+    let runtime: RuntimeAuthority = issuer.clone().into();
+    let admitted = AdmittedAgent::verify(&runtime, &TurnAdmission::LocalRoot, &path, &volumes)?;
+    let (_, custody) = admitted.journal_authority(&host, &[], &[]).await?;
+    let grant = ContentGrant::verify(
+        &custody.verifier,
+        &custody.scope,
+        &journal,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    let operation = OperationId::from_bytes([216; 16]);
+    let mut staged = Vec::new();
+    for (class, bytes) in [("summaries", "summary"), ("execution", "execution record")] {
+        staged.push(
+            host.put_content(
+                &journal,
+                &grant,
+                &format!(".system/{class}/{operation}/{}.json", "a".repeat(64)),
+                bytes.as_bytes(),
+                "text/plain",
+                "record.json",
+                Some(1024),
+                &crate::IdempotencyKey::new(class)?,
+                None,
+                Default::default(),
+            )
+            .await?,
+        );
+    }
+    let execution = staged
+        .pop()
+        .ok_or_else(|| Error::NotFound("execution record".into()))?;
+    let summary = staged
+        .pop()
+        .ok_or_else(|| Error::NotFound("summary".into()))?;
+    let authority =
+        agent_authority(&runtime, &TurnAdmission::LocalRoot, &path, &volumes, &[]).await?;
+    assert!(
+        !authority
+            .grants
+            .contains(crate::contract::capability::HARNESS_HOST)
+    );
+    let reader = FilesystemContentVerifier::new(
+        host.clone(),
+        &authority.verifier,
+        &authority.scope,
+        1024,
+        None,
+    )?;
+    assert_eq!(
+        reader.read(&summary, 1024, None, None)?.await?.as_ref(),
+        b"summary"
+    );
+    // The journal policy, not the grant, keeps execution records host-private.
+    let denied = async { reader.read(&execution, 1024, None, None)?.await }
+        .await
+        .expect_err("an agent read its host-private execution record");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    // Negative control: the same agent without the journal read is refused
+    // the summary, so the grant, not the agent's identity, admits it.
+    let narrowed = issuer.bootstrap_scope(
+        "narrowed",
+        &Capabilities::new([private.capability(VolumeOperation::Read, &mut None)?]),
+        Some(owner),
+        &mut None,
+    )?;
+    let narrowed =
+        FilesystemContentVerifier::new(host.clone(), &authority.verifier, &narrowed, 1024, None)?;
+    let denied = async { narrowed.read(&summary, 1024, None, None)?.await }
+        .await
+        .expect_err("a scope without the journal read projected a summary");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}

@@ -264,7 +264,7 @@ impl<'v> AdmittedAgent<'v> {
                 (scope.capabilities().clone(), scope)
             }
             None => {
-                let grants = Capabilities::new(root_grants(self.volumes, external)?);
+                let grants = Capabilities::new(root_grants(self.volumes, &self.journal, external)?);
                 let scope = self
                     .issuer
                     .issue(None, "agent", &grants, Some(self.owner))
@@ -477,11 +477,15 @@ pub(super) fn journal_grants(journal: &VolumeRef, content: &Capabilities) -> Res
 }
 
 /// A local root agent's grants: routing, tools, the visible entries' read/write
-/// ceilings, its provider's seed layer and retained exact input versions.
-/// Raw writers cannot widen a rooted entry; scoped publication belongs to the
-/// table's view composition.
-fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<String>> {
-    let mut grants = Vec::with_capacity(3 * volumes.len() + 2);
+/// ceilings, its provider's seed layer, its own journal's reads and retained
+/// exact input versions. Raw writers cannot widen a rooted entry; scoped
+/// publication belongs to the table's view composition.
+fn root_grants(
+    volumes: &[WorkspaceEntry],
+    journal: &VolumeRef,
+    external: &[FileRef],
+) -> Result<Vec<String>> {
+    let mut grants = Vec::with_capacity(3 * volumes.len() + 3);
     let seed = volumes
         .iter()
         .find_map(WorkspaceEntry::as_volume)
@@ -491,6 +495,11 @@ fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<S
         grants.push(seed.capability(VolumeOperation::Read, &mut None)?);
     }
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
+    // The journal read every admitted agent's admission carries. The journal
+    // policy alone decides each path: what a turn publishes for its agent to
+    // read (inputs, tool outputs, inherited conversation, compaction
+    // summaries) is readable, and execution records stay host-private.
+    grants.push(journal.capability(VolumeOperation::Read, &mut None)?);
     // Every agent may spawn, message and archive within its own subtree.
     grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
     for binding in volumes
@@ -515,6 +524,7 @@ fn root_grants(volumes: &[WorkspaceEntry], external: &[FileRef]) -> Result<Vec<S
         // A retained exact file can lie outside the current root on a still
         // bound volume. Its immutable conversation selection grants it alone.
         if seed.as_ref() != Some(file.volume())
+            && file.volume() != journal
             && !volumes.iter().any(|binding| {
                 binding.role != crate::agent::WorkspaceRole::Internal
                     && binding.as_volume() == Some(file.volume())
