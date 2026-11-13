@@ -585,7 +585,7 @@ impl NativeChildren {
                     cause: cause.clone(),
                 },
                 None if running.answer.omitted => Outcome::Failed {
-                    message: "step=read native reply: an event exceeded the 65,536-byte frame limit, contained invalid UTF-8 or malformed JSON; recovery=acyclic agents".into(),
+                    message: "step=read native reply: an event contained invalid UTF-8 or malformed JSON; recovery=acyclic agents".into(),
                 },
                 None => Outcome::Failed {
                     message: "step=settle native child: process exited without a completed native reply; recovery=acyclic agents".into(),
