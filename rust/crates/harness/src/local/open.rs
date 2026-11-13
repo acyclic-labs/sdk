@@ -290,7 +290,10 @@ impl Opening {
         #[cfg(any(test, not(target_arch = "wasm32")))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
         #[cfg(any(test, not(target_arch = "wasm32")))]
-        if self.native_mounts() {
+        // Every checkout can later bind a sparse fork, including a physical
+        // root whose current tool registry has no shell. Initialize the shared
+        // services once at workspace startup, before admitting those bindings.
+        if matches!(&self.config.project, LocalProject::Workspace(_)) || self.native_mounts() {
             acyclic_fs::initialize_native_mount_services_async()
                 .await
                 .map_err(storage)?;

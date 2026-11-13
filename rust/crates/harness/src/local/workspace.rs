@@ -234,9 +234,15 @@ impl LocalWorkspace {
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
-        // Namespace bindings are independent of OS projection. Physical views
-        // retain the same logical volumes without creating native mounts.
-        let native = self.mounting == WorkspaceMounting::Native;
+        // Forks use sparse native projection even when their admitted root
+        // checkout is physical. Their auxiliary volumes need the same native
+        // bindings, rather than inheriting logical-only root bindings.
+        let native = self.mounting == WorkspaceMounting::Native
+            || self
+                .filesystem
+                .workspace_id(project.storage_name(&mut None)?)
+                .map_err(storage)?
+                != self.view().workspace().id();
         let mut mounts = mounts::owner(
             root.path(),
             project,
@@ -246,7 +252,8 @@ impl LocalWorkspace {
                     .mounts
                     .mounts()
                     .find(|(_, mount)| &mount.view.volume == volume)
-                    .and_then(|(_, mount)| mount.view.source.clone());
+                    .and_then(|(_, mount)| mount.view.source.clone())
+                    .filter(|source| !native || source.options.is_some());
                 (name.clone(), volume.clone(), source)
             }),
         )?;
