@@ -65,7 +65,7 @@ async fn one_operation_captures_native_edits_before_distinct_file_publications()
     for path in ["baseline", "first", "second"] {
         std::fs::write(directory.path().join("native"), path).map_err(storage)?;
         let file = publisher
-            .stage_once(
+            .stage(
                 operation,
                 path,
                 path.as_bytes(),
@@ -76,7 +76,7 @@ async fn one_operation_captures_native_edits_before_distinct_file_publications()
             .await?;
         // Replaying a completed publication must retain its original receipt.
         let replay = publisher
-            .stage_once(
+            .stage(
                 operation,
                 path,
                 path.as_bytes(),
