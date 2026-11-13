@@ -647,3 +647,109 @@ async fn abandoned_owned_wait_records_unsettled_without_consuming_follow()
     assert_eq!(trace.tail().await?, 2);
     Ok(())
 }
+
+#[tokio::test]
+async fn original_cursor_end_distinguishes_finite_completion_from_unsettled_live_wait()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::StreamProvider as _;
+    use crate::trace::Recorder;
+    for finite in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let data = crate::Stream::new(provider.clone(), "agents/worker/data")?;
+        data.append(b"original".to_vec(), IdempotencyKey::unique())
+            .await?;
+        let original = if finite {
+            provider
+                .read(crate::ReadRequest {
+                    key: None,
+                    path: data.path().clone(),
+                    from: 0,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await?
+        } else {
+            crate::records_only(
+                provider
+                    .follow(crate::FollowRequest::new(data.path().clone(), 0))
+                    .await?,
+            )
+        };
+        let snapshot = original.snapshot.clone();
+        let end = original.selection.end;
+        assert_eq!(end.is_some(), finite);
+        // A consumer cut closes delivery without supplying a live cursor's
+        // missing settlement. Keep the original provider snapshot and selection.
+        let cut = original.map_cursor(|cursor| Box::pin(cursor.take(1)));
+        let trace = crate::Stream::new(provider, "agents/worker/trace")?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [24; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        let parent = root.id();
+        let mut records = root
+            .within(async { super::super::context::records(cut) })
+            .await;
+        assert_eq!(records.snapshot, snapshot);
+        assert_eq!(records.selection.end, end);
+        assert_eq!(
+            records
+                .try_next()
+                .await?
+                .ok_or("original row lost")?
+                .value
+                .as_ref(),
+            b"original"
+        );
+        assert!(records.try_next().await?.is_none());
+        let _terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut returned_without_settlement = false;
+        while completed < 3 {
+            if let Some(Observation::Completed {
+                start,
+                bytes,
+                result,
+                ..
+            }) = query.next().await?
+            {
+                completed += 1;
+                if start.mechanism == Mechanism::Wait {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.guarantee.as_deref(), Some("ordered_cursor_delivery"));
+                    if bytes == Some(0) {
+                        assert_eq!(
+                            result,
+                            if finite {
+                                Outcome::Succeeded
+                            } else {
+                                Outcome::Unsettled
+                            }
+                        );
+                        returned_without_settlement = !finite;
+                    } else {
+                        assert_eq!(bytes, Some(8));
+                        assert_eq!(result, Outcome::Succeeded);
+                    }
+                }
+            }
+        }
+        assert_eq!(returned_without_settlement, !finite);
+        assert_eq!(
+            query.totals()[&Mechanism::Wait].unsettled,
+            u128::from(!finite)
+        );
+        assert_eq!(query.active_waits(), 0);
+    }
+    Ok(())
+}

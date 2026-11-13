@@ -115,10 +115,11 @@ pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {
     let Some(active) = active else {
         return records;
     };
+    let finite = records.selection.end.is_some();
     records.map_cursor(|cursor| {
         Box::pin(futures::stream::unfold(
             (cursor, active),
-            |(mut cursor, active)| async move {
+            move |(mut cursor, active)| async move {
                 let admission = active.producer.enabled().then(|| {
                     active.producer.clone().start(Request {
                         name: "stream.record_delivery",
@@ -136,8 +137,14 @@ pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {
                         Some(Err(_)) => None,
                     };
                     if !matches!(next, Some(Err(_))) {
-                        let _completion =
-                            recording.finish_submitted(bytes, super::Outcome::Succeeded);
+                        let _completion = recording.finish_submitted(
+                            bytes,
+                            if next.is_none() && !finite {
+                                super::Outcome::Unsettled
+                            } else {
+                                super::Outcome::Succeeded
+                            },
+                        );
                     }
                 }
                 next.map(|value| (value, (cursor, active)))

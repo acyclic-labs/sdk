@@ -143,6 +143,10 @@ SDK `follow` admits the original ordered history-and-live cursor through
 as finite reads. Snapshot and selection stay attached to the original cursor;
 there is no collector, prefetched trace queue or new wait per idle child. Following
 the active diagnostic source bypasses both wrappers, as reading that source does.
+A delivery wait returning EOF on an original live selection has not observed
+settlement and records `Unsettled`. A finite selection can complete successfully.
+This classification uses the cursor's original selected end, without another
+head read, and leaves its snapshot, delivered records and EOF unchanged.
 A registry-bound producer also carries its own admitted lease count. The final
 lease retires new inherited child observations even when the original request
 still retains its recorder or another agent remains followed. This is an inline
