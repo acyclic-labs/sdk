@@ -528,6 +528,25 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
     fn admission_class(&self, _: &ActorReference) -> acyclic_actors::guest::AdmissionClass {
         acyclic_actors::guest::AdmissionClass::Control
     }
+    fn failure_owner(
+        &self,
+        actor: &ActorReference,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Option<ActorReference> {
+        // Both control and quiet checkpoints carry their original agent. Read
+        // only ownership so an unrelated malformed field cannot hide a failure.
+        #[derive(Deserialize)]
+        struct Owner {
+            agent: AgentPath,
+        }
+        let owner: Owner = serde_json::from_slice(&checkpoint?.bytes).ok()?;
+        ActorReference::new(
+            actor.account().as_bytes(),
+            actor.namespace().as_str().as_bytes(),
+            owner.agent.id().as_str().as_bytes(),
+        )
+        .ok()
+    }
     fn external_subscriptions(&self) -> &[String] {
         &self.external
     }

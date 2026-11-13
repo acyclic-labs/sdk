@@ -58,6 +58,13 @@ where
     fn admission_class(&self, actor: &ActorReference) -> AdmissionClass {
         self.host.admission_class(actor)
     }
+    fn failure_owner(
+        &self,
+        actor: &ActorReference,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Option<ActorReference> {
+        self.host.failure_owner(actor, checkpoint)
+    }
 
     fn retain_paused(&self, actor: &ActorReference, checkpoint: Option<&Checkpoint>) -> bool {
         self.host.retain_paused(actor, checkpoint)

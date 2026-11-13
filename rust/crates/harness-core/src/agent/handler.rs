@@ -773,6 +773,17 @@ where
             .as_ref()
             .map_or(&[], |companions| companions.external_subscriptions())
     }
+    fn failure_owner(
+        &self,
+        actor: &ActorReference,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Option<ActorReference> {
+        self.agents
+            .companions
+            .as_ref()
+            .filter(|companions| companions.handles(actor))
+            .and_then(|companions| companions.failure_owner(actor, checkpoint))
+    }
 
     fn retain_paused(&self, actor: &ActorReference, checkpoint: Option<&Checkpoint>) -> bool {
         self.agents
