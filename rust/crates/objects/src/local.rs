@@ -664,6 +664,7 @@ fn open_root(
         match acyclic_native_runtime::recover_log_tail(
             &log,
             end,
+            end,
             tail,
             native(durability),
             |bytes| LOG_FRAME.is_valid(bytes),
