@@ -88,7 +88,7 @@ impl HeadlessOutcome {
         if let Error::Cleanup(failure) = error {
             return failure.classification.outcome;
         }
-        if matches!(error, Error::GoalBlocked(_)) {
+        if matches!(error, Error::GoalBlocked(_) | Error::ExecutionControlled(_)) {
             return Self::Blocked;
         }
         match error.code() {

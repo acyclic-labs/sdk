@@ -212,13 +212,23 @@ pub struct Args {
 impl Args {
     /// Normalize the exec shorthand before validating its input identity.
     pub fn prepare_input(&mut self) -> Result<(), &'static str> {
-        if matches!(self.command, Some(Command::Run { .. } | Command::Serve(_))) {
+        if matches!(
+            self.command,
+            Some(Command::Run { goal: Some(_), .. } | Command::Serve(_))
+        ) {
             if self.credentials.is_some() {
                 return Err(
                     "unattended execution reads provider keys from the process environment; remove --credentials",
                 );
             }
             self.environment_credentials = true;
+        }
+        if matches!(
+            self.command,
+            Some(Command::Run { goal: Some(_), .. } | Command::Supervise { .. })
+        ) && (self.prompt.is_some() || self.input_format != InputFormat::Text)
+        {
+            return Err("goal execution and supervision accept no prompt or JSONL input");
         }
         if matches!(self.command, Some(Command::Send { .. })) {
             if self.endpoint.is_none() || self.operation.is_none() {
@@ -498,7 +508,7 @@ pub enum Command {
     /// Run the shared file-driven goal continuation until goal or terminal signal.
     Run {
         /// UTF-8 Markdown goal; plain Markdown starts active.
-        #[arg(long, requires = "policy")]
+        #[arg(long, requires = "policy", conflicts_with = "prompt")]
         goal: Option<PathBuf>,
         /// Version-one supervision policy with owner-configured reservations.
         #[arg(long, requires = "goal")]
@@ -752,6 +762,42 @@ mod tests {
         assert!(run.no_compaction);
         assert!(run.no_peer);
         assert_eq!(run.prompt.as_deref(), Some("task"));
+        assert!(
+            !run.environment_credentials,
+            "ordinary runs retain credential selection"
+        );
+        let mut credentialed =
+            Args::try_parse_from(["acyclic", "run", "--credentials", "keys.json", "-p", "task"])
+                .unwrap();
+        credentialed.prepare_input().unwrap();
+        assert!(!credentialed.environment_credentials);
+        let mut goal = Args::try_parse_from([
+            "acyclic",
+            "run",
+            "--goal",
+            "GOAL.md",
+            "--policy",
+            "policy.json",
+        ])
+        .unwrap();
+        goal.prepare_input().unwrap();
+        assert!(goal.environment_credentials);
+        for command in [
+            vec!["run", "--goal", "GOAL.md", "--policy", "policy.json"],
+            vec!["supervise", "--json"],
+        ] {
+            for input in [vec!["-p", "discarded"], vec!["--input-format", "jsonl"]] {
+                match Args::try_parse_from(
+                    ["acyclic"]
+                        .into_iter()
+                        .chain(command.iter().copied())
+                        .chain(input),
+                ) {
+                    Ok(mut args) => assert!(args.prepare_input().is_err()),
+                    Err(_) => {}
+                }
+            }
+        }
 
         let mut attach =
             Args::try_parse_from(["acyclic", "attach", "harness/agents/root"]).unwrap();
