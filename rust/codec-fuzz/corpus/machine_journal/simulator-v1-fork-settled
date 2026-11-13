@@ -1,0 +1,1 @@
+{"version":"1","value":{"digest":[18,120,153,22,31,252,3,48,237,195,211,219,130,51,245,4,240,1,225,35,56,89,146,82,233,10,1,251,70,49,120,179],"outcome":{"Forked":{"provenance":{"source":{"Machine":"6e028c59-54ac-5f47-8297-863f1049aaa1"},"inherited":"MemoryAndDisk"},"results":{"operation":"71e1244f-a7f9-566d-b036-f069d653d4b1","settlement":{"NativeController":4},"count":2}}}}}
