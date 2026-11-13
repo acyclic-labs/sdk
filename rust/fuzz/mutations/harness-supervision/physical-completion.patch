@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/filesystem/hosting/quiet.rs
++++ b/rust/crates/harness-core/src/filesystem/hosting/quiet.rs
+@@ -244,7 +244,7 @@
+                 .map_err(Error::Stream)?
+                 .ok_or(Error::Record("quiet completion publication"))?;
+             acyclic_fs::PublicationContext::from_bytes(context).map_err(Error::Stream)?;
+-            retired = true;
++            retired = false;
+         }
+     }
+     if !retired {
