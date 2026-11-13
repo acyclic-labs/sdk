@@ -212,7 +212,7 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
                 },
                 Routed::Rejected(reason) => Reply {
                     version: 1,
-                    key: Bytes::new(),
+                    key: Bytes::copy_from_slice(message.request.idempotency_key.as_bytes()),
                     relay_seq: None,
                     rejection: Some(reason as i32),
                 },
@@ -240,7 +240,7 @@ pub async fn admit(
         )
         .await?;
     let reply = Reply::decode(bytes).map_err(|_| StreamError::InvalidResponse)?;
-    if reply.version != 1 {
+    if reply.version != 1 || reply.key.as_ref() != message.request.idempotency_key.as_bytes() {
         return Err(StreamError::InvalidResponse.into());
     }
     match (reply.key.is_empty(), reply.relay_seq, reply.rejection) {
@@ -248,7 +248,7 @@ pub async fn admit(
             key: IdempotencyKey::new(reply.key).map_err(|_| StreamError::InvalidResponse)?,
             relay_seq,
         }),
-        (true, None, Some(reason)) => Ok(Routed::Rejected(
+        (false, None, Some(reason)) => Ok(Routed::Rejected(
             Rejection::try_from(reason).map_err(|_| StreamError::InvalidResponse)?,
         )),
         _ => Err(StreamError::InvalidResponse.into()),

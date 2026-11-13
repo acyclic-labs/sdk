@@ -246,7 +246,13 @@ async fn account_calls_enforce_source_and_message_authority() -> Result {
         Err(StreamError::NotFound)
     ));
     let original = admit(&client, 0, &message, 4096).await?;
-    assert!(matches!(original, Routed::Relayed { relay_seq: 0, .. }));
+    assert_eq!(
+        original,
+        Routed::Relayed {
+            key: message.request.idempotency_key.clone(),
+            relay_seq: 0,
+        }
+    );
     assert_eq!(admit(&client, 0, &message, 4096).await?, original);
     assert_eq!(provider.tail(paths.relay(&other)?).await?, 1);
     assert!(matches!(

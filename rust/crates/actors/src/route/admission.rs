@@ -35,7 +35,7 @@ pub enum Routed {
     Delivered(Delivered),
     /// The account durably admitted the original request to its destination relay.
     Relayed {
-        /// Original account admission identity.
+        /// Original caller intent key, independent of physical relay stages.
         key: IdempotencyKey,
         /// Original relay sequence, unchanged by exact retries.
         relay_seq: u64,
@@ -217,7 +217,11 @@ impl Envelope {
                 if append.start.checked_add(1) != Some(append.tail) {
                     return Err(Error::InvalidRecord);
                 }
-                Ok(outcome(rejection, key, append.start))
+                Ok(outcome(
+                    rejection,
+                    self.request.idempotency_key.clone(),
+                    append.start,
+                ))
             }
             Ok(CommitOutcome::Conflict(conflicts)) => {
                 Err(crate::local::Error::PreconditionChanged(conflicts).into())
@@ -278,7 +282,11 @@ impl Envelope {
                     if reason.is_some() && Self::decode(&record.value)?.to != self.sender {
                         return Err(Error::InvalidRecord);
                     }
-                    original = Some(outcome(reason, key.clone(), append.start));
+                    original = Some(outcome(
+                        reason,
+                        self.request.idempotency_key.clone(),
+                        append.start,
+                    ));
                 }
                 original.ok_or(Error::InvalidRecord)
             }
