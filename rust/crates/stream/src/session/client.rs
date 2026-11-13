@@ -827,17 +827,32 @@ impl Client {
                 })))
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
-            let (opened_id, receipt) = opened.await.map_err(|_| StreamError::Unavailable)??;
+            let (opened_id, receipt) = opened
+                .await
+                .map_err(|source| StreamError::Unavailable.with_source(source))??;
             if opened_id != id {
-                return Err(StreamError::Unavailable);
+                return Err(StreamError::InvalidResponse.with_source(AdmissionMismatch {
+                    expected: id,
+                    received: opened_id,
+                }));
             }
             cursor.opened = receipt;
             Ok(())
         };
-        let registered = operation
-            .clone()
-            .scope(super::runtime::waiting("session-open", id, registration))
-            .await;
+        #[cfg(feature = "serde")]
+        let registered = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.session_admission",
+                mechanism: crate::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("admission_acknowledges_original_session_interest"),
+            },
+            operation.clone().scope(registration),
+            |_| Some(0),
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        let registered = operation.clone().scope(registration).await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));
             return Err(error);
@@ -1095,4 +1110,11 @@ fn subscription_parts(
         _ => return Err(StreamError::Unsupported),
     }
     Ok((kind, resume, subscription.filter, subscription.credential))
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("session admission acknowledged interest {received}, expected {expected}")]
+struct AdmissionMismatch {
+    expected: u64,
+    received: u64,
 }

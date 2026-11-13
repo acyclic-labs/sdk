@@ -765,9 +765,10 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
             Default::default(),
         );
         let mut round_trip = None;
+        let mut admission = None;
         let mut copies = Vec::new();
         let fragments = body.chunks(crate::MAX_RECORD_BYTES).count();
-        while round_trip.is_none() || copies.len() != fragments {
+        while round_trip.is_none() || admission.is_none() || copies.len() != fragments {
             let Some(event) = query.next().await? else {
                 return Err("diagnostic source ended".into());
             };
@@ -791,6 +792,16 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
                         assert_eq!(bytes, Some(body.len() as u64));
                         round_trip = Some(id);
                     }
+                    "stream.session_admission" => {
+                        assert_eq!(start.mechanism, Mechanism::Wait);
+                        assert_eq!(
+                            start.guarantee.as_deref(),
+                            Some("admission_acknowledges_original_session_interest")
+                        );
+                        assert_eq!(result, Outcome::Succeeded);
+                        assert_eq!(bytes, Some(0));
+                        admission = Some(start.parent);
+                    }
                     "stream.reply_copy" => {
                         assert_eq!(start.mechanism, Mechanism::Copy);
                         assert_eq!(
@@ -804,6 +815,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
                 }
             }
         }
+        assert_eq!(admission, Some(round_trip));
         assert!(copies.iter().all(|(parent, _)| *parent == round_trip));
         assert_eq!(
             copies.iter().map(|(_, bytes)| bytes).sum::<u64>(),
