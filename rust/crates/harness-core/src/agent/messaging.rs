@@ -141,10 +141,11 @@ pub async fn initial_peer_membership<P: crate::store::JournalProvider + ?Sized>(
 ) -> Result<PeerMembership, super::Error> {
     use super::AgentRecord as _;
     use futures::TryStreamExt as _;
+    let path = root.peer_membership()?;
     let mut records = provider
         .read(acyclic_stream::ReadRequest {
             key: None,
-            path: root.peer_membership()?,
+            path: path.clone(),
             from: 0,
             limit: 1,
             at_least: Default::default(),
@@ -157,6 +158,9 @@ pub async fn initial_peer_membership<P: crate::store::JournalProvider + ?Sized>(
         .map_err(super::Error::Stream)?
         .filter(|record| record.sequence == 0)
         .ok_or(super::Error::Record("root has no original peer choice"))?;
+    if record.origin != path {
+        return Err(super::Error::Record("peer membership origin differs"));
+    }
     PeerMembership::decode(&record.value)
 }
 
@@ -207,18 +211,23 @@ pub async fn session_peer_admission<P: crate::store::JournalProvider + ?Sized>(
         .map_err(super::Error::Stream)?;
     view.validate_for(&request).map_err(super::Error::Stream)?;
     let mut admitted = Vec::with_capacity(2);
-    for head in view.heads {
-        let Some(record) = head.and_then(|head| head.last) else {
+    for (path, head) in request.paths.iter().zip(view.heads) {
+        let Some(head) = head else {
             return Ok(None);
         };
+        let Some(record) = head.last else {
+            return Ok(None);
+        };
+        if record.origin != *path || record.sequence.checked_add(1) != Some(head.tail) {
+            return Err(super::Error::Record(
+                "peer membership head provenance differs",
+            ));
+        }
         if !PeerMembership::decode(&record.value)?.enabled {
             return Ok(None);
         }
         admitted.push(PeerMembershipHead {
-            tail: record
-                .sequence
-                .checked_add(1)
-                .ok_or(super::Error::Record("membership tail overflow"))?,
+            tail: head.tail,
             commit: *record.commit_id.as_bytes(),
         });
     }
@@ -314,6 +323,86 @@ mod tests {
         assert!(peer_send_allowed(&subtree, &child));
         assert!(!peer_send_allowed(&subtree, &other));
         assert!(!peer_send_allowed(&crate::Capabilities::default(), &root));
+        Ok(())
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod provenance_tests {
+    use super::*;
+    use crate::agent::{AgentId, AgentRecord};
+    use acyclic_stream::{
+        CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream,
+        StreamProvider,
+    };
+
+    #[tokio::test]
+    async fn inherited_membership_cannot_admit_either_peer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for inherited_sender in [false, true] {
+            let provider = MemoryStream::default();
+            let sender = AgentPath::root(&AgentId::from_bytes([1; 16]));
+            let recipient = AgentPath::root(&AgentId::from_bytes([2; 16]));
+            let original = AgentPath::root(&AgentId::from_bytes([3; 16]));
+            let inherited = if inherited_sender {
+                &sender
+            } else {
+                &recipient
+            };
+            let direct = if inherited_sender {
+                &recipient
+            } else {
+                &sender
+            };
+            let enabled = PeerMembership { enabled: true };
+            let publish = async |mutations| {
+                let outcome = provider
+                    .commit(CommitRequest {
+                        deadline_unix_millis: None,
+                        idempotency_key: IdempotencyKey::unique(),
+                        effects: vec![CommitEffect::hard(Vec::new(), mutations)],
+                    })
+                    .await
+                    .map_err(super::super::Error::Stream)?;
+                assert!(matches!(outcome, CommitOutcome::Committed(_)));
+                Ok::<_, super::super::Error>(())
+            };
+            publish(vec![
+                CommitMutation::Append {
+                    path: original.peer_membership()?,
+                    records: vec![enabled.encode()?.into()],
+                },
+                CommitMutation::Append {
+                    path: direct.peer_membership()?,
+                    records: vec![enabled.encode()?.into()],
+                },
+            ])
+            .await?;
+            publish(vec![CommitMutation::Fork {
+                source: original.peer_membership()?,
+                destination: inherited.peer_membership()?,
+                at_tail: None,
+                exclude: Vec::new(),
+                records: Vec::new(),
+            }])
+            .await?;
+            let grants = crate::Capabilities::new([SEND_PEER.to_owned()]);
+            // Identical enabled bytes on their original streams are admitted.
+            assert!(
+                session_peer_admission(&provider, &grants, direct, &original)
+                    .await?
+                    .is_some()
+            );
+            assert_eq!(initial_peer_membership(&provider, direct).await?, enabled);
+            // Removing the provenance check admits this real inherited head;
+            // its enabled value and retained commit otherwise match exactly.
+            assert!(
+                session_peer_admission(&provider, &grants, &sender, &recipient)
+                    .await
+                    .is_err()
+            );
+            assert!(initial_peer_membership(&provider, inherited).await.is_err());
+        }
         Ok(())
     }
 }
