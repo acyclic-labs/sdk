@@ -7,8 +7,9 @@
 //! cursor): one [`ConversationEntry`] naming the turn's input and its staged output.
 
 use super::{
-    AgentOutcome, AgentRecord, AgentState, ApprovalRequested, ContextAction, Error, InboxRecord,
-    IntentId, Out, Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
+    AgentOutcome, AgentPath, AgentRecord, AgentState, ApprovalRequested, ContextAction, Error,
+    InboxRecord, IntentId, Out, Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep,
+    Wait,
 };
 use crate::{
     OperationId,
@@ -650,8 +651,27 @@ pub fn turn_notices(agent: &AgentState) -> Result<Option<super::NoticeSelection>
 /// part, followed by a message's attachment manifest by its exact version
 /// (which [`expand_attachments`] replaces with the files it lists). Primitive
 /// events use the common Notice block and retain their original typed files.
-pub fn model_input_at(inbox: u64, input: &TurnInput) -> Result<ModelContent, Error> {
-    let content = model_input(input)?;
+pub fn model_input_at(
+    receiver: &AgentPath,
+    inbox: u64,
+    input: &TurnInput,
+) -> Result<ModelContent, Error> {
+    let mut content = model_input(input)?;
+    if let TurnInput::Message {
+        from: super::Sender::Agent { path },
+        ..
+    } = input
+        && receiver.is_child_of(path)
+        && let ModelContent::Parts(parts) = &mut content
+        && let Some(ModelContentPart::Notices { notices }) = parts.first_mut()
+    {
+        for notice in notices {
+            notice.kind = "parent.message".into();
+            notice.body["authority"] = serde_json::json!(
+                "Instruction from your parent, the principal of this delegated task. Subject to your existing policy and approval requirements."
+            );
+        }
+    }
     if !matches!(input, TurnInput::Message { .. }) {
         return Ok(content);
     }
@@ -1083,7 +1103,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let notices = turn_notices(agent)?;
             let turn = turn_id(agent, &input)?;
             let stop = cancellation;
-            let content = model_input_at(inbox, &input)?;
+            let content = model_input_at(&agent.path, inbox, &input)?;
             let Some(open) = opened(
                 self.host
                     .open(agent, turn, inbox, cursor, &content, stop.clone())
