@@ -8,7 +8,7 @@ use ts_rs::TS;
 /// `volume:///home/agent.ts`: the agent's model and how it is called. You may
 /// change your own; `model` must be one your permissions allow (sys/models/),
 /// otherwise its `Admission` is "rejected" with the reason.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentConfig {
     /// "<provider>/<model>", one of the models in sys/models/.
@@ -32,7 +32,7 @@ pub struct AgentConfig {
 }
 
 /// Reasoning effort.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
     /// Least reasoning.
@@ -44,7 +44,7 @@ pub enum Effort {
 }
 
 /// Per-call sampling.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Sampling {
     /// Nonnegative temperature in the provider's units.
@@ -71,7 +71,7 @@ impl Sampling {
 }
 
 /// The loop an agent runs in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "kebab-case")]
 pub enum Host {
     /// The harness's own loop.
@@ -89,7 +89,7 @@ pub enum Host {
 /// issuer wrote (through spawn or fork `files`) binds you and is read-only
 /// to you. Every policy over you is met: everything is allowed unless a
 /// rule here, or one set above you, denies it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     /// Denied actions.
@@ -104,7 +104,7 @@ pub struct Policy {
 
 /// One policy rule. `path` is in the subject's own tree; for "spawn" it
 /// matches child names, for "call" actions or tool paths.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[ts(rename = "Rule")]
 pub struct PolicyRule {
@@ -115,7 +115,7 @@ pub struct PolicyRule {
 }
 
 /// An action a policy rule covers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS, crate::HeapLayout)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     /// Reading a file.

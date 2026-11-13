@@ -48,7 +48,7 @@ impl AfterHook {
         // then borrows the admitted delta without an engine, clock or allocation.
         let identity = evaluation.identity();
         let evaluated = evaluation.into_result()?;
-        let effects: Vec<Effect> = serde_json::from_value(evaluated.value)
+        let effects: Vec<Effect> = serde_json::from_value(evaluated.value.into_unbounded()?)
             .map_err(|error| Error::Invalid(format!("after-hook result: {error}")))?;
         let notices = effects
             .into_iter()
