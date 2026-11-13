@@ -14,14 +14,20 @@ pub fn status(error: &Status) -> StreamError {
         canonical(&category),
         None,
     )
-    .map_or(category, StreamError::Refused)
+    .map_or_else(
+        || category.clone(),
+        |refusal| category.clone().with_refusal(refusal),
+    )
 }
 
 /// Admits a platform callback's owned envelope through the same category mapping.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn status_owned(parts: acyclic_auth::refusal::Parts) -> StreamError {
     let category = StreamError::from_grpc_status(parts.code, &parts.message);
-    Refusal::capture_owned(parts, canonical(&category), None).map_or(category, StreamError::Refused)
+    Refusal::capture_owned(parts, canonical(&category), None).map_or_else(
+        || category.clone(),
+        |refusal| category.clone().with_refusal(refusal),
+    )
 }
 
 /// The category alone, without retaining diagnostics.
@@ -29,7 +35,7 @@ pub(crate) fn category(error: &Status) -> StreamError {
     StreamError::from_grpc_status(error.code() as i32, error.message())
 }
 
-fn canonical(error: &StreamError) -> Canonical<'static> {
+pub(super) fn canonical(error: &StreamError) -> Canonical<'static> {
     let (code, message) = match error {
         StreamError::InvalidResponse => (Code::DataLoss, "invalid_response"),
         StreamError::InvalidPath => (Code::InvalidArgument, "invalid_path"),
@@ -43,9 +49,8 @@ fn canonical(error: &StreamError) -> Canonical<'static> {
         StreamError::Capacity => (Code::ResourceExhausted, "stream capacity exhausted"),
         StreamError::IdempotencyMismatch => (Code::FailedPrecondition, "idempotency_mismatch"),
         StreamError::PrefixNotRetained => (Code::FailedPrecondition, "prefix_not_retained"),
-        StreamError::Unavailable | StreamError::Refused(_) => {
-            (Code::Unavailable, "stream unavailable")
-        }
+        StreamError::Refused(_) => return canonical(&error.category()),
+        StreamError::Unavailable => (Code::Unavailable, "stream unavailable"),
         StreamError::DeadlineElapsed => (Code::FailedPrecondition, "deadline_elapsed"),
         StreamError::Unsupported => (Code::Unimplemented, "unsupported_capability"),
         StreamError::RevisionForeign => (Code::FailedPrecondition, "revision_foreign"),
@@ -80,7 +85,7 @@ impl From<StreamError> for Status {
 #[must_use]
 fn error_status(error: &StreamError) -> Status {
     let refusal = match error {
-        StreamError::Refused(refusal) => Some(refusal),
+        StreamError::Refused(refusal) => Some(&**refusal),
         _ => None,
     };
     let parts = Refusal::encode(refusal, canonical(error));

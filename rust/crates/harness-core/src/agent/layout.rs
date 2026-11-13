@@ -182,6 +182,33 @@ impl Serialize for AgentPath {
 crate::core::ownership::owned_struct!(AgentPath { text, depth });
 
 impl AgentPath {
+    /// The actor owning an agent stream or its separate canonical status
+    /// stream. Both prefixes share one ancestry parser; conversation and
+    /// execution journal suffixes retain that same owner.
+    pub fn containing(stream: &StreamPath) -> Option<Self> {
+        let text = stream.as_str();
+        let prefix = if text.starts_with(AGENTS) {
+            AGENTS
+        } else {
+            STATUSES
+        };
+        let rest = text.strip_prefix(prefix)?.strip_prefix('/')?;
+        let mut segments = rest.split('/');
+        let id = segments.next()?;
+        AgentId::validate(id).ok()?;
+        let mut end = prefix.len() + 1 + id.len();
+        let mut depth = 0;
+        while segments.next() == Some(CHILDREN) {
+            let Some(id) = segments.next() else { break };
+            AgentId::validate(id).ok()?;
+            end += 1 + CHILDREN.len() + 1 + id.len();
+            depth += 1;
+        }
+        Some(Self {
+            text: format!("{AGENTS}{}", &text[prefix.len()..end]),
+            depth,
+        })
+    }
     /// A top-level agent.
     #[must_use]
     pub fn root(id: &AgentId) -> Self {
@@ -481,6 +508,10 @@ mod tests {
             });
             let parsed = parsed.expect("parser ran")?;
             assert_eq!(parsed, descendant);
+            for owned in [parsed.status()?, parsed.children()?, parsed.conversation()?] {
+                assert_eq!(AgentPath::containing(&owned), Some(parsed.clone()));
+            }
+            assert!(AgentPath::containing(&stream("other/agents/not-owned")?).is_none());
             assert_eq!(parsed.as_str().as_ptr(), original);
             assert_eq!(parsing.count_total, 0);
             // Addressing borrows the canonical ancestry and root; owning either

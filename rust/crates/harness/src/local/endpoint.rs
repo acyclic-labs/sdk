@@ -34,19 +34,31 @@ pub struct Connection {
     owner_exit: Option<super::service::exit::Observation>,
 }
 
-/// The client's cause together with the one its in-process owner retained.
+/// The client failure with its original in-process or recorded owner cause.
 #[derive(Debug, thiserror::Error)]
-#[error("{client}; {owner}")]
-struct OwnerFailure<E: std::error::Error + 'static> {
-    client: E,
-    #[source]
-    owner: OwnerCause,
+enum OwnerFailure<E: std::error::Error + 'static> {
+    #[error("{client}; {owner}")]
+    Stream {
+        client: E,
+        #[source]
+        owner: acyclic_stream::LocalStreamFailure,
+    },
+    #[error("{client}; {owner}")]
+    Runtime {
+        #[source]
+        client: E,
+        owner: String,
+    },
+    #[error("{client}; {owner}")]
+    Recorded {
+        client: E,
+        #[source]
+        owner: OwnerCause,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
 enum OwnerCause {
-    #[error("{0}")]
-    Live(String),
     #[error("local owner{0}")]
     Recorded(#[source] acyclic_auth::refusal::Refusal),
     #[error("cannot read the original owner's exit record: {0}")]
@@ -124,7 +136,7 @@ impl Connection {
             }
             Error::exchange(
                 ExchangeStep::Session,
-                OwnerFailure {
+                OwnerFailure::Recorded {
                     client: error,
                     owner: OwnerCause::recorded(owner_exit),
                 },
@@ -185,24 +197,36 @@ impl Connection {
         &self,
         error: impl std::error::Error + Send + Sync + 'static,
     ) -> Error {
-        let cause = self
-            ._host
-            .as_ref()
-            .and_then(|host| {
-                host.agent_stream
-                    .as_ref()
-                    .and_then(|stream| stream.failure())
-                    .map(|cause| cause.to_string())
-                    .or_else(|| host.agents.get()?.runtime.failure())
-            })
-            .map(OwnerCause::Live)
-            .or_else(|| self.owner_exit.as_ref().map(OwnerCause::recorded));
-        match cause {
-            Some(owner) => Error::exchange(
+        if let Some(host) = &self._host {
+            if let Some(owner) = host
+                .agent_stream
+                .as_ref()
+                .and_then(|stream| stream.failure())
+            {
+                return Error::exchange(
+                    ExchangeStep::Session,
+                    OwnerFailure::Stream {
+                        client: error,
+                        owner,
+                    },
+                );
+            }
+            if let Some(owner) = host.agents.get().and_then(|host| host.runtime.failure()) {
+                return Error::exchange(
+                    ExchangeStep::Session,
+                    OwnerFailure::Runtime {
+                        client: error,
+                        owner,
+                    },
+                );
+            }
+        }
+        match &self.owner_exit {
+            Some(observation) => Error::exchange(
                 ExchangeStep::Session,
-                OwnerFailure {
+                OwnerFailure::Recorded {
                     client: error,
-                    owner,
+                    owner: OwnerCause::recorded(observation),
                 },
             ),
             None => Error::exchange(ExchangeStep::Session, error),

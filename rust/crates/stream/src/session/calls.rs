@@ -94,6 +94,20 @@ impl CallAuthorization {
 
 /// Product-owned decoding/routing, without another session or transport loop.
 pub trait CallProvider: crate::ProviderPlatform + 'static {
+    /// The owning producer's failure for this logical subscription. The
+    /// returned observer is polled only after authorization, independently
+    /// of data credit. It must name only the selected producer, never sibling
+    /// work. Finite reads and effectful calls must remain available for
+    /// inspection and recovery. This observer does not own the physical
+    /// Session connection's lifetime. `None` attaches no product failure
+    /// observer; the stream's own failure and Session lifetime still apply.
+    fn failure(
+        &self,
+        _subscription: &wire::SessionSubscription,
+    ) -> Option<crate::BoxProviderFuture<'static, StreamError>> {
+        None
+    }
+
     /// Validate/decode the canonical invocation and derive its exact product
     /// resource and declared action. This phase MUST NOT perform I/O or dispatch.
     fn target(&self, invocation: &[u8]) -> Result<CallTarget, StreamError>;

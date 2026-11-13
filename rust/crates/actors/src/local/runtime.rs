@@ -14,6 +14,7 @@ mod clock;
 mod completion;
 mod dispatcher;
 mod external;
+mod failure;
 mod interrupt;
 mod limits;
 mod pause;
@@ -48,6 +49,7 @@ use std::{
 };
 
 struct Slot {
+    failure: OnceLock<Arc<failure::Signal>>,
     registration: Registration<ActorReference>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
@@ -91,10 +93,13 @@ impl Drop for EventDelivery {
 /// alarm; its flight then keeps the actor's failure mark. The work it was
 /// taken for settles with it.
 struct Settlement<'a> {
+    actor: &'a ActorReference,
+    failures: &'a Arc<failure::Signals>,
     slot: &'a Slot,
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
     failed: bool,
+    cause: Option<DeliveryFailure>,
 }
 impl Drop for Settlement<'_> {
     fn drop(&mut self) {
@@ -102,14 +107,33 @@ impl Drop for Settlement<'_> {
             return;
         };
         if self.failed {
+            self.slot
+                .failure
+                .get_or_init(|| self.failures.signal(self.actor))
+                .failed(self.cause.take().unwrap_or_else(|| DeliveryFailure {
+                    message: format!(
+                        "actor {:?}: delivery producer disappeared before reporting an outcome",
+                        self.actor
+                    ),
+                }));
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
+        } else if let Some(failure) = self.slot.failure.get() {
+            failure.healthy();
         }
         flight.finish(self.failed);
         if let Some(work) = self.work.take() {
             work.settle();
         }
     }
+}
+
+/// One failed delivery attempt. Its input and any unknown publication remain
+/// owned by the actor; observing this failure does not settle either.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct DeliveryFailure {
+    message: String,
 }
 
 #[derive(Default)]
@@ -220,6 +244,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     clock: Arc<dyn Clock>,
     ready: [ReadySet<ActorReference>; 2],
     actors: [SyncMutex<HashMap<ActorReference, Arc<Slot>>>; 64],
+    failures: Arc<failure::Signals>,
     shards: RandomState,
     /// Host node incarnation retained in explicit placement commands.
     instance: uuid::Uuid,
@@ -250,6 +275,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             handler,
             clock,
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
+            failures: Arc::new(failure::Signals::default()),
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
             places: true,
@@ -375,9 +401,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let registration =
             self.ready[self.handler.admission_class(&actor).index()].register(actor.clone())?;
         let waker = registration.waker();
+        let failure = self
+            .failures
+            .existing(&actor)
+            .map_or_else(OnceLock::new, OnceLock::from);
         actors.insert(
             actor,
             Arc::new(Slot {
+                failure,
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
@@ -390,6 +421,22 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }),
         );
         Ok(())
+    }
+
+    /// Observe this actor's next failed delivery, including a failure already
+    /// retained by this runtime. Observation registers no resident slot or work. Observers
+    /// survive hibernation without retaining actor I/O. Recovery clears the
+    /// current failure, but cannot erase an event from an earlier observer.
+    pub fn delivery_failure(
+        &self,
+        actor: &ActorReference,
+    ) -> Result<BoxProviderFuture<'static, DeliveryFailure>, Error> {
+        if !self.includes(actor) {
+            return Err(Error::Invalid("actor is outside this runtime's scope"));
+        }
+        // Signals outlive idle slots. Register directly in their shared index,
+        // so concurrent release cannot turn healthy hibernation into failure.
+        Ok(self.failures.signal(actor).observe())
     }
 
     /// Register an actor and request its first delivery attempt, as after
@@ -443,6 +490,39 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Request a delivery attempt, for example after a transient failure.
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
+            slot.refresh.store(true, Ordering::Release);
+            slot.waker.wake_by_ref();
+        }
+    }
+
+    /// Notify a resident actor of the activation in a confirmed publication.
+    /// The direct producer and the activation follow share its committed cursor,
+    /// so a delayed copy cannot redeliver an input after its producer failed.
+    /// The caller must have included this actor's activation in the commit.
+    ///
+    /// # Errors
+    /// The receipt omits the actor's activation log append.
+    pub fn wake_committed(
+        &self,
+        actor: &ActorReference,
+        receipt: &acyclic_stream::CommitReceipt,
+    ) -> Result<(), Error> {
+        let path = self
+            .store
+            .scheduling_path(self.store.scheduling_shard(actor))?;
+        let append = receipt
+            .appends
+            .iter()
+            .find(|append| append.path == path)
+            .ok_or(Error::Invalid("receipt omits the actor activation"))?;
+        self.activate(actor, append.tail);
+        Ok(())
+    }
+
+    fn activate(&self, actor: &ActorReference, cursor: u64) {
+        if let Some(slot) = self.slot(actor)
+            && slot.entry.fetch_max(cursor, Ordering::AcqRel) < cursor
+        {
             slot.refresh.store(true, Ordering::Release);
             slot.waker.wake_by_ref();
         }
@@ -995,10 +1075,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         if self.places {
                             self.track(actor.clone())?;
                         }
-                        if let Some(slot) = self.slot(&actor) {
-                            slot.entry.fetch_max(cursor, Ordering::AcqRel);
-                        }
-                        self.wake(&actor);
+                        self.activate(&actor, cursor);
                     }
                     seen.insert(shard, cursor);
                 }
@@ -1309,12 +1386,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // until it settles; a failed or unfinished one keeps its
                 // actor's wake past every later checkpoint.
                 let mut settlement = Settlement {
+                    actor,
+                    failures: &self.failures,
                     slot,
                     flight: Some(
                         self.ready[self.handler.admission_class(actor).index()].flight(actor),
                     ),
                     work,
                     failed: true,
+                    cause: None,
                 };
                 let result = match &self.admission[self.handler.admission_class(actor).index()] {
                     Some(admission) => admission
@@ -1344,6 +1424,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // A released slot delivered nothing: its input belongs to
                 // the next placer.
                 settlement.failed = result.is_err() || inner.released;
+                if let Err(error) = &result {
+                    settlement.cause = Some(DeliveryFailure {
+                        message: format!("actor {actor:?}: {error}"),
+                    });
+                }
                 drop(settlement);
                 drop(inner);
                 if result.is_ok() && slot.evict.load(Ordering::Acquire) && self.release(actor) {
