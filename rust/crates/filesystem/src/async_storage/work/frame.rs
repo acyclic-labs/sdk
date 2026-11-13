@@ -5,6 +5,7 @@ use crate::kernel::allocation::{AllocationLedger, KernelAccounting};
 pub(crate) struct AuthorityFrame<'a> {
     value: AuthorityWork<'a>,
     restore: Option<(&'a mut AllocationLedger, &'a mut WorkCounters)>,
+    restore_construction: &'a mut crate::collection::ConstructionRoots,
 }
 
 impl<'a> AuthorityFrame<'a> {
@@ -13,22 +14,42 @@ impl<'a> AuthorityFrame<'a> {
         let cancellation = accounting.cancellation();
         match accounting {
             #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work, .. } => Ok(Self {
-                value: AuthorityWork::native(work, cancellation),
+            KernelAccounting::NativeOriginal {
+                work, construction, ..
+            } => Ok(Self {
+                value: AuthorityWork {
+                    construction: std::mem::take(construction.roots()),
+                    ..AuthorityWork::native(work, cancellation)
+                },
                 restore: None,
+                restore_construction: construction.roots(),
             }),
             KernelAccounting::Standalone {
                 allocations,
                 work,
                 budget,
+                construction,
                 ..
-            } => Ok(Self::standalone(allocations, work, *budget, cancellation)),
+            } => Ok(Self::standalone(
+                allocations,
+                work,
+                *budget,
+                cancellation,
+                construction.roots(),
+            )),
             KernelAccounting::BorrowedStandalone {
                 allocations,
                 work,
                 budget,
+                construction,
                 ..
-            } => Ok(Self::standalone(allocations, work, *budget, cancellation)),
+            } => Ok(Self::standalone(
+                allocations,
+                work,
+                *budget,
+                cancellation,
+                construction.roots(),
+            )),
         }
     }
 
@@ -37,9 +58,11 @@ impl<'a> AuthorityFrame<'a> {
         work: &'a mut WorkCounters,
         budget: WorkBudget,
         cancellation: &'a CancellationToken,
+        construction: &'a mut crate::collection::ConstructionRoots,
     ) -> Self {
         Self {
             value: AuthorityWork {
+                construction: std::mem::take(construction),
                 allocations: std::mem::take(allocations),
                 scratch_floor: 0,
                 read_observation: None,
@@ -52,6 +75,7 @@ impl<'a> AuthorityFrame<'a> {
                 request_allocation: None,
             },
             restore: Some((allocations, work)),
+            restore_construction: construction,
         }
     }
 }
@@ -75,6 +99,7 @@ mod tests;
 
 impl Drop for AuthorityFrame<'_> {
     fn drop(&mut self) {
+        *self.restore_construction = std::mem::take(&mut self.value.construction);
         if let Some((allocations, work)) = self.restore.take() {
             *allocations = std::mem::take(&mut self.value.allocations);
             *work = self.value.work;

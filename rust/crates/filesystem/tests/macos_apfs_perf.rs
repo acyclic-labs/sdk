@@ -184,10 +184,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     lazy.exactify(
         "/hot",
         PublicationPermit::Unrestricted,
-        &mut KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        },
+        &mut KernelAccounting::native(&work, &cancellation),
     )
     .await?;
     let exactify_us = started.elapsed().as_micros();

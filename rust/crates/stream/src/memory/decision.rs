@@ -32,15 +32,18 @@ impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Deci
         }
     }
 
+    /// Persists then installs a durable decision. An ephemeral one installs
+    /// at once and never reaches `persist`: no frame, no fsync.
     fn durable(
         self,
         core: &MemoryStream,
         mut state: impl std::ops::DerefMut<Target = State>,
+        ephemeral: bool,
         mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
     ) -> impl Future<Output = Result<T, StreamError>> {
         async move {
-            if matches!(&self, Self::Returned(_)) {
-                return self.install(core, &mut state, true);
+            if ephemeral || matches!(&self, Self::Returned(_)) {
+                return self.install(core, &mut state, !ephemeral);
             }
             // An immediate acknowledgement needs no second state acquisition.
             if let std::task::Poll::Ready(result) = futures::poll!(persist.as_mut()) {
@@ -90,22 +93,30 @@ impl MemoryStream {
             ))
             .then_some(_publication);
             let mut state = self.state.write().await;
+            let ephemeral = matches!(
+                state
+                    .ephemeral
+                    .write_scope(&state.paths, &canonical.command)?,
+                Scope::Ephemeral(_)
+            );
             match &canonical.command {
                 WriteRequest::Append(request) => self
                     .plan_append_locked(&mut state, request)?
-                    .durable(self, state, persist.as_mut())
+                    .durable(self, state, ephemeral, persist.as_mut())
                     .await
                     .map(|(result, allocation)| Execution {
                         outcome: WriteOutcome::Append(result),
                         _allocation: allocation,
+                        ephemeral,
                     }),
                 WriteRequest::Fork(request) => self
                     .plan_fork_locked(&mut state, request)?
-                    .durable(self, state, persist.as_mut())
+                    .durable(self, state, ephemeral, persist.as_mut())
                     .await
                     .map(|result| Execution {
                         outcome: WriteOutcome::Fork(result),
                         _allocation: None,
+                        ephemeral,
                     }),
                 WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
                     let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
@@ -116,11 +127,12 @@ impl MemoryStream {
                         deadline,
                         matches!(&canonical.command, WriteRequest::CommitAccepted(_)),
                     )?
-                    .durable(self, state, persist.as_mut())
+                    .durable(self, state, ephemeral, persist.as_mut())
                     .await
                     .map(|(result, allocation)| Execution {
                         outcome: result,
                         _allocation: allocation,
+                        ephemeral,
                     })
                 }
             }
