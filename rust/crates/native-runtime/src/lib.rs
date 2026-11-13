@@ -45,6 +45,10 @@ pub use stdin::{Stdin, stdin};
 mod output;
 #[cfg(not(target_arch = "wasm32"))]
 pub use output::InheritedOutput;
+#[cfg(target_os = "linux")]
+#[path = "../runner/fuse_protocol.rs"]
+#[doc(hidden)]
+pub mod fuse_protocol;
 pub mod obs;
 mod process_tree;
 #[cfg(all(target_pointer_width = "64", feature = "test-support"))]

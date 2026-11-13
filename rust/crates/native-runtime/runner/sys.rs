@@ -415,6 +415,13 @@ pub fn pidfd(pid: Pid) -> Result<Fd, Errno> {
     unsafe { call(number::PIDFD_OPEN, [arg(pid), 0, 0, 0, 0, 0]) }.map(fd)
 }
 
+/// F_GET_SEALS is supported only by a memory-backed file. This rejects a
+/// descriptor whose writes could enter a caller's mounted filesystem.
+pub fn memory_file(file: Fd) -> Result<(), Errno> {
+    // SAFETY: a borrowed descriptor and a pointer-free fcntl query.
+    unsafe { call(number::FCNTL, [arg(file), 1034, 0, 0, 0, 0]) }.map(|_| ())
+}
+
 /// Warden control stays addressable when the guest changes group or session.
 /// Block before forking; prepare_program restores the guest's original mask.
 pub fn tree_control() -> Result<Fd, Errno> {

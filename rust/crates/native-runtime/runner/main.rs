@@ -23,6 +23,7 @@ mod ancillary;
 mod device;
 #[path = "../src/execution/linux/entry.rs"]
 mod entry;
+mod fuse_protocol;
 mod packet_device;
 #[path = "../src/process_tree/record.rs"]
 mod record;

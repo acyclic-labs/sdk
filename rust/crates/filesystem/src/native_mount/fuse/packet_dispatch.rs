@@ -116,6 +116,20 @@ impl From<i32> for PacketFailure {
     }
 }
 
+impl From<acyclic_native_runtime::fuse_protocol::Error> for PacketFailure {
+    fn from(error: acyclic_native_runtime::fuse_protocol::Error) -> Self {
+        use acyclic_native_runtime::fuse_protocol::Error;
+        match error {
+            Error::Errno(errno) => errno.into(),
+            Error::UnsupportedCapabilities(flags) => {
+                NativeMountError::FuseUnsupportedCapabilities(InitFlags::from_bits_retain(flags))
+                    .into()
+            }
+            Error::Closed => Self::TransportClosed,
+        }
+    }
+}
+
 impl From<NativeMountError> for PacketFailure {
     fn from(error: NativeMountError) -> Self {
         Self::Local(error)

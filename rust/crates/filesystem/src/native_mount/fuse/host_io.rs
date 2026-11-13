@@ -71,10 +71,10 @@ pub(super) struct HostIo {
     // The session is the sole descriptor owner. Retained notification sinks
     // retain this control, never a live device after its server has stopped.
     device: RwLock<Option<File>>,
-    custody: Mutex<Option<(PacketDeviceRetirement, crate::NativeAllocation)>>,
+    custody: RwLock<Option<(PacketDeviceRetirement, crate::NativeAllocation)>>,
     pub(super) maximum_write: u32,
     publication: Mutex<()>,
-    framed: bool,
+    pub(super) framed: bool,
     wake: ProcessWake,
     // Readiness is advisory. One owner keeps this queue's claim through the
     // physical read, then releases it before any source callback or reply.
@@ -112,7 +112,7 @@ impl HostIo {
     #[cfg(test)]
     pub(super) fn host_id(&self) -> Option<u32> {
         self.custody
-            .lock()
+            .read()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .map(|(retirement, _)| retirement.host_id())
@@ -146,7 +146,7 @@ impl HostIo {
             connection: OnceLock::new(),
             device: RwLock::new(Some(device)),
             framed: custody.is_some(),
-            custody: Mutex::new(custody),
+            custody: RwLock::new(custody),
             maximum_write,
             publication: Mutex::new(()),
             wake,
@@ -171,9 +171,21 @@ impl HostIo {
             .take();
         // The host acknowledges only after the actual /dev/fuse has closed.
         // No kernel caller can remain pinned behind a stopped owner transport.
+        // A half-close is an event the host already observes. It completes a
+        // blocked publisher with physical retirement, without a readiness
+        // probe or another wake descriptor on every successful publication.
+        if let Some((custody, _)) = self
+            .custody
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            && let Err(error) = custody.request_stop()
+        {
+            tracing::error!(%error, "FUSE device host stop request failed");
+        }
         if let Some((mut custody, _allocation)) = self
             .custody
-            .lock()
+            .write()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
             && let Err(error) = custody.retire()
@@ -195,6 +207,39 @@ impl HostIo {
             Some(device) => mount.wait_device_detached(device, Some(&self.wake)),
             None => mount.observe_closed(),
         })
+    }
+
+    pub(super) fn start_fuse(
+        &self,
+        configuration: acyclic_native_runtime::fuse_protocol::Configuration,
+        initialization_trace: Option<&File>,
+    ) -> Result<(), super::NativeMountError> {
+        let mut custody = self.custody.write().unwrap_or_else(PoisonError::into_inner);
+        let (custody, _) = custody
+            .as_mut()
+            .ok_or(super::NativeMountError::ControlPending)?;
+        custody
+            .start_fuse(configuration, initialization_trace)
+            .map_err(|error| {
+                if let Some(cause) = error.get_ref().and_then(|cause| {
+                    cause.downcast_ref::<acyclic_native_runtime::fuse_protocol::Error>()
+                }) {
+                    super::packet_dispatch::PacketFailure::from(*cause).into_native_error()
+                } else {
+                    error.into()
+                }
+            })
+    }
+
+    fn publication(&self) -> io::Result<()> {
+        let custody = self.custody.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some((custody, _)) = custody.as_ref() {
+            custody.publication()
+        } else if self.framed {
+            Err(io::Error::from_raw_os_error(libc::ENODEV))
+        } else {
+            Ok(())
+        }
     }
 
     fn wait(&self, events: i16) -> io::Result<Ready> {
@@ -325,7 +370,7 @@ impl PacketSink for HostIo {
                 }
             };
             match result {
-                Ok(length) if sent + length == total => return Ok(()),
+                Ok(length) if sent + length == total => return self.publication(),
                 Ok(length) if self.framed && length > 0 => {
                     sent += length;
                 }
