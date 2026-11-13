@@ -79,7 +79,9 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
         if kind == Admit::Archive && !closed {
             model.pending = open_children;
         }
-        if admitted.enqueue && model.queued < 3 {
+        let review = admitted.enqueue && kani::any::<bool>();
+        model.control.review |= review;
+        if admitted.enqueue && !review && model.queued < 3 {
             model.queued += 1;
             model.approval_queued |=
                 matches!(model.control.mode, Mode::Approval) && kani::any::<bool>();
@@ -122,12 +124,17 @@ fn step(kernel: Kernel, model: &mut Model, wake: Option<Admit>, open_children: u
     }
     if matches!(model.control.mode, Mode::Await(_)) {
         assert!(
-            picked == Pick::Nothing || picked == Pick::Resume,
+            picked == Pick::Nothing || picked == Pick::Resume || picked == Pick::Review,
             "an arrival started a step during a condition wait"
         );
     }
     match picked {
         Pick::Nothing => return,
+        Pick::Review => {
+            // Selection and completion leave the original worker parked.
+            model.control.review = kani::any();
+            return;
+        }
         Pick::Resume => {}
         Pick::Front => model.queued -= 1,
         Pick::Approval => {

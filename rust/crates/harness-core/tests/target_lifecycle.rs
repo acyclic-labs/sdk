@@ -291,8 +291,7 @@ async fn archive_destroys_the_agents_machines_before_it_closes() -> Result {
     assert!(host.runtime().drain().await.is_empty());
     // The root's first turn (its first input after adoption) spawns `c`.
     let child = root.child(&AgentId::derive(&root.id(), "c"))?;
-    let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: child.clone(),
+    let input = InboxRecord::Approval(Approval {
         id: intent("input"),
     });
     host.send(&root, &user(), &input).await?;

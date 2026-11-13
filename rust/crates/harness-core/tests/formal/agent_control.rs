@@ -50,6 +50,7 @@ fn released_generation_is_terminal_and_has_no_committed_turn() {
         reported: kani::any(),
         turn: false,
         input: false,
+        review: kani::any(),
     };
     for kind in [Admit::Input, Admit::Cancel, Admit::Archive] {
         let admitted = production::admit(before, kind);

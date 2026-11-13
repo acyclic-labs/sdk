@@ -19,7 +19,7 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Freeze parent review before opening a worker executor.
+            // Independent parent controls retain their original source and policy cuts.
             version: "7".into(),
         });
     &IDENTITY
@@ -654,6 +654,14 @@ mod tests {
                         steered_through: u64::MAX,
                         steering_tail: u64::MAX,
                         pending_notices: Some(0..u64::MAX),
+                        approval_control: Some(super::super::ApprovalControl {
+                            range: 0..u64::MAX,
+                            selected: Some(super::super::ApprovalSelection {
+                                source: path.clone(),
+                                range: 0..super::super::MAX_QUEUED as u64,
+                                policy: None,
+                            }),
+                        }),
                         dropped_before: u64::MAX,
                         checkpoint: Some(u64::MAX),
                         announcements: [(crate::agent::AnnouncementKind::Targets, [u8::MAX; 32])]

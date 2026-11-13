@@ -82,8 +82,7 @@ async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Resul
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     assert!(host.runtime().drain().await.is_empty());
     for n in 0..3 {
-        let record = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+        let record = InboxRecord::Approval(Approval {
             id: intent(&format!("request-{n}")),
         });
         let Delivered::Committed { inbox } = host.send(&root, &user(), &record).await? else {
@@ -774,8 +773,7 @@ async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
         )?;
         let root = host.create(&intent("create"), adopted(id(1))).await?;
         host.drain(&root).await?;
-        let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+        let input = InboxRecord::Approval(Approval {
             id: intent("approval"),
         });
         assert!(matches!(
@@ -999,8 +997,7 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         )?;
         let root = host.create(&intent("create"), adopted(id(1))).await?;
         host.drain(&root).await?;
-        let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+        let input = InboxRecord::Approval(Approval {
             id: intent("start"),
         });
         host.send(&root, &user(), &input).await?;
@@ -1143,8 +1140,7 @@ async fn native_reopen_preserves_reserved_spawns_until_the_matching_approval() -
     host.send(
         &root,
         &user(),
-        &InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
+        &InboxRecord::Approval(Approval {
             id: intent("question"),
         }),
     )
@@ -1257,8 +1253,7 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     let snapshot = store(&provider)?.load(&actor).await?;
     let state = snapshot.state().ok_or("missing actor state")?;
     let checkpoint = state.checkpoint().ok_or("missing agent checkpoint")?;
-    let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: root.child(&id(2))?,
+    let input = InboxRecord::Approval(Approval {
         id: intent("approval"),
     });
     let Delivered::Committed { inbox } = host.send(&root, &user(), &input).await? else {
@@ -1346,10 +1341,7 @@ async fn spawn_and_archive() -> Result {
     let cursor = |state: &Snapshot| state.state().and_then(|s| s.cursor(INBOX));
     assert_eq!(cursor(&actors.load(&host.actor(&root)?).await?), Some(1));
     let child = root.child(&AgentId::derive(&root.id(), "c"))?;
-    let record = InboxRecord::ApprovalRequested(ApprovalRequested {
-        child: child.clone(),
-        id: intent("q"),
-    });
+    let record = InboxRecord::Approval(Approval { id: intent("q") });
     assert!(matches!(
         host.send(&root, &user(), &record).await?,
         Delivered::Committed { .. }
