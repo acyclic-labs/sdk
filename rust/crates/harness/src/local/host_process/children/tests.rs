@@ -32,8 +32,11 @@ async fn nested_children_preserve_unmerged_work_across_follow_up_and_merge() -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_reference_aliases_preserve_process_and_parent_ownership() -> Result {
     for host in ["codex", "claude-code", "pi"] {
-        served(host, references).await?;
-        served(host, shared_references).await?;
+        served(host, |host, cwd| {
+            references(host, cwd)?;
+            shared_references(host, cwd)
+        })
+        .await?;
     }
     Ok(())
 }
