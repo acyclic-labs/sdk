@@ -26,6 +26,7 @@ impl TurnExecutors for NoTurns {
 }
 
 async fn binding() -> TestResult<(Binding, AgentPath)> {
+    acyclic_native_runtime::initialize_native_io_services()?;
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?;
     let bound = Bound::local_root(
@@ -142,6 +143,100 @@ async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
     assert_eq!(
         bound.tool_resource(&root).await?,
         bound.volumes().tool_resource(output.volume()).await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_wait_follows_branch_commits_and_checkout_changes() -> TestResult {
+    use crate::conversation::{DirectoryQuery, DirectoryTarget};
+    use futures::FutureExt as _;
+    fn query(after: Option<&crate::resources::GenerationRef>) -> DirectoryQuery<'_> {
+        DirectoryQuery {
+            target: DirectoryTarget::Private {},
+            path: "",
+            generation: None,
+            after_generation: after,
+            after_name: None,
+            maximum_entries: 8,
+        }
+    }
+    eprintln!("branch-wait: creating hosted binding");
+    let (bound, agent) = binding().await?;
+    eprintln!("branch-wait: hosted binding created");
+    let state = bound.agents().state(&agent).await?;
+    let reference = super::super::super::bounded_io::content_workspace(
+        &bound.volumes.provider,
+        state.volumes[0].volume()?,
+        None,
+    )?;
+    let root = bound.volumes.open(&reference, None).await?;
+    let store = acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(
+        bound.volumes.filesystem.stream_provider(),
+    ));
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    let cancellation = acyclic_fs::CancellationToken::new();
+    graph
+        .register_root(&root, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|failure| failure.error)?;
+    eprintln!("branch-wait: project root registered");
+    let branch = graph
+        .fork(
+            &root,
+            "watched-branch",
+            acyclic_fs::IdempotencyKey::new(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    eprintln!("branch-wait: branch forked");
+    let repository = acyclic_fs::GitCompatRepository::new(root.id(), store);
+    repository
+        .register_branch_workspace("watched-branch", branch.id(), None, true)
+        .await?;
+    eprintln!("branch-wait: branch selected");
+    branch
+        .write_text("/before-wait", "initial branch file")
+        .await?;
+    eprintln!("branch-wait: initial branch file published without a pending query");
+    let selected = bound.directory_page(&agent, query(None)).await?;
+    eprintln!("branch-wait: original branch directory selected");
+    let waiting = bound.directory_page(&agent, query(Some(&selected.generation)));
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    eprintln!("branch-wait: directory pending; publishing branch file");
+    branch
+        .write_text("/branch-only", "published in the selected branch")
+        .await?;
+    eprintln!("branch-wait: branch publication completed");
+    let changed = waiting
+        .now_or_never()
+        .ok_or("branch publication did not wake query")??;
+    assert!(
+        changed
+            .entries
+            .iter()
+            .any(|entry| entry.name == "branch-only")
+    );
+    let waiting = bound.directory_page(&agent, query(Some(&changed.generation)));
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    // Switching back changes no volume's publication stream. Only the original
+    // repository-state event can wake this already pending directory query.
+    repository
+        .register_branch_workspace("main", root.id(), None, true)
+        .await?;
+    let checked_out = waiting
+        .now_or_never()
+        .ok_or("checkout did not wake query")??;
+    assert_ne!(checked_out.generation, changed.generation);
+    assert!(
+        !checked_out
+            .entries
+            .iter()
+            .any(|entry| entry.name == "branch-only")
     );
     Ok(())
 }

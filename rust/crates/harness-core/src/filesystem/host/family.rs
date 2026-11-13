@@ -9,6 +9,7 @@ pub(super) trait ProjectFamily<A: 'static, O: 'static>:
 {
     fn applies(&self, root: WorkspaceId) -> bool;
     fn selects_content(&self) -> bool;
+    fn selection_path(&self, root: WorkspaceId) -> Result<Option<acyclic_stream::StreamPath>>;
     fn workspace<'a>(
         &'a self,
         host: &'a FilesystemHost<A, O>,
@@ -34,6 +35,7 @@ pub(super) trait ProjectFamily<A: 'static, O: 'static>:
 struct Family<S> {
     root: Option<WorkspaceId>,
     store: S,
+    selection_path: Option<fn(WorkspaceId) -> Result<acyclic_stream::StreamPath>>,
 }
 
 impl<
@@ -48,6 +50,10 @@ impl<
 
     fn selects_content(&self) -> bool {
         self.root.is_none()
+    }
+
+    fn selection_path(&self, root: WorkspaceId) -> Result<Option<acyclic_stream::StreamPath>> {
+        self.selection_path.map(|path| path(root)).transpose()
     }
 
     fn workspace<'a>(
@@ -145,6 +151,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .project_family = Some(Arc::new(Family {
             root: Some(root),
             store,
+            selection_path: None,
         }));
         Ok(self)
     }
@@ -152,13 +159,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Binds stream-backed project selection and ancestry before sharing.
     /// Ordinary provider reads and writes follow each root's selected descendant;
     /// the root still supplies the original project authorization boundary.
-    pub fn with_project_families<S: WorkspaceLineageStore + GitCompatStore + Clone + 'static>(
+    pub fn with_project_families<
+        P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    >(
         mut self: Arc<Self>,
-        store: S,
+        store: acyclic_fs::StreamGitCompatStore<P>,
     ) -> Result<Arc<Self>> {
         Arc::get_mut(&mut self)
             .ok_or_else(|| Error::Conflict("bind project ancestry before sharing its host".into()))?
-            .project_family = Some(Arc::new(Family { root: None, store }));
+            .project_family = Some(Arc::new(Family {
+            root: None,
+            store,
+            selection_path: Some(|root| {
+                acyclic_fs::StreamGitCompatStore::<P>::changes_path(root)
+                    .map_err(|error| Error::Storage(error.to_string()))
+            }),
+        }));
         Ok(self)
     }
 }
@@ -185,6 +201,18 @@ async fn authorize<S: WorkspaceLineageStore>(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    pub(in crate::filesystem) fn selection_changes_path(
+        &self,
+        root: WorkspaceId,
+    ) -> Result<Option<acyclic_stream::StreamPath>> {
+        self.project_family
+            .as_ref()
+            .filter(|family| family.applies(root))
+            .map(|family| family.selection_path(root))
+            .transpose()
+            .map(Option::flatten)
+    }
+
     pub(in crate::filesystem) async fn select_current_workspace(
         &self,
         root: &Workspace<A, O>,

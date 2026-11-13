@@ -92,6 +92,12 @@ pub struct GitCompatCas<'a> {
 }
 
 impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
+    /// Original repository-state stream, including checkout selection changes.
+    /// This identity grants no authority; capture its tail before reading state.
+    pub fn changes_path(id: WorkspaceId) -> Result<StreamPath, StreamGitCompatStoreError> {
+        Self::path(id, "refs")
+    }
+
     fn path(id: WorkspaceId, family: &str) -> Result<StreamPath, StreamGitCompatStoreError> {
         Ok(StreamPath::new(format!(
             "fs/git-state-v1/{}/{family}",
