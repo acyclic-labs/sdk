@@ -295,6 +295,7 @@ impl World {
                                 message: canonical,
                                 details: b"",
                                 owned: &[],
+                                cause_is_embedded: false,
                             },
                             None,
                         )

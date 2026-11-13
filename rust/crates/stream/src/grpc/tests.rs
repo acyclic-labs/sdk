@@ -799,6 +799,47 @@ fn every_member_refusal_round_trips_its_original_status() {
     }
 }
 
+#[test]
+fn attributed_unavailability_survives_transport_round_trips() {
+    use std::error::Error as _;
+    let cause = acyclic_auth::refusal::Cause::new("stream.lock", "poisoned");
+    let original = StreamError::unavailable(cause.clone());
+    let encoded = Status::from(original);
+    for category in StreamError::ALL {
+        let mut attributed = Status::from(&category);
+        *attributed.metadata_mut() = encoded.metadata().clone();
+        let decoded = status(&attributed);
+        assert_eq!(decoded.category(), category);
+        assert_eq!(decoded.uncertain(), category.uncertain());
+        assert_eq!(
+            self::original(&Status::from(decoded)),
+            self::original(&attributed)
+        );
+    }
+    let decoded = status(&encoded);
+    let refusal = decoded
+        .source()
+        .unwrap()
+        .downcast_ref::<acyclic_auth::refusal::Refusal>()
+        .unwrap();
+    assert!(refusal.original().is_none());
+    assert_eq!(decoded.category(), StreamError::Unavailable);
+    assert!(decoded.uncertain());
+    assert_eq!(
+        decoded
+            .source()
+            .unwrap()
+            .source()
+            .unwrap()
+            .downcast_ref::<acyclic_auth::refusal::Cause>(),
+        Some(&cause),
+    );
+    assert_eq!(
+        self::original(&Status::from(decoded)),
+        self::original(&encoded)
+    );
+}
+
 proptest::proptest! {
     /// Every category's canonical status decodes to itself. Every original
     /// status survives decoding, independently of recovery classification.

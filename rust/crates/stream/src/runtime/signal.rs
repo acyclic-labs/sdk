@@ -61,7 +61,7 @@ impl<T> Signal<T> {
     /// may update atomics, but must not acquire locks or wake tasks.
     pub(crate) fn send_with(&self, value: impl FnOnce() -> T) -> Result<(), StreamError> {
         let wake = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock()?;
             state.0.push_back(value());
             state.1.take()
         };
@@ -71,12 +71,7 @@ impl<T> Signal<T> {
         Ok(())
     }
     pub(crate) fn try_next(&self) -> Result<Option<T>, StreamError> {
-        Ok(self
-            .state
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .0
-            .pop_front())
+        Ok(self.state.lock()?.0.pop_front())
     }
     /// Receives at most one event and arms the next publication atomically.
     /// The second result names buffered work that needs another owner turn.
@@ -86,7 +81,7 @@ impl<T> Signal<T> {
     ) -> Result<(Option<T>, bool), StreamError> {
         let wake = cx.waker().clone();
         let (value, buffered, previous) = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let mut state = self.state.lock()?;
             let value = state.0.pop_front();
             (value, !state.0.is_empty(), state.1.replace(wake))
         };
@@ -94,12 +89,7 @@ impl<T> Signal<T> {
         Ok((value, buffered))
     }
     pub(crate) fn wake(&self) -> Result<(), StreamError> {
-        let wake = self
-            .state
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .1
-            .take();
+        let wake = self.state.lock()?.1.take();
         if let Some(wake) = wake {
             wake.wake();
         }
