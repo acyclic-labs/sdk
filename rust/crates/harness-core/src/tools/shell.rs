@@ -108,35 +108,26 @@ impl crate::tool::ToolProjection for ShellProjection {
     }
 }
 
-pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) -> String {
+pub(crate) fn omission(fields: &serde_json::Map<String, serde_json::Value>) -> String {
     use std::fmt::Write;
-    if let Some(error) = fields.get("error").and_then(serde_json::Value::as_str) {
-        return format!("Tool failed: {error}");
-    }
-    let exit = fields
-        .get("exit_code")
-        .and_then(serde_json::Value::as_i64)
-        .map_or_else(|| "unavailable".into(), |code| code.to_string());
-    let stdout = fields
-        .get("stdout")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let stderr = fields
-        .get("stderr")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let mut text = format!("Exit code: {exit}");
+    let mut text = String::new();
     if let Some(omitted) = fields
         .get("omitted_bytes")
         .and_then(serde_json::Value::as_u64)
-        .filter(|omitted| *omitted > 0)
+        .filter(|value| *value > 0)
     {
-        let _ = write!(
-            text,
-            "\n[{omitted} earlier bytes omitted; stdout tail then stderr tail follow"
+        let start = fields["omitted_range"]["start"]
+            .as_u64()
+            .unwrap_or_default();
+        let end = fields["omitted_range"]["end"]
+            .as_u64()
+            .unwrap_or(start.saturating_add(omitted));
+        text.push_str(
+            crate::tool::output::omission_notice(omitted, start, end).trim_end_matches("]\n"),
         );
+        text.push_str("; read this byte range from");
         if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
-            let _ = write!(text, "; complete output: {spill}");
+            let _ = write!(text, " {spill}");
         } else if let (Some(volume), Some(directory)) = (
             fields.get("output_volume"),
             fields
@@ -145,12 +136,31 @@ pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) 
         ) {
             let _ = write!(
                 text,
-                "; complete output: volume {volume}, directory {directory}"
+                " volume {volume}, directory {directory} in capture order"
             );
+        } else {
+            text.push_str(" the complete output");
         }
-        text.push(']');
+        text.push_str("]\n");
     }
-    let _ = write!(text, "\n{stdout}{stderr}");
+    text
+}
+
+pub(crate) fn window_presentation(
+    fields: &serde_json::Map<String, serde_json::Value>,
+    head: &str,
+    tail: &str,
+) -> String {
+    use std::fmt::Write;
+    if let Some(error) = fields.get("error").and_then(serde_json::Value::as_str) {
+        return format!("Tool failed: {error}");
+    }
+    let exit = fields
+        .get("exit_code")
+        .and_then(serde_json::Value::as_i64)
+        .map_or_else(|| "unavailable".into(), |code| code.to_string());
+    let mut text = format!("Exit code: {exit}");
+    let _ = write!(text, "\n{head}{}{tail}", omission(fields));
     if let Some(message) = fields
         .get("stop")
         .and_then(|stop| stop.get("message"))

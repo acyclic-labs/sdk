@@ -42,13 +42,12 @@ pub(super) fn result(
     maximum: impl Into<Option<u64>>,
 ) -> Result<ToolResult> {
     if name == super::shell::PLATFORM.name {
-        // The complete presentation, including its retained-log notice, fits
-        // the shared window so it never needs a second output spill.
+        // A prepared window carries original source coordinates. Later credit
+        // reductions use the general lossless projection spill, never a second
+        // interpretation of already shortened stdout/stderr fields.
         let maximum = crate::tool::output::view_bytes(maximum.into());
         if let Value::Object(fields) = result.value {
-            if let Some(text) = fields.get("text").and_then(Value::as_str)
-                && text_projection_len(text) as u64 <= maximum
-            {
+            if fields.get("text").and_then(Value::as_str).is_some() {
                 return Ok(ToolResult {
                     value: Value::Object(fields),
                 });
@@ -64,49 +63,101 @@ pub(super) fn result(
 }
 
 fn shell(mut fields: Map<String, Value>, maximum: usize) -> Result<Value> {
+    if fields
+        .get("omitted_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_default()
+        > 0
+    {
+        return Err(Error::Invalid(
+            "truncated shell output has no source window; bind the shared OutputWindow collector"
+                .into(),
+        ));
+    }
     let mut take = |field: &str| match fields.get_mut(field) {
         Some(Value::String(text)) => std::mem::take(text),
         _ => String::new(),
     };
     let (stdout, stderr) = (take("stdout"), take("stderr"));
-    let omitted = fields
-        .get("omitted_bytes")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
+    let mut window = crate::tool::OutputWindow::new(stdout.len().saturating_add(stderr.len()));
+    window
+        .observe(stdout.as_bytes(), false)
+        .map_err(Error::process_io)?;
+    window
+        .observe(stderr.as_bytes(), true)
+        .map_err(Error::process_io)?;
+    window
+        .render(
+            ToolResult {
+                value: Value::Object(fields),
+            },
+            maximum as u64,
+        )
+        .map(|result| result.value)
+}
+
+pub(crate) fn shell_window(
+    result: ToolResult,
+    bytes: &[u8],
+    prefix: usize,
+    total: u64,
+    maximum: u64,
+) -> Result<(ToolResult, std::ops::Range<usize>)> {
+    let Value::Object(mut fields) = result.value else {
+        return Err(Error::Invalid("shell result is not an object".into()));
+    };
+    let maximum =
+        usize::try_from(crate::tool::output::view_bytes(Some(maximum))).unwrap_or(usize::MAX);
+    if total == bytes.len() as u64 {
+        fields.insert("omitted_bytes".into(), 0.into());
+        fields.insert(
+            "omitted_range".into(),
+            serde_json::json!({"start":total,"end":total}),
+        );
+        let text = super::shell::window_presentation(&fields, &String::from_utf8_lossy(bytes), "");
+        if text_projection_len(&text) <= maximum {
+            fields.insert("text".into(), text.into());
+            fields.insert("truncated".into(), false.into());
+            return Ok((
+                ToolResult {
+                    value: Value::Object(fields),
+                },
+                bytes.len()..bytes.len(),
+            ));
+        }
+    }
     // Reserve the largest omission counter up front; shortening output cannot
     // grow its notice past this allowance. The result is bounded by its actual
     // text projection rather than a second JSON rendering of canonical fields.
-    fields.insert("omitted_bytes".into(), Value::from(u64::MAX));
-    let base = super::shell::presentation(&fields);
+    fields.insert("omitted_bytes".into(), Value::from(total));
+    fields.insert(
+        "omitted_range".into(),
+        serde_json::json!({"start":total,"end":total}),
+    );
+    let base = super::shell::window_presentation(&fields, "", "");
     let overhead = text_projection_len(&base);
     let budget = maximum
         .checked_sub(overhead)
         .ok_or_else(|| bound_too_small(super::shell::PLATFORM.name))?;
-    let error = escaped_len(&stderr);
-    // Output keeps what stderr leaves, and at least half the budget.
-    let output = suffix(&stdout, budget.saturating_sub(error).max(budget / 2));
-    let error = suffix(&stderr, budget - escaped_len(output));
-    let omitted =
-        omitted.saturating_add((stdout.len() - output.len() + stderr.len() - error.len()) as u64);
-    let (output, error) = (output.to_owned(), error.to_owned());
-    fields.insert("stdout".into(), Value::String(output));
-    fields.insert("stderr".into(), Value::String(error));
-    fields.insert("omitted_bytes".into(), Value::from(omitted));
-    fields.insert("truncated".into(), Value::Bool(omitted > 0));
-    let text = super::shell::presentation(&fields);
+    let selected = crate::tool::output::select_window(bytes, prefix, total, budget);
+    let start = selected.start as u64;
+    let end = total.saturating_sub((bytes.len() - selected.end) as u64);
+    fields.insert("omitted_bytes".into(), Value::from(end - start));
+    fields.insert(
+        "omitted_range".into(),
+        serde_json::json!({"start":start,"end":end}),
+    );
+    fields.insert("truncated".into(), Value::Bool(start != end));
+    let head = String::from_utf8_lossy(&bytes[..selected.start]);
+    let tail = String::from_utf8_lossy(&bytes[selected.end..]);
+    let text = super::shell::window_presentation(&fields, &head, &tail);
     fields.insert("text".into(), Value::String(text));
-    Ok(Value::Object(fields))
-}
-
-fn suffix(text: &str, budget: usize) -> &str {
-    let mut used = 0;
-    for (index, character) in text.char_indices().rev() {
-        used += escaped(character);
-        if used > budget {
-            return &text[index + character.len_utf8()..];
-        }
-    }
-    text
+    Ok((
+        ToolResult {
+            value: Value::Object(fields),
+        },
+        selected,
+    ))
 }
 
 fn text_projection_len(text: &str) -> usize {
@@ -130,7 +181,7 @@ fn encoded_len(value: &Value) -> Result<usize> {
 }
 
 /// Bytes `character` takes inside an encoded JSON string.
-fn escaped(character: char) -> usize {
+pub(crate) fn escaped(character: char) -> usize {
     match character {
         '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
         character if (character as u32) < 0x20 => 6,
@@ -138,7 +189,7 @@ fn escaped(character: char) -> usize {
     }
 }
 
-fn escaped_len(text: &str) -> usize {
+pub(crate) fn escaped_len(text: &str) -> usize {
     text.chars().map(escaped).sum()
 }
 

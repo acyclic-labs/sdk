@@ -1,15 +1,12 @@
 //! Bounded presentation over the existing process stream. The original spill
 //! handle stays held until its bytes are published to the private output volume.
 use std::{
-    collections::VecDeque,
     io::{self, Seek as _, Write},
     path::PathBuf,
 };
 
 pub(super) struct Tail {
-    bytes: VecDeque<u8>,
-    channels: VecDeque<(bool, usize)>,
-    total: u64,
+    window: crate::tool::OutputWindow,
     maximum: usize,
     path: PathBuf,
     spill: Option<std::fs::File>,
@@ -18,9 +15,7 @@ pub(super) struct Tail {
 impl Tail {
     pub(super) fn new(path: PathBuf, maximum: usize) -> Self {
         Self {
-            bytes: VecDeque::new(),
-            channels: VecDeque::new(),
-            total: 0,
+            window: crate::tool::OutputWindow::new(maximum),
             maximum,
             path,
             spill: None,
@@ -28,61 +23,31 @@ impl Tail {
     }
 
     pub(super) fn observe(&mut self, bytes: &[u8], stderr: bool) -> io::Result<()> {
-        self.total = self.total.checked_add(bytes.len() as u64).ok_or_else(|| {
-            io::Error::other(
-                "shell output count overflow; recovery: reconcile the original command",
-            )
-        })?;
-        if self.spill.is_none() && self.total > self.maximum as u64 {
+        let total = self
+            .window
+            .total()
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| io::Error::other("shell output byte count overflow"))?;
+        if self.spill.is_none() && total > self.maximum as u64 {
             self.ensure_spill()?;
         }
         if let Some(file) = &mut self.spill {
             file.write_all(bytes).map_err(|error| io::Error::new(error.kind(), format!("shell spill write failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display())))?;
         }
-        let keep = bytes.len().min(self.maximum);
-        let remove = self
-            .bytes
-            .len()
-            .saturating_add(keep)
-            .saturating_sub(self.maximum);
-        self.bytes.drain(..remove);
-        let mut evicted = remove;
-        while evicted > 0 {
-            let Some((_, length)) = self.channels.front_mut() else {
-                break;
-            };
-            let cut = evicted.min(*length);
-            *length -= cut;
-            evicted -= cut;
-            if *length == 0 {
-                self.channels.pop_front();
-            }
-        }
-        self.bytes.extend(&bytes[bytes.len() - keep..]);
-        if keep > 0 {
-            if let Some((_, length)) = self
-                .channels
-                .back_mut()
-                .filter(|(channel, _)| *channel == stderr)
-            {
-                *length += keep;
-            } else {
-                self.channels.push_back((stderr, keep));
-            }
-        }
-        Ok(())
+        self.window.observe(bytes, stderr)
     }
 
-    /// Before eviction this buffer is the complete output, so a presentation
-    /// cut discovered at settlement can still retain every original byte.
+    /// Before eviction the retained window contains the complete output.
     pub(super) fn ensure_spill(&mut self) -> io::Result<()> {
         if self.spill.is_none() {
             let mut file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(&self.path)
                 .map_err(|error| io::Error::new(error.kind(), format!("shell spill creation failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display())))?;
-            let (first, second) = self.bytes.as_slices();
-            file.write_all(first).and_then(|()| file.write_all(second)).map_err(|error| {
-                io::Error::new(error.kind(), format!("shell spill prefix write failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display()))
-            })?;
+            let bytes = self
+                .window
+                .retained()
+                .map(|(byte, _)| byte)
+                .collect::<Vec<_>>();
+            file.write_all(&bytes).map_err(|error| io::Error::new(error.kind(), format!("shell spill prefix write failed: {error}; recovery: inspect {} and reconcile the original command", self.path.display())))?;
             self.spill = Some(file);
         }
         Ok(())
@@ -90,17 +55,10 @@ impl Tail {
 
     pub(super) fn settle(
         mut self,
-        mut result: crate::tool::ToolResult,
+        result: crate::tool::ToolResult,
         maximum: u64,
     ) -> crate::Result<(crate::tool::ToolResult, Option<std::fs::File>)> {
-        let (stdout, stderr, omitted) = self.text();
-        let fields = result.value.as_object_mut().ok_or_else(|| crate::Error::Invalid(
-            "shell settlement requires terminal fields; recovery: bind the shared shell executor".into(),
-        ))?;
-        fields.insert("stdout".into(), stdout.into());
-        fields.insert("stderr".into(), stderr.into());
-        fields.insert("omitted_bytes".into(), omitted.into());
-        let mut result = crate::tools::shell::bounded_result(result, maximum)?;
+        let mut result = self.window.render(result, maximum)?;
         if result.value["omitted_bytes"].as_u64().unwrap_or_default() > 0 {
             self.ensure_spill().map_err(crate::Error::process_io)?;
             if let Some(file) = &mut self.spill {
@@ -111,35 +69,6 @@ impl Tail {
         }
         Ok((result, self.spill))
     }
-
-    fn text(&mut self) -> (String, String, u64) {
-        let raw = self.bytes.make_contiguous();
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let mut offset = 0;
-        for &(error, length) in &self.channels {
-            let output = if error { &mut stderr } else { &mut stdout };
-            output.extend_from_slice(&raw[offset..offset + length]);
-            offset += length;
-        }
-        let mut omitted = self.total - raw.len() as u64;
-        // A retained suffix can start inside a scalar on either channel.
-        // Omit the partial scalar rather than displaying an invented byte.
-        let mut text = |bytes: &[u8]| {
-            let skip = if self.total > raw.len() as u64 {
-                bytes
-                    .iter()
-                    .take_while(|byte| **byte & 0xc0 == 0x80)
-                    .count()
-            } else {
-                0
-            };
-            omitted += skip as u64;
-            String::from_utf8_lossy(&bytes[skip..]).into_owned()
-        };
-        let (stdout, stderr) = (text(&stdout), text(&stderr));
-        (stdout, stderr, omitted)
-    }
 }
 
 #[cfg(test)]
@@ -148,7 +77,7 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    fn truncated_preview_identifies_retained_tails_before_output() -> crate::Result<()> {
+    fn truncated_preview_keeps_both_ends_and_addresses_the_original_middle() -> crate::Result<()> {
         use std::io::Read as _;
         let directory = tempfile::tempdir().map_err(crate::Error::process_io)?;
         let path = directory.path().join("spill");
@@ -169,31 +98,32 @@ mod tests {
         let output = fields["stdout"].as_str().unwrap();
         let error = fields["stderr"].as_str().unwrap();
         assert!(!output.is_empty());
-        assert!(stdout.ends_with(output));
+        assert!(output.starts_with("beginning\n"));
+        assert!(output.ends_with("stdout end\n"));
         assert_eq!(error, stderr);
-        assert_eq!(
-            fields["omitted_bytes"].as_u64().unwrap(),
-            (stdout.len() + stderr.len() - output.len() - error.len()) as u64
-        );
+        let start = fields["omitted_range"]["start"].as_u64().unwrap();
+        let end = fields["omitted_range"]["end"].as_u64().unwrap();
+        assert_eq!(fields["omitted_bytes"].as_u64().unwrap(), end - start);
         let text = fields["text"].as_str().unwrap();
-        let (notice, shown) = text.split_once("]\n").unwrap();
-        assert!(notice.contains("earlier bytes omitted; stdout tail then stderr tail follow"));
-        assert!(notice.contains(spill_path));
-        assert_eq!(shown, format!("{output}{error}"));
+        assert!(text.find("beginning").unwrap() < text.find("bytes omitted").unwrap());
+        assert!(text.find("bytes omitted").unwrap() < text.find("stdout end").unwrap());
+        assert!(text.contains(spill_path));
         let mut complete = String::new();
         spill
             .unwrap()
             .read_to_string(&mut complete)
             .map_err(crate::Error::process_io)?;
         assert_eq!(complete, format!("{stdout}{stderr}"));
+        assert!(text.contains(&complete[..start as usize]));
+        assert!(text.ends_with(&complete[end as usize..]));
         Ok(())
     }
 
     proptest! {
-        // Arbitrary chunk boundaries cannot change the retained suffix or
+        // Arbitrary chunk boundaries cannot change the retained ends or
         // exact spill bytes, and storage stays independent of total output.
         #[test]
-        fn chunks_preserve_tail_and_complete_spill(
+        fn chunks_preserve_ends_ranges_and_complete_spill(
             directory in Just(std::sync::Arc::new(tempfile::tempdir().expect(
                 "step=create shell property directory; recovery=cargo test -p acyclic-harness --lib local::checkout_tools::shell::tail::tests::chunks_preserve_tail_and_complete_spill"
             ))),
@@ -216,12 +146,14 @@ mod tests {
                 let stderr = index % 2 == 1;
                 channels.extend(std::iter::repeat_n(stderr, bytes.len()));
                 tail.observe(bytes, stderr)?;
-                prop_assert!(tail.bytes.len() <= maximum);
+                prop_assert!(tail.window.retained().count() <= maximum);
             }
-            let raw = bytes.len().saturating_sub(maximum);
-            prop_assert!(tail.bytes.iter().copied().eq(bytes[raw..].iter().copied()));
-            let retained_channels = tail.channels.iter().flat_map(|(channel, length)| std::iter::repeat_n(*channel, *length)).collect::<Vec<_>>();
-            prop_assert_eq!(retained_channels.as_slice(), &channels[raw..]);
+            let head = bytes.len().min(maximum.div_ceil(2));
+            let tail_start = bytes.len().saturating_sub(maximum/2).max(head);
+            let expected = bytes[..head].iter().zip(&channels[..head])
+                .chain(bytes[tail_start..].iter().zip(&channels[tail_start..]))
+                .map(|(&byte,&channel)|(byte,channel)).collect::<Vec<_>>();
+            prop_assert_eq!(tail.window.retained().collect::<Vec<_>>(), expected);
             prop_assert_eq!(tail.spill.is_some(), bytes.len() > maximum);
             let (result, _) = tail.settle(crate::tool::ToolResult {
                 value: serde_json::json!({"exit_code": 0, "spill": "volume:///home/output"}),
@@ -229,6 +161,10 @@ mod tests {
             let projected = serde_json::json!({"kind":"parts", "parts":[{"kind":"text", "text":result.value["text"]}]}).to_string();
             prop_assert!(projected.len() as u64 <= render);
             let omitted = result.value["omitted_bytes"].as_u64().unwrap();
+            let start = result.value["omitted_range"]["start"].as_u64().unwrap();
+            let end = result.value["omitted_range"]["end"].as_u64().unwrap();
+            prop_assert_eq!(end-start, omitted);
+            prop_assert!(end <= bytes.len() as u64);
             if omitted > 0 {
                 prop_assert_eq!(std::fs::read(path)?, bytes);
             } else {
