@@ -161,7 +161,7 @@ impl LocalHarness {
                 .mounts
                 .named(None)?
                 .1
-                .source_path(path, Some(&io))?;
+                .source_path(path, Some(&work))?;
             match view
                 .read_at_snapshot(
                     cut,
@@ -237,7 +237,7 @@ impl LocalHarness {
                 .mounts
                 .named(None)?
                 .1
-                .source_path(path, Some(&io))?;
+                .source_path(path, Some(&work))?;
             let (chunk, _allocation) = view
                 .read_at_snapshot(
                     cut,
