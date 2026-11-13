@@ -69,14 +69,7 @@ pub async fn observe<T, E>(
     work: impl Future<Output = Result<T, E>>,
     bytes: impl FnOnce(&T) -> Option<u64>,
 ) -> Result<T, E> {
-    let recording = match child(request) {
-        Some(admission) => admission.await.ok(),
-        None => None,
-    };
-    let result = match &recording {
-        Some(recording) => recording.within(work).await,
-        None => work.await,
-    };
+    let (result, recording) = OwnedRecording::accompany(child(request), work).await;
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     if let Some(recording) = recording
         && let Ok(value) = &result

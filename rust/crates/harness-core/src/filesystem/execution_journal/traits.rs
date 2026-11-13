@@ -553,6 +553,9 @@ where
         Some(crate::conversation::BoundedContentFuture::new(
             io,
             || async move {
+                let path = crate::executor::with_history_io(io, |work| {
+                    crate::distributed::execution_path(operation, work)
+                })?;
                 let mut commit = None;
                 let sequence = self
                     .append_projected(
@@ -570,9 +573,6 @@ where
                     return Ok(None);
                 };
                 let commit_id = commit.ok_or(Error::Indeterminate(operation))?;
-                let path = crate::executor::with_history_io(io, |work| {
-                    crate::distributed::execution_path(operation, work)
-                })?;
                 Ok(Some(acyclic_stream::RetainedRecord {
                     commit_id,
                     path,

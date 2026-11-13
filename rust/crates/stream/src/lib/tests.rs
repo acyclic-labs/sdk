@@ -516,6 +516,63 @@ mod replay_tests {
     }
     #[cfg(feature = "serde")]
     #[tokio::test]
+    async fn ready_sdk_work_does_not_wait_for_diagnostic_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let trace = Stream::new(
+            Arc::new(Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records: 0,
+                inspect_on_write: false,
+                pause_write: Some(writes),
+                resume_write: None,
+            }),
+            "agents/worker/trace",
+        )?;
+        let data = Stream::new(Arc::new(MemoryStream::default()), "agents/worker/data")?;
+        data.append(b"original".to_vec(), IdempotencyKey::unique())
+            .await?;
+        let original = data.head().await?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [16; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        let mut work = Box::pin(root.within(data.head()));
+        let std::task::Poll::Ready(result) = futures::poll!(&mut work) else {
+            return Err("diagnostic admission delayed an original ready result".into());
+        };
+        assert_eq!(result?, original);
+        drop(work);
+        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        query.next().await?;
+        assert!(matches!(
+            query.next().await?,
+            Some(Observation::Completed {
+                result: Outcome::Succeeded,
+                ..
+            })
+        ));
+        assert_eq!(
+            trace.tail().await?,
+            2,
+            "abandoned diagnostic admission fabricated child settlement"
+        );
+        Ok(())
+    }
+    #[cfg(feature = "serde")]
+    #[tokio::test]
     async fn observed_dispatch_handoff_cannot_wait_after_original_claim()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::trace::{

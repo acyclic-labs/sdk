@@ -348,19 +348,14 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         event: impl std::future::Future<Output = Option<Result<ModelEvent>>>,
     ) -> Option<Result<ModelEvent>> {
-        let trace = match journal.trace_request(acyclic_stream::trace::Request {
+        let admission = journal.trace_request(acyclic_stream::trace::Request {
             name: "harness.provider_event_wait",
             mechanism: acyclic_stream::trace::Mechanism::Wait,
             parent: None,
             guarantee: Some("provider_event_delivery"),
-        }) {
-            Some(admission) => admission.await.ok(),
-            None => None,
-        };
-        let next = match &trace {
-            Some(recording) => recording.within(event).await,
-            None => event.await,
-        };
+        });
+        let (next, trace) =
+            acyclic_stream::trace::OwnedRecording::accompany(admission, event).await;
         #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
         if let Some(recording) = trace {
             let outcome = match &next {
