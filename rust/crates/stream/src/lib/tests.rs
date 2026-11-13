@@ -822,6 +822,7 @@ mod replay_tests {
     async fn cancelled_inherited_wait_retains_pending_start_and_original_follow()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::trace::{Mechanism, Observation, Outcome, Recorder, Request, TraceQuery};
+        use futures::TryStreamExt as _;
         let (release, resume) = futures::channel::oneshot::channel::<()>();
         let trace = Stream::new(
             Arc::new(Gapped {
