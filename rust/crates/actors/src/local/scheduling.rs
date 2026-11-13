@@ -157,6 +157,18 @@ pub(super) fn shard(count: std::num::NonZeroU16, actor: &ActorReference) -> u16 
     u16::from_be_bytes([hash[0], hash[1]]) % count.get()
 }
 
+/// A deadline window's child name: exactly the 20 ASCII decimal digits
+/// `window_path` writes. Any other form (a sign, whitespace, another
+/// length, or a value past `u64::MAX`) is a typed refusal, never parsed
+/// leniently.
+fn window_name(name: &str) -> Result<u64, Error> {
+    let invalid = || Error::Invalid("invalid deadline window");
+    if name.len() != 20 || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    name.parse().map_err(|_| invalid())
+}
+
 /// A malformed runtime record is a typed refusal of that record alone,
 /// observed by its error kind; the dispatcher continues past it.
 fn refused<T>(decoded: Result<T, Error>) -> Option<T> {
@@ -247,9 +259,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     .as_str()
                     .strip_prefix(parent.as_str())
                     .and_then(|name| name.strip_prefix('/'))
-                    .filter(|name| name.len() == 20)
-                    .and_then(|name| name.parse::<u64>().ok())
-                    .ok_or(Error::Invalid("invalid deadline window")),
+                    .ok_or(Error::Invalid("invalid deadline window"))
+                    .and_then(window_name),
             );
             if window.is_some() {
                 return Ok(window);
@@ -437,3 +448,6 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         Ok((actors, page.next_after))
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
