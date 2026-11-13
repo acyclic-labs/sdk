@@ -1,5 +1,21 @@
 use super::*;
 
+fn start_task_view(
+    destination: &Path,
+    source: Arc<dyn MountFilesystem>,
+) -> Result<crate::native_mount::NativeMountSession, NativeMountError> {
+    crate::native_mount::mount_native(
+        NativeMountRequest {
+            mount_id: crate::MountId::new(),
+            volume_id: crate::VolumeId::new(),
+            destination: destination.to_path_buf(),
+            writable: true,
+            shared: true,
+        },
+        source,
+    )
+}
+
 fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
     use super::super::file_ops::acyclic_fs_darwin_mount_fsync;
     use super::super::requests::CallbackTarget;
@@ -231,20 +247,8 @@ fn task_views_share_one_real_nfs_session_and_retire_independently() -> TestResul
     let admitted = crate::hold_root(namespace.path())?;
     let first_name = crate::native_mount::shared_view_destination(Some(&admitted))?;
     let second_name = crate::native_mount::shared_view_destination(Some(&admitted))?;
-    let start = |destination: &Path, source: Arc<dyn MountFilesystem>| {
-        crate::native_mount::mount_native(
-            NativeMountRequest {
-                mount_id: crate::MountId::new(),
-                volume_id: crate::VolumeId::new(),
-                destination: destination.to_path_buf(),
-                writable: true,
-                shared: true,
-            },
-            source,
-        )
-    };
-    let mut first = start(first_name.path(), first_source)?;
-    let mut second = start(second_name.path(), second_source)?;
+    let mut first = start_task_view(first_name.path(), first_source)?;
+    let mut second = start_task_view(second_name.path(), second_source)?;
     let first_driver = first.driver.as_ref().ok_or("first driver missing")?;
     let second_driver = second.driver.as_ref().ok_or("second driver missing")?;
     assert!(Arc::ptr_eq(&first_driver.unmount, &second_driver.unmount));
@@ -274,4 +278,50 @@ fn task_views_share_one_real_nfs_session_and_retire_independently() -> TestResul
         "last view retained the physical session"
     );
     Ok(())
+}
+
+fn native_provider_exit_closes_admission(keep_provider_running: bool) -> TestResult {
+    let (source, _, _) = checkout_context(MountPublication::Manual)?;
+    let (late_source, _, _) = checkout_context(MountPublication::Manual)?;
+    crate::native_mount::initialize_native_mount_services()?;
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let namespace = tempfile::tempdir()?;
+    let admitted = crate::hold_root(namespace.path())?;
+    let name = crate::native_mount::shared_view_destination(Some(&admitted))?;
+    let mut view = start_task_view(name.path(), source)?;
+    let physical = Arc::clone(&view.driver.as_ref().ok_or("driver missing")?.unmount);
+    if !keep_provider_running {
+        physical.interrupt(None)?;
+        let mut state = physical.state();
+        while !state.loop_finished {
+            state = physical
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        assert_eq!(
+            physical.pointer(),
+            0,
+            "exited provider retained its native owner"
+        );
+    }
+    // Keep the original view alive, so acquisition finds this exact instance
+    // instead of legitimately starting a replacement after its last observer.
+    let late = crate::native_mount::shared_view_destination(Some(&admitted))?;
+    let outcome = start_task_view(late.path(), late_source);
+    assert!(outcome.is_err(), "dead provider admitted a view");
+    drop(outcome);
+    view.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?;
+    Ok(())
+}
+
+#[test]
+fn real_provider_exit_refuses_new_views_while_existing_views_retain_the_instance() -> TestResult {
+    native_provider_exit_closes_admission(false)
+}
+
+#[test]
+#[should_panic(expected = "dead provider admitted a view")]
+fn provider_exit_negative_control_keeps_the_real_provider_running() {
+    native_provider_exit_closes_admission(true).expect("real native provider fixture");
 }
