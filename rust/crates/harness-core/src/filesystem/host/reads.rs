@@ -879,7 +879,7 @@ async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     path: &str,
     maximum: Option<u64>,
     io: &PreparationIo,
-    classify: fn(Error) -> Error,
+    classify: fn(WorkspaceError) -> Error,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
     let (result, recorded) = generation.read(path, maximum, io, io.cancellation()).await;
@@ -889,7 +889,7 @@ async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let result = match result {
         Ok(bytes) => Ok(Some(bytes)),
         Err(WorkspaceError::NotFound) => Ok(None),
-        Err(error) => Err(classify(error.into())),
+        Err(error) => Err(classify(error)),
     };
     result?.map(|bytes| io.retain_read_bytes(bytes)).transpose()
 }
