@@ -713,15 +713,21 @@ async fn child_projection_does_not_read_or_materialize_the_inherited_tree() -> R
     let large = child_projection_work(6_000, false)
         .await?
         .expect("native projection");
-    assert_eq!(
-        large.source_bytes_read, 0,
-        "binding hydrated inherited payloads"
-    );
-    assert_eq!(large.materializations, 0, "binding copied inherited files");
-    assert_eq!(
-        large.source_entries_visited, small.source_entries_visited,
-        "child binding enumerated the inherited tree"
-    );
+    // Native path witnesses and publication receipts also charge source bytes
+    // (for example held-descriptor readlink queries). They are binding work,
+    // not inherited file hydration, and must not grow with the inherited tree.
+    assert_eq!(large.source_bytes_read, small.source_bytes_read);
+    for work in [small, large] {
+        assert_eq!(work.materializations, 0, "binding copied inherited files");
+        assert_eq!(
+            work.source_path_components, 0,
+            "binding walked inherited paths"
+        );
+        assert_eq!(
+            work.source_entries_visited, 0,
+            "binding observed inherited entries"
+        );
+    }
     Ok(())
 }
 
