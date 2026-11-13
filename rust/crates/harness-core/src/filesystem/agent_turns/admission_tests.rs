@@ -1,7 +1,9 @@
 use super::*;
+use crate::test_support::replace_policy;
 use crate::{
     conversation::{ContentGrant, VolumeRef},
     core::AuthorityRoot,
+    filesystem::workspace_ref,
     resources::ProviderRef,
 };
 
@@ -117,7 +119,7 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
             Default::default(),
         );
         let admitted = host.admit(&state)?;
-        let documents = host.journal_storage(&admitted, &[]).await?.files;
+        let documents = host.journal_storage(&admitted, &[], &[]).await?.files;
         assert!(
             documents
                 .create("targets.json", br#"{"targets":[]}"#, Some(1024))
@@ -310,7 +312,62 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             file_bytes,
             None,
         )?;
+        let archived = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/context/selected/AGENTS.md",
+                b"original checkout guidance",
+                "text/plain",
+                "AGENTS.md",
+                file_bytes,
+                &crate::IdempotencyKey::new("checkout-guidance")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        assert_eq!(
+            reader
+                .read(&archived, archived.descriptor().byte_length(), None, None)?
+                .await?
+                .as_ref(),
+            b"original checkout guidance",
+        );
+        let manifest = host
+            .put_content(
+                &journal,
+                &control_grant,
+                &crate::context::ContextEpoch::path(OperationId::from_bytes([206; 16])),
+                br#"{"private_source":"original","callable":{"runtime":"private"}}"#,
+                "application/json",
+                "manifest.json",
+                Some(4096),
+                &crate::IdempotencyKey::new("private-epoch-manifest")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let host_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &guest.verifier,
+            &control_scope,
+            4096,
+            None,
+        )?;
+        assert!(
+            host_reader
+                .read(&manifest, 4096, None, None)?
+                .await
+                .expect("host reads private epoch manifest")
+                .len()
+                > 0
+        );
+        ContentGrant::verify_read(&guest.verifier, &guest.scope, &manifest)?;
         for ceiling in [None, Some(parent.capabilities())] {
+            let denied = async { reader.read(&manifest, 4096, ceiling, None)?.await }
+                .await
+                .expect_err("a broad guest journal grant disclosed the private epoch manifest");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
             let denied = async {
                 reader
                     .read(&control, control.descriptor().byte_length(), ceiling, None)?
@@ -320,6 +377,88 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .expect_err("guest read host data through the persisted policy");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
+        // Input references enter committed inboxes and can be inherited. The
+        // journal policy admits their bytes, while the scope selects exactly
+        // the original published file, never the entire journal.
+        let input = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/message.txt",
+                b"accepted input",
+                "text/plain",
+                "message.txt",
+                Some(4096),
+                &crate::IdempotencyKey::new("accepted-input")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let skill = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/skills/source/SKILL.md",
+                b"optional instructions",
+                "text/markdown",
+                "SKILL.md",
+                Some(4096),
+                &crate::IdempotencyKey::new("published-skill")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        assert_eq!(
+            reader
+                .read(&skill, 4096, None, None)?
+                .await
+                .expect("guest reads published skill body")
+                .as_ref(),
+            b"optional instructions"
+        );
+        let selected = root.bootstrap_scope(
+            "input-reader",
+            &Capabilities::new([input.read_capability(&mut None)?]),
+            Some(owner),
+            &mut None,
+        )?;
+        let selected_reader =
+            FilesystemContentVerifier::new(host.clone(), &guest.verifier, &selected, 4096, None)?;
+        let replacement = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/message.txt",
+                b"later input",
+                "text/plain",
+                "message.txt",
+                Some(4096),
+                &crate::IdempotencyKey::new("later-input")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        assert_eq!(
+            selected_reader
+                .read(&input, 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"accepted input"
+        );
+        for file in [&replacement, &control] {
+            let denied = async { selected_reader.read(file, 4096, None, None)?.await }
+                .await
+                .expect_err("an input reference granted another journal file or version");
+            assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+        }
+        let denied = async {
+            selected_reader
+                .read(&input, 4096, Some(&Capabilities::default()), None)?
+                .await
+        }
+        .await
+        .expect_err("input publication bypassed the caller ceiling");
+        assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         let guest_write = ContentGrant::verify(
             &guest.verifier,
             &guest.scope,
@@ -327,6 +466,190 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             VolumeOperation::Write,
             &mut None,
         )?;
+        // Reopening existing storage must re-admit the kernel's current
+        // policy, without rewriting any original input or granting guest writes.
+        let workspace = host
+            .filesystem
+            .open_workspace(
+                journal.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        let mut policy: acyclic_fs::access::Policy =
+            serde_json::from_slice(include_bytes!("../host/journal-policy.json"))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        policy.layers[0].retain(|rule| rule.id != "published-input");
+        policy.layers[0][0].id = "saved-host-custody-".repeat(256);
+        assert!(
+            crate::contract::canonical_json_bytes(&policy)?.len()
+                > include_bytes!("../host/journal-policy.json").len()
+        );
+        replace_policy(&workspace, &policy).await?;
+        let refused = async { selected_reader.read(&input, 4096, None, None)?.await }
+            .await
+            .expect_err("the saved policy did not exercise input refusal");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        let before = host
+            .resolve(
+                &workspace_ref(
+                    journal.provider().clone(),
+                    &journal.storage_name(&mut None)?,
+                )?,
+                None,
+            )
+            .await?;
+        let refused = host
+            .enforce_journal_policy(
+                &journal,
+                &guest.verifier,
+                &guest.scope,
+                true,
+                || std::future::ready(Ok(guest_write.clone())),
+                None,
+            )?
+            .await
+            .expect_err("a guest replaced journal enforcement");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        let reopened = FilesystemHost::new(host.filesystem.clone(), journal.provider(), None)?;
+        let allowed: Vec<_> = acyclic_fs::access::Action::ALL
+            .into_iter()
+            .filter(|action| *action != acyclic_fs::access::Action::Admin)
+            .collect();
+        let limited = root.bootstrap_scope(
+            "policy-without-admin",
+            &Capabilities::new([
+                HARNESS_HOST.to_owned(),
+                journal.capability(VolumeOperation::Write, &mut None)?,
+                acyclic_fs::access::Capability::whole_volume(None, &allowed)
+                    .to_scope_label()
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            ]),
+            Some(owner),
+            &mut None,
+        )?;
+        let limited_grant = ContentGrant::verify(
+            &guest.verifier,
+            &limited,
+            &journal,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let refused = reopened
+            .enforce_journal_policy(
+                &journal,
+                &guest.verifier,
+                &control_scope,
+                true,
+                || std::future::ready(Ok(limited_grant)),
+                None,
+            )?
+            .await
+            .expect_err("journal admission bypassed the administrator ceiling");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        assert_eq!(
+            reopened
+                .resolve(
+                    &workspace_ref(
+                        journal.provider().clone(),
+                        &journal.storage_name(&mut None)?
+                    )?,
+                    None,
+                )
+                .await?
+                .generation,
+            before.generation
+        );
+        // A second admission repairs the journal after the first observes its
+        // saved policy but before the first binds its publication authority.
+        reopened
+            .enforce_journal_policy(
+                &journal,
+                &guest.verifier,
+                &control_scope,
+                true,
+                || async {
+                    reopened
+                        .enforce_journal_policy(
+                            &journal,
+                            &guest.verifier,
+                            &control_scope,
+                            true,
+                            || std::future::ready(Ok(control_grant.clone())),
+                            None,
+                        )?
+                        .await?;
+                    Ok(control_grant.clone())
+                },
+                None,
+            )?
+            .await?;
+        let reopened_admission = AdmittedAgent::verify(&issuer, &admission, &path, &volumes)?;
+        let foreign_provider = ProviderRef::new(
+            "another-host".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?;
+        let foreign_journal = crate::conversation::journal_volume(foreign_provider, &path.id())?;
+        let foreign_input = FileRef::new(
+            foreign_journal,
+            input.path().into(),
+            input.version().into(),
+            input.descriptor().clone(),
+            input.display_name().into(),
+            &mut None,
+        )?;
+        let refused = reopened_admission
+            .journal_authority(&reopened, &[foreign_input], &[])
+            .await
+            .err()
+            .expect("journal admission accepted a retained source from another host");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+        reopened_admission
+            .journal_authority(&reopened, &[input.clone()], &[])
+            .await
+            .expect("host repairs the owned journal policy");
+        let reference = workspace_ref(
+            journal.provider().clone(),
+            &journal.storage_name(&mut None)?,
+        )?;
+        let repaired = reopened.resolve(&reference, None).await?;
+        assert_ne!(repaired.generation, before.generation);
+        reopened
+            .enforce_journal_policy(
+                &journal,
+                &guest.verifier,
+                &control_scope,
+                true,
+                || std::future::ready(Err(Error::Unauthorized("no policy writer selected".into()))),
+                None,
+            )?
+            .await?;
+        assert_eq!(
+            selected_reader
+                .read(&input, 4096, None, None)?
+                .await?
+                .as_ref(),
+            b"accepted input"
+        );
+        reopened_admission
+            .journal_authority(&reopened, &[input.clone()], &[])
+            .await
+            .expect("host repairs the owned journal policy");
+        assert_eq!(
+            reopened.resolve(&reference, None).await?.generation,
+            repaired.generation
+        );
+        assert_eq!(
+            async { reader.read(&control, 4096, None, None)?.await }
+                .await
+                .expect_err("policy admission exposed unrelated control data")
+                .code(),
+            crate::wire::ErrorCode::Unauthorized,
+        );
         for path in ["forged.json", "inputs/forged.json"] {
             let denied = host
                 .put_content(
@@ -378,6 +701,285 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
                 .await?
                 .as_ref(),
             b"selected input"
+        );
+        let foreign = crate::conversation::journal_volume(
+            journal.provider().clone(),
+            &crate::agent::AgentId::from_bytes([202; 16]),
+        )?;
+        host.create_volume(&foreign).await?;
+        let foreign_scope = root.bootstrap_scope(
+            "source-host",
+            &Capabilities::new([
+                HARNESS_HOST.to_owned(),
+                foreign.capability(VolumeOperation::Read, &mut None)?,
+                foreign.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(crate::AgentId::from_bytes([202; 16])),
+            &mut None,
+        )?;
+        let foreign_write = ContentGrant::verify(
+            &guest.verifier,
+            &foreign_scope,
+            &foreign,
+            VolumeOperation::Write,
+            &mut None,
+        )?;
+        let source_files = AgentInternalFiles::new(
+            host.clone(),
+            foreign.clone(),
+            foreign_write.clone(),
+            foreign.clone(),
+            foreign_write.clone(),
+        );
+        let shared = source_files
+            .stage_announcement(
+                crate::agent::AnnouncementKind::Targets,
+                [203; 32],
+                br#"{"source":"shared"}"#,
+            )
+            .await?;
+        let source_input = host
+            .put_content(
+                &foreign,
+                &foreign_write,
+                "inputs/message.txt",
+                b"shared original input",
+                "text/plain",
+                "message.txt",
+                Some(4096),
+                &crate::IdempotencyKey::new("shared-input")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        let source_workspace = host
+            .filesystem
+            .open_workspace(
+                foreign.storage_name(&mut None)?,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
+        replace_policy(&source_workspace, &policy).await?;
+        let source_reference = workspace_ref(
+            foreign.provider().clone(),
+            &foreign.storage_name(&mut None)?,
+        )?;
+        let source_before = host.resolve(&source_reference, None).await?;
+        let source_volume =
+            uuid::Uuid::from_bytes(source_workspace.id().volume_id().into_bytes()).to_string();
+        let label = crate::core::filesystem_scope_label(parent.capabilities(), &mut None)?;
+        let mut read_only: Vec<_> = parent
+            .capabilities()
+            .iter()
+            .filter(|capability| Some(*capability) != label)
+            .map(str::to_owned)
+            .collect();
+        read_only.push(shared.read_capability(&mut None)?);
+        read_only.push(source_input.read_capability(&mut None)?);
+        if structured {
+            let mut capability = acyclic_fs::access::Capability::whole_volume(
+                Some(
+                    uuid::Uuid::from_bytes(private_workspace.id().volume_id().into_bytes())
+                        .to_string(),
+                ),
+                &acyclic_fs::access::Action::ALL,
+            );
+            capability.layers[0].extend(
+                acyclic_fs::access::Capability::whole_volume(
+                    Some(
+                        uuid::Uuid::from_bytes(workspace.id().volume_id().into_bytes()).to_string(),
+                    ),
+                    &acyclic_fs::access::Action::ALL,
+                )
+                .layers
+                .into_iter()
+                .flatten(),
+            );
+            capability.layers[0].extend(
+                acyclic_fs::access::Capability::whole_volume(
+                    Some(source_volume.clone()),
+                    &[
+                        acyclic_fs::access::Action::Read,
+                        acyclic_fs::access::Action::ReadHistory,
+                    ],
+                )
+                .layers
+                .into_iter()
+                .flatten(),
+            );
+            read_only.push(
+                capability
+                    .to_scope_label()
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+        }
+        let read_only = root.bootstrap_scope(
+            "host-with-read-only-source",
+            &Capabilities::new(read_only),
+            Some(owner),
+            &mut None,
+        )?;
+        if structured {
+            host.authorize_volume_creation(&read_only, &private)?;
+            host.authorize_volume_creation(&read_only, &foreign)
+                .expect_err("read-only source admission allocated a fresh source volume");
+            let before = host.create_volume(&foreign).await?;
+            let retained = host
+                .create_volume_admitted(&foreign, Some(&read_only))
+                .await?;
+            assert_eq!(retained, before);
+            host.authorize_retained_writer(&read_only, &foreign)
+                .await
+                .expect_err("read-only source admission acquired an existing writer");
+        }
+        let (_source_producer, source_stopped) = futures::channel::oneshot::channel::<()>();
+        let source_context = acyclic_auth::operation::Context::from_stopped(
+            root.verifier(&mut None)?
+                .expiry(&read_only)?
+                .saturating_mul(1000),
+            async move {
+                let _ = source_stopped.await;
+                acyclic_auth::operation::Stopped::Cancelled
+            },
+        );
+        let source_issuer = RuntimeAuthority::admitted(
+            root.admit(read_only.clone(), source_context)?,
+            OperationId::from_bytes([204; 16]),
+        );
+        let read_only_admission = TurnAdmission::Admitted {
+            audience: audience.clone(),
+            scope: read_only.clone(),
+        };
+        let reader_admission =
+            AdmittedAgent::verify(&source_issuer, &read_only_admission, &path, &volumes)?;
+        reader_admission
+            .journal_authority(&reopened, &[], std::slice::from_ref(&shared))
+            .await
+            .expect("read-only source admission leaves foreign policy unchanged");
+        assert_eq!(
+            host.resolve(&source_reference, None).await?.generation,
+            source_before.generation,
+            "reading a foreign journal changed its owner's policy"
+        );
+        let reader_authority = reader_admission
+            .authority(&[shared.clone(), source_input.clone()])
+            .await?;
+        let foreign_reader = FilesystemContentVerifier::new(
+            host.clone(),
+            &reader_authority.verifier,
+            &reader_authority.scope,
+            4096,
+            None,
+        )?;
+        assert_eq!(
+            foreign_reader
+                .read(&shared, 4096, None, None)?
+                .await?
+                .as_ref(),
+            br#"{"source":"shared"}"#
+        );
+        assert_eq!(
+            async { foreign_reader.read(&source_input, 4096, None, None)?.await }
+                .await
+                .expect_err("source policy admitted its unpublished input rule")
+                .code(),
+            crate::wire::ErrorCode::Unauthorized,
+        );
+        if structured {
+            let label = crate::core::filesystem_scope_label(read_only.capabilities(), &mut None)?
+                .expect("structured source capability");
+            let mut capability = acyclic_fs::access::Capability::from_scope_label(label)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .expect("typed source capability");
+            for rule in capability.layers.iter_mut().flatten() {
+                if rule.resource.volume.as_deref() == Some(source_volume.as_str()) {
+                    rule.actions = acyclic_fs::access::Action::ALL.into_iter().collect();
+                    rule.resource.generations = acyclic_fs::access::Generations::Range(
+                        acyclic_fs::access::GenerationRange {
+                            first: 1,
+                            last: u64::MAX,
+                        },
+                    );
+                }
+            }
+            let mut capabilities: Vec<_> = read_only
+                .capabilities()
+                .iter()
+                .filter(|candidate| *candidate != label)
+                .map(str::to_owned)
+                .collect();
+            capabilities.push(foreign.capability(VolumeOperation::Write, &mut None)?);
+            capabilities.push(
+                capability
+                    .to_scope_label()
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+            let administrator_scope = root.bootstrap_scope(
+                "generation-bound-source-administrator",
+                &Capabilities::new(capabilities),
+                Some(owner),
+                &mut None,
+            )?;
+            host.authorize_volume_creation(&administrator_scope, &foreign)
+                .expect_err("a later-generation grant authorized initial storage creation");
+            let before = host.create_volume(&foreign).await?;
+            let retained = host
+                .create_volume_admitted(&foreign, Some(&administrator_scope))
+                .await?;
+            assert_eq!(retained, before);
+            host.authorize_retained_writer(&administrator_scope, &foreign)
+                .await?;
+            let (_administrator_producer, administrator_stopped) =
+                futures::channel::oneshot::channel::<()>();
+            let administrator_context = acyclic_auth::operation::Context::from_stopped(
+                root.verifier(&mut None)?
+                    .expiry(&administrator_scope)?
+                    .saturating_mul(1000),
+                async move {
+                    let _ = administrator_stopped.await;
+                    acyclic_auth::operation::Stopped::Cancelled
+                },
+            );
+            let administrator_issuer = RuntimeAuthority::admitted(
+                root.admit(administrator_scope.clone(), administrator_context)?,
+                OperationId::from_bytes([205; 16]),
+            );
+            let administrator_admission = TurnAdmission::Admitted {
+                audience: audience.clone(),
+                scope: administrator_scope,
+            };
+            let administrator = AdmittedAgent::verify(
+                &administrator_issuer,
+                &administrator_admission,
+                &path,
+                &volumes,
+            )?;
+            administrator
+                .journal_authority(&reopened, &[], std::slice::from_ref(&shared))
+                .await
+                .expect("generation-bound administrator repairs the source policy");
+            assert_ne!(
+                host.resolve(&source_reference, None).await?.generation,
+                source_before.generation,
+                "an actor-bound administrator could not update its admitted source"
+            );
+            assert_eq!(
+                foreign_reader
+                    .read(&source_input, 4096, None, None)?
+                    .await?
+                    .as_ref(),
+                b"shared original input"
+            );
+        }
+        assert_eq!(
+            async { reader.read(&manifest, 4096, None, None)?.await }
+                .await
+                .expect_err("reopening published private epoch metadata")
+                .code(),
+            crate::wire::ErrorCode::Unauthorized,
         );
         let announcements = AgentInternalFiles::new(
             host.clone(),

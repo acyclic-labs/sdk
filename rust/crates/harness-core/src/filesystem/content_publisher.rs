@@ -320,11 +320,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     expected_path: replacement.map(|(_, path)| path),
                     maximum_bytes: maximum.into_iter().chain(self.maximum_bytes).min(),
                     internal_class: None,
-                    purpose: if replacement.is_some() {
-                        super::PublicationPurpose::WriteReceipt
-                    } else {
-                        super::PublicationPurpose::Metadata
-                    },
+                    purpose: super::PublicationPurpose::WriteReceipt,
                     scope: self.grant.policy_scope(),
                     ceiling,
                 },

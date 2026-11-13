@@ -478,7 +478,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let stream = Arc::new(MemoryStream::default());
     let path = super::create(stream.as_ref(), id(216)).await?;
     let (filesystem, binding) = private(&path).await?;
-    let issuer = AuthorityRoot::new(
+    let issuer: acyclic_harness_core::core::RuntimeAuthority = AuthorityRoot::new(
         "agents",
         [7; 32],
         Authority {
@@ -487,34 +487,22 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         },
     )
     .into();
-    let authority = acyclic_harness_core::filesystem::agent_authority(
-        &issuer,
-        &TurnAdmission::LocalRoot,
-        &path,
-        std::slice::from_ref(&binding),
-        &[],
-    )
-    .await?;
-    let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
-        filesystem.clone(),
-        binding.volume()?,
-        &authority.verifier,
-        &authority.scope,
-        LIMITS.maximum_bytes,
-        None,
-    )?;
-    drop(authority);
     let model = Arc::new(ScriptedModelProvider::new([]));
     let host = FilesystemTurnHost::new(
         stream.clone(),
         within(),
-        filesystem,
-        issuer,
+        filesystem.clone(),
+        issuer.clone(),
         TurnAdmission::LocalRoot,
         executors(model.clone())?,
         LIMITS,
         Default::default(),
     );
+    let own = binding.volume()?.clone();
+    let journal = acyclic_harness_core::conversation::journal_volume(
+        binding.volume()?.provider().clone(),
+        &path.id(),
+    )?;
     let mut adoption = adopted(path.id());
     adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
@@ -530,6 +518,32 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         )
         .await?;
     let boundary = open.journal.model_boundary().ok_or("no boundary")?;
+    let scope = issuer
+        .issue(
+            None,
+            "notice-host",
+            &acyclic_harness_core::Capabilities::new([
+                acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+                journal.capability(
+                    acyclic_harness_core::conversation::VolumeOperation::Read,
+                    &mut None,
+                )?,
+                journal.capability(
+                    acyclic_harness_core::conversation::VolumeOperation::Write,
+                    &mut None,
+                )?,
+            ]),
+            Some(acyclic_harness_core::AgentId::from_bytes(path.id_bytes())),
+        )
+        .await?;
+    let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
+        filesystem.clone(),
+        &journal,
+        &issuer.verifier(&mut None)?,
+        &scope,
+        LIMITS.maximum_bytes,
+        None,
+    )?;
     let foreign = OperationId::from_bytes([217; 16]);
     assert!(matches!(
         boundary.messages(foreign, 0, None).await,
@@ -557,7 +571,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             let file = publisher
                 .stage_once(
                     OperationId::from_bytes([218; 16]),
-                    "inputs/waking.json",
+                    "inputs/notices/waking.json",
                     &bytes,
                     NOTICE_MEDIA_TYPE,
                     "notice",
@@ -661,6 +675,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         .transcript(operation)
         .await?
         .ok_or("no transcript")?;
+    assert_eq!(transcript.file.volume(), &journal);
     assert_eq!(transcript.through, cut.through);
     assert!(matches!(
         boundary.transcript(foreign).await,
@@ -703,13 +718,13 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
             None,
         )?
         .await?;
-    // This uses the same private staging and authenticated observation writer
-    // as dispatch; no provider response or boundary replay supplies recovery.
-    let bytes = acyclic_harness_core::contract::canonical_json_bytes(request.request())?;
-    let request_file = open
-        .journal
-        .stage(operation, "request", &bytes, "application/json", None)?
-        .await?;
+    let request_file = acyclic_harness_core::test_support::stage_model_request(
+        open.journal.as_ref(),
+        operation,
+        "request",
+        &request,
+    )
+    .await?;
     for step in [1, 2] {
         let snapshot = if step == 1 {
             // The prior exact snapshot, already staged for this boundary.
@@ -721,28 +736,20 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
         } else {
             boundary.prepared_snapshot(operation, step)?
         };
-        let projection = serde_json::json!({
-            "$version": 1,
-            "header": {
-                "version": 1,
-                "summary": request.request().summary,
-                "compose_tools": request.request().compose_tools,
-                "model": request.request().model,
-                "tools": request.request().tools,
-                "sampling": request.request().sampling,
-            },
-            "projection": {
-            "context": {"messages": request.request().messages, "metadata": {}, "current_input_index": 0},
-            "canonical": null, "checkpoint": null, "working": null, "accounting": null,
-            "steering": snapshot,
-            },
-        });
-        let bytes = acyclic_harness_core::contract::canonical_json_bytes(&projection)?;
         let key = format!("prepared:{step}");
-        let file = open
-            .journal
-            .stage(operation, &key, &bytes, "application/json", None)?
-            .await?;
+        let file = acyclic_harness_core::test_support::stage_context_projection(
+            open.journal.as_ref(),
+            operation,
+            &key,
+            acyclic_harness_core::context::Context {
+                messages: request.request().messages.clone(),
+                metadata: Default::default(),
+                current_input_index: Some(0),
+            },
+            &request,
+            snapshot,
+        )
+        .await?;
         let selected = if step == 1 {
             cut
         } else {
@@ -809,6 +816,122 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let bytes = reopened.journal.load(&recovered.file, None)?.await?;
     let recovered: Vec<ModelMessage> = acyclic_harness_core::contract::json_from_slice(&bytes)?;
     assert_eq!(recovered, messages);
+    // The following turn reads the settled host transcript without adding any
+    // journal file permission to the workload's original private-volume grant.
+    let scope = issuer
+        .issue(
+            None,
+            "private-only",
+            &Capabilities::new([
+                own.capability(VolumeOperation::Read, &mut None)?,
+                own.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(acyclic_harness_core::AgentId::from_bytes(path.id_bytes())),
+        )
+        .await?;
+    assert!(
+        acyclic_harness_core::conversation::ContentGrant::verify_read(
+            &issuer.verifier(&mut None)?,
+            &scope,
+            &transcript.file,
+        )
+        .is_err()
+    );
+    let output_bytes = acyclic_harness_core::contract::canonical_json_bytes(
+        &acyclic_harness_core::executor::TurnOutput::new(
+            "settled".into(),
+            serde_json::Value::Null,
+            1,
+        ),
+    )?;
+    let output = publisher
+        .stage_once(
+            OperationId::from_bytes([219; 16]),
+            "outputs/settled.json",
+            &output_bytes,
+            "application/json",
+            "settled",
+            ContentAccess::default(),
+        )?
+        .await?
+        .0;
+    let entry = ConversationEntry {
+        observed_through: cut.through,
+        inbox: 1,
+        input: TurnInput::Approval {
+            id: intent("settled-approval"),
+        },
+        output,
+        outcome: TurnOutcome::Completed,
+        goal: None,
+        announcements: Vec::new(),
+        tool_results: None,
+        steering: Some(transcript.clone()),
+        notices: None,
+    };
+    stream
+        .append(acyclic_stream::AppendRequest {
+            path: path.conversation()?,
+            records: vec![entry.encode()?.into()],
+            if_tail: Some(0),
+            idempotency_key: intent_key("settled-steering", &["original"])?,
+        })
+        .await?;
+    let history = HistoryCheckpoint {
+        version: 2,
+        live_children: false,
+        conversation: 1,
+        checkpoint: None,
+        context: ContextCut {
+            path: path.conversation()?,
+            tail: 1,
+            checkpoint: None,
+        },
+        volumes: Vec::new(),
+    };
+    stream
+        .append(acyclic_stream::AppendRequest {
+            path: path.history()?,
+            records: vec![serde_json::to_vec(&history)?.into()],
+            if_tail: Some(0),
+            idempotency_key: intent_key("settled-steering-history", &["original"])?,
+        })
+        .await?;
+    let mut next = state.clone();
+    next.conversation_tail = 1;
+    let next_host = FilesystemTurnHost::new(
+        stream.clone(),
+        within(),
+        filesystem.clone(),
+        issuer.clone(),
+        TurnAdmission::Admitted {
+            audience: Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+            scope,
+        },
+        executors(model.clone())?,
+        LIMITS,
+        Default::default(),
+    );
+    let next_open = next_host
+        .open(
+            &next,
+            OperationId::from_bytes([220; 16]),
+            10,
+            5,
+            &ModelContent::Text("next turn".into()),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+    let selected = next_open.selected.ok_or("no selected next-turn context")?;
+    assert!(
+        messages
+            .iter()
+            .all(|message| selected.messages.contains(message)),
+        "the later turn lost admitted steering history"
+    );
     assert!(
         model.requests().is_empty(),
         "boundary observation never dispatches"

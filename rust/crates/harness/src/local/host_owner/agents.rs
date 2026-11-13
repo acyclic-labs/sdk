@@ -234,6 +234,7 @@ impl HostDriver {
                 scope, verifier, ..
             },
         ) = agent_journal_authority(
+            &self.files,
             &self.issuer.clone().into(),
             &TurnAdmission::LocalRoot,
             &agent.path,

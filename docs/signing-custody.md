@@ -40,6 +40,26 @@ credential backend. Automatically temporary stores retain memory custody
 through their existing resource ownership anchor. Shipping-binary fixtures
 explicitly select private-file custody under their own scratch directory.
 
+The agent journal's persisted policy permits read-only consumption of published
+top-level `inputs/` files, published `inputs/mentions/` manifests and copies,
+pinned `inputs/skills/*/SKILL.md` bodies, conversation
+documents and tool results. Private epoch manifests remain under host custody,
+including for broad journal readers holding their file reference. Reading an input still
+requires its original file grant and the caller's ceiling; an exact reference
+does not grant another version or file. Input publication grants no directory
+listing or writes. Other journal control data requires host custody even when
+the caller holds a broad journal capability.
+
+Host journal admission checks the current kernel policy for its journal and
+selected retained journals it administers, including after reopening. Read-only
+foreign sources retain their owner's policy and ordinary read checks. Delegated
+source administration preserves an existing agent binding and source ceilings.
+A differing owned policy requires authenticated write and administrator authority
+and uses the ordinary fenced workspace publication. The original input references and
+bytes stay fixed. A matching policy publishes no generation and does not require
+a source writer. The journal format is unchanged; no older-format reader or
+conversion is involved.
+
 CustodyFailure preserves the operation and CustodyCause, including native
 numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an

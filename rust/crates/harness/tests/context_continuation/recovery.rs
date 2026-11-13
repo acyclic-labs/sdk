@@ -44,6 +44,7 @@ pub(super) async fn local_journal_compaction_preserves_context_settlement_and_re
                 current_input_index: Some(0),
             },
             &request,
+            None,
         )
         .await?;
         let compacted = ExecutionEvent::ContextCompacted {

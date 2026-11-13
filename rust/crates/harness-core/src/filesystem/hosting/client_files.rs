@@ -152,7 +152,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         let initial = if after.is_none() && session.is_some() {
             Some(
                 self.volumes
-                    .create_volume(&volume)
+                    .create_volume_admitted(
+                        &volume,
+                        match &self.admission {
+                            TurnAdmission::Admitted { scope, .. } => Some(scope),
+                            _ => None,
+                        },
+                    )
                     .await
                     .map_err(turn)?
                     .generation,
@@ -239,7 +245,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     ) -> Result<GenerationRef, Error> {
         let (volume, scope, verifier) = self.client_volume(agent, session).await?;
         if session.is_some() {
-            self.volumes.create_volume(&volume).await.map_err(turn)?;
+            self.volumes
+                .create_volume_admitted(
+                    &volume,
+                    match &self.admission {
+                        TurnAdmission::Admitted { scope, .. } => Some(scope),
+                        _ => None,
+                    },
+                )
+                .await
+                .map_err(turn)?;
         }
         let publisher = FilesystemContentPublisher::new(
             self.volumes.clone(),

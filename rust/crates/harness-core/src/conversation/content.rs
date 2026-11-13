@@ -673,6 +673,8 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Observes the original publication without substituting a mutable head.
     /// A replacement supplies its destination volume and relative path;
     /// `None` selects the operation's original `stage_once` publication.
+    /// This recovers a writer's receipt under write authority on its original
+    /// recorded path; it does not enumerate a directory or require listing.
     fn observe_staged_once<'a>(
         &'a self,
         _operation_id: OperationId,

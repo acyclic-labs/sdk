@@ -511,10 +511,11 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
         )
         .await
         .map_err(agent)?;
-    assert!(matches!(
-        client.cancel().await,
-        Err(Error::Conflict(reason)) if reason.contains("archived")
-    ));
+    assert_eq!(
+        client.cancel().await?,
+        None,
+        "an archived agent has no current input to cancel"
+    );
     assert_eq!(provider.request_count(), requests);
     Ok(())
 }
@@ -2630,6 +2631,11 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     );
     let inbox = observed.conversation.send("mention", prompt).await?;
     let entry = observed.settled(inbox).await?;
+    assert_eq!(
+        entry.outcome,
+        crate::agent::TurnOutcome::Completed,
+        "the real mention must reach and settle its model request"
+    );
     let client = observed.conversation;
     // Later publications on the private volume leave a replay unchanged.
     assert_eq!(

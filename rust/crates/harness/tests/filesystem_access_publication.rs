@@ -68,7 +68,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         Some(next)
     );
     let unknown = acyclic_harness::OperationId::from_bytes([54; 16]);
-    let _ = writer
+    let (original, _) = writer
         .stage_once(
             unknown,
             "secrets/unknown",
@@ -81,6 +81,28 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
     assert_eq!(
         writer
             .observe_staged_once(unknown, None, Some(4096), ContentAccess::default())?
+            .await?
+            .0,
+        Some(original),
+    );
+    let grant = ContentGrant::verify(
+        &fixture.issuer.verifier(&mut None)?,
+        &scope,
+        &fixture.volume,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    assert_eq!(
+        fixture
+            .host
+            .content_for_operation(
+                &fixture.volume,
+                &grant,
+                &IdempotencyKey::new("file")?,
+                "secrets/key",
+                Some(4096),
+                ContentAccess::default(),
+            )
             .await
             .err()
             .ok_or("metadata discovery unexpectedly succeeded")?
@@ -184,7 +206,7 @@ async fn legacy_write_grant_does_not_disclose_cached_metadata() -> Result<(), Bo
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
+async fn write_receipts_release_original_ledger_custody_on_allow_and_deny()
 -> Result<(), Box<dyn Error>> {
     use acyclic_harness::conversation::ContentPublisher;
     let fixture = Fixture::new().await?;
@@ -227,7 +249,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
                 .clone();
             deny.id = "hide-cache".into();
             deny.effect = Effect::Deny;
-            deny.actions = [Action::List].into_iter().collect();
+            deny.actions = [Action::Create, Action::Write].into_iter().collect();
             deny.resource.path = "secrets/**".into();
             policy
                 .layers
@@ -258,7 +280,7 @@ async fn cached_metadata_releases_original_ledger_custody_on_allow_and_deny()
                 assert_eq!(
                     work.live_allocation_bytes(),
                     previous,
-                    "warm metadata retains no request storage"
+                    "warm receipt recovery retains no request storage"
                 );
             }
         }

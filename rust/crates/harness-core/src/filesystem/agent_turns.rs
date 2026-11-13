@@ -137,7 +137,9 @@ impl TurnAdmission {
 /// An agent's admission, verified before any of its IO: its private volume
 /// is its own, and under [`TurnAdmission::Admitted`] the admitted scope is
 /// authentic, live, bound to this audience and agent, and grants the private
-/// volume's write. Attestation is deferred until execution needs a signed scope. Every
+/// volume binding. Structured filesystem permissions are checked at the real
+/// filesystem selection; fresh allocations have a separate creation check.
+/// Attestation is deferred until execution needs a signed scope. Every
 /// read of a turn and its [`AgentAuthority`] require one.
 pub(super) struct AdmittedAgent<'v> {
     issuer: RuntimeAuthority,
@@ -195,15 +197,6 @@ impl<'v> AdmittedAgent<'v> {
                 VolumeOperation::Write,
                 &mut None,
             )?;
-            require_structured_access(
-                scope,
-                owner,
-                private.volume()?,
-                &[
-                    acyclic_fs::access::Action::Create,
-                    acyclic_fs::access::Action::Write,
-                ],
-            )?;
         }
         if issuer.native().is_none() {
             let scope = parent
@@ -227,16 +220,6 @@ impl<'v> AdmittedAgent<'v> {
                     &mut None,
                 )?;
             }
-            require_structured_access(
-                scope,
-                owner,
-                &journal,
-                &[
-                    acyclic_fs::access::Action::Read,
-                    acyclic_fs::access::Action::Create,
-                    acyclic_fs::access::Action::Write,
-                ],
-            )?;
         }
         Ok(Self {
             issuer,
@@ -288,23 +271,66 @@ impl<'v> AdmittedAgent<'v> {
     }
 
     /// Host authority over this agent's journal and retained conversation files.
-    async fn journal_authority<'a>(
+    pub(super) async fn journal_authority<A, O>(
         &self,
-        retained: impl IntoIterator<Item = &'a FileRef>,
-    ) -> Result<(VolumeRef, AgentAuthority<'v>)> {
+        host: &FilesystemHost<A, O>,
+        retained: &[FileRef],
+        external: &[FileRef],
+    ) -> Result<(VolumeRef, AgentAuthority<'v>)>
+    where
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
         let content = Capabilities::new(
             retained
-                .into_iter()
+                .iter()
+                .chain(external)
                 .filter(|file| file.volume() != &self.journal)
                 .map(|file| file.read_capability(&mut None))
                 .collect::<Result<Vec<_>>>()?,
         );
         let scope = self.control_scope(&content).await?;
+        let verifier = self.issuer.verifier(&mut None)?;
+        let journals: std::collections::BTreeSet<&VolumeRef> = std::iter::once(&self.journal)
+            .chain(retained.iter().chain(external).map(FileRef::volume))
+            .filter(|volume| volume.is_agent_journal())
+            .collect();
+        for journal in journals {
+            if journal != &self.journal && !self.administers_journal(journal)? {
+                continue;
+            }
+            host.enforce_journal_policy(
+                journal,
+                &verifier,
+                &scope,
+                journal == &self.journal,
+                || async {
+                    let source_scope;
+                    let policy_scope = if journal == &self.journal {
+                        &scope
+                    } else {
+                        source_scope = self
+                            .control_scope_for(journal, &Capabilities::default())
+                            .await?;
+                        &source_scope
+                    };
+                    crate::conversation::ContentGrant::verify(
+                        &verifier,
+                        policy_scope,
+                        journal,
+                        VolumeOperation::Write,
+                        &mut None,
+                    )
+                },
+                None,
+            )?
+            .await?;
+        }
         Ok((
             self.journal.clone(),
             AgentAuthority {
                 issuer: self.issuer.clone(),
-                verifier: self.issuer.verifier(&mut None)?,
+                verifier,
                 grants: scope.capabilities().clone(),
                 scope,
                 private: self.private,
@@ -314,27 +340,91 @@ impl<'v> AdmittedAgent<'v> {
 
     async fn control_scope(&self, content: &Capabilities) -> Result<Scope> {
         self.authorize_host_volume(&self.journal)?;
-        let parent = if self.issuer.native().is_some() {
+        self.control_scope_for(&self.journal, content).await
+    }
+
+    async fn control_scope_for(
+        &self,
+        journal: &VolumeRef,
+        content: &Capabilities,
+    ) -> Result<Scope> {
+        if !journal.is_agent_journal() || journal.provider() != self.journal.provider() {
+            return Err(Error::Unauthorized(
+                "journal policy belongs to another host".into(),
+            ));
+        }
+        let VolumeOwner::Agent(owner) = journal.owner() else {
+            return Err(Error::Invalid("journal has no agent owner".into()));
+        };
+        let parent = if self.issuer.native().is_some()
+            && (journal == &self.journal || self.parent.is_none())
+        {
             None
         } else {
             self.parent
                 .or_else(|| self.issuer.caller().map(|(_, scope)| scope))
         };
         if let Some(parent) = parent
-            && parent.agent() == Some(self.owner)
+            && parent.agent() == Some(*owner)
         {
             return Ok(parent.clone());
         }
         let grants = match parent {
             Some(parent) => parent.capabilities().clone(),
-            None => journal_grants(&self.journal, content)?,
+            None => journal_grants(journal, content)?,
         };
         self.issuer
-            .issue(parent, "host-journal", &grants, Some(self.owner))
+            .issue(
+                parent,
+                "host-journal",
+                &grants,
+                parent.and_then(Scope::agent).or(Some(*owner)),
+            )
             .await
     }
 
-    /// Pure admission for a proposed volume. Local enrollment already owns
+    fn administers_journal(&self, journal: &VolumeRef) -> Result<bool> {
+        if journal.provider() != self.journal.provider() {
+            return Err(Error::Unauthorized(
+                "journal policy belongs to another host".into(),
+            ));
+        }
+        let scope = match self.parent {
+            Some(scope) => scope,
+            None if self.issuer.native().is_some() => return Ok(true),
+            None => match self.issuer.caller() {
+                Some((_, scope)) => scope,
+                None => return Ok(false),
+            },
+        };
+        if !scope
+            .capabilities()
+            .contains(crate::contract::capability::HARNESS_HOST)
+        {
+            return Ok(false);
+        }
+        if !crate::core::volume_operation_granted_with_work(
+            scope.capabilities(),
+            journal,
+            VolumeOperation::Write,
+            &mut None,
+        )? {
+            return Ok(false);
+        }
+        let VolumeOwner::Agent(owner) = journal.owner() else {
+            return Ok(false);
+        };
+        // Structured generation and administrator checks require the actual
+        // source head. The host evaluates them with its ordinary access view.
+        if crate::core::filesystem_scope_label(scope.capabilities(), &mut None)?.is_some() {
+            Ok(true)
+        } else {
+            Ok(scope.agent().is_none_or(|agent| agent == *owner))
+        }
+    }
+
+    /// Authenticates a proposed volume binding. Its filesystem permissions are
+    /// checked at selection or before fresh allocation. Local enrollment already owns
     /// its root; an admitted caller must grant the exact persisted owner.
     pub(super) fn authorize_volume(&self, volume: &crate::conversation::VolumeRef) -> Result<()> {
         if let Some(scope) = self.parent {
@@ -345,15 +435,6 @@ impl<'v> AdmittedAgent<'v> {
                 volume,
                 VolumeOperation::Write,
                 &mut None,
-            )?;
-            require_structured_access(
-                scope,
-                self.owner,
-                volume,
-                &[
-                    acyclic_fs::access::Action::Create,
-                    acyclic_fs::access::Action::Write,
-                ],
             )?;
         } else {
             volume.require_writer(Some(self.owner), &None)?;
@@ -381,61 +462,6 @@ pub(super) fn journal_grants(journal: &VolumeRef, content: &Capabilities) -> Res
             journal.capability(VolumeOperation::Write, &mut None)?,
         ],
     )))
-}
-
-/// The filesystem's decision over `scope`'s structured grant, if it has one:
-/// it creates and writes every path of `volume`. It performs no IO; the
-/// writer still applies the volume's persisted policy.
-pub(super) fn require_structured_access(
-    scope: &Scope,
-    owner: crate::AgentId,
-    volume: &crate::conversation::VolumeRef,
-    actions: &[acyclic_fs::access::Action],
-) -> Result<()> {
-    use acyclic_fs::access::{
-        Capability, Context, INITIAL_POLICY, PathTrie, Policy, Principal, PrincipalKind, Resource,
-    };
-    let Some(label) = crate::core::filesystem_scope_label(scope.capabilities(), &mut None)? else {
-        return Ok(());
-    };
-    let denied =
-        || Error::Unauthorized("admission does not grant the complete volume access".into());
-    let capability = Capability::from_scope_label(label)
-        .ok()
-        .flatten()
-        .ok_or_else(denied)?;
-    let policy: Policy = serde_json::from_slice(INITIAL_POLICY)
-        .map_err(|_| Error::FilesystemAccessConfiguration("initial policy is invalid"))?;
-    let principal = Principal {
-        kind: PrincipalKind::Agent,
-        id: owner.to_string(),
-        lineage: Vec::new(),
-        groups: Default::default(),
-        roles: Default::default(),
-        tags: Default::default(),
-        attributes: Default::default(),
-    };
-    let now = super::access::access_now()?;
-    let view = PathTrie::compile(
-        &policy,
-        &principal,
-        Resource {
-            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
-            lineage: &[],
-            volume: volume.id(),
-            generation: 0,
-            head: 0,
-            path: "",
-        },
-        Context { now, approvals: 0 },
-        &capability,
-    )
-    .map_err(|_| denied())?;
-    if view.allows_every_path(actions, now) {
-        Ok(())
-    } else {
-        Err(denied())
-    }
 }
 
 /// A local root agent's grants: routing, tools, the visible entries' read/write
@@ -521,15 +547,20 @@ pub async fn agent_authority<'v>(
 /// conversation files. The original admission is verified before storage IO.
 /// This scope carries host custody and must never enter task or tool bindings;
 /// use [`agent_authority`] for the workload's independent workspace scope.
-pub async fn agent_journal_authority<'v>(
+pub async fn agent_journal_authority<'v, A, O>(
+    host: &FilesystemHost<A, O>,
     issuer: &RuntimeAuthority,
     admission: &'v TurnAdmission,
     path: &AgentPath,
     volumes: &'v [WorkspaceEntry],
     retained: &[FileRef],
-) -> Result<(VolumeRef, AgentAuthority<'v>)> {
+) -> Result<(VolumeRef, AgentAuthority<'v>)>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
     AdmittedAgent::verify(issuer, admission, path, volumes)?
-        .journal_authority(retained)
+        .journal_authority(host, retained, &[])
         .await
 }
 
@@ -923,7 +954,9 @@ where
         &'a self,
         agent: &'a AgentState,
     ) -> Result<(VolumeRef, AgentAuthority<'a>)> {
-        self.admit(agent)?.journal_authority(&[]).await
+        self.admit(agent)?
+            .journal_authority(&self.host, &[], &[])
+            .await
     }
 
     /// Read current project roots through the agent's signed grant and persisted
@@ -1057,7 +1090,7 @@ where
         let local_root = admitted.parent.is_none();
         let storage = crate::core::until_turn_stopped(
             stop.clone(),
-            self.journal_storage(&admitted, external.iter().chain(retained)),
+            self.journal_storage(&admitted, retained, external),
         )
         .await?;
         let AgentAuthority {
@@ -1194,12 +1227,15 @@ where
     /// Retained documents are selected by the conversation, independently of
     /// current workspace roots.
     /// This reader and its journal write grant never enter the tool bindings.
-    async fn journal_storage<'a>(
+    async fn journal_storage(
         &self,
         admitted: &AdmittedAgent<'_>,
-        retained: impl IntoIterator<Item = &'a FileRef>,
+        retained: &[FileRef],
+        external: &[FileRef],
     ) -> Result<JournalStorage<A, O>> {
-        let (volume, authority) = admitted.journal_authority(retained).await?;
+        let (volume, authority) = admitted
+            .journal_authority(&self.host, retained, external)
+            .await?;
         let AgentAuthority {
             scope, verifier, ..
         } = authority;
@@ -1668,42 +1704,44 @@ impl<'a> TurnContext<'a> {
         Ok(seen)
     }
 
-    /// Files supplied to the turn's model and tool content bindings, each by
-    /// its exact version. Announcement documents use the host-only reader.
-    /// This includes the files
-    /// each message names, each settled output and the files its transcript
-    /// names (an inherited turn's are staged on an ancestor's private volume,
-    /// a child's result on the child's), and the approval policy.
+    /// Host-owned sources decoded before constructing model-visible content.
+    fn journal_files(&self) -> impl Iterator<Item = &FileRef> {
+        self.checkpoint.iter().map(|(_, summary)| summary).chain(
+            self.settled.iter().flat_map(|settled| {
+                std::iter::once(&settled.output).chain(settled.steering.iter())
+            }),
+        )
+    }
+
+    /// Exact files exposed to model and tool content bindings. Host metadata
+    /// does not add permissions to the workload's original admission.
     fn files(&self) -> impl Iterator<Item = &FileRef> {
-        self.checkpoint
+        self.settled
             .iter()
-            .map(|(_, summary)| summary)
-            .chain(self.settled.iter().flat_map(|settled| {
+            .flat_map(|settled| {
                 settled
                     .input
                     .file_refs()
-                    .chain(std::iter::once(&settled.output))
                     .chain(
                         settled
                             .transcript
                             .iter()
                             .flat_map(|message| message.content.file_refs()),
                     )
-                    .chain(settled.steering.iter())
                     .chain(
                         settled
                             .steered
                             .iter()
                             .flat_map(|message| message.content.file_refs()),
                     )
-            }))
+            })
             .chain(self.input.file_refs())
             .chain(self.policy)
     }
 
     /// The selection: the checkpoint's summary as one assistant message
     /// (none when it is empty), then each settled turn's input and its staged
-    /// transcript, read through `reader`, which holds [`Self::files`]. Shared
+    /// transcript, already decoded through journal custody. Shared
     /// instructions open every selection; a spawned agent's role directive
     /// sits at its fork point. Target rosters remain separate user messages
     /// before each turn input and retain their original publication identity.
@@ -1713,8 +1751,7 @@ impl<'a> TurnContext<'a> {
         self,
         stream: &P,
         agent: &AgentState,
-        reader: &dyn ContentResidencyVerifier,
-        announcement_reader: &dyn ContentResidencyVerifier,
+        journal_reader: &dyn ContentResidencyVerifier,
         input: &ModelContent,
         announcements: &[crate::agent::AnnouncedDocument],
         content_limits: crate::conversation::Limits,
@@ -1730,8 +1767,10 @@ impl<'a> TurnContext<'a> {
             ..
         } = self;
         let summary = match checkpoint {
-            Some((checkpoint, output)) => Some((checkpoint, staged_text(reader, &output).await?))
-                .filter(|(_, summary)| !summary.is_empty()),
+            Some((checkpoint, output)) => {
+                Some((checkpoint, staged_text(journal_reader, &output).await?))
+                    .filter(|(_, summary)| !summary.is_empty())
+            }
             None => None,
         };
         let capacity = 2 * settled.len()
@@ -1805,14 +1844,11 @@ impl<'a> TurnContext<'a> {
                 place(&mut messages, &mut message_ids, ancestor);
             }
             if !announced.is_empty() {
-                for (part, content) in crate::agent::announcement_messages(
-                    &announced,
-                    announcement_reader,
-                    content_limits,
-                )
-                .await?
-                .into_iter()
-                .enumerate()
+                for (part, content) in
+                    crate::agent::announcement_messages(&announced, journal_reader, content_limits)
+                        .await?
+                        .into_iter()
+                        .enumerate()
                 {
                     messages.push(ModelMessage {
                         role: ModelRole::User,
@@ -1853,14 +1889,11 @@ impl<'a> TurnContext<'a> {
             directive(&mut messages, &mut message_ids);
         }
         if !announcements.is_empty() {
-            for (part, content) in crate::agent::announcement_messages(
-                announcements,
-                announcement_reader,
-                content_limits,
-            )
-            .await?
-            .into_iter()
-            .enumerate()
+            for (part, content) in
+                crate::agent::announcement_messages(announcements, journal_reader, content_limits)
+                    .await?
+                    .into_iter()
+                    .enumerate()
             {
                 messages.push(ModelMessage {
                     role: ModelRole::User,
@@ -1996,9 +2029,11 @@ where
             } else {
                 None
             };
-            let storage =
-                crate::core::until_turn_stopped(Some(stop), self.journal_storage(&admitted, &[]))
-                    .await?;
+            let storage = crate::core::until_turn_stopped(
+                Some(stop),
+                self.journal_storage(&admitted, &[], &[]),
+            )
+            .await?;
             Ok(crate::agent::OpenControl {
                 outputs: storage.files,
                 checkpoint,
@@ -2087,7 +2122,7 @@ where
                 let pinned_announcements =
                     crate::agent::turn_announcements(agent).map_err(Error::from)?;
                 // Steering transcripts pin references admitted after the original
-                // turn opened. Read their manifests under exact grants, then include
+                // turn opened. Read their manifests under journal custody, then include
                 // those references in this turn's ordinary authority derivation.
                 let transcripts: Vec<FileRef> = context
                     .settled
@@ -2095,9 +2130,10 @@ where
                     .filter_map(|settled| settled.steering.clone())
                     .collect();
                 if !transcripts.is_empty() {
-                    let authority = crate::core::until_turn_stopped(
+                    let (_, authority) = crate::core::until_turn_stopped(
                         Some(stop.clone()),
-                        self.admit(agent)?.authority(&transcripts),
+                        self.admit(agent)?
+                            .journal_authority(&self.host, &transcripts, &[]),
                     )
                     .await?;
                     let reader = FilesystemContentVerifier::new(
@@ -2119,10 +2155,14 @@ where
                     }
                 }
                 let retained: Vec<FileRef> = context
-                    .settled
-                    .iter()
-                    .flat_map(|settled| &settled.announcements)
-                    .flat_map(crate::agent::AnnouncedDocument::files)
+                    .journal_files()
+                    .chain(
+                        context
+                            .settled
+                            .iter()
+                            .flat_map(|settled| &settled.announcements)
+                            .flat_map(crate::agent::AnnouncedDocument::files),
+                    )
                     .chain(
                         pinned_announcements
                             .iter()
@@ -2284,7 +2324,7 @@ where
                     agent.clone(),
                     turn,
                     inbox,
-                    Arc::clone(&files),
+                    Arc::clone(&bindings.journal.files),
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),
@@ -2304,7 +2344,6 @@ where
                     .select(
                         &*self.stream,
                         agent,
-                        &*bindings.content.reader,
                         bindings.journal.reader.as_ref(),
                         input,
                         &announcements,

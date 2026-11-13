@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": 2,
+  "version": 4,
   "layers": [[{
     "id": "host-custody",
     "effect": "allow",
@@ -9,18 +9,39 @@
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "**"},
     "conditions": {"role": "harness-host"}
   }, {
+    "id": "published-input",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/*"},
+    "conditions": {}
+  }, {
+    "id": "published-context",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/context/**"},
+    "conditions": {}
+  }, {
+    "id": "published-mention",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/mentions/**"},
+    "conditions": {}
+  }, {
+    "id": "published-skill",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/skills/*/SKILL.md"},
+    "conditions": {}
+  }, {
     "id": "published-conversation",
     "effect": "allow",
     "principal": {"attributes": {}},
     "actions": ["read", "read-history"],
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": ".system/inherited-conversation/**"},
-    "conditions": {}
-  }, {
-    "id": "published-input",
-    "effect": "allow",
-    "principal": {"attributes": {}},
-    "actions": ["read", "read-history"],
-    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/**"},
     "conditions": {}
   }, {
     "id": "published-tool-output",

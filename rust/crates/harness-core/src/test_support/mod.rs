@@ -51,6 +51,7 @@ pub async fn stage_context_projection(
     key: &str,
     context: crate::context::Context,
     prepared: &crate::model::PreparedModelRequest,
+    steering: Option<crate::agent::SteeringSnapshot>,
 ) -> crate::Result<crate::conversation::FileRef> {
     crate::executor::transcript::stage_projection(
         journal,
@@ -59,7 +60,7 @@ pub async fn stage_context_projection(
         (
             &crate::executor::ResponseProjection {
                 context,
-                steering: None,
+                steering,
                 canonical: None,
                 checkpoint: None,
                 working: None,
@@ -107,3 +108,8 @@ pub fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
 pub(crate) fn fresh_key() -> Result<acyclic_stream::IdempotencyKey, acyclic_stream::StreamError> {
     acyclic_stream::IdempotencyKey::new(uuid::Uuid::new_v4().as_bytes().to_vec())
 }
+
+#[cfg(test)]
+mod workspace_policy;
+#[cfg(test)]
+pub(crate) use workspace_policy::replace_policy;

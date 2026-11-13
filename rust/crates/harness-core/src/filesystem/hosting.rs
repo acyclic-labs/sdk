@@ -1230,6 +1230,10 @@ where
     ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
+        let directory = match &input {
+            StagedInput::Notice(_) => "inputs/notices",
+            StagedInput::Text { .. } | StagedInput::Content(_) => "inputs",
+        };
         let encoded;
         let (source, payload, extension) = match input {
             StagedInput::Notice(notice) => {
@@ -1280,7 +1284,7 @@ where
         let operation = OperationId::from_bytes(operation);
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
-        let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
+        let leaf = format!("{operation}-{}.{extension}", blake3::hash(source));
         let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
@@ -1291,23 +1295,31 @@ where
             None,
         )
         .map_err(turn)?;
+        let (prior, _) = publisher
+            .observe_staged_once(
+                operation,
+                None,
+                self.maximum_bytes,
+                ContentAccess::default(),
+            )
+            .map_err(turn)?
+            .await
+            .map_err(turn)?;
+        if prior
+            .as_ref()
+            .is_some_and(|file| file.path().rsplit('/').next() != Some(leaf.as_str()))
+        {
+            return Err(Error::Conflict("input identity reused with changed source"));
+        }
         let Some((bytes, media_type)) = payload else {
-            let (staged, _) = publisher
-                .observe_staged_once(
-                    operation,
-                    None,
-                    self.maximum_bytes,
-                    ContentAccess::default(),
-                )
-                .map_err(turn)?
-                .await
-                .map_err(turn)?;
-            if staged.as_ref().is_some_and(|file| file.path() != path()) {
-                return Err(Error::Conflict("input identity reused with changed source"));
-            }
-            return Ok(staged);
+            return Ok(prior);
         };
-        let path = path();
+        // Placement is selected only for a new operation. Replays retain the
+        // original publication and still verify its bytes and metadata below.
+        let path = prior.as_ref().map_or_else(
+            || format!("{directory}/{leaf}"),
+            |file| file.path().to_owned(),
+        );
         let staged = publisher
             .stage_once(
                 operation,
@@ -1359,12 +1371,31 @@ where
         for binding in &request.fresh {
             if let Some(volume) = binding.as_volume() {
                 authority.authorize_volume(volume).map_err(turn)?;
+                if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+                    self.volumes
+                        .authorize_volume_creation(scope, volume)
+                        .map_err(turn)?;
+                }
             }
         }
         let journal =
             crate::conversation::journal_volume(self.volumes.provider.clone(), &request.agent)
                 .map_err(turn)?;
         authority.authorize_host_volume(&journal).map_err(turn)?;
+        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            crate::conversation::ContentGrant::authorize_agent_volume(
+                &self.issuer.verifier(&mut None).map_err(turn)?,
+                scope,
+                crate::AgentId::from_bytes(path.id_bytes()),
+                &journal,
+                crate::conversation::VolumeOperation::Write,
+                &mut None,
+            )
+            .map_err(turn)?;
+            self.volumes
+                .authorize_volume_creation(scope, &journal)
+                .map_err(turn)?;
+        }
         if request
             .fresh
             .iter()
@@ -1380,10 +1411,12 @@ where
     ///
     /// Before any IO it verifies the caller's admission for the root (the
     /// [`agent_authority`] check turns make: authentic, live, this audience
-    /// and agent, and writing the private volume) and that the admission
+    /// and agent, and bound to the private owner) and that the admission
     /// writes every fresh volume; a read-only or mismatched admission is
     /// refused here, having read and written nothing. Retained volumes keep
-    /// exactly the access the admission grants them. Then it prepares the one
+    /// exactly the access the admission grants them. A retained private writer
+    /// is checked against its real persisted policy before preparing storage;
+    /// this reads policy metadata, never its file contents. Then it prepares the one
     /// sealed commit creating the fresh volumes and the root. Preparation
     /// performs no stream IO; it writes the fresh volumes' initial objects to
     /// the object store, held unpublished by the returned commit.
@@ -1421,6 +1454,16 @@ where
         questions: Option<bool>,
     ) -> Result<Prepared, Error> {
         self.admit_root(&request)?;
+        if let TurnAdmission::Admitted { scope, .. } = &self.admission {
+            for binding in &request.retained {
+                if binding.role == crate::agent::WorkspaceRole::Private {
+                    self.volumes
+                        .authorize_retained_writer(scope, binding.volume()?)
+                        .await
+                        .map_err(turn)?;
+                }
+            }
+        }
         if self.turns.templates().is_some() {
             self.volumes.seed_layer().await.map_err(turn)?;
         }

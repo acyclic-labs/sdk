@@ -2,6 +2,169 @@ use super::*;
 use crate::IdempotencyKey;
 
 #[tokio::test]
+async fn retained_writer_admission_requires_the_host_provider() -> Result<()> {
+    let agent = AgentId::new();
+    let storage = MemoryHarnessStorage::new(agent, 4096).await?;
+    storage
+        .host
+        .authorize_retained_writer(&storage.scope, &storage.volume)
+        .await?;
+    let foreign = VolumeRef::new(
+        crate::resources::ProviderRef::new(
+            "elsewhere".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )?,
+        storage.volume.id().to_owned(),
+        storage.volume.class(),
+        storage.volume.owner().clone(),
+        &mut None,
+    )?;
+    let refused = storage
+        .host
+        .authorize_retained_writer(&storage.scope, &foreign)
+        .await
+        .expect_err("a foreign provider was opened under the host's binding");
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+    storage
+        .host
+        .authorize_volume_creation(&storage.scope, &storage.volume)?;
+    let refused = storage
+        .host
+        .authorize_volume_creation(&storage.scope, &foreign)
+        .expect_err("legacy allocation accepted another provider");
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
+    let journal = crate::conversation::journal_volume(
+        storage.volume.provider().clone(),
+        &crate::agent::AgentId::from_bytes(agent.into_bytes()),
+    )?;
+    let creation = acyclic_fs::access::Capability::whole_volume(
+        None,
+        &[
+            acyclic_fs::access::Action::Create,
+            acyclic_fs::access::Action::Write,
+        ],
+    );
+    let creation_scope = storage.issuer.bootstrap_scope(
+        "allocate-only",
+        &Capabilities::new([creation
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?]),
+        Some(agent),
+        &mut None,
+    )?;
+    storage
+        .host
+        .authorize_volume_creation(&creation_scope, &journal)?;
+    Ok(())
+}
+#[tokio::test]
+async fn original_publication_receipts_require_write_but_not_directory_listing() -> Result<()> {
+    use acyclic_fs::access::{Action, Capability};
+    let agent = AgentId::new();
+    let storage = MemoryHarnessStorage::new(agent, 4096).await?;
+    let capability = Capability::whole_volume(
+        None,
+        &[Action::Read, Action::Create, Action::Write, Action::Admin],
+    );
+    let scope = storage.issuer.bootstrap_scope(
+        "receipt-writer",
+        &Capabilities::new([capability
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?]),
+        Some(agent),
+        &mut None,
+    )?;
+    let publisher = FilesystemContentPublisher::new(
+        storage.host.clone(),
+        &storage.volume,
+        &storage.verifier(),
+        &scope,
+        4096,
+        None,
+    )?;
+    let operation = OperationId::new();
+    let original = publisher
+        .stage_once(
+            operation,
+            "original",
+            b"original",
+            "text/plain",
+            "original",
+            Default::default(),
+        )?
+        .await?
+        .0;
+    assert_eq!(
+        publisher
+            .observe_staged_once(operation, None, Some(4096), Default::default())?
+            .await?
+            .0,
+        Some(original.clone())
+    );
+    assert_eq!(
+        publisher
+            .stage_once(
+                operation,
+                "original",
+                b"original",
+                "text/plain",
+                "original",
+                Default::default(),
+            )?
+            .await?
+            .0,
+        original
+    );
+    let mut elsewhere = capability;
+    elsewhere.layers[0][0].resource.path = "elsewhere".into();
+    let ceiling = Capabilities::new([elsewhere
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?]);
+    let denied = async {
+        publisher
+            .observe_staged_once(
+                operation,
+                None,
+                Some(4096),
+                crate::conversation::ContentAccess {
+                    ceiling: Some(&ceiling),
+                    io: None,
+                },
+            )?
+            .await
+    }
+    .await
+    .err()
+    .expect("receipt recovery ignored the recorded path's write ceiling");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    let grant = ContentGrant::verify(
+        &storage.verifier(),
+        &scope,
+        &storage.volume,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    let key = crate::filesystem::content_publisher::once_key(operation, None)?;
+    let metadata = storage
+        .host
+        .content_for_operation(
+            &storage.volume,
+            &grant,
+            &key,
+            "original",
+            Some(4096),
+            Default::default(),
+        )
+        .await
+        .err()
+        .expect("standalone metadata lookup bypassed directory disclosure");
+    assert_eq!(metadata.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}
+
+#[tokio::test]
 async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
     // Exercise a valid host whose journal and private publisher share a volume.

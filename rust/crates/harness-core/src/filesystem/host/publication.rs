@@ -147,12 +147,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             purpose,
             ..
         } = *request;
-        // Recovery of a caller-selected path returns the original write receipt.
-        // Discovery of an unknown path still requires directory disclosure.
+        // A known publication operation returns its original write receipt.
+        // Check write authority on the recorded path before disclosing it;
+        // standalone metadata discovery still requires directory authority.
         let write_receipt = purpose == PublicationPurpose::WriteReceipt;
-        if write_receipt && request.expected_path.is_none() {
-            return Err(io.invalid("write receipt recovery requires its original path"));
-        }
         if write_receipt {
             for grants in [Some(scope.capabilities()), ceiling].into_iter().flatten() {
                 if !crate::core::volume_operation_granted_with_work(

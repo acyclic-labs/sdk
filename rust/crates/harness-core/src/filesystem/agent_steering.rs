@@ -183,14 +183,20 @@ where
                 });
                 continue;
             }
-            let authority = AdmittedAgent::verify(
+            let admitted = AdmittedAgent::verify(
                 &self.issuer,
                 &self.admission,
                 &self.agent.path,
                 &self.agent.volumes,
-            )?
-            .authority(&external)
-            .await?;
+            )?;
+            let authority = if waking_notice {
+                admitted
+                    .journal_authority(&self.host, &[], &external)
+                    .await?
+                    .1
+            } else {
+                admitted.authority(&external).await?
+            };
             let mut reader = FilesystemContentVerifier::new(
                 Arc::clone(&self.host),
                 &authority.verifier,
