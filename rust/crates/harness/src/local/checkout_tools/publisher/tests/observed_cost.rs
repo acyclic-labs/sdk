@@ -1,5 +1,6 @@
 //! Rebinding a captured publication must reuse its authenticated content.
 use super::*;
+use acyclic_fs::facade::FsWork as _;
 
 fn publication_source(root: &Path) -> Result<()> {
     for index in 0..128 {
