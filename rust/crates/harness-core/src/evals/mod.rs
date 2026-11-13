@@ -78,6 +78,12 @@ pub fn write_case(
     if record.sequence != sequence {
         return Err(DemandError::StaleSource);
     }
+    let next = sequence.checked_add(1).ok_or(DemandError::StaleSource)?;
+    let before = inputs.checkpoint(sequence)?;
+    let after = inputs.checkpoint(next)?;
+    if before.conversation != sequence || after.conversation != next {
+        return Err(DemandError::StaleSource);
+    }
     serde_json::to_writer(
         sink,
         &Case {
@@ -85,7 +91,7 @@ pub fn write_case(
             cut: Cut {
                 stream: inputs.stream().as_str(),
                 through: sequence,
-                checkpoint: inputs.checkpoint(sequence)?,
+                checkpoint: before,
             },
             source: Source {
                 origin: record.origin.as_str(),
@@ -99,8 +105,7 @@ pub fn write_case(
             },
             outcome: Outcome {
                 status: &entry.outcome,
-                checkpoint: inputs
-                    .checkpoint(sequence.checked_add(1).ok_or(DemandError::StaleSource)?)?,
+                checkpoint: after,
                 output: &entry.output,
                 tool_results: entry.tool_results.as_deref(),
             },

@@ -39,6 +39,22 @@ impl SourceChangeSink for Changes {
     fn delivery_lost(&self) {}
 }
 
+// Supply authentic retained records with the adjacent boundaries reversed.
+struct ReversedBoundaries(Snapshot);
+impl Inputs for ReversedBoundaries {
+    fn stream(&self) -> &StreamPath {
+        self.0.stream()
+    }
+    fn tail(&self) -> u64 {
+        self.0.tail()
+    }
+    fn entry(&self, sequence: u64) -> Result<(&Record, &ConversationEntry), DemandError> {
+        self.0.entry(sequence)
+    }
+    fn checkpoint(&self, sequence: u64) -> Result<&HistoryCheckpoint, DemandError> {
+        self.0.checkpoint(1 - sequence)
+    }
+}
 #[tokio::test]
 async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -151,6 +167,26 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(error, _)| error)?;
     let reference = source.reference(&mut accounting(&work)).await?;
+    let provider = StreamProvider::new(Arc::clone(&streams), &agent)?;
+    let snapshot = provider
+        .snapshot(
+            reference.clone(),
+            ViewQuery::Open(&path("/00000000000000000000.json")),
+            &mut accounting(&work),
+        )
+        .await?;
+    let mut encoded = Vec::new();
+    write_case(&snapshot, 0, &mut encoded)?;
+    assert!(!encoded.is_empty());
+    encoded.clear();
+    assert!(matches!(
+        write_case(&ReversedBoundaries(snapshot), 0, &mut encoded),
+        Err(DemandError::StaleSource)
+    ));
+    assert!(
+        encoded.is_empty(),
+        "invalid boundaries must fail before writing case bytes"
+    );
     let mut first = source
         .list_page(reference.clone(), &path("/"), None, 1, &work, &cancel)
         .await?;
