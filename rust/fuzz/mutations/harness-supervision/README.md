@@ -57,6 +57,7 @@ Physical completion and an ordinary foreground terminal must retire it.
 | --- | --- | --- |
 | `background-start-finish.patch` restores retirement on the logical start result. | `filesystem::execution_journal::supervision::tests::selected_check_repetitions_ignore_capture_options_but_stay_within_the_original_turn` | `background start receipt retired quiet supervision` |
 | `physical-completion.patch` discards the authoritative physical completion. | `agent_model::hosting::quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs` | `physical completion did not retire quiet supervision` |
+| `completion-unkeyed.patch` removes completion-key routing from the shared handler. | `agent_model::hosting::quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs` | `unrelated journal output woke the quiet actor` |
 
 Run each regression before applying its mutation, require an actual assertion
 failure (not a compiler error), reverse the patch, and require the same test to
@@ -66,3 +67,6 @@ pass. The library test uses `-p acyclic-harness-core --lib`; the actor test uses
 `filesystem::hosting::journal_tests::call_output_uses_the_journal_without_granting_tools_its_writer`
 also proves the physical completion publication's original identity and replay
 through the shared output publisher.
+The same real-actor test publishes output and completion for a different call
+into the shared journal and requires the original actor's state stream to remain
+unchanged. Its own output and physical completion still deliver normally.
