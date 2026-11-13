@@ -67,7 +67,12 @@ fn failures_and_checks_count_exact_signatures_without_scanning_history() {
             .signals
             .is_empty()
     );
-    let twice = run.deliver(failed(" cargo   test ", b"compile error"), &policy);
+    assert!(
+        run.deliver(failed(" cargo   test ", b"compile error"), &policy)
+            .signals
+            .is_empty()
+    );
+    let twice = run.deliver(failed("cargo test", b"compile error"), &policy);
     assert_eq!(
         (twice.signals[0].kind, twice.signals[0].count, twice.action),
         (Kind::RepeatFailure, 2, Action::Alert)
@@ -85,7 +90,12 @@ fn failures_and_checks_count_exact_signatures_without_scanning_history() {
             );
         }
     }
-    let looped = run.deliver(start(3, "cargo   check"), &policy);
+    assert!(
+        run.deliver(start(3, "cargo   check"), &policy)
+            .signals
+            .is_empty()
+    );
+    let looped = run.deliver(start(3, "cargo check"), &policy);
     assert_eq!(
         (
             looped.signals[0].kind,
@@ -497,30 +507,4 @@ fn crash_replay_has_no_effects_and_refused_cuts_cannot_mutate_the_checkpoint() {
         Err(Error::Version)
     ));
     assert_eq!(run.state, before);
-}
-
-#[test]
-fn normalization_preserves_program_bytes_that_can_change_shell_meaning() {
-    assert_eq!(
-        normalize_command("  cargo\t check   -p harness "),
-        "cargo check -p harness"
-    );
-    for command in [
-        "printf 'a  b'",
-        "echo \"a  b\"",
-        "echo a\\  ",
-        "echo `printf ' a  b'`",
-        "cat <<EOF\na  b\nEOF",
-        "echo ok #  two spaces",
-    ] {
-        assert_eq!(normalize_command(command), command);
-    }
-    assert_ne!(
-        normalize_command("printf 'a b'"),
-        normalize_command("printf 'a  b'")
-    );
-    assert_ne!(
-        normalize_command("echo a\\ b"),
-        normalize_command("echo a b")
-    );
 }

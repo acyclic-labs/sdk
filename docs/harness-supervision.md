@@ -39,8 +39,7 @@ capacity. For example:
 ```
 
 A null occurrence threshold disables that query. Null reservation dimensions are
-unbounded. Validation commands are owner selected; normalization preserves shell
-quotes, escapes and multiline source. An action is `alert`, `pause` or `stop`.
+unbounded. Validation commands are owner selected; commands match exact original bytes, including quotes and whitespace. An action is `alert`, `pause` or `stop`.
 Alerts continue execution. The default repeated-failure action escalates from an
 alert to a pause; validation loops, output loops and exhausted capacity pause.
 
@@ -54,7 +53,7 @@ progress; changed inputs under that identity are refused.
 
 | Signal | Original evidence |
 | --- | --- |
-| `repeat_failure` | Identical normalized invocation and terminal error |
+| `repeat_failure` | Identical invocation with byte-identical command arguments and terminal error |
 | `validation_loop` | Repeated admission of a selected check within one turn |
 | `no_progress` | Consecutive spending turns without accepted authored progress |
 | `stuck` | An unsettled tool's output quiet deadline, delivered by an actor alarm |

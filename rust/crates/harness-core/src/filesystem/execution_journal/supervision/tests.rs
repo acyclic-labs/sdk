@@ -180,7 +180,7 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
 async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_original_turn()
 -> Result<()> {
     use crate::supervision::{RunAdmission, RunAdmissionSource};
-    for same_turn in [false, true] {
+    for (same_turn, exact_command) in [(false, true), (true, true), (true, false)] {
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let run = OperationId::from_bytes([112; 16]);
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([81; 16]));
@@ -219,10 +219,12 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
             .await?;
         let stream = Arc::clone(&journal.stream);
         let queries = Queries::new(stream.as_ref(), &agent, run);
-        for (index, command) in ["check  unit", "check unit", "check\tunit"]
-            .into_iter()
-            .enumerate()
-        {
+        let commands = if exact_command {
+            ["check unit"; 3]
+        } else {
+            ["check  unit", "check\tunit", " check unit"]
+        };
+        for (index, command) in commands.into_iter().enumerate() {
             let operation = if same_turn || index == 0 {
                 run
             } else {
@@ -282,7 +284,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 .append(operation, &format!("check-{index}"), &started, None)?
                 .await?;
             let signal = queries.read_signal(Kind::ValidationLoop).await?;
-            if same_turn && index == 2 {
+            if same_turn && exact_command && index == 2 {
                 assert_eq!(
                     signal
                         .ok_or_else(|| Error::Invalid("repeated check did not signal".into()))?
@@ -308,7 +310,8 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
 
 #[tokio::test]
 async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors() -> Result<()> {
-    for repeated in [false, true] {
+    for (same_error, exact_command) in [(false, true), (true, true), (true, false)] {
+        let repeated = same_error && exact_command;
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let run = OperationId::new();
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([58; 16]));
@@ -324,10 +327,16 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
             )?
             .await?;
         let queries = Queries::new(&*journal.stream, &agent, run);
-        for (index, command) in ["check  unit", "check unit", "check\tunit"]
-            .into_iter()
-            .enumerate()
-        {
+        let commands = if exact_command {
+            ["check unit"; 3]
+        } else {
+            [
+                "echo \"$(echo \"a  b\")\"",
+                "echo \"$(echo \"a b\")\"",
+                "check\tunit",
+            ]
+        };
+        for (index, command) in commands.into_iter().enumerate() {
             let call_id = format!("call-{index}");
             let invocation = crate::tool::ToolInvocation::for_model_call(
                 run,
@@ -364,7 +373,7 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                 )?
                 .await?;
             let result = crate::tool::ToolResult {
-                value: serde_json::json!({"exit_code":1,"stdout":format!("unrelated output {index}"),"stderr":if repeated {"same failure".into()} else {format!("failure {index}")}}),
+                value: serde_json::json!({"exit_code":1,"stdout":format!("unrelated output {index}"),"stderr":if same_error {"same failure".into()} else {format!("failure {index}")}}),
             };
             let result = crate::executor::stage_json(
                 &journal,
