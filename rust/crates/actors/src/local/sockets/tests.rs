@@ -838,7 +838,7 @@ impl StreamProvider for ControlledStream {
             .with_deferred_durability()
     }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
-        self.inner.durability_barrier().await?;
+        // MemoryStream acceptance is already its durable boundary.
         match self.durability_fault.lock().unwrap().take() {
             Some(error) => Err(error),
             None => Ok(()),
