@@ -306,7 +306,11 @@ mod replay_tests {
         drop(copied);
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);
         meter.assert_refunded();
-        meter.deny_allocation.store(true, Ordering::SeqCst);
+        // The operation allowance refuses with the meter's inline OOM error;
+        // the separately supported diagnostic denial deliberately owns a box.
+        meter
+            .limit
+            .store(meter.allocations.load(Ordering::SeqCst), Ordering::SeqCst);
         assert!(original_cut.native_clone(&meter.original()).is_err());
         // A unique ordinary key would otherwise lazily allocate its shared
         // header on clone before reaching the provider's native admission.
@@ -355,7 +359,7 @@ mod replay_tests {
             "native point read copied its revision vector before admission"
         );
         meter.assert_refunded();
-        meter.deny_allocation.store(false, Ordering::SeqCst);
+        meter.limit.store(u64::MAX, Ordering::SeqCst);
         meter.cancelled.store(true, Ordering::SeqCst);
         assert!(
             provider
