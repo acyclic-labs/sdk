@@ -281,8 +281,18 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
                 ..Default::default()
             };
             policy.actions.insert(Kind::NoProgress, action);
-            let (filesystem, volumes, issuer, _) =
+            let (filesystem, volumes, issuer, publisher) =
                 admitted_files(&stream, &path, operation, &policy).await?;
+            let (body, _) = publisher
+                .stage_once(
+                    OperationId::new(),
+                    "input.txt",
+                    b"Finish this task",
+                    "text/plain",
+                    "input.txt",
+                    ContentAccess::default(),
+                )?
+                .await?;
             let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::Content {
                     delta: "finished response".into(),
@@ -304,8 +314,16 @@ async fn spending_turn_settlement_commits_signal_and_terminal_action_once() -> R
             let mut adoption = adopted(path.id());
             adoption.volumes = volumes;
             let mut state = AgentState::adopted(path.clone(), &adoption)?;
-            state.run_admission = Some(operation);
-            let wake = || requested("run", &path);
+            let wake = || Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::Message(Message {
+                    from: super::super::user(),
+                    id: intent(&operation.to_string()),
+                    body: Box::new(body.clone()),
+                    re: None,
+                    attachments: None,
+                }),
+            };
             let first = step(
                 &driver,
                 &path,

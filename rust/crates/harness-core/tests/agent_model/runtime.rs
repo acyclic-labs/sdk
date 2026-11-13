@@ -88,7 +88,15 @@ async fn a_same_turn_stop_archives_newly_admitted_children() -> Result {
             .await
             .expect("same-turn child was not admitted and archived");
         assert_eq!(parent.closed, stop);
-        assert_eq!(child.closed, stop, "same-turn spawn escaped the stop");
+        let inbox = values(provider.as_ref(), child.path.inbox()?).await?;
+        let inbox: Vec<_> = inbox
+            .iter()
+            .map(|bytes| InboxRecord::decode(bytes))
+            .collect();
+        assert_eq!(
+            child.closed, stop,
+            "same-turn spawn escaped the stop; parent={parent:?}; child={child:?}; inbox={inbox:?}"
+        );
         assert_eq!(parent.open_children.len(), usize::from(!stop));
         if stop {
             assert!(parent.dropped_before >= 2, "stopped input remained pending");
