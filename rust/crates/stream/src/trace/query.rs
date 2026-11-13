@@ -167,6 +167,21 @@ impl<S> TraceQuery<S> {
         self.active.iter()
     }
 
+    /// Borrow a bounded page strictly after the previous identity. Seeking uses
+    /// the existing active-span index, so earlier pages are not scanned. A
+    /// cursor need not remain active; settlement may remove it between reads.
+    /// Pages reflect current observations rather than an immutable snapshot.
+    pub fn active_page(
+        &self,
+        after: Option<SpanId>,
+        count: std::num::NonZeroU32,
+    ) -> impl Iterator<Item = (&SpanId, &ActiveSpan)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.active
+            .range((after.map_or(Unbounded, Excluded), Unbounded))
+            .take(count.get() as usize)
+    }
+
     /// Fixed-cardinality mechanism aggregates, borrowed without scanning history.
     pub fn totals(&self) -> &BTreeMap<Mechanism, MechanismTotals> {
         &self.totals

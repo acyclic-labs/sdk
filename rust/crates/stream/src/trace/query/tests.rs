@@ -80,6 +80,20 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
             ..
         })
     ));
+    let count = std::num::NonZeroU32::new(1).unwrap();
+    let first = live.active_page(None, count).collect::<Vec<_>>();
+    assert_eq!(first.len(), 1);
+    assert_eq!(*first[0].0, wait);
+    assert_eq!(first[0].1.evidence.sequence, 0);
+    let between = SpanId {
+        sequence: 1,
+        ..wait
+    };
+    let second = live.active_page(Some(between), count).collect::<Vec<_>>();
+    assert_eq!(second.len(), 1);
+    assert_eq!(*second[0].0, io);
+    assert_eq!(second[0].1.evidence.sequence, 1);
+    assert!(live.active_page(Some(io), count).next().is_none());
     append(
         &stream,
         SpanEvent::Finished {
