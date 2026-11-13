@@ -4,6 +4,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::num::NonZeroU32;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+mod replay;
 mod response;
 
 pub(super) fn selected(command: &crate::tools::FsCommand) -> bool {

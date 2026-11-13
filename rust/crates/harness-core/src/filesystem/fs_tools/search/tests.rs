@@ -179,6 +179,37 @@ async fn native_scope_grep_preserves_cursor_selection_and_releases_original_cust
                 .cloned(),
         );
         let next = page["next"].as_str().map(str::to_owned);
+        let io = PreparationIo::from_native_work(&work)?;
+        let caller_value = io.value_json(&"caller-owned content", None)?;
+        let caller_bytes = io.owned_bytes()?;
+        fixture
+            .tools
+            .authorize_replay(Some(&fixture.context), &invocation, &result, Some(&io))?
+            .expect("source replay authorization")
+            .await?;
+        if !page["matches"]
+            .as_array()
+            .expect("search matches")
+            .is_empty()
+        {
+            let mut foreign = result.clone();
+            foreign.value["result"]["matches"][0]["path"] = serde_json::json!("outside/history");
+            let refused = fixture
+                .tools
+                .authorize_replay(Some(&fixture.context), &invocation, &foreign, Some(&io))?
+                .expect("source replay authorization")
+                .await;
+            assert!(refused.is_err());
+        }
+        assert_eq!(
+            io.owned_bytes()?,
+            caller_bytes,
+            "replay retired caller-owned storage"
+        );
+        let caller_hold = io.guard_owned(caller_bytes)?;
+        drop(caller_value);
+        drop(caller_hold);
+        drop(io);
         drop(result);
         drop(custody);
         assert_eq!(work.live_allocation_bytes(), baseline);
@@ -205,6 +236,21 @@ async fn native_scope_grep_preserves_cursor_selection_and_releases_original_cust
     assert_eq!(found[0]["origin"], fixture.decision.as_str());
     assert_eq!(found[0]["sequence"], 0);
     let invocation = invoke("grep --scope . accepted".into());
+    let saved = ToolResult {
+        value: serde_json::json!({"result": {
+            "kind": "grep", "matches": found, "work": 1, "next": null,
+        }}),
+    };
+    fixture._issuer.revoke_workload(&fixture.tools.scope)?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let refused = fixture
+        .tools
+        .authorize_replay(Some(&fixture.context), &invocation, &saved, Some(&io))?
+        .expect("source replay authorization")
+        .await;
+    assert!(refused.is_err(), "revoked authority exposed a saved result");
+    drop(io);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     cancellation.cancel();
     assert!(
         fixture

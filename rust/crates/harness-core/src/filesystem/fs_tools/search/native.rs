@@ -9,7 +9,7 @@ fn invalid(io: &PreparationIo, reason: &'static str) -> Error {
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> FilesystemTools<P, O> {
-    fn native_search_selection(
+    pub(super) fn native_search_selection(
         &self,
         command: &crate::tools::FsCommand,
         context: &ToolContext,

@@ -677,7 +677,11 @@ impl<'io> StockExecution<'io> {
         _invocation: &ToolInvocation,
         result: &FileRef,
         projection: &FileRef,
-        (definition, _code_mode): (&crate::tool::ToolDefinition, bool),
+        (definition, tool, context): (
+            &crate::tool::ToolDefinition,
+            Option<&crate::tool::Tool>,
+            Option<&crate::runtime::ToolContext>,
+        ),
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<(crate::model::ToolResultContent, Option<ToolReceipt<'io>>)> {
         let result = load_json::<ToolResult>(journal, result, self.io).await?;
@@ -689,10 +693,17 @@ impl<'io> StockExecution<'io> {
                 work,
             )
         })?;
+        if let Some(tool) = tool
+            && let Some(authorization) =
+                tool.executor
+                    .authorize_replay(context, _invocation, &result.0, self.io)?
+        {
+            authorization.await?;
+        }
         let projection = load_json::<Value>(journal, projection, self.io).await?;
         let content = definition.validate_projection(&projection.0, self.stock.limits, self.io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if _code_mode {
+        if tool.is_some_and(|tool| tool.executor.is_code_mode()) {
             self.restore_js_context(&result.0.value, _hook_context)?;
         }
         #[cfg(not(target_arch = "wasm32"))]

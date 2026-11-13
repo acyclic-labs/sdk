@@ -314,62 +314,102 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: acyclic_fs::NativeWork<'a>,
-    ) -> Option<BoxProviderFuture<'a, Result<()>>> {
-        Some(Box::pin(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.is_some() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "filesystem replay requires its ordinary provider context",
-                });
-            }
-            let _ = work;
-            let context = context.ok_or_else(|| {
-                Error::Unauthorized("filesystem replay has no task context".into())
-            })?;
-            let command = invocation
-                .arguments
-                .get("command")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| Error::Invalid("fs requires a command string".into()))?;
-            let parsed = match crate::tools::parse_fs_command(command) {
-                Ok(parsed) => parsed,
-                // Rejected syntax never selected a source or read its data.
-                Err(Error::Invalid(_)) => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            if search::selected(&parsed) {
-                self.authorize(None, Some(context), invocation, None)?;
-                self.search_selection(&parsed, context)?;
-                return Ok(());
-            }
-            let volume = self.target(&parsed, context)?;
-            let reference =
-                super::workspace_ref(self.host.provider.clone(), &volume.storage_name(&mut None)?)?;
-            let mut cancellation = context.model_cancellation(None)?;
-            let root =
-                read_before_effect(&mut cancellation, self.host.open(&reference, None)).await?;
-            let access = WorkspaceAccess::new(
-                &self.verifier,
-                &self.scope,
-                context.effective_scope().grants(),
-                Some(volume),
-            )?;
-            read_before_effect(&mut cancellation, access.require(&root)).await?;
-            read_before_effect(&mut cancellation, async {
-                (crate::tools::git::RepositoryAccess {
-                    access: &access,
-                    filesystem: &self.host.filesystem,
-                    store: &self.store,
-                    current: &root,
-                    repository: root.id(),
+        result: &'a ToolResult,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        Ok(Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(io) = io
+                    && let Some(work) = io.original_native_work()
+                {
+                    let original_io = PreparationIo::from_native_work(work)?;
+                    let io = &original_io;
+                    let context = context.ok_or_else(|| {
+                        crate::executor::stock_boundary(
+                            Some(io),
+                            crate::wire::ErrorCode::Unauthorized,
+                            "filesystem replay has no task context",
+                        )
+                    })?;
+                    self.authorize(None, Some(context), invocation, Some(work))?;
+                    let command = invocation
+                        .arguments
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| {
+                            crate::executor::stock_boundary(
+                                Some(io),
+                                crate::wire::ErrorCode::Invalid,
+                                "fs requires a command string",
+                            )
+                        })?;
+                    let parsed =
+                        match crate::tools::fs_command::parse_fs_command_with_io(command, Some(io))
+                        {
+                            Ok(parsed) => parsed,
+                            Err(error) if error.code() == crate::wire::ErrorCode::Invalid => {
+                                return Ok(());
+                            }
+                            Err(error) => return Err(error),
+                        };
+                    let hold = io.guard_owned(io.owned_bytes()?)?;
+                    self.authorize_search_result(&parsed, context, result, Some(io))
+                        .await?;
+                    drop(parsed);
+                    drop(hold);
+                    return Ok(());
+                }
+                let context = context.ok_or_else(|| {
+                    Error::Unauthorized("filesystem replay has no task context".into())
+                })?;
+                let command = invocation
+                    .arguments
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| Error::Invalid("fs requires a command string".into()))?;
+                let parsed = match crate::tools::parse_fs_command(command) {
+                    Ok(parsed) => parsed,
+                    // Rejected syntax never selected a source or read its data.
+                    Err(Error::Invalid(_)) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                if search::selected(&parsed) {
+                    self.authorize(None, Some(context), invocation, None)?;
+                    self.authorize_search_result(&parsed, context, result, io)
+                        .await?;
+                    return Ok(());
+                }
+                let volume = self.target(&parsed, context)?;
+                let reference = super::workspace_ref(
+                    self.host.provider.clone(),
+                    &volume.storage_name(&mut None)?,
+                )?;
+                let mut cancellation = context.model_cancellation(None)?;
+                let root =
+                    read_before_effect(&mut cancellation, self.host.open(&reference, None)).await?;
+                let access = WorkspaceAccess::new(
+                    &self.verifier,
+                    &self.scope,
+                    context.effective_scope().grants(),
+                    Some(volume),
+                )?;
+                read_before_effect(&mut cancellation, access.require(&root)).await?;
+                read_before_effect(&mut cancellation, async {
+                    (crate::tools::git::RepositoryAccess {
+                        access: &access,
+                        filesystem: &self.host.filesystem,
+                        store: &self.store,
+                        current: &root,
+                        repository: root.id(),
+                    })
+                    .require_saved_result_access()
+                    .await
                 })
-                .require_saved_result_access()
                 .await
-            })
-            .await
-        }))
+            },
+        )?))
     }
 
     fn authorize(

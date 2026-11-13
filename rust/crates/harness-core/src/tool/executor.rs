@@ -233,6 +233,10 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     }
 
     /// Rechecks mutable source authority before exposing a completed result.
+    /// The result has been loaded and schema-checked, but neither it nor its
+    /// projection has been exposed. Source addresses in saved results require
+    /// the same current authority as an original read. The returned future
+    /// retains its physical allocation on the original operation ledger.
     /// The invocation has already passed `authorize` and its recorded identity
     /// check. This must only authorize reads: it cannot execute or reconcile the
     /// command. Executors whose synchronous authorization is sufficient return
@@ -241,9 +245,10 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _context: Option<&'a crate::runtime::ToolContext>,
         _invocation: &'a ToolInvocation,
-        _work: acyclic_fs::NativeWork<'a>,
-    ) -> Option<BoxFuture<'a, Result<()>>> {
-        None
+        _result: &'a ToolResult,
+        _io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        Ok(None)
     }
 
     /// The record that hands this invocation to another host, appended in the

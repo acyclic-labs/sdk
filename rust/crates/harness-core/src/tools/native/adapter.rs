@@ -156,19 +156,28 @@ impl ToolExecutor for Adapter {
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
-        work: acyclic_fs::NativeWork<'a>,
-    ) -> Option<BoxFuture<'a, Result<()>>> {
-        Some(Box::pin(async move {
-            let adapted = self.adapt(invocation, work)?;
-            match self
-                .original
-                .executor
-                .authorize_replay(context, &adapted.invocation, work)
-            {
-                Some(authorization) => authorization.await,
-                None => Ok(()),
-            }
-        }))
+        result: &'a ToolResult,
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, ()>>> {
+        Ok(Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                #[cfg(not(target_arch = "wasm32"))]
+                let work = io.and_then(crate::filesystem::PreparationIo::original_native_work);
+                #[cfg(target_arch = "wasm32")]
+                let work = None;
+                let adapted = self.adapt(invocation, work)?;
+                match self.original.executor.authorize_replay(
+                    context,
+                    &adapted.invocation,
+                    result,
+                    io,
+                )? {
+                    Some(authorization) => authorization.await,
+                    None => Ok(()),
+                }
+            },
+        )?))
     }
 
     fn dispatch(
