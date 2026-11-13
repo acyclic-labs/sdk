@@ -363,7 +363,7 @@ pub fn reply_header(
     } else {
         length
     };
-    if length < OUTPUT_HEADER || bytes.len() < OUTPUT_HEADER {
+    if length < OUTPUT_HEADER || bytes.len() < length {
         return Err(ENOBUFS);
     }
     let status = match errno {
@@ -388,4 +388,30 @@ pub fn reply(bytes: &mut [u8], unique: u64, body: &[u8], errno: Option<i32>) -> 
             .copy_from_slice(body);
     }
     reply_header(bytes, length, unique, errno)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_length_requires_backing_storage_but_errors_discard_payload() {
+        let mut bytes = [0xa5; OUTPUT_HEADER];
+        assert_eq!(
+            reply_header(&mut bytes, OUTPUT_HEADER + 1, 7, None),
+            Err(ENOBUFS)
+        );
+        assert_eq!(
+            bytes, [0xa5; OUTPUT_HEADER],
+            "a refused frame must not publish a header"
+        );
+        assert_eq!(
+            reply_header(&mut bytes, usize::MAX, 7, Some(EINVAL)),
+            Ok(OUTPUT_HEADER)
+        );
+        assert_eq!(
+            u32::from_ne_bytes(bytes[..4].try_into().unwrap()) as usize,
+            OUTPUT_HEADER
+        );
+    }
 }

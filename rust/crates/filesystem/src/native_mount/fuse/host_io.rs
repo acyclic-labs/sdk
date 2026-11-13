@@ -440,17 +440,28 @@ impl std::task::Wake for HostIo {
 /// Fund the external packet owner before handing it a physical device.
 /// One additional buffer pair participates in the same negotiation as the
 /// callback workers; it cannot silently exceed the caller's original budget.
+pub(super) struct FundedDevice {
+    pub(super) capacity: u32,
+    pub(super) maximum_write: u32,
+    pub(super) allocation: crate::NativeAllocation,
+}
+
 pub(super) fn fund_device(
     work: &crate::NativeMaterializationWork,
-) -> Result<(u32, crate::NativeAllocation), super::NativeMountError> {
+) -> Result<FundedDevice, super::NativeMountError> {
     let workers =
         std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS + 1).ok_or(libc::EINVAL)?;
     // SAFETY: sysconf takes no pointer arguments.
     let page =
         u32::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).map_err(|_| libc::EOVERFLOW)?;
     let page = std::num::NonZeroU32::new(page).ok_or(libc::EIO)?;
-    let capacity = super::packet_buffers::maximum_write(work, workers, page)? + 4096;
+    let maximum_write = super::packet_buffers::maximum_write(work, workers, page)?;
+    let capacity = maximum_write.checked_add(4096).ok_or(libc::EOVERFLOW)?;
     let bytes = acyclic_native_runtime::PacketDevice::storage_bytes(capacity)?;
     let allocation = work.claim(bytes, 3, crate::WorkCounters::UNCHARGED)?;
-    Ok((capacity, allocation))
+    Ok(FundedDevice {
+        capacity,
+        maximum_write,
+        allocation,
+    })
 }
