@@ -7,10 +7,16 @@ use crate::{
 };
 use acyclic_stream::{BoxProviderFuture, OwnedBytes};
 
-/// The settings evaluator and canonical adapter are real; the two immutable
-/// source states model the original tree and an unavailable producer on reopen.
+#[derive(Clone, Copy)]
+enum Source {
+    Valid,
+    Broken,
+    Unavailable,
+}
+
+/// The settings evaluator and canonical adapter consume immutable source cuts.
 struct Programs {
-    available: bool,
+    source: Source,
     shell: Arc<Tool>,
     catalog: ToolRegistry,
 }
@@ -21,18 +27,34 @@ impl Tree for Programs {
         path: &'a str,
     ) -> futures::future::BoxFuture<'a, Result<Option<OwnedBytes>>> {
         Box::pin(async move {
-            if !self.available {
+            if matches!(self.source, Source::Unavailable) {
                 return Err(Error::Storage(
                     "original program source is unavailable".into(),
                 ));
             }
             let bytes = match path {
+                "tools/echo/program.ts" if matches!(self.source, Source::Broken) => b"throw new Error('original manifest refusal');".as_slice(),
                 "tools/echo/program.ts" => b"export default {version: 1, name: 'echo', description: 'Echo arguments', inputSchema: {type: 'object'}, entry: {sh: 'main.sh', ps1: 'main.ps1'}};".as_slice(),
                 "tools/echo/main.sh" | "tools/echo/main.ps1" => b"exit 0".as_slice(),
                 _ => return Ok(None),
             };
             Ok(Some(OwnedBytes::from_static(bytes)))
         })
+    }
+}
+
+struct PreparedPrograms<'a>(&'a Programs, Option<&'a PreparationIo>);
+
+impl Tree for PreparedPrograms<'_> {
+    fn preparation_io(&self) -> Option<&PreparationIo> {
+        self.1
+    }
+
+    fn read<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<Option<OwnedBytes>>> {
+        self.0.read(path)
     }
 }
 
@@ -56,10 +78,12 @@ impl ToolSource for Programs {
     fn load<'a>(
         &'a self,
         name: &'a str,
-        _io: Option<&'a PreparationIo>,
+        io: Option<&'a PreparationIo>,
     ) -> BoxProviderFuture<'a, Result<Option<Arc<Tool>>>> {
         Box::pin(async move {
-            let program = crate::plugins::load_program(self, &format!("tools/{name}")).await?;
+            let program =
+                crate::plugins::load_program(&PreparedPrograms(self, io), &format!("tools/{name}"))
+                    .await?;
             program.bind(self.shell.clone()).map(Arc::new).map(Some)
         })
     }
@@ -69,7 +93,7 @@ fn executor(
     task: &TaskContext,
     scope: RuntimeScope,
     operation: OperationId,
-    available: bool,
+    source: Source,
 ) -> Result<StockExecutor> {
     let tools = crate::tools::defaults()?;
     let shell = Arc::new(
@@ -86,7 +110,7 @@ fn executor(
     )
     .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
     .with_tool_source(Arc::new(Programs {
-        available,
+        source,
         shell,
         catalog: ToolRegistry::default(),
     }))
@@ -133,7 +157,7 @@ async fn rebuilt_executor_retains_selection_without_source_reads_and_refuses_cha
         name: "echo".into(),
         arguments: serde_json::json!({"text": "original"}),
     };
-    let first = executor(&task()?, scope.clone(), operation, true)?;
+    let first = executor(&task()?, scope.clone(), operation, Source::Valid)?;
     let selected = StockExecution::ordinary(&first)
         .lazy_call(call(), (operation, 0), ("echo", r#"{"text":"original"}"#))
         .await?
@@ -141,7 +165,7 @@ async fn rebuilt_executor_retains_selection_without_source_reads_and_refuses_cha
     drop(first);
     // A fresh executor and task read the original once-publication. An accidental
     // source reload fails instead of silently selecting the replacement program.
-    let mut rebuilt = executor(&task()?, scope, operation, false)?;
+    let mut rebuilt = executor(&task()?, scope.clone(), operation, Source::Unavailable)?;
     crate::tools::native::NativeTools::new(crate::model::NativeToolProfile::Openai)?
         .bind(&mut rebuilt.tools)?;
     let retained = StockExecution::ordinary(&rebuilt)
@@ -158,5 +182,39 @@ async fn rebuilt_executor_retains_selection_without_source_reads_and_refuses_cha
         .lazy_call(changed, (operation, 0), ("echo", r#"{"text":"changed"}"#))
         .await;
     assert!(matches!(refusal, Err(Error::Conflict(_))));
+
+    // The real bounded evaluator's semantic refusal becomes journaled tool
+    // feedback. Cancellation on that same original work remains an outer error.
+    let operation = OperationId::new();
+    let broken = executor(&task()?, scope, operation, Source::Broken)?;
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let execution = StockExecution {
+        io: Some(&io),
+        ..StockExecution::ordinary(&broken)
+    };
+    let mut invalid = call();
+    invalid.operation_id = OperationId::new();
+    let refusal = execution
+        .lazy_call(invalid, (operation, 0), ("echo", "{}"))
+        .await?;
+    assert!(matches!(refusal, Err(cause) if cause.message.contains("original manifest refusal")));
+    cancel.cancel();
+    let mut cancelled = call();
+    cancelled.operation_id = OperationId::new();
+    assert!(matches!(
+        execution
+            .lazy_call(cancelled, (operation, 0), ("echo", "{}"))
+            .await,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
     Ok(())
 }
