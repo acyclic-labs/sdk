@@ -137,6 +137,15 @@ fn pending_owner(root: &Path, old: bool) -> Result<(), Box<dyn std::error::Error
     } else {
         start()
     }?;
+    let devices = std::fs::read_dir("/proc/self/fd")?
+        .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+        .filter(|target| target == Path::new("/dev/fuse"))
+        .count();
+    assert_eq!(
+        devices,
+        usize::from(old),
+        "only the old-path control may retain the mounted FUSE device"
+    );
     let device = session
         .native_root_identity()
         .ok_or("root identity absent")?

@@ -8,6 +8,16 @@ use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
+#[cfg(test)]
+thread_local! {
+    static SOCKET_COMPLETION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[path = "host_io/tests.rs"]
+mod tests;
+
 /// An acquired abort control for one kernel FUSE connection.
 #[derive(Debug)]
 pub(super) struct Connection(File);
@@ -232,8 +242,16 @@ impl HostIo {
     }
 
     fn publication(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if SOCKET_COMPLETION.get() {
+            return Ok(());
+        }
         let custody = self.custody.read().unwrap_or_else(PoisonError::into_inner);
         if let Some((custody, _)) = custody.as_ref() {
+            #[cfg(test)]
+            if let Some(probe) = BEFORE_RECEIPT.with_borrow_mut(Option::take) {
+                probe();
+            }
             custody.publication()
         } else if self.framed {
             Err(io::Error::from_raw_os_error(libc::ENODEV))
