@@ -304,8 +304,93 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
     Ok(())
 }
 
+async fn apply_planned<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    plan: &JoinPlan<A, O>,
+) -> Result<JoinOutcome<A, O>, WorkspaceError> {
+    plan.apply(
+        ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        },
+        std::collections::BTreeMap::new(),
+        crate::PublicationPermit::Unrestricted,
+    )
+    .await
+}
+
+/// Joins planned together against one target head, writing disjoint keys,
+/// all apply in that one round when the authority composes independent
+/// publications. Without composition (the negative control) every join after
+/// the first goes stale and leaves the target unchanged.
+async fn disjoint_joins_in_one_round<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    fs: Fs<A, O>,
+    composes: bool,
+) -> Result<(), Box<dyn Error>> {
+    let main = unbounded!(fs, create_workspace("main"))?;
+    let base = unbounded!(main, head())?;
+    let mut plans = Vec::new();
+    for index in 0..4 {
+        let agent = fork_workspace(
+            &main,
+            &format!("agent-{index}"),
+            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
+        )
+        .await?;
+        agent
+            .write_text(&format!("/agent-{index}"), "agent")
+            .await?;
+        plans.push(unbounded!(agent.join_into(&main), plan())?);
+    }
+    for (index, plan) in plans.iter().enumerate() {
+        let before = unbounded!(main, head())?.id();
+        let outcome = apply_planned(plan).await?;
+        if composes || index == 0 {
+            assert!(
+                matches!(outcome, JoinOutcome::Applied(_)),
+                "join {index} did not apply in its planned round"
+            );
+        } else {
+            assert!(matches!(outcome, JoinOutcome::StaleTarget(_)));
+            assert_eq!(unbounded!(main, head())?.id(), before);
+        }
+    }
+    for index in 0..4 {
+        let read = unbounded!(main, read(&format!("/agent-{index}"), 16));
+        if composes || index == 0 {
+            assert_eq!(read?, OwnedBytes::from_static(b"agent"));
+        } else {
+            assert!(read.is_err());
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
-async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Error>> {
+async fn disjoint_joins_apply_in_one_round_over_a_moved_target() -> Result<(), Box<dyn Error>> {
+    disjoint_joins_in_one_round(Fs::memory(), true).await
+}
+
+#[tokio::test]
+async fn negative_control_exact_head_joins_go_stale_over_disjoint_moves()
+-> Result<(), Box<dyn Error>> {
+    disjoint_joins_in_one_round(
+        Fs::new(
+            crate::MemoryAuthorityStore::default(),
+            crate::MemoryObjectStore::default(),
+            crate::EmbeddedCapabilities::MEMORY,
+        ),
+        false,
+    )
+    .await
+}
+
+/// A target change to a key the join writes leaves the planned join stale
+/// without mutation, exactly once: the replanned join then applies.
+#[tokio::test]
+async fn a_join_goes_stale_once_when_the_target_changes_its_keys() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("main"))?;
     let base = unbounded!(main, head())?;
@@ -315,25 +400,29 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
         ForkOptions::from_generation(base, IdempotencyKey::new()),
     )
     .await?;
+    agent.write_text("/shared", "same").await?;
     agent.write_text("/agent", "agent").await?;
     let plan = unbounded!(agent.join_into(&main), plan())?;
-    let expected = plan.target_head();
-    main.write_text("/raced", "winner").await?;
-    let outcome = plan
-        .apply(
-            ApplyOptions {
-                if_target: expected,
-                idempotency_key: IdempotencyKey::new(),
-            },
-            std::collections::BTreeMap::new(),
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await?;
-    assert!(matches!(outcome, JoinOutcome::StaleTarget(_)));
+    main.write_text("/shared", "same").await?;
+    let raced = unbounded!(main, head())?.id();
+    assert!(matches!(
+        apply_planned(&plan).await?,
+        JoinOutcome::StaleTarget(_)
+    ));
+    assert_eq!(unbounded!(main, head())?.id(), raced);
     assert!(unbounded!(main, read("/agent", 16)).is_err());
+    let replanned = unbounded!(agent.join_into(&main), plan())?;
+    assert!(matches!(
+        apply_planned(&replanned).await?,
+        JoinOutcome::Applied(_)
+    ));
     assert_eq!(
-        unbounded!(main, read("/raced", 16))?,
-        OwnedBytes::from_static(b"winner")
+        unbounded!(main, read("/agent", 16))?,
+        OwnedBytes::from_static(b"agent")
+    );
+    assert_eq!(
+        unbounded!(main, read("/shared", 16))?,
+        OwnedBytes::from_static(b"same")
     );
     Ok(())
 }

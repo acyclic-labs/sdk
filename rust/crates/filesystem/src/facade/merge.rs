@@ -527,7 +527,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         operation_id,
                         generation_root: candidate,
                     },
-                    intent: PublicationIntent::guarded(Some(operation_context), permit),
+                    // The join changes exactly its delta against the planned
+                    // target. A target that moved only elsewhere composes it in
+                    // the same publication round; a change to any key it
+                    // writes leaves it stale, to be replanned.
+                    intent: PublicationIntent {
+                        preconditions: Some(crate::kernel::PublicationPreconditions {
+                            base: target_object,
+                            config: target.config,
+                            head: expected_head,
+                            rebase: true,
+                            reads: crate::kernel::CheckoutDependencies::new([], [])
+                                .map_err(FsError::from)?,
+                        }),
+                        ..PublicationIntent::guarded(Some(operation_context), permit)
+                    },
                     limits: closure_limits(target.config),
                     resolutions_digest,
                     source_hold,
