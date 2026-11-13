@@ -896,7 +896,32 @@ impl Cursor {
     async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {
         match self.receiver.try_recv() {
             Ok(received) => Some(received),
-            Err(_) => super::runtime::waiting(self.primitive, self.id, self.receiver.recv()).await,
+            Err(_) => {
+                let work = super::runtime::waiting(self.primitive, self.id, self.receiver.recv());
+                #[cfg(feature = "serde")]
+                {
+                    let progress = &self.progress;
+                    crate::trace::observe_value(
+                        crate::trace::Request {
+                            name: "stream.session_delivery_wait",
+                            mechanism: crate::trace::Mechanism::Wait,
+                            parent: None,
+                            guarantee: Some("queued_delivery_or_confirmed_session_end"),
+                        },
+                        work,
+                        |result| match result {
+                            Some(Ok(_)) => Some((Some(0), crate::trace::Outcome::Succeeded)),
+                            None if progress.ended() => {
+                                Some((Some(0), crate::trace::Outcome::Succeeded))
+                            }
+                            _ => None,
+                        },
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "serde"))]
+                work.await
+            }
         }
     }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
