@@ -91,7 +91,16 @@ struct HostCallIdentity<'a> {
     version: u32,
     invocation: &'a ToolInvocation,
     definition: &'a crate::tool::ToolDefinition,
+    canonical: Option<HostCanonicalIdentity<'a>>,
     metadata: &'a Value,
+}
+
+#[derive(Serialize)]
+struct HostCanonicalIdentity<'a> {
+    capability: &'a crate::tool::ToolDefinition,
+    implementation: &'a crate::tool::ToolDefinition,
+    arguments: &'a Value,
+    refused: &'a [String],
 }
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
@@ -213,6 +222,15 @@ impl<'io> StockExecution<'io> {
             version: 1,
             invocation,
             definition: &tool.definition,
+            canonical: tool
+                .executor
+                .canonical_binding()
+                .map(|binding| HostCanonicalIdentity {
+                    capability: &binding.capability.definition,
+                    implementation: &binding.implementation.definition,
+                    arguments: binding.arguments,
+                    refused: binding.refused,
+                }),
             metadata,
         };
         let fingerprint = match self.io {
