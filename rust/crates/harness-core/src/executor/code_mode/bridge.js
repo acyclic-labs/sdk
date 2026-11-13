@@ -1,5 +1,6 @@
 (rpc, definitions, lazy) => {
     const parse = JSON.parse, stringify = JSON.stringify;
+    const raw = String.raw, isArray = Array.isArray, hasOwn = Object.hasOwn;
     const ErrorType = Error, PromiseType = Promise;
     const define = Object.defineProperty, tools = Object.create(null);
     const own = Object.hasOwn;
@@ -28,8 +29,18 @@
         }
     };
     for (const definition of parse(definitions)) {
-        const tool = args => {
+        const required = definition.input_schema.required;
+        const literalInput = isArray(required) && required.length === 1 ? required[0] : null;
+        const tool = (args, ...values) => {
             if (closed) throw new ErrorType('JavaScript calls are closed');
+            // A tag receives both cooked and raw strings. Use the original
+            // spelling, so JavaScript identity escapes cannot alter tool input.
+            // The original registry still validates and executes the request.
+            if (isArray(args) && hasOwn(args, 'raw')) {
+                if (literalInput === null)
+                    throw new ErrorType('Tagged tool calls require exactly one required input; use an argument object');
+                args = {[literalInput]: raw(args, ...values)};
+            }
             return invoke(definition.name, args);
         };
         Object.defineProperty(tool, 'input_schema', {value: definition.input_schema});
