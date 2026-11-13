@@ -45,62 +45,64 @@ pub(crate) struct WorkspaceJoinRequest<'a, A: 'static, O: 'static> {
 
 impl<A, O> WorkspaceJoinRequest<'_, A, O> {
     pub(super) fn operation_context(&self, resolutions: Digest) -> Digest {
-        workspace_join_context(
-            self.source.workspace.volume.id,
-            self.source.id,
-            self.target.id,
-            self.expected_target,
-            self.base,
-            self.history,
-            self.maximum_generations,
-            self.maximum_changes,
-            self.maximum_conflicts,
+        WorkspaceJoinContext {
+            source_workspace: self.source.workspace.volume.id,
+            source_generation: self.source.id,
+            target_workspace: self.target.id,
+            expected_target: self.expected_target,
+            base: self.base,
+            history: self.history,
+            maximum_generations: self.maximum_generations,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
             resolutions,
-        )
+        }
+        .digest()
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "join digest binds every checked Filesystem generation and limit"
-)]
-pub(super) fn workspace_join_context(
-    source_workspace: VolumeId,
-    source_generation: GenerationId,
-    target_workspace: VolumeId,
-    expected_target: GenerationId,
-    base: WorkspaceCommonAncestor,
-    history: crate::workspace::JoinHistory,
-    maximum_generations: Option<u32>,
-    maximum_changes: impl Into<Option<u32>>,
-    maximum_conflicts: impl Into<Option<u32>>,
-    resolutions: Digest,
-) -> Digest {
-    let maximum_changes = maximum_changes.into();
-    let maximum_conflicts = maximum_conflicts.into();
+pub(super) struct WorkspaceJoinContext {
+    pub source_workspace: VolumeId,
+    pub source_generation: GenerationId,
+    pub target_workspace: VolumeId,
+    pub expected_target: GenerationId,
+    pub base: WorkspaceCommonAncestor,
+    pub history: crate::workspace::JoinHistory,
+    pub maximum_generations: Option<u32>,
+    pub maximum_changes: Option<u32>,
+    pub maximum_conflicts: Option<u32>,
+    pub resolutions: Digest,
+}
 
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
-    hasher.update(&source_workspace.into_bytes());
-    hasher.update(&source_generation.to_bytes());
-    hasher.update(&target_workspace.into_bytes());
-    hasher.update(&expected_target.to_bytes());
-    hasher.update(&base.volume_id.into_bytes());
-    hasher.update(&base.id.to_bytes());
-    hasher.update(&[match history {
-        crate::workspace::JoinHistory::Merge => 1,
-        crate::workspace::JoinHistory::Rebase => 2,
-        crate::workspace::JoinHistory::Squash => 3,
-        crate::workspace::JoinHistory::CherryPick => 4,
-    }]);
-    for maximum in [maximum_generations, maximum_changes, maximum_conflicts] {
-        hasher.update(&[u8::from(maximum.is_some())]);
-        if let Some(maximum) = maximum {
-            hasher.update(&maximum.to_le_bytes());
+impl WorkspaceJoinContext {
+    pub(super) fn digest(self) -> Digest {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
+        hasher.update(&self.source_workspace.into_bytes());
+        hasher.update(&self.source_generation.to_bytes());
+        hasher.update(&self.target_workspace.into_bytes());
+        hasher.update(&self.expected_target.to_bytes());
+        hasher.update(&self.base.volume_id.into_bytes());
+        hasher.update(&self.base.id.to_bytes());
+        hasher.update(&[match self.history {
+            crate::workspace::JoinHistory::Merge => 1,
+            crate::workspace::JoinHistory::Rebase => 2,
+            crate::workspace::JoinHistory::Squash => 3,
+            crate::workspace::JoinHistory::CherryPick => 4,
+        }]);
+        for maximum in [
+            self.maximum_generations,
+            self.maximum_changes,
+            self.maximum_conflicts,
+        ] {
+            hasher.update(&[u8::from(maximum.is_some())]);
+            if let Some(maximum) = maximum {
+                hasher.update(&maximum.to_le_bytes());
+            }
         }
+        hasher.update(self.resolutions.as_bytes());
+        Digest::from_bytes(*hasher.finalize().as_bytes())
     }
-    hasher.update(resolutions.as_bytes());
-    Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
 pub(crate) enum WorkspaceJoinResolutions<'a> {

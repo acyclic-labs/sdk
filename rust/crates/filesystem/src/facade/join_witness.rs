@@ -29,21 +29,22 @@ pub struct JoinCommitWitness {
 
 impl JoinCommitWitness {
     pub(super) fn operation_context(self) -> Digest {
-        workspace_join_context(
-            self.source_workspace,
-            self.source_generation,
-            self.target_workspace,
-            self.expected_target,
-            WorkspaceCommonAncestor {
+        WorkspaceJoinContext {
+            source_workspace: self.source_workspace,
+            source_generation: self.source_generation,
+            target_workspace: self.target_workspace,
+            expected_target: self.expected_target,
+            base: WorkspaceCommonAncestor {
                 volume_id: self.base_workspace,
                 id: self.base_generation,
             },
-            self.history,
-            self.maximum_generations,
-            self.maximum_changes,
-            self.maximum_conflicts,
-            self.resolutions_digest,
-        )
+            history: self.history,
+            maximum_generations: self.maximum_generations,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
+            resolutions: self.resolutions_digest,
+        }
+        .digest()
     }
 }
 
