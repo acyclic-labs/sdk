@@ -52,6 +52,43 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
     Ok((directory, fixture, publisher))
 }
 
+#[tokio::test]
+async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<()> {
+    let directory = temporary_directory()?;
+    std::fs::create_dir(directory.path().join("directory")).map_err(storage)?;
+    let (_fixture, publisher) = open_fixture(directory.path(), temporary_directory()?).await?;
+    let _busy = lock_owned(StateArc::clone(&publisher.tools.state)).await;
+    let denied = crate::Capabilities::new(Vec::<String>::new());
+    for (ceiling, code) in [
+        (Some(&denied), crate::wire::ErrorCode::Unauthorized),
+        (None, crate::wire::ErrorCode::Invalid),
+    ] {
+        let result = publisher
+            .stage_once(
+                OperationId::new(),
+                "directory",
+                b"bytes",
+                "text/plain",
+                "directory",
+                crate::conversation::ContentAccess { ceiling, io: None },
+            )?
+            .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => return Err(Error::Invalid("directory publication was accepted".into())),
+        };
+        assert_eq!(error.code(), code, "{error:?}");
+        if code == crate::wire::ErrorCode::Invalid {
+            assert!(
+                error.to_string().contains("path is a directory"),
+                "{error:?}"
+            );
+        }
+    }
+    assert!(directory.path().join("directory").is_dir());
+    Ok(())
+}
+
 async fn open_fixture(
     directory: &Path,
     state: tempfile::TempDir,

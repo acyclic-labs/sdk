@@ -103,6 +103,62 @@ impl CheckoutPublisher {
             Publication::Once { path, .. } | Publication::Path { path, .. } => (None, *path),
             Publication::Replace(source) => (Some(source.volume()), source.path()),
         };
+        // Refusals linearize at an authorized logical cut before waiting for
+        // native checkout publication. Successful writes still select and
+        // revalidate under the guard; an original receipt bypasses new-path
+        // admission so a replay never acquires a later destination's meaning.
+        if !matches!(&publication, Publication::Replace(_)) {
+            let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
+            mount.check(
+                acyclic_fs::access::Action::Write,
+                &relative,
+                self.tools.clock.now_unix_millis() / 1000,
+            )?;
+            let (selected, _) = self.tools.workspace.selected_view().await?;
+            let selected = selected
+                .as_ref()
+                .unwrap_or_else(|| self.tools.workspace.view());
+            let workspace = mount.view.source.as_ref().map_or_else(
+                || selected.workspace(),
+                |source| source.workspace.workspace(),
+            );
+            access::require_volume_access(
+                workspace,
+                &mount.view.volume,
+                &self.tools.signed,
+                ceiling.unwrap_or(self.tools.signed.capabilities()),
+                "local checkout publication",
+            )
+            .await?;
+            let writer = self.writer_for(&mount.view.volume, workspace)?;
+            let original = match &publication {
+                Publication::Once { .. } => {
+                    writer
+                        .observe_staged_once(
+                            operation,
+                            None,
+                            self.maximum,
+                            crate::conversation::ContentAccess { ceiling, io: None },
+                        )?
+                        .await?
+                        .0
+                }
+                Publication::Path { .. } => {
+                    writer
+                        .observe_staged_path(operation, &relative, self.maximum, ceiling)
+                        .await?
+                }
+                Publication::Replace(_) => unreachable!(),
+            };
+            if original.is_none() {
+                writer
+                    .admit_path(
+                        &relative,
+                        crate::conversation::ContentAccess { ceiling, io: None },
+                    )?
+                    .await?;
+            }
+        }
         serialized(&self.tools.state, async |mut state| {
             let physical = self.selected_workspace(&state)?;
             let (mount, relative) = physical.mounts.file(volume, path)?;
