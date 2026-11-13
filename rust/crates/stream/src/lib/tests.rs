@@ -418,9 +418,98 @@ mod replay_tests {
         }
         assert_eq!(drain(&mut stream.replay(tail)).await.unwrap(), [tail]);
         assert_eq!(
-            drain(&mut stream.replay(0).until(tail + 2)).await,
+            drain(&mut stream.replay(0).until(tail + 2))
+                .await
+                .map_err(|error| error.category()),
             Err(StreamError::Unavailable)
         );
+    }
+
+    #[cfg(feature = "serde")]
+    #[tokio::test]
+    async fn replay_observation_preserves_results_parentage_and_unretained_failures()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Observation, Recorder, Settlement, SpanId, TraceQuery};
+        use std::error::Error as _;
+        let provider = Arc::new(MemoryStream::default());
+        let data = Stream::new(provider.clone(), "agents/worker/data")?;
+        data.append(b"original payload".to_vec(), IdempotencyKey::unique())
+            .await?;
+        let traces = Stream::new(provider, "agents/worker/trace")?;
+        let recorder = Arc::new(Recorder::new(traces.clone(), [3; 16]));
+        let parent = SpanId {
+            process: [1; 16],
+            sequence: 7,
+        };
+        let mut replay = data.replay(0);
+        let observed = replay
+            .next_page_observed(Some(&recorder), Some(parent))
+            .await;
+        let rows = observed.result?.ok_or("original page missing")?;
+        assert_eq!(rows[0].value.as_ref(), b"original payload");
+        assert!(matches!(observed.observation?, Settlement::Finished(_)));
+        let mut query = TraceQuery::new(traces.read(0, 2).await?, Default::default());
+        query.next().await?;
+        assert!(matches!(query.next().await?, Some(Observation::Completed {
+            start, bytes: Some(16), ..
+        }) if start.parent == Some(parent) && start.mechanism == Mechanism::Io
+            && start.guarantee.as_deref() == Some("gapless_committed_prefix")));
+        let disabled = replay.next_page_observed(None, None).await;
+        assert!(disabled.result?.is_none());
+        assert!(matches!(disabled.observation?, Settlement::Disabled));
+        assert_eq!(traces.tail().await?, 2);
+
+        let mut incomplete = data.replay(1).until(2);
+        let observed = incomplete
+            .next_page_observed(Some(&recorder), Some(parent))
+            .await;
+        let error = observed
+            .result
+            .err()
+            .ok_or("incomplete prefix was accepted")?;
+        assert_eq!(error.category(), StreamError::Unavailable);
+        let mut source = error.source();
+        let mut found = false;
+        while let Some(cause) = source {
+            found |= matches!(
+                cause.downcast_ref::<ReplayViolation>(),
+                Some(ReplayViolation::IncompletePrefix { cursor: 1, end: 2 })
+            );
+            source = cause.source();
+        }
+        assert!(found, "original replay invariant cause was lost");
+        let Settlement::Pending(recording) = observed.observation? else {
+            return Err("unretained failure fabricated a terminal".into());
+        };
+        drop(recording);
+        let mut query = TraceQuery::new(traces.read(2, 1).await?, Default::default());
+        query.next().await?;
+        assert_eq!(query.active().len(), 1);
+        assert!(query.totals().is_empty());
+
+        // A real producer-capacity refusal must not replace the successful
+        // read, consume its payload or turn its cursor into a retry.
+        let provider = Arc::new(MemoryStream::new(MemoryLimits {
+            paths: Some(1),
+            ..Default::default()
+        }));
+        let data = Stream::new(provider.clone(), "data")?;
+        data.append(b"retained".to_vec(), IdempotencyKey::unique())
+            .await?;
+        let recorder = Arc::new(Recorder::new(Stream::new(provider, "trace")?, [4; 16]));
+        let mut replay = data.replay(0);
+        let observed = replay.next_page_observed(Some(&recorder), None).await;
+        assert_eq!(
+            observed.result?.ok_or("successful read was lost")?[0]
+                .value
+                .as_ref(),
+            b"retained"
+        );
+        assert_eq!(replay.cursor(), 1);
+        assert!(
+            matches!(observed.observation, Err(error) if error.category() == StreamError::Capacity)
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -437,7 +526,10 @@ mod replay_tests {
             )
             .await;
             let mut replay = stream.replay(0);
-            assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+            assert_eq!(
+                drain(&mut replay).await.map_err(|error| error.category()),
+                Err(StreamError::Unavailable)
+            );
             assert_eq!(
                 replay.cursor(),
                 cursor,
@@ -448,7 +540,9 @@ mod replay_tests {
                 (0..missing).collect::<Vec<_>>()
             );
             assert_eq!(
-                drain(&mut stream.replay(0).until(missing + 1)).await,
+                drain(&mut stream.replay(0).until(missing + 1))
+                    .await
+                    .map_err(|error| error.category()),
                 Err(StreamError::Unavailable)
             );
         }
@@ -466,7 +560,10 @@ mod replay_tests {
             if let Some(end) = end {
                 replay = replay.until(end);
             }
-            assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
+            assert_eq!(
+                drain(&mut replay).await.map_err(|error| error.category()),
+                Err(StreamError::Unavailable)
+            );
             assert_eq!(replay.cursor(), 0, "an overlong page advanced its cursor");
         }
     }

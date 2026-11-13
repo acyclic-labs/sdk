@@ -7,6 +7,39 @@ use std::sync::{
 };
 use web_time::Instant;
 
+/// Static request contract, without payloads, credentials or resource labels.
+pub struct Request {
+    /// Stable operation name.
+    pub name: &'static str,
+    /// Logical mechanism, independent of backend placement.
+    pub mechanism: Mechanism,
+    /// Original causal parent, if known.
+    pub parent: Option<SpanId>,
+    /// Public guarantee the request buys.
+    pub guarantee: Option<&'static str>,
+}
+
+/// Original operation output and independent observation-publication result.
+/// A diagnostic failure never replaces a successful read or its native cause.
+#[must_use]
+pub struct Observed<T, E, P: ?Sized> {
+    /// The original operation result, moved without wrapping its error.
+    pub result: Result<T, E>,
+    /// Observation state; publication failures retain their original sources.
+    pub observation: Result<Settlement<P>, StreamError>,
+}
+
+/// What the observer actually retained, distinct from the operation's result.
+pub enum Settlement<P: ?Sized> {
+    /// No host-admitted interest; no observation work was performed.
+    Disabled,
+    /// A successful operation has an original terminal publication.
+    Finished(RetainedRecord),
+    /// The operation failed. Its caller must retain the original failure before
+    /// finishing this span as Failed; dropping it preserves incomplete coverage.
+    Pending(Recording<P>),
+}
+
 /// One selected producer incarnation and its original monotonic clock.
 /// Hosts retain this only for an admitted trace subscription. Constructing or
 /// cloning an ordinary Stream never creates a recorder or reads a clock.
@@ -28,6 +61,42 @@ enum RecorderFailure {
 }
 
 impl<P: StreamProvider + ?Sized> Recorder<P> {
+    /// Observe polling of the original future, retaining its output even when
+    /// trace publication fails. Disabled interest never evaluates `bytes`.
+    /// A failed operation cannot acquire an invented persisted cause: its
+    /// pending handle requires original evidence through Outcome::Failed.
+    pub async fn observe<T, E>(
+        recorder: Option<&Arc<Self>>,
+        request: Request,
+        work: impl std::future::Future<Output = Result<T, E>>,
+        bytes: impl FnOnce(&T) -> Option<u64>,
+    ) -> Observed<T, E, P> {
+        let admission = Self::start_optional(
+            recorder,
+            request.name,
+            request.mechanism,
+            request.parent,
+            request.guarantee,
+        )
+        .await;
+        let result = work.await;
+        let observation = match admission {
+            Err(error) => Err(error),
+            Ok(None) => Ok(Settlement::Disabled),
+            Ok(Some(recording)) => match &result {
+                Ok(value) => recording
+                    .finish(bytes(value), Outcome::Succeeded)
+                    .await
+                    .map(Settlement::Finished),
+                Err(_) => Ok(Settlement::Pending(recording)),
+            },
+        };
+        Observed {
+            result,
+            observation,
+        }
+    }
+
     /// The unfollowed path: no clock read, allocation, serialization or IO.
     /// Callers obtain the optional recorder from their host's admitted interest,
     /// rather than constructing one per request or discovering interest by IO.

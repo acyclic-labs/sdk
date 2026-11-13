@@ -9,7 +9,7 @@ use crate::RetainedRecord;
 #[cfg(feature = "serde")]
 mod recorder;
 #[cfg(feature = "serde")]
-pub use recorder::{Recorder, Recording};
+pub use recorder::{Observed, Recorder, Recording, Request, Settlement};
 
 #[cfg(feature = "serde")]
 mod query;

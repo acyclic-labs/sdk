@@ -223,7 +223,50 @@ pub struct Replay<P: ?Sized> {
     done: bool,
 }
 
+#[derive(Debug, thiserror::Error)]
+enum ReplayViolation {
+    #[error("replay page returned {actual} records beyond its requested bound {limit}")]
+    OversizedPage { limit: u32, actual: usize },
+    #[error("replay expected record {expected}, received {actual}, exclusive end {end:?}")]
+    Discontinuity {
+        expected: u64,
+        actual: u64,
+        end: Option<u64>,
+    },
+    #[error("replay prefix ended at {cursor} before the requested exclusive end {end}")]
+    IncompletePrefix { cursor: u64, end: u64 },
+    #[error("replay cursor cannot advance beyond the sequence representation")]
+    CursorExhausted,
+}
+
 impl<P: StreamProvider + ?Sized> Replay<P> {
+    /// Observe the original page request under the owner's admitted trace
+    /// interest. Report payload bytes, not wire/header bytes or copy counts.
+    /// The original result and any diagnostic publication failure stay separate.
+    #[cfg(feature = "serde")]
+    pub async fn next_page_observed(
+        &mut self,
+        recorder: Option<&Arc<crate::trace::Recorder<P>>>,
+        parent: Option<crate::trace::SpanId>,
+    ) -> crate::trace::Observed<Option<Vec<Record>>, StreamError, P> {
+        crate::trace::Recorder::observe(
+            recorder,
+            crate::trace::Request {
+                name: "stream.replay_page",
+                mechanism: crate::trace::Mechanism::Io,
+                parent,
+                guarantee: Some("gapless_committed_prefix"),
+            },
+            self.next_page(),
+            |page| {
+                page.iter().flatten().try_fold(0_u64, |bytes, record| {
+                    bytes.checked_add(u64::try_from(record.value.len()).ok()?)
+                })
+            },
+        )
+        .await
+    }
+
     /// Stops before `sequence`, even if the stream grows while pages are read.
     /// An end at or before the cursor is empty; an incomplete prefix refuses.
     #[must_use]
@@ -241,7 +284,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
         }
         let limit = match self.until {
             Some(end) => u32::try_from((end - self.next).min(u64::from(REPLAY_PAGE)))
-                .map_err(|_| StreamError::LimitExceeded)?,
+                .map_err(|error| StreamError::LimitExceeded.with_source(error))?,
             None => REPLAY_PAGE,
         };
         let page = match self.stream.read(self.next, limit).await {
@@ -255,17 +298,31 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
             Err(error) => return Err(error),
         };
         if page.len() > limit as usize {
-            return Err(StreamError::Unavailable);
+            return Err(
+                StreamError::Unavailable.with_source(ReplayViolation::OversizedPage {
+                    limit,
+                    actual: page.len(),
+                }),
+            );
         }
         let mut next = self.next;
         for record in &page {
             if record.sequence != next || self.until.is_some_and(|end| next >= end) {
-                return Err(StreamError::Unavailable);
+                return Err(
+                    StreamError::Unavailable.with_source(ReplayViolation::Discontinuity {
+                        expected: next,
+                        actual: record.sequence,
+                        end: self.until,
+                    }),
+                );
             }
-            next = next.checked_add(1).ok_or(StreamError::LimitExceeded)?;
+            next = next.checked_add(1).ok_or_else(|| {
+                StreamError::LimitExceeded.with_source(ReplayViolation::CursorExhausted)
+            })?;
         }
-        if page.is_empty() && self.until.is_some_and(|end| next < end) {
-            return Err(StreamError::Unavailable);
+        if let Some(end) = self.until.filter(|end| page.is_empty() && next < *end) {
+            return Err(StreamError::Unavailable
+                .with_source(ReplayViolation::IncompletePrefix { cursor: next, end }));
         }
         self.next = next;
         self.done = page.is_empty() || self.until == Some(self.next);
