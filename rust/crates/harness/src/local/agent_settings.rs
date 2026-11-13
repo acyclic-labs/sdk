@@ -492,7 +492,7 @@ mod tests {
                     contents.as_bytes(),
                     "text/plain",
                     name,
-                    u64::MAX,
+                    None,
                     &crate::IdempotencyKey::new(format!("program-{name}"))?,
                     None,
                     ContentAccess::default(),
@@ -577,7 +577,7 @@ mod tests {
             signed: &harness.signed,
             home: &harness.scratch,
             journal: &harness.journal,
-            maximum_bytes: u64::MAX,
+            maximum_bytes: None,
         };
         let refused = Tree::new(&volumes, crate::config::AGENT, None)
             .await
