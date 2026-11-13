@@ -215,6 +215,7 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                                 Subscription {
                                     path: source.clone(),
                                     cursor: 0,
+                                    paused: false,
                                 },
                             )
                         })
@@ -256,6 +257,27 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
                 trigger.record_position(),
                 Some((if earliest { "z" } else { "inbox" }, record.sequence))
             );
+        }
+        for paused in ["inbox", "z"] {
+            let mut state = snapshot.state().ok_or("missing ordered state")?.clone();
+            state.subscriptions.get_mut(paused).unwrap().paused = true;
+            for after in [None, Some("inbox"), Some("z")] {
+                let (trigger, record, _) = runtime
+                    .next_record(&state, after)
+                    .await?
+                    .ok_or("paused member starved an active source member")?;
+                let (active, sequence) = if paused == "inbox" {
+                    ("z", 0)
+                } else {
+                    ("inbox", 1)
+                };
+                assert_eq!(record.sequence, sequence);
+                assert_eq!(trigger.record_position(), Some((active, sequence)));
+            }
+            for bound in state.subscriptions.values_mut() {
+                bound.paused = true;
+            }
+            assert!(runtime.next_record(&state, None).await?.is_none());
         }
     }
     Ok(())
@@ -315,6 +337,7 @@ async fn ordered_source_backlog_yields_to_an_unrelated_ready_input() -> TestResu
                                         source.clone()
                                     },
                                     cursor: 0,
+                                    paused: false,
                                 },
                             )
                         })
@@ -433,6 +456,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
                     Subscription {
                         path: source.clone(),
                         cursor: 0,
+                        paused: false,
                     },
                 )]),
                 checkpoint: Some(ledger("out/external")?),

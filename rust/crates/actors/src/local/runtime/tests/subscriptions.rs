@@ -527,6 +527,7 @@ impl Handler for ApprovalPause {
                 _ => panic!("suspended input was delivered: {subscription}"),
             };
             Ok(Transition {
+                pause: false,
                 response: None,
                 checkpoint: Checkpoint {
                     codec: self.manifest().codec.clone(),
