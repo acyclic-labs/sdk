@@ -1,34 +1,61 @@
 use super::*;
 
+struct NativeProvider<F>(F);
+
+impl<F> crate::model::ModelProvider for NativeProvider<F>
+where
+    F: Fn() -> Result<Option<Arc<NativeTools>>> + Send + Sync,
+{
+    fn generate<'a>(
+        &'a self,
+        _: &'a crate::model::PreparedModelRequest,
+        _: crate::model::ModelDispatch,
+    ) -> crate::model::ModelStream<'a> {
+        unreachable!("declaration-only provider")
+    }
+
+    fn native_tools(&self, _: &crate::model::Model) -> Result<Option<Arc<NativeTools>>> {
+        (self.0)()
+    }
+}
+
 #[test]
 fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let cache = Cache::default();
     for profile in [
         NativeToolProfile::Anthropic,
         NativeToolProfile::Openai,
         NativeToolProfile::Google,
     ] {
         let model = crate::model::Model::new("test".into(), format!("{profile:?}"), "1".into())?;
-        let calls = AtomicUsize::new(0);
-        let refused = cache.get(&model, || {
-            Err(Error::Unsupported("original profile refusal".into()))
-        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(NativeProvider({
+            let calls = Arc::clone(&calls);
+            move || {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(Error::Unsupported("original profile refusal".into()));
+                }
+                NativeTools::new(profile).map(|tools| Some(Arc::new(tools)))
+            }
+        }));
+        let selection = format!("{}/{}", model.provider, model.name);
+        let catalog = crate::model::ModelResolver::new(selection.clone(), |_| {
+            Err(Error::NotFound("unregistered selection".into()))
+        })
+        .with_binding((model.clone(), provider))?;
+        let binding = catalog.resolve_shared(&selection)?;
+        let refused = binding.native_tools();
         assert!(
             matches!(refused, Err(Error::Unsupported(reason)) if reason == "original profile refusal")
         );
-
         let start = std::sync::Barrier::new(4);
         let bindings = std::thread::scope(|scope| {
             let workers: Vec<_> = (0..4)
                 .map(|_| {
                     scope.spawn(|| {
                         start.wait();
-                        cache.get(&model, || {
-                            calls.fetch_add(1, Ordering::SeqCst);
-                            NativeTools::new(profile).map(|tools| Some(Arc::new(tools)))
-                        })
+                        binding.native_tools()
                     })
                 })
                 .collect();
@@ -39,16 +66,13 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         })?;
         let original = bindings[0].as_ref().expect("native family binding");
         // A cached hit does not even ask the immutable selection for its profile.
-        let retained = cache
-            .get(&model, || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Err(Error::Unsupported("cached binding was read again".into()))
-            })?
+        let retained = binding
+            .native_tools()?
             .expect("retained native family binding");
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            1,
-            "native profile was read more than once"
+            2,
+            "native profile was read again after its one successful admission"
         );
         assert!(Arc::ptr_eq(original, &retained));
         for binding in bindings.iter().flatten() {
@@ -73,9 +97,18 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         }
         let mut changed = registry.clone();
         let admitted = Arc::new(NativeTools::from_definitions(admitted)?);
-        let selected = Cache::default()
-            .get(&model, || Ok(Some(Arc::clone(&admitted))))?
+        let replacement = catalog.with_binding((
+            model.clone(),
+            Arc::new(NativeProvider({
+                let admitted = Arc::clone(&admitted);
+                move || Ok(Some(Arc::clone(&admitted)))
+            })),
+        ))?;
+        let selected = replacement
+            .resolve_shared(&selection)?
+            .native_tools()?
             .unwrap();
+        assert!(Arc::ptr_eq(&retained, &binding.native_tools()?.unwrap()));
         assert!(Arc::ptr_eq(&selected, &admitted));
         selected.bind(&mut changed)?;
         let selected = changed.get("shell", None, None)?.unwrap();
@@ -152,15 +185,20 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         }
     }
     let model = crate::model::Model::new("test".into(), "absent".into(), "1".into())?;
-    let absent = Cache::default();
-    assert!(absent.get(&model, || Ok(None))?.is_none());
-    assert!(
-        absent
-            .get(&model, || Err(Error::Unsupported(
-                "absent profile was read again".into()
-            )))?
-            .is_none()
-    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let absent = crate::model::ResolvedModel::new((
+        model,
+        Arc::new(NativeProvider({
+            let calls = Arc::clone(&calls);
+            move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }
+        })),
+    ));
+    assert!(absent.native_tools()?.is_none());
+    assert!(absent.native_tools()?.is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
     // Canonical presentation cannot create a missing selection.
     assert!(matches!(
         ToolRegistry::default().present_natively("shell", vec!["shell".into()]),

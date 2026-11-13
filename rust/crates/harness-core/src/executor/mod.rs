@@ -720,7 +720,7 @@ pub trait StepConfiguration: acyclic_stream::ProviderPlatform {
 pub struct StockExecutor {
     step_configuration: Option<Arc<dyn StepConfiguration>>,
     intervention: Option<Arc<crate::agent::ContinuationOverride>>,
-    model: Model,
+    model: ExecutorModel,
     sampling: Option<crate::model::ModelSampling>,
     resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
     provider: Arc<dyn ModelProvider>,
@@ -748,6 +748,17 @@ pub struct StockExecutor {
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
     reconciliation_only: bool,
+}
+
+#[derive(Clone)]
+struct ExecutorModel(Arc<crate::model::ResolvedModel>);
+
+impl std::ops::Deref for ExecutorModel {
+    type Target = Model;
+
+    fn deref(&self) -> &Model {
+        &self.0.0
+    }
 }
 
 /// Journal payload separating canonical history from the exact transformed request.

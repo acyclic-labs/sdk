@@ -164,39 +164,6 @@ type Mapped = (
 /// One profile's mapped declarations, decoded and checked once.
 pub struct NativeTools(Vec<Mapped>);
 
-/// Model-specific declarations. The fallible initializer owns the
-/// reservation before it reads the profile or decodes any declarations.
-#[derive(Default)]
-pub(crate) struct Cache(
-    std::sync::Mutex<
-        std::collections::BTreeMap<(String, String, String), Option<Arc<NativeTools>>>,
-    >,
-);
-
-impl Cache {
-    pub(crate) fn get(
-        &self,
-        model: &crate::model::Model,
-        binding: impl FnOnce() -> Result<Option<Arc<NativeTools>>>,
-    ) -> Result<Option<Arc<NativeTools>>> {
-        let mut cache = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = (
-            model.provider.clone(),
-            model.name.clone(),
-            model.revision.clone(),
-        );
-        if let Some(native) = cache.get(&key) {
-            return Ok(native.clone());
-        }
-        let native = binding()?;
-        cache.insert(key, native.clone());
-        Ok(native)
-    }
-}
-
 impl NativeTools {
     /// The declarations `profile`'s layer maps, in the layer's order.
     /// Unmapped declarations are left out.
