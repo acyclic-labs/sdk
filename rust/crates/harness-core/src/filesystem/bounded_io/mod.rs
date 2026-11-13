@@ -95,7 +95,7 @@ impl PreparationIo {
     }
 
     /// Owns one attempt's storage while sharing its original work allowances.
-    pub(in crate::filesystem) fn scoped(&self) -> Result<Self> {
+    pub fn scoped(&self) -> Result<Self> {
         self.check_cancellation()?;
         match self {
             Self::Owned {

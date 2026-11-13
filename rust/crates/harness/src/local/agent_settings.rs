@@ -3,7 +3,7 @@
 //! its sampling. Each source cut's outcome is recorded as an
 //! [`Admission`](crate::config::Admission) in the journal.
 use super::*;
-use crate::config::{self, Admission, AdmissionStatus, AgentConfig, Sampling};
+use crate::config::{self, AdmissionStatus, AgentConfig, Sampling};
 use crate::conversation::{ContentAccess, ContentGrant};
 use crate::layers::{Layer, is_off};
 
@@ -205,6 +205,7 @@ pub(super) async fn admit(
     let cut = tree.cut()?.to_hex();
     admitted(
         tree.volumes,
+        tree.io,
         agent,
         (config::AGENT, cut.as_str(), file.version()),
         settle(&layers, tree, started, resolve, base_model).await,
@@ -272,6 +273,7 @@ impl<'a> Tree<'a> {
 /// their original cause; invalid enforcement content cannot select defaults.
 async fn admitted<T>(
     volumes: &Volumes<'_>,
+    io: Option<&crate::executor::PreparationIo>,
     agent: AgentId,
     version: (&str, &str, &str),
     result: std::result::Result<T, Refused>,
@@ -279,10 +281,10 @@ async fn admitted<T>(
 ) -> Result<T> {
     let outcome = match &result {
         Ok(_) => (AdmissionStatus::Applied, None),
-        Err(Refused::Settings(status, error)) => (*status, Some(error.to_string())),
+        Err(Refused::Settings(status, error)) => (*status, Some(error)),
         Err(Refused::Operation(_)) => return result.map_err(Refused::cause),
     };
-    record(volumes, agent, version, outcome, clock).await?;
+    record(volumes, io, agent, version, outcome, clock).await?;
     result.map_err(Refused::cause)
 }
 
@@ -290,48 +292,122 @@ async fn admitted<T>(
 /// configuration cut, so issuer edits cannot overwrite another cut's outcome.
 async fn record(
     volumes: &Volumes<'_>,
+    io: Option<&crate::executor::PreparationIo>,
     agent: AgentId,
     (path, cut, version): (&str, &str, &str),
-    (status, error): (AdmissionStatus, Option<String>),
+    (status, error): (AdmissionStatus, Option<&Error>),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<()> {
-    let admission = Admission {
-        path: path.to_owned(),
-        version: version.to_owned(),
+    let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;
+    let io = attempt.as_ref();
+    #[derive(serde::Serialize)]
+    struct Outcome<'a, T> {
+        path: &'a str,
+        version: &'a str,
+        status: AdmissionStatus,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<Diagnostic<'a>>,
+        at: T,
+    }
+    struct Diagnostic<'a>(&'a Error);
+    impl serde::Serialize for Diagnostic<'_> {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            serializer.collect_str(self.0)
+        }
+    }
+    let admission = Outcome {
+        path,
+        version,
         status,
-        error,
-        at: config::utc(clock.now_unix_millis()),
+        error: error.map(Diagnostic),
+        at: config::utc_value(clock.now_unix_millis()),
     };
-    let bytes =
-        serde_json::to_vec(&admission).map_err(|error| Error::Invalid(error.to_string()))?;
-    let record = format!("live/agents/{agent}/admissions/{path}/{cut}/{version}.json");
+    let bounded;
+    let unbounded;
+    let bytes: &[u8] = match io {
+        Some(io) => {
+            bounded = io.encode(&admission, volumes.maximum_bytes, false)?;
+            &bounded
+        }
+        None => {
+            unbounded = serde_json::to_vec(&admission)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            &unbounded
+        }
+    };
+    let mut agent_text = uuid::Uuid::encode_buffer();
+    let identity = uuid::Uuid::from_bytes(agent.into_bytes());
+    let agent = identity.hyphenated().encode_lower(&mut agent_text);
+    let record = crate::executor::PreparationIo::joined_text(
+        &[
+            "live/agents/",
+            agent,
+            "/admissions/",
+            path,
+            "/",
+            cut,
+            "/",
+            version,
+            ".json",
+        ],
+        io,
+    )?;
+    crate::executor::with_history_io(io, |work| -> Result<()> {
+        if let Some(work) = work.as_deref_mut() {
+            work.hashed_bytes(bytes.len() as u64)?;
+        }
+        Ok(())
+    })?;
+    let digest = blake3::hash(bytes).to_hex();
+    let (key, hold) = crate::executor::PreparationIo::joined_text(
+        &[
+            "admission:",
+            agent,
+            ":",
+            path,
+            ":",
+            cut,
+            ":",
+            version,
+            ":",
+            digest.as_str(),
+        ],
+        io,
+    )?;
+    // Keep the constructed key before its original storage owner on every exit.
+    let key = (crate::IdempotencyKey::new(key)?, hold);
+    let grant = crate::executor::with_history_io(io, |work| {
+        ContentGrant::verify(
+            volumes.verifier,
+            volumes.signed,
+            volumes.journal,
+            VolumeOperation::Write,
+            work,
+        )
+    })?;
     volumes
         .files
         .put_content(
             volumes.journal,
-            &ContentGrant::verify(
-                volumes.verifier,
-                volumes.signed,
-                volumes.journal,
-                VolumeOperation::Write,
-                &mut None,
-            )?,
-            &record,
-            &bytes,
+            &grant,
+            &record.0,
+            bytes,
             "application/json",
             "admission",
             volumes.maximum_bytes,
-            &crate::IdempotencyKey::new(format!(
-                "admission:{agent}:{path}:{cut}:{version}:{}",
-                blake3::hash(&bytes)
-            ))?,
+            &key.0,
             None,
-            ContentAccess::default(),
+            ContentAccess {
+                io,
+                ..ContentAccess::default()
+            },
         )
         .await?;
     Ok(())
 }
-
 /// The plugin set `plugins.ts` enables, read as the
 /// session starts, recording the home module's admission. Invalid enforcement
 /// manifests refuse the session rather than remove its guards.
@@ -373,6 +449,7 @@ pub(super) async fn plugins(
     let cut = tree.cut()?.to_hex();
     admitted(
         tree.volumes,
+        tree.io,
         agent,
         (MANIFEST, cut.as_str(), file.version()),
         load_result(tree, &layers, &enabler)
@@ -672,6 +749,155 @@ mod tests {
             "a source must not reopen an unmeasured ledger for its imports"
         );
         assert!(limited.receipt().output_bytes <= allowance.output_bytes);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn admission_records_use_original_work_before_publication() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let project = volume(directory.path()).await?;
+        let harness = LocalHarness::open(volume_config(directory.path(), project, text())?).await?;
+        let volumes = Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            seed: (&harness.seed.0, &harness.seed.1),
+            configuration: harness.harness.issuer_configuration(),
+            maximum_bytes: None,
+        };
+        let grant = ContentGrant::verify_directory_read(
+            &harness.verifier,
+            &harness.signed,
+            &harness.journal,
+            "",
+            &mut None,
+        )?;
+        async fn observed(
+            volumes: &Volumes<'_>,
+            grant: &ContentGrant,
+            agent: AgentId,
+            cut: &str,
+        ) -> Result<Option<crate::config::Admission>> {
+            let path = format!("live/agents/{agent}/admissions/agent.ts/{cut}/original.json");
+            volumes
+                .files
+                .read_private_path_indexed(
+                    volumes.journal,
+                    grant,
+                    &path,
+                    None,
+                    None,
+                    ContentAccess::default(),
+                )
+                .await?
+                .map(|(_, bytes, _)| {
+                    serde_json::from_slice(&bytes)
+                        .map_err(|error| Error::Invalid(error.to_string()))
+                })
+                .transpose()
+        }
+        struct Clock;
+        impl acyclic_stream::UnixMillisClock for Clock {
+            fn now_unix_millis(&self) -> u64 {
+                0
+            }
+        }
+        let cancel = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: 16 * 1024 * 1024,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::executor::PreparationIo::from_native_work(&work)?;
+        let occupied = work.claim(
+            work.remaining()?.peak_allocation_bytes,
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
+        let result = record(
+            &volumes,
+            Some(&io),
+            harness.root,
+            (config::AGENT, "unfunded", "original"),
+            (AdmissionStatus::Applied, None),
+            &Clock,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded {
+                        counter: "peak_allocation_bytes",
+                        ..
+                    }
+                ),
+                ..
+            })
+        ));
+        assert!(
+            observed(&volumes, &grant, harness.root, "unfunded")
+                .await?
+                .is_none()
+        );
+        drop(occupied);
+        let reason = Error::Invalid("original refusal: \"source\"\n".into());
+        record(
+            &volumes,
+            Some(&io),
+            harness.root,
+            (config::AGENT, "admitted", "original"),
+            (AdmissionStatus::Rejected, Some(&reason)),
+            &Clock,
+        )
+        .await?;
+        let outcome = observed(&volumes, &grant, harness.root, "admitted")
+            .await?
+            .ok_or_else(|| Error::NotFound("funded settings admission".into()))?;
+        assert_eq!(outcome.status, AdmissionStatus::Rejected);
+        assert_eq!(outcome.error.as_deref(), Some(reason.to_string().as_str()));
+        assert_eq!(outcome.path, config::AGENT);
+        assert_eq!(outcome.version, "original");
+        assert_eq!(outcome.at, "1970-01-01T00:00:00.000Z");
+        assert!(work.receipt().allocation_operations > 0);
+        let retained = work.live_allocation_bytes();
+        record(
+            &volumes,
+            Some(&io),
+            harness.root,
+            (config::AGENT, "admitted", "original"),
+            (AdmissionStatus::Rejected, Some(&reason)),
+            &Clock,
+        )
+        .await?;
+        assert_eq!(
+            work.live_allocation_bytes(),
+            retained,
+            "replaying the same record must retire temporary publication storage"
+        );
+        cancel.cancel();
+        let result = record(
+            &volumes,
+            Some(&io),
+            harness.root,
+            (config::AGENT, "cancelled", "original"),
+            (AdmissionStatus::Applied, None),
+            &Clock,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ref error) if error.code() == crate::wire::ErrorCode::Cancelled)
+        );
+        assert!(
+            observed(&volumes, &grant, harness.root, "cancelled")
+                .await?
+                .is_none()
+        );
         Ok(())
     }
 
