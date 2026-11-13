@@ -121,7 +121,7 @@ pub(super) fn walk_commits(
     state: &GitCompatState,
     mut next: Option<GitCommitId>,
     maximum: u32,
-) -> Vec<GitCommit> {
+) -> (Vec<GitCommit>, Option<GitCommitId>) {
     let mut commits = Vec::new();
     while let Some(id) = next {
         if commits.len() >= usize::try_from(maximum).unwrap_or(usize::MAX) {
@@ -133,5 +133,5 @@ pub(super) fn walk_commits(
         commits.push(commit.clone());
         next = commit.parents.first().copied();
     }
-    commits
+    (commits, next)
 }

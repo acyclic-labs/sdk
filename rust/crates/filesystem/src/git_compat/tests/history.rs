@@ -1,6 +1,65 @@
 use super::*;
 
 #[tokio::test]
+async fn log_pages_reach_the_root_without_following_a_moving_head() {
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    let mut expected = Vec::new();
+    for byte in 1..=205 {
+        let GitCommandOutput::Committed(commit) = repository
+            .record_commit(
+                expected.last().copied(),
+                generation(byte),
+                BTreeSet::new(),
+                format!("commit {byte}"),
+                "author".to_owned(),
+                i64::from(byte),
+            )
+            .await
+            .expect("record history")
+        else {
+            panic!("expected commit");
+        };
+        expected.push(commit.id);
+    }
+    let original_head = expected.last().copied();
+    expected.reverse();
+    let mut arguments = vec!["log".to_owned()];
+    let mut observed = Vec::new();
+    for (page, length) in [100, 100, 5].into_iter().enumerate() {
+        let command = parse_git_argv::<std::convert::Infallible>(&arguments, "author", 0)
+            .expect("log page arguments");
+        let GitCommandOutput::Commits { commits, next } = repository
+            .execute(command, tree(205))
+            .await
+            .expect("history page")
+        else {
+            panic!("expected history page");
+        };
+        assert_eq!(commits.len(), length);
+        observed.extend(commits.into_iter().map(|commit| commit.id));
+        if page == 0 {
+            repository
+                .record_commit(
+                    original_head,
+                    generation(206),
+                    BTreeSet::new(),
+                    "new head",
+                    "author",
+                    206,
+                )
+                .await
+                .expect("advance HEAD between pages");
+        }
+        if page < 2 {
+            arguments = vec!["log".to_owned(), next.expect("continuation").to_hex()];
+        } else {
+            assert_eq!(next, None);
+        }
+    }
+    assert_eq!(observed, expected);
+}
+
+#[tokio::test]
 async fn auto_staging_commit_and_machine_readable_history() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Status(status) = repository
@@ -43,8 +102,14 @@ async fn auto_staging_commit_and_machine_readable_history() {
     else {
         panic!("expected commit");
     };
-    let GitCommandOutput::Commits(log) = repository
-        .execute(GitCommand::Log { maximum: 10 }, tree(1))
+    let GitCommandOutput::Commits { commits: log, .. } = repository
+        .execute(
+            GitCommand::Log {
+                maximum: 10,
+                object: None,
+            },
+            tree(1),
+        )
         .await
         .expect("log")
     else {
@@ -657,7 +722,10 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     assert_eq!(started.remaining, 3);
     let selected_paths = BTreeSet::from(["tracked.txt".to_owned(), "removed-later.txt".to_owned()]);
     for command in [
-        GitCommand::Log { maximum: 10 },
+        GitCommand::Log {
+            maximum: 10,
+            object: None,
+        },
         GitCommand::Blame {
             path: "tracked.txt".to_owned(),
         },
@@ -667,7 +735,7 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
             .await
             .expect("selected history");
         let history = match output {
-            GitCommandOutput::Commits(commits) => commits,
+            GitCommandOutput::Commits { commits, .. } => commits,
             GitCommandOutput::Action(GitFilesystemAction::Blame { commits, .. }) => commits,
             _ => panic!("expected selected history"),
         };
@@ -1319,9 +1387,12 @@ async fn discard_keeps_every_record_a_discarded_branch_produced() {
         };
         assert_eq!(branches.len(), 1, "{scenario:?}");
         // The repository stays writable and merged history stays reachable.
-        let GitCommandOutput::Commits(log) = repository
+        let GitCommandOutput::Commits { commits: log, .. } = repository
             .run(
-                GitCommand::Log { maximum: 10 },
+                GitCommand::Log {
+                    maximum: 10,
+                    object: None,
+                },
                 main_tree,
                 &TestExecutor::failing(),
             )
@@ -1410,7 +1481,10 @@ async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
     // A bare revision still shows the commit itself.
     assert_eq!(
         shown(&repository, "HEAD").await.expect("show commit"),
-        GitCommandOutput::Commits(vec![commit])
+        GitCommandOutput::Commits {
+            commits: vec![commit],
+            next: None
+        }
     );
     // Negative controls: an untracked path, an unknown revision and the index
     // form never fall back to another tree.

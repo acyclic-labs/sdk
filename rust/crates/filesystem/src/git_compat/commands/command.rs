@@ -41,9 +41,11 @@ pub enum GitCommand {
     } => ("diff", r#"{ readonly kind: "diff"; readonly cached?: boolean }"#),
 /// Walk explicit compatibility history.
     Log {
-        /// Maximum first-parent commits to return.
+        /// Maximum first-parent commits in one page; the result names the next object.
         maximum: u32,
-    } => ("log", r#"{ readonly kind: "log"; readonly maximum: number }"#),
+        /// First commit to return, defaulting to the visible HEAD.
+        object: Option<String>,
+    } => ("log", r#"{ readonly kind: "log"; readonly maximum: number; readonly object?: string }"#),
 /// Inspect one compatibility commit.
     Show {
         /// Object to show, defaulting to `HEAD`.

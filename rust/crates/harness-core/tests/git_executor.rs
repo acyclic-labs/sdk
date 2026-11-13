@@ -2220,7 +2220,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
                 &argv,
             )
             .await?;
-            if let Some(GitCommandOutput::Commits(commits)) = output.command {
+            if let Some(GitCommandOutput::Commits { commits, .. }) = output.command {
                 log = Some(commits);
                 break;
             }
@@ -2230,7 +2230,7 @@ async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> R
             // Cut before the transition was recorded: nothing to resume, so
             // the merge is simply run again.
             run(&fs, &store, &main, repo, &["merge", "agents/kid"]).await?;
-            let GitCommandOutput::Commits(commits) =
+            let GitCommandOutput::Commits { commits, .. } =
                 run(&fs, &store, &main, repo, &["log"]).await?.0
             else {
                 return Err("expected the merged log".into());

@@ -56,8 +56,14 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             to: workspace,
             tracked_paths: visible_tracked_paths.clone(),
         }),
-        GitCommand::Log { maximum } => {
-            GitCommandOutput::Commits(walk_commits(state, visible_head, maximum))
+        GitCommand::Log { maximum, object } => {
+            let start = object
+                .as_deref()
+                .map(|object| resolve_object::<E>(state, Some(object)))
+                .transpose()?
+                .or(visible_head);
+            let (commits, next) = walk_commits(state, start, maximum);
+            GitCommandOutput::Commits { commits, next }
         }
         GitCommand::Show { object, offset } => {
             if let Some((revision, path)) =
@@ -66,13 +72,16 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
                 return show_file(state, revision, path, offset).map(GitCommandOutput::Action);
             }
             let id = resolve_object::<E>(state, object.as_deref())?;
-            GitCommandOutput::Commits(vec![
-                state
-                    .commits
-                    .get(&id)
-                    .cloned()
-                    .ok_or(GitCompatError::InvalidState)?,
-            ])
+            GitCommandOutput::Commits {
+                commits: vec![
+                    state
+                        .commits
+                        .get(&id)
+                        .cloned()
+                        .ok_or(GitCompatError::InvalidState)?,
+                ],
+                next: None,
+            }
         }
         GitCommand::Add { .. } => GitCommandOutput::NoOp,
         GitCommand::Commit {
@@ -399,7 +408,7 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         }
         GitCommand::Blame { path } => GitCommandOutput::Action(GitFilesystemAction::Blame {
             path,
-            commits: walk_commits(state, visible_head, u32::MAX),
+            commits: walk_commits(state, visible_head, u32::MAX).0,
         }),
         GitCommand::Grep { pattern, path } => GitCommandOutput::Action(GitFilesystemAction::Grep {
             pattern,
