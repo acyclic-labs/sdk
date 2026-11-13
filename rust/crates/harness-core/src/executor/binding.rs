@@ -60,6 +60,22 @@ impl StockExecution<'_> {
     }
 
     pub(super) fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
+        // A step may select another complete binding, but the parent journal
+        // and its working cuts still belong to the configuration that issued
+        // the turn. Summaries have their own frozen request configuration.
+        if self.summary.is_none() && !std::ptr::eq(&*self.stock, self.origin) {
+            return Self {
+                io: self.io,
+                context: self.context,
+                single_request: self.single_request,
+                ..Self::ordinary(self.origin)
+            }
+            .configuration_request_digest(input);
+        }
+        self.configuration_request_digest(input)
+    }
+
+    fn configuration_request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         #[derive(Serialize)]
         struct IssuedContext<'a> {
             admission_operation: OperationId,

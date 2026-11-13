@@ -90,7 +90,7 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
         let executor = initial
             .as_ref()
             .clone()
-            .with_step_configuration(Arc::new(Configurations([initial, next])));
+            .with_step_configuration(Arc::new(Configurations([initial, Arc::clone(&next)])));
         let input = TurnInput {
             operation_id: OperationId::new(),
             input: ModelContent::Text("question".into()),
@@ -126,6 +126,21 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
             &message.content, ModelContent::Part(ModelContentPart::ToolResult { call_id, .. })
             if call_id == "change"
         )));
+        // Summary entry and retained working cuts both recheck this parent
+        // identity after a step changes the selected model and sampling.
+        let mut selected = StockExecution::ordinary(&executor);
+        let original_identity = selected.request_digest(&input)?;
+        selected.stock = ExecutionConfiguration::Shared(next);
+        assert_eq!(selected.request_digest(&input)?, original_identity);
+        selected.ensure_started(journal.as_ref(), &input).await?;
+        let mut different_input = input.clone();
+        different_input.input = ModelContent::Text("different question".into());
+        assert!(
+            selected
+                .ensure_started(journal.as_ref(), &different_input)
+                .await
+                .is_err()
+        );
         assert!(matches!(
             executor.execute_progress(input, journal.as_ref()).await?,
             ExecutionProgress::Ready(_)
