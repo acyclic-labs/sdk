@@ -97,7 +97,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
             .windows(b"instruction-secret".len())
             .any(|bytes| bytes == b"instruction-secret")
     );
-    let bytes = storage.read(retained).await?;
+    let bytes = journal.load(retained, None)?.await?;
     let reopened: Context =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(reopened, source);

@@ -174,7 +174,7 @@ proptest! {
             (0..15_usize).prop_map(|depth| format!("**/a{}", "/?".repeat(depth))),
         ],
         work in 0..100_001_usize,
-        refuse_stage in 0..5_usize,
+        refusal in prop::option::of(any::<usize>()),
         folded in any::<bool>(),
     ) {
         let (policy, capability) = input(&pattern).map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
@@ -182,6 +182,15 @@ proptest! {
         let context = Context { now: 10, approvals: 0 };
         let mut resource = resource();
         if folded { resource.config.case_sensitivity = acyclic_fs::model::CaseSensitivity::ProfileFolded; }
+        let mut admission_count = 0;
+        let mut counted_work = work;
+        drop(PathTrie::compile_with_work(&policy, &caller, resource, context, &capability,
+            &mut counted_work, |_| {
+                admission_count += 1;
+                Ok(())
+            }));
+        let refuse_stage = refusal.filter(|_| admission_count != 0)
+            .map_or(0, |cut| 1 + cut % admission_count);
         let mut remaining = work;
         let mut reserved = 0;
         let mut stages = 0;
@@ -196,9 +205,8 @@ proptest! {
                 }));
         });
         prop_assert!(remaining <= work);
-        // Shared preparation/DFA, caller facts, and the whole-volume ceiling
-        // each require admission. Exercise refusal at every one of those cuts.
-        prop_assert!(stages <= 4);
+        // Select from actual admission cuts, including those introduced by
+        // pattern compilation and caller binding, rather than a fixed count.
         if refuse_stage != 0 && stages == refuse_stage {
             prop_assert!(matches!(compiled.as_ref(), Some(Err(InvalidPolicy("unfunded compiler stage")))));
             prop_assert_eq!(measured.bytes_current, 0);
