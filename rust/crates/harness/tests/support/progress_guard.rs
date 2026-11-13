@@ -67,6 +67,7 @@ impl Guard {
         tokio::pin!(idle);
         tokio::pin!(future);
         let mut revision = self.registry.snapshot().0;
+        let mut reported_quiet = false;
         loop {
             tokio::select! {
                 biased;
@@ -79,6 +80,16 @@ impl Guard {
                     idle.as_mut().reset(tokio::time::Instant::now() + quiet);
                 }
                 _ = &mut idle => {
+                    if !reported_quiet {
+                        eprintln!(
+                            "scenario quiet: native={}, registry={:?}, blocked={:?}, trace={:?}",
+                            self.io.pending_native_work(),
+                            self.registry.snapshot(),
+                            self.registry.blocked_snapshot(revision),
+                            self.io.trace().into_iter().rev().take(16).collect::<Vec<_>>()
+                        );
+                        reported_quiet = true;
+                    }
                     if let Some(open) = self.registry.blocked_snapshot(revision)
                         && self.io.pending_native_work() == 0 {
                         return Err(if open.is_empty() {
