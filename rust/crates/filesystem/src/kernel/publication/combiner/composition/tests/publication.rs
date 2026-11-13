@@ -37,6 +37,12 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
         cache: Arc::default(),
     };
     let mut intent = PublicationIntent::guarded(None, PublicationPermit::Unrestricted);
+    let evidence = vec![b'e'; acyclic_stream::MAX_RECORD_BYTES + 1];
+    let (bytes, custody) = original.copy_bytes(&evidence)?;
+    intent.original_evidence = Some(
+        acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter())
+            .ok_or("original evidence lost its funded backing")?,
+    );
     intent.preconditions = Some(core.preconditions.clone());
     drop(core);
     let preparation = crate::kernel::publication::preparation::Preparation {
@@ -189,13 +195,52 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
             crate::access::projection::enter(fs.authority().operation_claims(), request.volume_id)
                 .is_ok()
         );
-        drop(
-            fs.objects()
-                .collection()
-                .ok_or("missing collection")?
-                .begin()
-                .await,
+        let collection = fs.objects().collection().ok_or("missing collection")?;
+        let collecting = tokio::task::unconstrained(collection.begin());
+        tokio::pin!(collecting);
+        assert!(
+            futures::poll!(&mut collecting).is_ready(),
+            "a retained quote kept original evidence collection admission after confirmation"
         );
+        fs.collect_local_garbage(None, &observer).await?;
+        let record = fs
+            .authority()
+            .find_operation(
+                request.authority_id,
+                request.operation_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &observer),
+            )
+            .await?;
+        assert_eq!(record.is_some(), committed);
+        if let Some(record) = record {
+            let reference = decode_publication_evidence_with_accounting(
+                &record.payload,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                None,
+                &mut observe,
+            )?
+            .original_evidence
+            .ok_or("committed publication lost original evidence")?;
+            let body = crate::kernel::read_blob_range_with_accounting(
+                fs.objects(),
+                reference.root,
+                crate::ByteRange {
+                    offset: 0,
+                    length: reference.bytes,
+                },
+                limits.decode,
+                &mut observe,
+                &observer,
+                true,
+            )
+            .await?;
+            assert_eq!(body.bytes.as_ref(), evidence.as_slice());
+            crate::kernel::verify_original_publication_evidence(
+                reference,
+                &body.bytes,
+                &mut observe,
+            )?;
+        }
         Ok(())
     })
     .await
