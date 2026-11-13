@@ -57,6 +57,27 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
     let first = client.send("first", "remember FIRST_FACT").await?;
     assert!(first.outcome.is_completed(), "{:?}", first.outcome);
     super::agents::settled(&harness, &root).await?;
+    let content = super::journal_content(&harness, &root)?;
+    let epoch = crate::context::ContextEpoch::operation(root.as_str(), None)?;
+    let (manifest, _, _) = content
+        .reader
+        .read_private_path(
+            &content.volume,
+            "context/epochs",
+            &crate::context::ContextEpoch::path(epoch),
+            None,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?
+        .ok_or_else(|| Error::NotFound("journal epoch manifest".into()))?;
+    assert_eq!(manifest.volume(), &content.volume);
+    assert!(matches!(
+        harness.agents.get().unwrap().server().bound()
+            .read_file(&root, &manifest, 0, manifest.descriptor().byte_length()).await,
+        Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
+    ));
+    drop(content);
     while !usage.synchronized() {
         usage.advance().await?;
     }

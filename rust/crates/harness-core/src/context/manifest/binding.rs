@@ -10,6 +10,7 @@ impl crate::filesystem::PreparationRecord for ContextManifest {
 impl ContextManifest {
     pub(crate) async fn bind_observed(
         reference: FileRef,
+        manifest_reader: &dyn ContentResidencyVerifier,
         reader: &dyn ContentResidencyVerifier,
         mut tools: ToolRegistry,
         limits: Limits,
@@ -29,7 +30,7 @@ impl ContextManifest {
             ));
         }
         let content_io = io;
-        let bytes = reader
+        let bytes = manifest_reader
             .read(
                 &reference,
                 reference.descriptor().byte_length(),

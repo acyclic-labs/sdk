@@ -312,6 +312,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         .with_context_epoch(
             &ContextEpoch::from_manifest(reference.clone()),
             reader.clone(),
+            reader.clone(),
         )
         .await?;
     assert!(
@@ -319,6 +320,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
             .clone()
             .with_context_epoch(
                 &ContextEpoch::from_manifest(reference.clone()),
+                reader.clone(),
                 reader.clone()
             )
             .await
@@ -347,7 +349,11 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     let first = executor.model_step(journal.as_ref(), &turn, 0, &[]).await?;
     assert_request(provider.as_ref(), &manifest, reader.as_ref()).await?;
     let restarted = stock(provider.clone(), tools()?, limits)?
-        .with_context_epoch(&ContextEpoch::from_manifest(reference), reader.clone())
+        .with_context_epoch(
+            &ContextEpoch::from_manifest(reference),
+            reader.clone(),
+            reader.clone(),
+        )
         .await?;
     let recovered = fixture
         .journal(stream, private, scope)?

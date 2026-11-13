@@ -15,14 +15,15 @@ pub struct RetainedArc<T: ?Sized> {
 /// instead of walking the owner's whole graph, and every cycle back through
 /// it, in every downstream crate.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type ErasedRetainedArc = RetainedArc<dyn std::any::Any + Send + Sync>;
+pub type ErasedRetainedArc = RetainedArc<dyn std::any::Any + Send + Sync>;
 /// The weak form of [`ErasedRetainedArc`].
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) type ErasedRetainedWeak = RetainedWeak<dyn std::any::Any + Send + Sync>;
+pub type ErasedRetainedWeak = RetainedWeak<dyn std::any::Any + Send + Sync>;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send + Sync + 'static> RetainedArc<T> {
-    pub(crate) fn erase(self) -> ErasedRetainedArc {
+    /// Hides the value's type while preserving its original allocation custody.
+    pub fn erase(self) -> ErasedRetainedArc {
         RetainedArc {
             value: self.value,
             allocation: self.allocation,
@@ -33,7 +34,7 @@ impl<T: Send + Sync + 'static> RetainedArc<T> {
 #[cfg(not(target_arch = "wasm32"))]
 impl ErasedRetainedArc {
     /// The original owner, or `None` when it has another type.
-    pub(crate) fn downcast<T: Send + Sync + 'static>(self) -> Option<RetainedArc<T>> {
+    pub fn downcast<T: Send + Sync + 'static>(self) -> Option<RetainedArc<T>> {
         Some(RetainedArc {
             value: self.value.downcast().ok()?,
             allocation: self.allocation,

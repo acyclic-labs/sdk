@@ -68,6 +68,7 @@ mod indexed_publication;
 mod inline_tests;
 mod interactions;
 mod observations;
+mod publication_authorization;
 #[cfg(not(target_arch = "wasm32"))]
 pub use context_publication::{
     ContextCheckpoint, ContextPublicationReceipt, ContextPublicationRequest,

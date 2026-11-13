@@ -117,9 +117,12 @@ impl StockExecutor {
     /// Binds request assembly and fixed tool selection to one frozen context
     /// epoch. Its manifest remains the prefix; live tool sources retain their
     /// own generations and announce changes through the ordinary tool notices.
+    /// The host manifest reader never reads source bodies; their original
+    /// reader retains the task's source authority.
     pub async fn with_context_epoch(
         mut self,
         epoch: &crate::context::ContextEpoch,
+        manifest_reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
         reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
     ) -> Result<Self> {
         let reference = epoch.manifest().clone();
@@ -130,6 +133,7 @@ impl StockExecutor {
         }
         let (tools, stage, baseline) = crate::context::ContextManifest::bind_observed(
             reference,
+            manifest_reader.as_ref(),
             reader.as_ref(),
             self.tools,
             self.limits,

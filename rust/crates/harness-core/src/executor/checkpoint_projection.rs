@@ -51,8 +51,21 @@ pub async fn load_canonical_checkpoint(
     envelope
         .0
         .validate_projection(&source.0, &retained.0, &proof.0, limits, io)?;
-    for file in retained.0.metadata.values() {
+    let mut authenticated_epoch = None;
+    for (name, file) in &retained.0.metadata {
         with_history_io(io, |work| limits.validate_file(file, work))?;
+        if name == "context.manifest" && file.descriptor().media_type() == "application/json" {
+            crate::model::charge_items(io, file.path().len() as u64)?;
+            if let Some(operation) =
+                crate::context::ContextEpoch::publication_operation(file.path())
+                && journal
+                    .authenticate_publication(operation, file, io)?
+                    .await?
+            {
+                authenticated_epoch = Some(file);
+                continue;
+            }
+        }
         if let Some(scope) = scope
             && !with_history_io(io, |work| {
                 crate::runtime::read_granted_with_work(scope.grants(), file, work)
@@ -75,7 +88,9 @@ pub async fn load_canonical_checkpoint(
     )
     .await?;
     for file in retained.0.metadata.values() {
-        journal.verify_input_file(file, io)?.await?;
+        if Some(file) != authenticated_epoch {
+            journal.verify_input_file(file, io)?.await?;
+        }
     }
     if proof
         .0

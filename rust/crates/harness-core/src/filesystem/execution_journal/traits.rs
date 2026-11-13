@@ -519,6 +519,17 @@ where
         })
     }
 
+    fn authenticate_publication<'a>(
+        &'a self,
+        operation: OperationId,
+        file: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.authenticate_publication_with_io(operation, file, io)
+        })
+    }
+
     fn authenticate_summary<'a>(
         &'a self,
         file: &'a FileRef,

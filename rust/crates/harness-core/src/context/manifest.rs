@@ -241,7 +241,7 @@ impl ContextManifest {
         limits: Limits,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
         let (tools, stage, _) =
-            Self::bind_observed(reference, reader, tools, limits, None, true).await?;
+            Self::bind_observed(reference, reader, reader, tools, limits, None, true).await?;
         Ok((tools, stage))
     }
 }

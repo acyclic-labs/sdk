@@ -396,6 +396,18 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         })
     }
 
+    /// Verifies host-journal content against its original single-file
+    /// publication receipt and descriptor. Ordinary private publications do
+    /// not qualify; this never grants task read access.
+    fn authenticate_publication<'a>(
+        &'a self,
+        _operation: OperationId,
+        _file: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(false) })
+    }
+
     /// Queries the private provenance file for this exact immutable summary.
     fn authenticate_summary<'a>(
         &'a self,

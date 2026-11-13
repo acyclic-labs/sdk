@@ -34,10 +34,21 @@ impl ContextEpoch {
         Ok(OperationId::from_bytes(bytes))
     }
 
-    /// The private path of the epoch manifest staged under `operation`.
+    /// The host-owned path of the epoch manifest staged under `operation`.
     #[must_use]
     pub fn path(operation: OperationId) -> String {
-        format!("inputs/epochs/{operation}.manifest.json")
+        format!("context/epochs/{operation}.manifest.json")
+    }
+
+    /// Selects the original publication receipt, never authority from a path.
+    pub(crate) fn publication_operation(path: &str) -> Option<OperationId> {
+        let operation = path
+            .strip_prefix("context/epochs/")?
+            .strip_suffix(".manifest.json")?;
+        OperationId::deserialize(
+            serde::de::value::StrDeserializer::<serde::de::value::Error>::new(operation),
+        )
+        .ok()
     }
 
     /// The epoch of an already staged, immutable manifest.

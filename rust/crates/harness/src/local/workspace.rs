@@ -45,7 +45,7 @@ pub(super) struct MountedVolume {
     /// Serializes preflight synchronization of the selected projection.
     pub(super) execution: StateArc<AsyncMutex<()>>,
     // Retires the exact index entry after this physical source's fields.
-    _binding: Option<acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>>,
+    _binding: Option<acyclic_fs::kernel::allocation::ErasedRetainedArc>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
@@ -97,7 +97,7 @@ pub struct LocalWorkspace {
     /// can still execute against its shared physical projections.
     pub(super) binding: Option<Arc<Mounts>>,
     // Keyed custody outlives preparation, including views with no auxiliary mounts.
-    binding_owner: Option<acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>>,
+    binding_owner: Option<acyclic_fs::kernel::allocation::ErasedRetainedArc>,
     bindings: acyclic_fs::kernel::allocation::RetainedArc<bindings::Bindings>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded

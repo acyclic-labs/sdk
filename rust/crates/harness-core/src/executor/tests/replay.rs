@@ -646,6 +646,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         .with_context_epoch(
             &crate::context::ContextEpoch::from_manifest(manifest_file),
             journal.clone(),
+            journal.clone(),
         )
         .await;
         let Some(expect_environment) = expect_environment else {

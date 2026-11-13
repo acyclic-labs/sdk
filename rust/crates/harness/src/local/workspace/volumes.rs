@@ -134,7 +134,7 @@ pub(super) async fn attach(
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(projection::Users::default()),
             execution: StateArc::new(AsyncMutex::new(())),
-            _binding: binding.cloned(),
+            _binding: binding.cloned().map(|binding| binding.erase()),
         }));
     }
     Ok(())
