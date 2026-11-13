@@ -4,9 +4,10 @@ impl ToolRegistry {
     pub(super) fn native_owned_bytes(&self) -> Result<u64> {
         use crate::filesystem::UploadRecord as _;
         let mut bytes = (REGISTRY_BYTES as u64)
-            .checked_add(
-                (self.sources.capacity() * std::mem::size_of::<Arc<dyn ToolSource>>()) as u64,
-            )
+            .checked_add(self.sources.as_ref().map_or(0, |sources| {
+                SOURCE_BYTES as u64
+                    + (sources.capacity() * std::mem::size_of::<Arc<dyn ToolSource>>()) as u64
+            }))
             .ok_or(OWNERSHIP_OVERFLOW)?;
         for ((name, revision), tool) in &self.data.versions {
             let definition_deep = tool.definition.logical_owned_bytes()?;
@@ -47,8 +48,14 @@ impl ToolRegistry {
             source_ceiling: self.source_ceiling.clone(),
             ..Self::default()
         };
-        for source in &self.sources {
-            crate::executor::stock_vec_push(&mut copied.sources, source.clone(), Some(&io))?;
+        if self.sources.is_some() {
+            io.retain_owned(SOURCE_BYTES as u64)?;
+            io.allocation_attempt(SOURCE_BYTES as u64)?;
+            let mut sources = Vec::new();
+            for source in self.sources() {
+                crate::executor::stock_vec_push(&mut sources, source.clone(), Some(&io))?;
+            }
+            copied.sources = Some(Arc::new(sources));
         }
         let data = Arc::make_mut(&mut copied.data);
         for ((name, revision), tool) in &self.data.versions {
