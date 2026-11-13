@@ -303,6 +303,9 @@ pub(super) fn lower_routed(
                 let routed = routing.filter(|(_, _, remote)| remote.contains(to));
                 let mut outbox = None;
                 if let Some((routing, within, _)) = routed {
+                    if path.depth() != 0 || to.depth() != 0 {
+                        return Err(Error::Record("peer routing requires member roots"));
+                    }
                     let admission = step
                         .outs
                         .iter()

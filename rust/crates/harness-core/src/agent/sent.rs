@@ -227,44 +227,11 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
                 if envelope.source != node {
                     return Err(Error::Record("send outbox source differs"));
                 }
-                let original = envelope
-                    .request
-                    .effects
-                    .iter()
-                    .flat_map(|effect| &effect.mutations)
-                    .filter_map(|mutation| match mutation {
-                        acyclic_stream::CommitMutation::Append { path, records }
-                            if path == &inbox =>
-                        {
-                            Some(records)
-                        }
-                        _ => None,
-                    })
-                    .flatten()
-                    .find_map(|record| match InboxRecord::decode(&record.value) {
-                        Ok(record @ (InboxRecord::Message(_) | InboxRecord::FollowUp(_))) => {
-                            Some(record)
-                        }
-                        _ => None,
-                    });
-                let Some(original) = original else {
-                    continue;
-                };
-                let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = &original
-                else {
-                    unreachable!()
-                };
-                if message.id != *id
-                    || !matches!(&message.from, Sender::Agent { path } if path == sender)
-                {
+                let peer = super::PeerRoute::parse(&envelope)?;
+                if peer.sender() != sender || peer.recipient() != &marker.to || peer.id() != id {
                     continue;
                 }
-                let expected = super::commit::send(&marker.to, &message.from, &original)?;
-                if envelope.request.idempotency_key != expected.idempotency_key
-                    || envelope.sender.id().as_bytes() != sender.id().as_str().as_bytes()
-                    || envelope.to.id().as_bytes() != marker.to.id().as_str().as_bytes()
-                    || routed.is_some()
-                {
+                if routed.is_some() {
                     return Err(Error::Record("send outbox intent differs"));
                 }
                 routed = Some(
@@ -273,7 +240,7 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
                         &paths,
                         &node,
                         record.sequence,
-                        &expected.idempotency_key,
+                        &envelope.request.idempotency_key,
                     )
                     .await
                     .map_err(super::routing::error)?

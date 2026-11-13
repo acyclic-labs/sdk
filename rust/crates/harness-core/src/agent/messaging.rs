@@ -48,34 +48,8 @@ impl PeerAdmission {
         sender: &AgentPath,
         recipient: &AgentPath,
     ) -> Result<(), super::Error> {
-        use super::AgentRecord as _;
-        use futures::TryStreamExt as _;
         for (root, head) in [(sender, &self.sender), (recipient, &self.recipient)] {
-            let sequence = head
-                .tail
-                .checked_sub(1)
-                .ok_or(super::Error::Record("peer membership head is empty"))?;
-            let mut records = provider
-                .read(acyclic_stream::ReadRequest {
-                    key: None,
-                    path: root.peer_membership()?,
-                    from: sequence,
-                    limit: 1,
-                    at_least: Default::default(),
-                })
-                .await
-                .map_err(super::Error::Stream)?;
-            let record = records
-                .try_next()
-                .await
-                .map_err(super::Error::Stream)?
-                .ok_or(super::Error::Record("peer membership record is missing"))?;
-            if record.sequence != sequence
-                || record.commit_id.as_bytes() != &head.commit
-                || !PeerMembership::decode(&record.value)?.enabled
-            {
-                return Err(super::Error::Record("peer membership was not enabled"));
-            }
+            head.validate(provider, root).await?;
         }
         Ok(())
     }
@@ -95,16 +69,49 @@ impl PeerAdmission {
             (sender.peer_membership()?, &self.sender),
             (recipient.peer_membership()?, &self.recipient),
         ] {
-            conditions.insert(
-                path.clone(),
-                acyclic_stream::CommitCondition::Head {
-                    path,
-                    expected: head.tail,
-                    commit_id: acyclic_stream::CommitId::from_bytes(head.commit),
-                },
-            );
+            conditions.insert(path.clone(), head.condition(path));
         }
         Ok(conditions.into_values().collect())
+    }
+}
+
+impl PeerMembershipHead {
+    pub(super) fn condition(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> acyclic_stream::CommitCondition {
+        acyclic_stream::CommitCondition::Head {
+            path,
+            expected: self.tail,
+            commit_id: acyclic_stream::CommitId::from_bytes(self.commit),
+        }
+    }
+
+    /// Check the retained enabled record, independently of its current head.
+    /// A publication guard fences opt-out, while exact retries can still
+    /// recover a receipt after a later membership change.
+    pub(super) async fn validate<P: crate::store::JournalProvider + ?Sized>(
+        &self,
+        provider: &P,
+        root: &AgentPath,
+    ) -> Result<(), super::Error> {
+        use super::AgentRecord as _;
+        use acyclic_stream::StreamProviderExt as _;
+        let sequence = self
+            .tail
+            .checked_sub(1)
+            .ok_or(super::Error::Record("peer membership head is empty"))?;
+        let record = provider
+            .record_at(root.peer_membership()?, sequence)
+            .await
+            .map_err(super::Error::Stream)?
+            .ok_or(super::Error::Record("peer membership record is missing"))?;
+        if record.commit_id.as_bytes() != &self.commit
+            || !PeerMembership::decode(&record.value)?.enabled
+        {
+            return Err(super::Error::Record("peer membership was not enabled"));
+        }
+        Ok(())
     }
 }
 

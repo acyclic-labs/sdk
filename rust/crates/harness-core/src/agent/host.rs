@@ -892,21 +892,32 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// exact intent retry is identical after other appends, while changed
     /// semantic bytes still fail the provider's digest check.
     /// Commits one inbox write with its agent's wake entry.
-    async fn deliver(
+    pub(super) async fn deliver(
         &self,
         to: &AgentPath,
         mut request: CommitRequest,
     ) -> Result<Delivered, Error> {
         let inbox = to.inbox()?;
+        let inbox_effect = request.effects.iter().position(|effect| effect.mutations.iter().any(|mutation|
+            matches!(mutation, acyclic_stream::CommitMutation::Append { path, .. } if path == &inbox)
+        )).ok_or(Error::Record("delivery has no inbox effect"))?;
+        let skipped_index =
+            u32::try_from(inbox_effect).map_err(|_| Error::Record("too many delivery effects"))?;
         let actor = self.actor(to)?;
-        request.effects.push(
-            self.runtime
-                .store()
-                .activation(&actor)
-                .map_err(actor_error)?,
-        );
+        let activation = self.runtime.store().activation(&actor).map_err(actor_error)?;
+        // The wake belongs to this same guarded write. A skipped inbox effect
+        // must not publish an activation for work that was never admitted.
+        request.effects[inbox_effect]
+            .conditions
+            .extend(activation.conditions);
+        request.effects[inbox_effect]
+            .mutations
+            .extend(activation.mutations);
         match submit(&*self.provider, request).await? {
             Submitted::Committed(receipt) => {
+                if receipt.skipped.contains(&skipped_index) {
+                    return Ok(Delivered::Closed);
+                }
                 let append = receipt
                     .appends
                     .iter()

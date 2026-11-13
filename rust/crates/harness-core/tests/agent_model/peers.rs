@@ -4,6 +4,242 @@ use acyclic_harness_core::Capabilities;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refusal() -> Result {
+    use acyclic_actors::{
+        addressing::ActorReference,
+        domain::ActorLimits,
+        local::SystemClock,
+        route::{self, NodeId, Paths},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct Recipient(Arc<AtomicUsize>);
+    impl TurnDriver for Recipient {
+        fn step<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: u64,
+            _: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(TurnStep {
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: Wait::Input,
+                    drops: None,
+                })
+            })
+        }
+    }
+    for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+        for opt_out_before_delivery in [false, true] {
+            let source = MemoryStream::default();
+            let destination = Arc::new(MemoryStream::default());
+            let sender = create(&source, id(60)).await?;
+            let recipient = AgentPath::root(&id(61));
+            let within = ActorReference::new(b"account", b"agents", b"owner")?;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let host = AgentHost::new(
+                destination.clone(),
+                Recipient(calls.clone()),
+                within.clone(),
+                ActorLimits::default(),
+                Arc::new(SystemClock),
+            )?;
+            host.create(&intent("recipient"), adopted(recipient.id()))
+                .await?;
+            let head =
+                async |provider: &MemoryStream, root: &AgentPath| -> Result<PeerMembershipHead> {
+                    let record = provider
+                        .head(root.peer_membership()?)
+                        .await?
+                        .last
+                        .ok_or("membership missing")?;
+                    Ok(PeerMembershipHead {
+                        tail: record.sequence + 1,
+                        commit: *record.commit_id.as_bytes(),
+                    })
+                };
+            let admission = PeerAdmission {
+                sender: head(&source, &sender).await?,
+                recipient: head(&destination, &recipient).await?,
+            };
+            let state = AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+            let step = Step {
+                outs: effect_outs(
+                    &state,
+                    vec![TurnEffect::Send {
+                        peer: Some(admission),
+                        delivery,
+                        to: recipient.clone(),
+                        id: intent("request"),
+                        re: None,
+                        body: Box::new(super::driver::file("message.md")?),
+                        attachments: None,
+                    }],
+                ),
+                state,
+                status: None,
+                alarm: Alarm::Clear,
+            };
+            let routing = Routing {
+                paths: Paths::new(StreamPath::new("routing")?),
+                node: NodeId::new(b"source")?,
+            };
+            submit(
+                &source,
+                routing.lower(
+                    &within,
+                    &BTreeSet::from([recipient.clone()]),
+                    &step,
+                    1,
+                    intent_key("source", &[])?,
+                )?,
+            )
+            .await?;
+            let record = source
+                .record_at(routing.paths.outbox(&routing.node)?, 0)
+                .await?
+                .ok_or("outbox missing")?;
+            let envelope = route::Envelope::decode(&record.value)?;
+            drop(source);
+            let peer = PeerRoute::parse(&envelope)?;
+            if opt_out_before_delivery {
+                host.set_peer_membership(&recipient, &user(), &intent("off"), false)
+                    .await?;
+            }
+            let expected = if opt_out_before_delivery {
+                Delivered::Closed
+            } else {
+                Delivered::Committed { inbox: 1 }
+            };
+            let activation = actor_store(&destination)?.activation(&host.actor(&recipient)?);
+            let activation_path = activation.mutations[0].path().clone();
+            let before_activation = destination.tail(activation_path.clone()).await?;
+            assert_eq!(peer.deliver(&host).await?, expected);
+            assert_eq!(
+                destination.tail(activation_path).await?,
+                before_activation + u64::from(!opt_out_before_delivery),
+                "a skipped inbox append published a wake"
+            );
+            host.set_peer_membership(
+                &recipient,
+                &user(),
+                &intent("change-membership"),
+                opt_out_before_delivery,
+            )
+            .await?;
+            assert_eq!(
+                peer.deliver(&host).await?,
+                expected,
+                "exact replay changed its original outcome"
+            );
+            assert_eq!(
+                destination.tail(recipient.inbox()?).await?,
+                if opt_out_before_delivery { 1 } else { 2 }
+            );
+            host.drain(&recipient).await?;
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                usize::from(!opt_out_before_delivery)
+            );
+            assert!(
+                matches!(
+                    destination.tail(sender.peer_membership()?).await,
+                    Err(StreamError::NotFound)
+                ),
+                "sender state must remain on its own node"
+            );
+            if !opt_out_before_delivery {
+                let records = values(&*destination, recipient.inbox()?).await?;
+                let input = InboxRecord::decode(&records[1])?;
+                match (input, delivery) {
+                    (InboxRecord::Message(message), MessageDelivery::Steer)
+                    | (InboxRecord::FollowUp(message), MessageDelivery::FollowUp) => {
+                        assert_eq!(message.from, Sender::Agent { path: sender });
+                    }
+                    _ => return Err("routed delivery changed receiver semantics".into()),
+                }
+            }
+            let mut altered = envelope.clone();
+            altered.request.effects[0]
+                .conditions
+                .push(CommitCondition::Present {
+                    path: StreamPath::new("foreign/private")?,
+                });
+            assert!(
+                PeerRoute::parse(&altered).is_err(),
+                "caller-selected reads were admitted"
+            );
+            let mut altered = envelope.clone();
+            altered.request.effects.push(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: StreamPath::new("foreign/private")?,
+                    records: vec!["write".into()],
+                }],
+            ));
+            assert!(
+                PeerRoute::parse(&altered).is_err(),
+                "foreign writes were admitted"
+            );
+            let mut altered = envelope.clone();
+            altered.request.idempotency_key = intent_key("substituted", &[])?;
+            assert!(
+                PeerRoute::parse(&altered).is_err(),
+                "substituted intent was admitted"
+            );
+            let mut altered = envelope.clone();
+            altered.to =
+                ActorReference::new(b"account", b"other", recipient.id().as_str().as_bytes())?;
+            assert!(
+                PeerRoute::parse(&altered).is_err(),
+                "foreign namespace was admitted"
+            );
+            let mut altered = envelope.clone();
+            altered.sender =
+                ActorReference::new(b"other-account", b"agents", envelope.sender.id().as_bytes())?;
+            altered.to =
+                ActorReference::new(b"other-account", b"agents", envelope.to.id().as_bytes())?;
+            assert!(
+                PeerRoute::parse(&altered)?.deliver(&host).await.is_err(),
+                "foreign account reached an owning-node writer"
+            );
+            for input in [
+                InboxRecord::Archive(Control {
+                    by: user(),
+                    id: intent("archive"),
+                }),
+                InboxRecord::Message(Message {
+                    from: user(),
+                    id: intent("request"),
+                    re: None,
+                    body: Box::new(super::driver::file("message.md")?),
+                    attachments: None,
+                }),
+            ] {
+                let mut altered = envelope.clone();
+                let CommitMutation::Append { records, .. } =
+                    &mut altered.request.effects[0].mutations[0]
+                else {
+                    unreachable!()
+                };
+                records[0].value = input.encode()?.into();
+                assert!(
+                    PeerRoute::parse(&altered).is_err(),
+                    "control or user input was admitted"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn remote_send_recovers_original_admission_from_its_source_publication() -> Result {
     use acyclic_actors::{
         addressing::ActorReference,
