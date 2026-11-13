@@ -443,14 +443,14 @@ where
         } else if matches!(event, ExecutionEvent::ModelWait { .. }) {
             self.authorize_model_observation(VolumeOperation::Write, io)?;
         }
-        let (model, usd_nanos) = self
+        let (model, usd_nanos, tokens) = self
             .verify_event_refs_with_io(operation_id, event, io)
             .await?;
         let limits = Limits::default();
         self.verify_canonical_publication_with_io(event, limits, io)
             .await?;
         let supervision = self
-            .supervision_inputs(operation_id, event, (model.as_ref(), usd_nanos), io)
+            .supervision_inputs(operation_id, event, (model.as_ref(), usd_nanos, tokens), io)
             .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
         let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;

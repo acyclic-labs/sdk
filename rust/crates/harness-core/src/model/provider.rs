@@ -450,6 +450,12 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
             "selected model context capacity is unavailable".into(),
         ))
     }
+    /// Complete original input, including separately reported cache reads and
+    /// writes. This only interprets the completed event's provider dialect;
+    /// it never estimates tokens or issues a request. Unknown stays `None`.
+    fn reported_input_tokens(&self, _: &Model, _: &Value) -> Result<Option<u64>> {
+        Ok(None)
+    }
     /// Admission for one request and its per-message compaction planning
     /// weights. `input_tokens` is a locally proven upper bound when one is
     /// within `ceiling`, so no count request precedes generation; otherwise it

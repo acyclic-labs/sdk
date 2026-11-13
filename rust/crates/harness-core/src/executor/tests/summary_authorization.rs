@@ -169,12 +169,19 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         .enable_all()
         .build()
         .unwrap();
+    for output_key in ["summary:0:output", "retained-summary"] {
+        authenticated_summary_case(&runtime, output_key)?;
+    }
+    Ok(())
+}
+
+fn authenticated_summary_case(runtime: &tokio::runtime::Runtime, output_key: &str) -> Result<()> {
     let storage = runtime.block_on(MemoryHarnessStorage::new(crate::AgentId::new(), 65_536))?;
     let journal = storage.journal();
     let operation = OperationId::new();
     let file = runtime.block_on(journal.stage(
         operation,
-        "summary:0:output",
+        output_key,
         b"summary",
         "text/plain",
         None,
