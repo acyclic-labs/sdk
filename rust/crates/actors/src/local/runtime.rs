@@ -1260,10 +1260,32 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .release(actor);
                 return Ok(true);
             }
+            let unwatched = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwatched(self.handler.manifest(), state);
+            let mut tails = BTreeMap::new();
+            for path in unwatched {
+                // Read before this delivery looks for input: it owns every
+                // earlier record, so the new follow reports only later ones.
+                let tail = match self.store.provider().tail(path.clone()).await {
+                    Ok(tail) => tail,
+                    Err(error) if error.category() == StreamError::NotFound => 0,
+                    Err(error) => return Err(error.into()),
+                };
+                tails.insert(path, tail);
+            }
             self.subscriptions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .bind(self.store.provider(), self.handler.manifest(), actor, state)?;
+                .bind(
+                    self.store.provider(),
+                    self.handler.manifest(),
+                    actor,
+                    state,
+                    &tails,
+                )?;
             let now = self.clock.now_unix_ms();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
             let (trigger, record) = match state.alarm().pending() {

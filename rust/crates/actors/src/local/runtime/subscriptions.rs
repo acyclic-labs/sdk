@@ -46,13 +46,8 @@ pub(super) struct Subscriptions {
 }
 
 impl Subscriptions {
-    pub(super) fn bind<P: StreamProvider + ?Sized>(
-        &mut self,
-        provider: &Arc<P>,
-        manifest: &crate::guest::Manifest,
-        actor: &ActorReference,
-        state: &State,
-    ) -> Result<(), Error> {
+    /// The guest-added interests of `state`, each at its earliest cursor.
+    fn selected(manifest: &crate::guest::Manifest, state: &State) -> BTreeMap<StreamPath, u64> {
         let mut selected = BTreeMap::<StreamPath, u64>::new();
         for (id, subscription) in state.subscriptions() {
             if !manifest.subscriptions.contains(id) {
@@ -62,6 +57,34 @@ impl Subscriptions {
                     .or_insert(subscription.cursor);
             }
         }
+        selected
+    }
+
+    /// The interest streams of `state` that no follow observes yet.
+    pub(super) fn unwatched(
+        &self,
+        manifest: &crate::guest::Manifest,
+        state: &State,
+    ) -> Vec<StreamPath> {
+        Self::selected(manifest, state)
+            .into_keys()
+            .filter(|path| !self.paths.contains_key(path))
+            .collect()
+    }
+
+    /// Bind `actor`'s interests. A new follow starts at the tail its binding
+    /// delivery read before looking for input (`tails`): that delivery owns
+    /// every earlier record, so the follow wakes only for later input and a
+    /// terminally failed input is never redelivered without a new event.
+    pub(super) fn bind<P: StreamProvider + ?Sized>(
+        &mut self,
+        provider: &Arc<P>,
+        manifest: &crate::guest::Manifest,
+        actor: &ActorReference,
+        state: &State,
+        tails: &BTreeMap<StreamPath, u64>,
+    ) -> Result<(), Error> {
+        let selected = Self::selected(manifest, state);
         if self.actors.get(actor) == Some(&selected)
             && selected.keys().all(|path| {
                 self.paths
@@ -85,7 +108,7 @@ impl Subscriptions {
                         _registration: registration,
                         waker,
                         next: None,
-                        next_from: *from,
+                        next_from: tails.get(path).map_or(*from, |&tail| tail.max(*from)),
                         notification: None,
                         observers: BTreeMap::new(),
                     },
@@ -93,8 +116,9 @@ impl Subscriptions {
             }
             let watch = self.paths.get_mut(path).expect("registered follow");
             watch.observers.insert(actor.clone(), *from);
-            // A registration starts idle: every follow this opens is polled
-            // through its own wake, the first one included.
+            // A registration starts idle: every follow this opens is armed
+            // through its own wake, the first one included. Arming polls the
+            // follow; only a record it returns wakes an observer.
             if watch.next.is_none() {
                 watch.next = Some(open(provider, path, watch.next_from));
                 watch.waker.wake_by_ref();
