@@ -57,6 +57,26 @@ async fn log_pages_reach_the_root_without_following_a_moving_head() {
         }
     }
     assert_eq!(observed, expected);
+    let mut prefixes = BTreeSet::new();
+    let ambiguous = expected
+        .iter()
+        .find_map(|id| {
+            let prefix = id.to_hex()[..1].to_owned();
+            (!prefixes.insert(prefix.clone())).then_some(prefix)
+        })
+        .expect("205 identities share a hexadecimal prefix");
+    assert!(matches!(
+        repository
+            .execute(
+                GitCommand::Log {
+                    maximum: 100,
+                    object: Some(ambiguous)
+                },
+                tree(206)
+            )
+            .await,
+        Err(GitCompatError::UnknownObject(_))
+    ));
 }
 
 #[tokio::test]
