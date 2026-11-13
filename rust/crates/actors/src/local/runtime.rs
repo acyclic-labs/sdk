@@ -111,6 +111,7 @@ struct Settlement<'a> {
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
     failed: bool,
+    attempted: bool,
     cause: Option<DeliveryFailure>,
 }
 impl Drop for Settlement<'_> {
@@ -119,15 +120,17 @@ impl Drop for Settlement<'_> {
             return;
         };
         if self.failed {
-            self.slot
-                .failure
-                .get_or_init(|| self.failures.signal(self.actor))
-                .failed(self.cause.take().unwrap_or_else(|| DeliveryFailure {
-                    message: format!(
-                        "actor {:?}: delivery producer disappeared before reporting an outcome",
-                        self.actor
-                    ),
-                }));
+            if self.attempted {
+                self.slot
+                    .failure
+                    .get_or_init(|| self.failures.signal(self.actor))
+                    .failed(self.cause.take().unwrap_or_else(|| DeliveryFailure {
+                        message: format!(
+                            "actor {:?}: delivery producer disappeared before reporting an outcome",
+                            self.actor
+                        ),
+                    }));
+            }
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
         } else if let Some(failure) = self.slot.failure.get() {
@@ -1479,6 +1482,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     ),
                     work,
                     failed: true,
+                    // Release may win before this delivery acquires the lock.
+                    // Retain its scheduling handoff without inventing an error.
+                    attempted: !inner.released,
                     cause: None,
                 };
                 let result = match &self.admission[self.handler.admission_class(actor).index()] {
