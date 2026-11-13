@@ -13,7 +13,7 @@ use prost::Message as _;
 mod node;
 pub use node::{NodeActor, NodeLink, NodePresence, open_link, open_request};
 mod drain;
-pub use drain::{drain, forward};
+pub use drain::{drain, forward, receipt};
 mod admission;
 pub use admission::{Delivered, Rejection, Routed};
 mod account;

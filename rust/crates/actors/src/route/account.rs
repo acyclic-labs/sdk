@@ -103,7 +103,7 @@ fn stream_error(error: Error) -> StreamError {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct Reply {
+pub(super) struct Reply {
     #[prost(uint32, tag = "1")]
     version: u32,
     #[prost(bytes = "bytes", tag = "2")]
@@ -112,6 +112,41 @@ struct Reply {
     relay_seq: Option<u64>,
     #[prost(enumeration = "Rejection", optional, tag = "4")]
     rejection: Option<i32>,
+}
+
+impl Reply {
+    pub(super) fn new(key: &IdempotencyKey, routed: Routed) -> Result<Self, StreamError> {
+        let (relay_seq, rejection) = match routed {
+            Routed::Relayed {
+                key: admitted,
+                relay_seq,
+            } if admitted == *key => (Some(relay_seq), None),
+            Routed::Rejected(reason) => (None, Some(reason as i32)),
+            _ => return Err(StreamError::InvalidResponse),
+        };
+        Ok(Self {
+            version: 1,
+            key: Bytes::copy_from_slice(key.as_bytes()),
+            relay_seq,
+            rejection,
+        })
+    }
+
+    pub(super) fn routed(self, key: &IdempotencyKey) -> Result<Routed, StreamError> {
+        if self.version != 1 || self.key.as_ref() != key.as_bytes() {
+            return Err(StreamError::InvalidResponse);
+        }
+        match (self.relay_seq, self.rejection) {
+            (Some(relay_seq), None) => Ok(Routed::Relayed {
+                key: key.clone(),
+                relay_seq,
+            }),
+            (None, Some(reason)) => Ok(Routed::Rejected(
+                Rejection::try_from(reason).map_err(|_| StreamError::InvalidResponse)?,
+            )),
+            _ => Err(StreamError::InvalidResponse),
+        }
+    }
 }
 
 impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
@@ -203,21 +238,7 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
                 }
             };
             authorize()?;
-            let reply = match routed {
-                Routed::Relayed { key, relay_seq } => Reply {
-                    version: 1,
-                    key: Bytes::copy_from_slice(key.as_bytes()),
-                    relay_seq: Some(relay_seq),
-                    rejection: None,
-                },
-                Routed::Rejected(reason) => Reply {
-                    version: 1,
-                    key: Bytes::copy_from_slice(message.request.idempotency_key.as_bytes()),
-                    relay_seq: None,
-                    rejection: Some(reason as i32),
-                },
-                Routed::Delivered(_) => return Err(StreamError::InvalidResponse),
-            };
+            let reply = Reply::new(&message.request.idempotency_key, routed)?;
             Ok(reply.encode_to_vec().into())
         })
     }
@@ -240,19 +261,7 @@ pub async fn admit(
         )
         .await?;
     let reply = Reply::decode(bytes).map_err(|_| StreamError::InvalidResponse)?;
-    if reply.version != 1 || reply.key.as_ref() != message.request.idempotency_key.as_bytes() {
-        return Err(StreamError::InvalidResponse.into());
-    }
-    match (reply.key.is_empty(), reply.relay_seq, reply.rejection) {
-        (false, Some(relay_seq), None) => Ok(Routed::Relayed {
-            key: IdempotencyKey::new(reply.key).map_err(|_| StreamError::InvalidResponse)?,
-            relay_seq,
-        }),
-        (false, None, Some(reason)) => Ok(Routed::Rejected(
-            Rejection::try_from(reason).map_err(|_| StreamError::InvalidResponse)?,
-        )),
-        _ => Err(StreamError::InvalidResponse.into()),
-    }
+    Ok(reply.routed(&message.request.idempotency_key)?)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

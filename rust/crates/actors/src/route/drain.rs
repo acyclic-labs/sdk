@@ -1,8 +1,8 @@
 //! One follow per destination, with acknowledgement after ordinary delivery.
-use super::{Envelope, Error, NodeId, Paths};
+use super::{Envelope, Error, NodeId, Paths, Routed, account::Reply};
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
-    IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    IdempotencyKey, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use prost::Message as _;
@@ -15,6 +15,46 @@ struct Cursor {
     version: u32,
     #[prost(uint64, tag = "2")]
     next: u64,
+    #[prost(message, optional, tag = "3")]
+    receipt: Option<Reply>,
+}
+
+/// Read the original admission of one source outbox record, without scanning
+/// other sends. `None` means it has not been acknowledged; wait on
+/// `paths.outbox_cursor(node)` from `outbox_sequence`, never poll this query.
+/// The owning host must authorize the sender's original intent before querying.
+pub async fn receipt<P: StreamProvider + ?Sized>(
+    local: &P,
+    paths: &Paths,
+    node: &NodeId,
+    outbox_sequence: u64,
+    intent: &IdempotencyKey,
+) -> Result<Option<Routed>, Error> {
+    let next = outbox_sequence.checked_add(1).ok_or(Error::InvalidRecord)?;
+    let mut records = match local
+        .read(ReadRequest {
+            key: None,
+            path: paths.outbox_cursor(node)?,
+            from: outbox_sequence,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+    {
+        Ok(records) => records,
+        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(record) = records.try_next().await? else {
+        return Ok(None);
+    };
+    let cursor = Cursor::decode(record.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
+    if record.sequence != outbox_sequence || cursor.version != 1 || cursor.next != next {
+        return Err(Error::InvalidRecord);
+    }
+    Ok(Some(
+        cursor.receipt.ok_or(Error::InvalidRecord)?.routed(intent)?,
+    ))
 }
 
 /// Drain this node's relay on its already authenticated account provider.
@@ -53,12 +93,9 @@ where
 /// the committed relay receipt (or durable rejection Notice). No local cursor
 /// advances while admission waits for credit or a transport is unavailable.
 /// A reopened forwarder resubmits the identical envelope after a lost receipt.
-/// The callback returns the original sender-local call completion, when present.
-/// It commits with the outbox cursor, so an
-/// acknowledged publication cannot lose its caller's result on restart. Their
-/// conditions retain the ordinary call cancellation and settlement rules.
-/// A call that cancellation has already settled keeps that terminal and does
-/// not block later outbox records. Arbitrary soft effects cannot be supplied.
+/// Its compact original receipt is the acknowledgement record itself. Callers
+/// recover it through [`receipt`], including after restart or later admissions.
+/// The forwarder owns no caller's call journal or cancellation terminal.
 pub async fn forward<P, D>(
     local: &P,
     paths: &Paths,
@@ -67,7 +104,7 @@ pub async fn forward<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<Option<crate::call::Completion>, Error>,
+    D: AsyncFnMut(Envelope) -> Result<Routed, Error>,
 {
     consume(
         local,
@@ -77,7 +114,8 @@ where
             if envelope.source != *node {
                 return Err(Error::InvalidRecord);
             }
-            admit(envelope).await
+            let key = envelope.request.idempotency_key.clone();
+            Ok(Some(Reply::new(&key, admit(envelope).await?)?))
         },
     )
     .await
@@ -91,13 +129,13 @@ async fn consume<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<Option<crate::call::Completion>, Error>,
+    D: AsyncFnMut(Envelope) -> Result<Option<Reply>, Error>,
 {
     let (mut next, mut cursor_tail) = match account.head(cursor_path.clone()).await {
         Ok(head) => {
             let record = head.last.ok_or(Error::InvalidRecord)?;
             let cursor = Cursor::decode(record.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
-            if cursor.version != 1 || cursor.next == 0 {
+            if cursor.version != 1 || cursor.next == 0 || cursor.next != head.tail {
                 return Err(Error::InvalidRecord);
             }
             (cursor.next, head.tail)
@@ -117,7 +155,7 @@ where
         if record.sequence != next {
             return Err(Error::InvalidRecord);
         }
-        let completion = deliver(Envelope::decode(&record.value)?).await?;
+        let receipt = deliver(Envelope::decode(&record.value)?).await?;
         let following = next.checked_add(1).ok_or(Error::InvalidRecord)?;
         let mut key = Sha256::new();
         key.update(b"acyclic.actors.route.ack.v1\0");
@@ -126,7 +164,7 @@ where
             key.update(part);
         }
         key.update(next.to_le_bytes());
-        let mut request = CommitRequest {
+        let request = CommitRequest {
             deadline_unix_millis: None,
             idempotency_key: IdempotencyKey::new(key.finalize().to_vec())?,
             effects: vec![CommitEffect::hard(
@@ -140,6 +178,7 @@ where
                         Cursor {
                             version: 1,
                             next: following,
+                            receipt,
                         }
                         .encode_to_vec()
                         .into(),
@@ -147,7 +186,6 @@ where
                 }],
             )],
         };
-        request.effects.extend(completion.map(CommitEffect::from));
         match account.commit(request).await? {
             CommitOutcome::Committed(_) => {
                 next = following;
