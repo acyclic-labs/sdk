@@ -453,6 +453,10 @@ pub enum Out {
     AwaitReplies(Vec<super::ReplyWatch>),
     /// Inbox inputs before this exclusive cursor already reached the model.
     Steered(u64),
+    /// Retire one ordered page of original inbox inputs consumed by a control.
+    /// Interleaved inputs remain queued; overflow uses its existing taken set.
+    /// Sequences must be distinct, increasing, and below the delivery cursor.
+    ConsumedInputs(Vec<u64>),
     /// Retain the cancellation of one input at this conversation frontier.
     InputCancelled {
         /// Original accepted inbox sequence.
@@ -1180,6 +1184,18 @@ fn finalize_step(
                 .retain(|input| input.inbox >= *through || !input.steering);
         }
     }
+    for out in &outs {
+        if let Out::ConsumedInputs(inputs) = out {
+            state
+                .queued
+                .retain(|input| inputs.binary_search(&input.inbox).is_err());
+            if let Some(from) = state.overflow {
+                state
+                    .taken
+                    .extend(inputs.iter().copied().filter(|sequence| *sequence >= from));
+            }
+        }
+    }
     let queued =
         wake_input(&state).is_some() || (!control(&state).input && state.overflow.is_some());
     let approval_ready = approval_position(&state).is_some();
@@ -1251,6 +1267,7 @@ fn finalize_step(
             | Out::PendingSpawns(_)
             | Out::AwaitReplies(_)
             | Out::Steered(_)
+            | Out::ConsumedInputs(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
             | Out::TurnDone { .. }
@@ -1479,6 +1496,9 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
         Out::InputCancelled { .. } => true,
+        Out::ConsumedInputs(inputs) => {
+            inputs.len() <= MAX_QUEUED && inputs.windows(2).all(|pair| pair[0] < pair[1])
+        }
         Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitReplies(_) | Out::PeerGuard { .. } => {
             true
         }
@@ -1698,7 +1718,10 @@ async fn run<T: TurnDriver + ?Sized>(
     }
     let base_conversation = conversation;
     let valid = turn.outs.iter().all(|out| {
-        if !admissible(out, &state.path) {
+        if !admissible(out, &state.path)
+            || matches!(out, Out::ConsumedInputs(inputs) if inputs.iter().any(|sequence| *sequence >= cursor))
+        {
+
             return false;
         }
         if matches!(out, Out::Conversation(_)) {
