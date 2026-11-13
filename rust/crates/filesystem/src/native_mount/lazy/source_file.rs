@@ -234,7 +234,7 @@ where
                 }
                 .filter(|node| node.file_identity == self.source_node.file_identity)
                 .unwrap_or(self.source_node);
-                Ok(source_mount_lookup(node, self.expected_source))
+                source_mount_lookup(node, self.expected_source)
             })
         })
     }

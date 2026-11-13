@@ -263,7 +263,7 @@ where
                 .map_err(|_| MountSourceError::Stale)?
                 .insert(file_id);
         }
-        let projected = mount_lookup(&lookup, file_id);
+        let projected = mount_lookup(&lookup, file_id)?;
         drop(lookup);
         if self.detached_by_id(file_id)?.is_some() {
             return Ok((self.project_authored(projected, work)?, None));

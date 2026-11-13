@@ -60,7 +60,8 @@ pub struct MountNode {
     pub file_id: FileId,
     /// Canonical node kind.
     pub kind: MountNodeKind,
-    /// Logical regular-file length; zero for non-files.
+    /// Exact logical regular-file length; zero for non-files. Sources that
+    /// cannot resolve a regular file's length refuse metadata publication.
     pub logical_bytes: u64,
     /// Exact namespace binding count for this path-independent file.
     pub link_count: u64,

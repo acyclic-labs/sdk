@@ -53,7 +53,10 @@ where
     .map_err(lazy_error)
 }
 
-pub(super) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup {
+pub(super) fn mount_lookup(
+    lookup: &LazyLookup,
+    file_id: FileId,
+) -> Result<MountLookup, MountSourceError> {
     let stat = lookup.stat();
     let (link_count, device) = match lookup {
         LazyLookup::Authored { record, .. } => (record.link_count, None),
@@ -70,28 +73,41 @@ pub(super) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup 
         ),
         LazyLookup::Source { node, .. } => return source_mount_lookup(*node, file_id),
     };
-    MountLookup {
+    Ok(MountLookup {
         node: MountNode {
             file_id,
             kind: source_kind(stat.kind),
-            logical_bytes: stat.logical_bytes.unwrap_or(0),
+            logical_bytes: exact_length(stat.kind, stat.logical_bytes)?,
             link_count,
             device,
         },
         metadata: workspace_metadata(lookup.metadata()),
-    }
+    })
 }
 
-pub(super) fn source_mount_lookup(node: SourceNode, file_id: FileId) -> MountLookup {
-    MountLookup {
+pub(super) fn source_mount_lookup(
+    node: SourceNode,
+    file_id: FileId,
+) -> Result<MountLookup, MountSourceError> {
+    Ok(MountLookup {
         node: MountNode {
             file_id,
             kind: source_kind(node.kind),
-            logical_bytes: node.logical_bytes.unwrap_or(0),
+            logical_bytes: exact_length(node.kind, node.logical_bytes)?,
             link_count: node.link_count.unwrap_or(1),
             device: node.device,
         },
         metadata: crate::lazy_workspace::source_file_metadata(node.metadata),
+    })
+}
+
+fn exact_length(kind: SourceNodeKind, length: Option<u64>) -> Result<u64, MountSourceError> {
+    if kind == SourceNodeKind::RegularFile {
+        length.ok_or(MountSourceError::Unsupported(
+            "source regular-file length is unknown".into(),
+        ))
+    } else {
+        Ok(0)
     }
 }
 

@@ -307,7 +307,7 @@ where
             .push(Arc::downgrade(&file));
         Ok((
             crate::native_mount::MountOpenClaim { file, bytes: 0 },
-            Some(mount_lookup(&LazyLookup::Source { node, source }, id)),
+            Some(mount_lookup(&LazyLookup::Source { node, source }, id)?),
             id,
         ))
     }

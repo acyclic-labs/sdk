@@ -150,7 +150,7 @@ impl SourceWatch for Watch {
         !self.is_stopped()
     }
 }
-struct Projection(Arc<Counts>, bool);
+struct Projection(Arc<Counts>, bool, bool);
 fn name() -> LogicalName {
     LogicalName::new(NameEncoding::Utf8, b"index.md".to_vec()).unwrap()
 }
@@ -186,7 +186,10 @@ impl View for Projection {
         Ok(if path.is_root() {
             Some(metadata(None))
         } else if path.components() == [name()] {
-            Some(metadata(Some(bytes.len() as u64)))
+            Some(SourceNode {
+                logical_bytes: self.2.then_some(bytes.len() as u64),
+                ..metadata(Some(bytes.len() as u64))
+            })
         } else {
             None
         })
@@ -294,15 +297,15 @@ macro_rules! ctx {
 }
 fn computed(provider: &Provider) -> Computed<Projection, Provider> {
     Computed::new(
-        Arc::new(Projection(provider.counts.clone(), false)),
+        Arc::new(Projection(provider.counts.clone(), false, true)),
         provider.clone(),
     )
 }
 
-pub(crate) fn unknown_length_source() -> impl DemandSource {
+pub(crate) fn unknown_length_source(lookup_length: bool) -> impl DemandSource {
     let provider = Provider::new();
     Computed::new(
-        Arc::new(Projection(provider.counts.clone(), true)),
+        Arc::new(Projection(provider.counts.clone(), true, lookup_length)),
         provider,
     )
 }
@@ -572,7 +575,7 @@ fn computed_changes_deliver_without_a_timer_or_readiness_probe() {
 #[test]
 fn computed_idle_cost_is_independent_of_agent_count() {
     let provider = Provider::new();
-    let view = Arc::new(Projection(provider.counts.clone(), false));
+    let view = Arc::new(Projection(provider.counts.clone(), false, true));
     for count in [10, 100_000] {
         let allocated = acyclic_test_support::measure(|| {
             for _ in 0..count {

@@ -3,30 +3,42 @@ use super::*;
 #[test]
 fn directory_resolves_unknown_file_lengths_before_publishing_attributes()
 -> Result<(), Box<dyn std::error::Error>> {
-    let work =
-        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| error)?;
-    let view = shared_runtime()?.block_on(mounted_view_of_with_authored_work(
-        Arc::new(crate::demand::computed_tests::unknown_length_source()),
-        "computed-lengths",
-        crate::MemoryLazyWorkspaceStore::default(),
-        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
-        Some(&work),
-    ))?;
-    let page = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
-    assert_eq!(page.entries.len(), 1);
-    let entry = &page.entries[0];
-    assert_eq!(entry.name, mounted(&["index.md"]).components[0]);
-    assert_eq!(entry.node.logical_bytes, 6);
-    let lookup = view
-        .lookup(&mounted(&["index.md"]))?
-        .ok_or("file disappeared")?;
-    assert_eq!(entry.node.logical_bytes, lookup.node.logical_bytes);
-    assert_eq!(entry.node.file_id, lookup.node.file_id);
-    // A directory continuation owns capture custody until its page retires.
-    drop(page);
-    drop(lookup);
-    view.cancel_cleanup(None)?;
+    for lookup_length in [true, false] {
+        let work =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| error)?;
+        let view = shared_runtime()?.block_on(mounted_view_of_with_authored_work(
+            Arc::new(crate::demand::computed_tests::unknown_length_source(
+                lookup_length,
+            )),
+            "computed-lengths",
+            crate::MemoryLazyWorkspaceStore::default(),
+            crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+            Some(&work),
+        ))?;
+        let page = view.read_directory_with_meter(&MountPath::root(), None, 1, &work);
+        if lookup_length {
+            let page = page?;
+            assert_eq!(page.entries.len(), 1);
+            let entry = &page.entries[0];
+            assert_eq!(entry.name, mounted(&["index.md"]).components[0]);
+            assert_eq!(entry.node.logical_bytes, 6);
+            let lookup = view
+                .lookup(&mounted(&["index.md"]))?
+                .ok_or("file disappeared")?;
+            assert_eq!(entry.node.logical_bytes, lookup.node.logical_bytes);
+            assert_eq!(entry.node.file_id, lookup.node.file_id);
+            // A directory continuation owns capture custody until its page retires.
+            drop(page);
+        } else {
+            assert!(matches!(page, Err(MountSourceError::Unsupported(_))));
+            assert!(matches!(
+                view.lookup(&mounted(&["index.md"])),
+                Err(MountSourceError::Unsupported(_))
+            ));
+        }
+        view.cancel_cleanup(None)?;
+    }
     Ok(())
 }
 
