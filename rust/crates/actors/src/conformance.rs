@@ -1059,6 +1059,7 @@ pub async fn placement<P: StreamProvider + ?Sized>(
     other.place(second.clone(), 1).await?;
     let cut = store.load(&first).await?;
     let forged = Transition {
+        pause: false,
         response: None,
         checkpoint: lab
             .creation("first", BTreeMap::new())?
