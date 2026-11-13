@@ -70,6 +70,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ) -> Result<(), MountSourceError>;
 
     /// Returns the sealed original native accounting and lifetime context.
+    /// This is an in-memory lifetime check and clone; it must not wait or do I/O.
     fn native_original_work(&self) -> Result<Option<NativeMaterializationWork>, MountSourceError> {
         Ok(None)
     }
