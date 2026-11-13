@@ -47,10 +47,9 @@ struct Storage {
 }
 
 pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
-    // Each phase owns its own allocation, so this entry's frame keeps only
-    // the configuration and one phase pointer, however large a phase grows.
-    let prepared = Box::pin(prepare(config)).await?;
-    Box::pin(prepared.open()).await
+    // One allocation holds both phases, keeping their state machines out of
+    // the entry frame without allocating again between preparation and open.
+    Box::pin(async move { prepare(config).await?.open().await }).await
 }
 
 /// A pinned local home, prepared before the session model is bound.
