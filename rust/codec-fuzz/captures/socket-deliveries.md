@@ -1,7 +1,9 @@
 # Runtime socket input captures
 
-Source: `e80c6f4b92a309347b75d2e41a65bfc60bee3f5e`.
-Producer: `cargo test --locked -p acyclic-actors --lib local::sockets::tests::socket_conformance_passes_on_local_runtime -- --exact --nocapture` (Linux x86_64, 1/1 passed, 0.65 s).
+Source: `506ccbe437bcaa94f93e2cb21868df8cb8a42688`, recaptured after the invocation
+record moved to the `acyclic.actor.invoke` v1 attribute (1d12ee2), whose earlier generation
+stores refuse as a whole.
+Producer: `cargo test --locked -p acyclic-actors --lib local::sockets::tests::socket_conformance_passes_on_local_runtime -- --exact --nocapture` (Linux x86_64, 1/1 passed, 0.16 s).
 
 The original `SocketPackage::on_record` boundary retained the Runtime-created
 Delivery with `guest::wire::encode_delivery` and its socket connection/event

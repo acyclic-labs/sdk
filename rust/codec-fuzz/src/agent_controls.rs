@@ -72,18 +72,29 @@ pub fn check(bytes: &[u8]) {
 
 fn writer_controls() {
     // Conditional arbitrary-input checks cannot detect an admission path that
-    // refuses everything. Retain the original public writer's positive witness.
+    // refuses everything. The positive witnesses come from the public writers
+    // themselves, not from corpus files capture rewrites: a witness compiled
+    // from the committed corpus refuses every format change before capture
+    // can regenerate it. The golden comparison still fixes the committed bytes.
+    let seeds: std::collections::BTreeMap<String, Vec<u8>> =
+        seeds().expect("public writer seeds").into_iter().collect();
+    let witness = |name: &str| {
+        seeds
+            .get(name)
+            .unwrap_or_else(|| panic!("public writer produced no {name} witness"))
+            .as_slice()
+    };
     assert!(
         matches!(
-            PreparedCommand::decode(include_bytes!("../corpus/agent_controls/command-root")),
+            PreparedCommand::decode(witness("command-root")),
             Ok(AgentCommand::Root {})
         ),
         "captured writer command refused"
     );
     for captured in [
-        include_bytes!("../corpus/agent_controls/actor-response-root-0").as_slice(),
-        include_bytes!("../corpus/agent_controls/actor-response-refused").as_slice(),
-        include_bytes!("../corpus/agent_controls/assembled-cancel").as_slice(),
+        witness("actor-response-root-0"),
+        witness("actor-response-refused"),
+        witness("assembled-cancel"),
     ] {
         let separator = captured.iter().position(|byte| *byte == 0).unwrap();
         let call =
@@ -109,7 +120,7 @@ fn writer_controls() {
     };
     assert_eq!(*decoded, original, "writer recovery request changed");
     assert!(unknown(&wire, &command), "writer recovery wire changed");
-    let captured = include_bytes!("../corpus/agent_controls/reply-bind-observation");
+    let captured = witness("reply-bind-observation");
     let separator = captured.iter().position(|byte| *byte == 0).unwrap();
     let command = PreparedCommand::decode(&captured[..separator]).unwrap();
     let reply = decode_agent_reply(&captured[separator + 1..], &command)
