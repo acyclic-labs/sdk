@@ -90,7 +90,7 @@ pub(in crate::local) async fn write(
     Ok(file.version().to_owned())
 }
 
-async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<Admission> {
+async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash> {
     let volumes = super::super::agent_settings::Volumes {
         files: &harness.files,
         verifier: &harness.verifier,
@@ -102,7 +102,11 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
         maximum_bytes: harness.limits.file_bytes,
     };
     let tree = super::super::agent_settings::Tree::new(&volumes, path, None).await?;
-    let cut = tree.cut()?.to_hex();
+    tree.cut()
+}
+
+async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<Admission> {
+    let cut = settings_cut(harness, path).await?.to_hex();
     let grant = ContentGrant::verify_directory_read(
         &harness.verifier,
         &harness.signed,
@@ -301,21 +305,7 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
     );
     let original = admission(&harness, "agent.ts", &version).await?;
     assert_eq!(original.status, AdmissionStatus::Applied);
-    let original_cut = {
-        let volumes = super::super::agent_settings::Volumes {
-            files: &harness.files,
-            verifier: &harness.verifier,
-            signed: &harness.signed,
-            home: &harness.scratch,
-            journal: &harness.journal,
-            seed: (&harness.seed.0, &harness.seed.1),
-            configuration: harness.harness.issuer_configuration(),
-            maximum_bytes: None,
-        };
-        super::super::agent_settings::Tree::new(&volumes, "agent.ts", None)
-            .await?
-            .cut()?
-    };
+    let original_cut = settings_cut(&harness, "agent.ts").await?;
     let mut conversation = super::ObservedConversation::open(&harness).await?;
     conversation.send("configuration", "Finish").await?;
     let requests = provider.requests();
@@ -366,6 +356,11 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
     assert_eq!(
         harness.sampling.and_then(|sampling| sampling.temperature),
         Some(6.0)
+    );
+    assert_ne!(
+        settings_cut(&harness, "agent.ts").await?,
+        original_cut,
+        "an issuer edit must select a different admission record"
     );
     let current = admission(&harness, "agent.ts", &version).await?;
     assert_eq!(current.status, AdmissionStatus::Applied);
