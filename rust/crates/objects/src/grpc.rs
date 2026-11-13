@@ -80,7 +80,8 @@ impl GrpcObjects {
     }
 
     /// Sets the caller's finite deadline for body-carrying calls; a slow or
-    /// large transfer is bounded by this deadline alone.
+    /// large transfer is bounded by this deadline alone when no Context is bound.
+    /// `with_context` replaces this relative timeout rather than combining with it.
     pub fn with_transfer_timeout(
         mut self,
         timeout: std::time::Duration,

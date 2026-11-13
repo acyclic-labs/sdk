@@ -62,8 +62,8 @@ clones keep that same budget through credential resolution, connection readiness
 response reading, conversion and final admission. Use `Context::run` around an
 explicit initial connection before adopting its channel with `from_channel`.
 An operation-bound view uses the host's existing stop event and timer instead of
-starting a relative transport timeout. An unbound view retains its configured
-transport timeout.
+starting a relative transport timeout. An unbound view has no deadline unless
+`GrpcObjects::with_transfer_timeout` supplies one for body-carrying calls.
 
 Local expiry and cancellation retain `Error::stopped`, including cancellation
 producer loss when the host maps it to cancellation. Expiry has the semantic
