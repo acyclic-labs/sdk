@@ -350,7 +350,7 @@ pub(super) fn lower_routed(
                         request,
                     };
                     let target = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
-                    builder.append(target.clone(), envelope.encode());
+                    builder.append(target.clone(), envelope.outbox_record());
                     outbox = Some(target);
                 }
                 if let InboxRecord::Message(message) | InboxRecord::FollowUp(message) = record

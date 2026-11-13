@@ -240,19 +240,23 @@ impl Publication {
     ) -> Result<CommitEffect, Error> {
         Self::effect(paths, &envelope.source, Body::Delivery(envelope.wire("")))
     }
+    pub(super) fn delivery_record(envelope: &Envelope) -> acyclic_stream::AppendRecord {
+        Self::record(Body::Delivery(envelope.wire("")))
+    }
+    fn record(body: Body) -> acyclic_stream::AppendRecord {
+        PublicationWire {
+            version: 1,
+            body: Some(body),
+        }
+        .encode_to_vec()
+        .into()
+    }
     fn effect(paths: &Paths, node: &NodeId, body: Body) -> Result<CommitEffect, Error> {
         Ok(CommitEffect::hard(
             Vec::new(),
             vec![CommitMutation::Append {
                 path: paths.outbox(node)?,
-                records: vec![
-                    PublicationWire {
-                        version: 1,
-                        body: Some(body),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ],
+                records: vec![Self::record(body)],
             }],
         ))
     }
