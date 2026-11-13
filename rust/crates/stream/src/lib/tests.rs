@@ -471,15 +471,57 @@ mod write_tests {
     }
 }
 
-#[cfg(all(test, feature = "serde"))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod indexed_trace_tests {
     use super::*;
-    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
-    use std::sync::Arc;
+    use futures::FutureExt as _;
+    use std::sync::{Arc, Mutex};
+    use tracing::{
+        Id,
+        field::{Field, Visit},
+        instrument::WithSubscriber,
+    };
+    use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
 
-    #[tokio::test]
-    async fn indexed_lookup_preserves_original_record_cut_and_owner()
-    -> Result<(), Box<dyn std::error::Error>> {
+    type Row = (&'static str, Id, Option<Id>, bool);
+    #[derive(Clone, Default)]
+    struct Rows(Arc<Mutex<(Vec<Row>, Vec<u64>)>>);
+
+    impl acyclic_observability::Sink for Rows {
+        fn record(&self, sample: &acyclic_observability::Sample<'_>) {
+            let name = sample.metadata.name();
+            if name == "acyclic.stream.latest_fence" || name == "acyclic.stream.latest_before" {
+                self.0.lock().unwrap().0.push((
+                    name,
+                    sample.span_id.clone(),
+                    sample.parent_id.cloned(),
+                    matches!(&sample.outcome, acyclic_observability::Outcome::Ok),
+                ));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Rows {
+        fn on_record(&self, id: &Id, fields: &tracing::span::Record<'_>, context: Context<'_, S>) {
+            if context
+                .span(id)
+                .is_some_and(|span| span.metadata().name() == "acyclic.stream.latest_before")
+            {
+                struct Bytes<'a>(&'a mut Vec<u64>);
+                impl Visit for Bytes<'_> {
+                    fn record_u64(&mut self, field: &Field, value: u64) {
+                        if field.name() == "bytes" {
+                            self.0.push(value);
+                        }
+                    }
+                    fn record_debug(&mut self, _: &Field, _: &dyn std::fmt::Debug) {}
+                }
+                fields.record(&mut Bytes(&mut self.0.lock().unwrap().1));
+            }
+        }
+    }
+
+    async fn indexed_owner(preserve: bool) -> Result<(), Box<dyn std::error::Error>> {
         let provider = Arc::new(MemoryStream::default());
         let data = Stream::new(provider.clone(), "agents/worker/data")?;
         data.append(
@@ -498,26 +540,42 @@ mod indexed_trace_tests {
                 Default::default(),
             )
             .await?;
-        let trace = Stream::new(provider.clone(), "agents/worker/trace")?;
-        let recorder = Arc::new(Recorder::new(trace.clone(), [51; 16]));
-        let root = recorder
-            .start(
-                "request",
-                Mechanism::ToolCall,
-                None,
-                Some("original_request"),
-            )
-            .await?
-            .into_owned();
-        let parent = root.id();
-        let (selected, condition) = root
-            .within(provider.latest_fenced(
-                data.path().clone(),
-                Some(bytes::Bytes::from_static(b"selected")),
-                Default::default(),
-            ))
+        let rows = Rows::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(acyclic_observability::Operations(rows.clone()))
+            .with(rows.clone());
+        let root = tracing::subscriber::with_default(subscriber, || {
+            crate::obs::OperationSpan::new(tracing::info_span!("test.request"))
+        });
+        let parent = root.id().ok_or("request span missing")?;
+        let selected = data.path().clone();
+        let future = root.in_scope(|| {
+            if preserve {
+                provider
+                    .latest_fenced(
+                        selected,
+                        Some(bytes::Bytes::from_static(b"selected")),
+                        Default::default(),
+                    )
+                    .boxed()
+            } else {
+                // Negative control: defer request creation until its owner is gone.
+                async {
+                    provider
+                        .latest_fenced(
+                            selected,
+                            Some(bytes::Bytes::from_static(b"selected")),
+                            Default::default(),
+                        )
+                        .await
+                }
+                .boxed()
+            }
+        });
+        let (record, condition) = future
+            .with_subscriber(tracing_subscriber::registry())
             .await?;
-        assert_eq!(selected, original);
+        assert_eq!(record, original);
         assert_eq!(
             condition,
             CommitCondition::Tail {
@@ -525,75 +583,54 @@ mod indexed_trace_tests {
                 expected: 1
             }
         );
-        assert!(
-            root.within(provider.latest(
+        let missing = root.in_scope(|| {
+            provider.latest_fenced(
                 data.path().clone(),
-                bytes::Bytes::from_static(b"absent"),
-                Default::default()
-            ))
-            .await?
-            .is_none()
-        );
+                Some(bytes::Bytes::from_static(b"absent")),
+                Default::default(),
+            )
+        });
         assert!(
-            root.within(provider.latest_before(data.path().clone(), None, 0, Default::default()))
+            missing
+                .with_subscriber(tracing_subscriber::registry())
+                .await?
+                .0
+                .is_none()
+        );
+        let zero = root
+            .in_scope(|| provider.latest_before(data.path().clone(), None, 0, Default::default()));
+        assert!(
+            zero.with_subscriber(tracing_subscriber::registry())
                 .await?
                 .is_none()
         );
-        assert!(
-            root.within(provider.latest(
-                trace.path().clone(),
-                bytes::Bytes::from_static(b"absent"),
-                Default::default()
-            ))
-            .await?
-            .is_none()
+        let captured = rows.0.lock().unwrap();
+        assert_eq!(
+            captured.0.len(),
+            4,
+            "indexed operation lost its request owner"
         );
-        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
-        let mut query = TraceQuery::new(
-            trace.follow(0, Default::default()).await?,
-            Default::default(),
-        );
-        query.next().await?;
-        query.next().await?;
-        assert!(
-            matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
-            if start.name == "stream.latest_fence" && start.mechanism == Mechanism::ProviderCall
-                && start.parent == Some(parent)
-                && start.guarantee.as_deref() == Some("original_head_cut_for_optimistic_publication_fence"))
-        );
-        for expected_bytes in [8, 0] {
-            query.next().await?;
-            assert!(
-                matches!(query.next().await?, Some(Observation::Completed { start, bytes, result: Outcome::Succeeded, .. })
-                if start.name == "stream.latest_before" && start.mechanism == Mechanism::ProviderCall
-                    && start.parent == Some(parent)
-                    && start.guarantee.as_deref() == Some("indexed_record_strictly_before_original_cut")
-                    && bytes == Some(expected_bytes))
-            );
+        assert_eq!(captured.1, [8, 0]);
+        for pair in captured.0.chunks_exact(2) {
+            let [read, fence] = pair else { unreachable!() };
+            assert_eq!(read.0, "acyclic.stream.latest_before");
+            assert_eq!(fence.0, "acyclic.stream.latest_fence");
+            assert_eq!(read.2.as_ref(), Some(&fence.1));
+            assert_eq!(fence.2.as_ref(), Some(&parent));
+            assert!(read.3 && fence.3);
         }
-        assert!(
-            matches!(query.next().await?, Some(Observation::Completed { id, .. }) if id == parent)
-        );
-        assert_eq!(
-            trace.tail().await?,
-            8,
-            "zero cuts and diagnostic reads must not emit provider work"
-        );
-        assert_eq!(
-            provider
-                .latest(
-                    data.path().clone(),
-                    bytes::Bytes::from_static(b"selected"),
-                    Default::default()
-                )
-                .await?,
-            original
-        );
-        assert_eq!(
-            trace.tail().await?,
-            8,
-            "the request owner must not leak into unrelated work"
-        );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn indexed_lookup_preserves_original_record_cut_and_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        indexed_owner(true).await
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "indexed operation lost its request owner")]
+    async fn indexed_lookup_negative_control_defers_creation_past_its_owner() {
+        indexed_owner(false).await.unwrap();
     }
 }
