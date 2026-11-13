@@ -17,12 +17,12 @@
     "mismatched-reply-path": "one same-length file path substitution in the original encoded reply"
   },
   "sha256": {
-    "committed-snapshot": "b74d68957838e468da2f2318e75a2bde5329341b5c306d354f545990b7cf8006",
-    "conditional-publication": "00d54380f793de378c0aec8d9514e10d352483eac197f6c7955bdf1644913d15",
-    "layout-v1": "a1e90ce9369b6fa6c0b5a3976f41abd6c254d50230f4b748baa965a2fc037830",
-    "duplicate-request-path": "82d5c9cf3299428b35b1573be892a8667b99f1253866b0f072b0ac2728cc292d",
-    "mismatched-reply-path": "1cd967a7b384c1380b0f4e04dabc6e9bcd81bdde22ac4287e9b7c85298d0504f",
-    "unsupported-layout-version": "26253ce7d749b3c0a073760ed0ebaee98deaa640761590bf3a599e292021d70c"
+    "committed-snapshot": "b42df34983410a02458b4a1ff191867f229d1f6c3964e7b147f19d9d487d0db4",
+    "conditional-publication": "f264d7d4e0c45a7c0599461045fc0b857d72273a5585d6321eb300c0ab43b39a",
+    "layout-v1": "35596ff46be9dbca2bae48d7cefc537adaa8fd91168d77a18b4bda8ffa0969ad",
+    "duplicate-request-path": "f83385bfa12908193df1355f977fabfafa966329ab11110515a98d309e960419",
+    "mismatched-reply-path": "bd9ebd0c21eec43bd218fc67e6d090c5b2a624008969ec115cba6d90beb5e29d",
+    "unsupported-layout-version": "574e094d38bcceebb6d5ff6d7ce5eddc1469ee3227f10d80187823b184bdbdad"
   },
   "additional_captures": {
     "conditional-publication": {

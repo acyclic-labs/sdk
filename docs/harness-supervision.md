@@ -38,7 +38,8 @@ capacity. For example:
 }
 ```
 
-A null occurrence threshold disables that query. Null reservation dimensions are
+A null signal threshold disables that query; null `repeat_failure_pause` disables
+only escalation, while `repeat_failure` still controls its alerts. Null reservation dimensions are
 unbounded. Validation commands are owner selected; commands match exact original bytes, including quotes and whitespace. An action is `alert`, `pause` or `stop`.
 Alerts continue execution. The default repeated-failure action escalates from an
 alert to a pause; validation loops, output loops and exhausted capacity pause.

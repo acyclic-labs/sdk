@@ -5,7 +5,7 @@ pub struct Transaction<A: 'static, O: 'static> {
     pub(crate) workspace: Workspace<A, O>,
     pub(crate) checkout: Checkout<A, O>,
     pub(crate) idempotency_key: IdempotencyKey,
-    pub(super) requires_rebase: bool,
+    pub(crate) requires_rebase: bool,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {

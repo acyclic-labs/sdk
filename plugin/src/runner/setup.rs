@@ -159,7 +159,8 @@ pub(super) async fn first_run(
     args: &mut Args,
     registry: &mut Registry,
 ) -> Result<Option<Tty>, Failure> {
-    if args.default_config
+    if args.environment_credentials
+        || args.default_config
         || !onboarding::interactive()
         || args.input_format != InputFormat::Text
         || args.output_format != OutputFormat::Text
