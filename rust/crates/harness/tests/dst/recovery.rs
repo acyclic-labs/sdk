@@ -64,8 +64,15 @@ impl ReplaySeed {
     fn retain(&self, directory: &Path) -> Result<std::path::PathBuf> {
         let path = directory.join("replay-seed.json");
         let next = directory.join("replay-seed.json.next");
-        std::fs::write(&next, serde_json::to_vec(self).map_err(seed_error)?).map_err(seed_error)?;
-        std::fs::rename(next, &path).map_err(seed_error)?;
+        let bytes = serde_json::to_vec(self).map_err(seed_error)?;
+        acyclic_native_runtime::private_file::publish(
+            &path,
+            &next,
+            acyclic_native_runtime::RenameMode::NoReplace,
+            |file| std::io::Write::write_all(file, &bytes),
+            |_| Ok(()),
+        )
+        .map_err(seed_error)?;
         Ok(path)
     }
 }
@@ -156,6 +163,9 @@ fn crash_reopen(point: Cut) -> Result<()> {
         assert_eq!(dispatched.is_some(), matches!(point, Cut::FirstModelEvent));
         drop(schedule);
         drop(crash);
+        // Recovery consumes the retained original seed after the crash, not
+        // the pre-crash in-memory copy.
+        let seed = ReplaySeed::read(&seed_path)?;
         // Independent providers, stores, clocks, identity source and executor
         // reopen the original files. The provider explicitly recovers the
         // previously accepted request; no old provider object crosses the cut.
