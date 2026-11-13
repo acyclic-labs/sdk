@@ -54,7 +54,7 @@ pub(super) fn result(
                 .get("omitted_bytes")
                 .and_then(Value::as_u64)
                 .unwrap_or_default();
-            fields.insert("omitted_bytes".into(), omitted.into());
+            fields.entry("omitted_bytes").or_insert(omitted.into());
             fields.insert("truncated".into(), (omitted > 0).into());
             if fields.contains_key("omitted_range")
                 || text_projection_len(super::shell::presentation(&fields)?) as u64 <= maximum

@@ -4,6 +4,7 @@ mod window;
 pub use window::OutputWindow;
 pub(crate) use window::notice as omission_notice;
 pub(crate) use window::select as select_window;
+pub(crate) use window::write_notice as write_omission;
 
 /// A shared rendering quantum, not a capacity limit. Omitted bytes remain in
 /// an immutable volume file and are read through the ordinary file reader.

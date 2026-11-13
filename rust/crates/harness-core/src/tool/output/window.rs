@@ -18,16 +18,23 @@ pub(crate) fn notice(omitted: u64, start: u64, end: u64) -> Omission {
 
 impl std::fmt::Display for Omission {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.omitted == 0 {
-            Ok(())
-        } else {
-            write!(
-                formatter,
-                "\n[{} bytes omitted in [{}, {})]\n",
-                self.omitted, self.start, self.end
-            )
-        }
+        write_notice(formatter, self.omitted, self.start, self.end, |_| Ok(()))
     }
+}
+
+pub(crate) fn write_notice(
+    formatter: &mut std::fmt::Formatter<'_>,
+    omitted: u64,
+    start: u64,
+    end: u64,
+    continuation: impl FnOnce(&mut std::fmt::Formatter<'_>) -> std::fmt::Result,
+) -> std::fmt::Result {
+    if omitted == 0 {
+        return Ok(());
+    }
+    write!(formatter, "\n[{omitted} bytes omitted in [{start}, {end})")?;
+    continuation(formatter)?;
+    formatter.write_str("]\n")
 }
 
 impl serde::Serialize for Omission {

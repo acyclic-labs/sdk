@@ -159,6 +159,16 @@ mod tests {
                 "invalid {field} must not silently hide output"
             );
         }
+        for count in [serde_json::json!(0), serde_json::json!("unknown")] {
+            let mut invalid = crate::tool::ToolResult {
+                value: result.value.clone(),
+            };
+            invalid.value["omitted_bytes"] = count;
+            assert!(
+                crate::tools::shell::project_result(&invalid, None).is_err(),
+                "a missing or malformed omission count cannot become complete output"
+            );
+        }
         Ok(())
     }
 

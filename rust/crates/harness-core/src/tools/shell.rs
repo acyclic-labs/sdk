@@ -122,11 +122,13 @@ pub(super) fn presentation(
 ) -> Result<Presentation<'_>> {
     let mut head = [""; 2];
     let mut tail = [""; 2];
-    let omitted = fields
-        .get("omitted_bytes")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or_default();
-    if omitted > 0 {
+    let omitted = match fields.get("omitted_bytes") {
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| Error::Invalid("shell output has an invalid omission count".into()))?,
+        None => 0,
+    };
+    if omitted > 0 || fields.contains_key("omitted_range") {
         let range = fields.get("omitted_range");
         let start = range
             .and_then(|range| range.get("start"))
@@ -202,24 +204,23 @@ impl std::fmt::Display for Presentation<'_> {
             let end = fields["omitted_range"]["end"]
                 .as_u64()
                 .unwrap_or(start.saturating_add(omitted));
-            write!(
-                f,
-                "\n[{omitted} bytes omitted in [{start}, {end}); read this byte range from"
-            )?;
-            if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
-                write!(f, " {spill}")?;
-            } else if let (Some(volume), Some(directory)) = (
-                fields.get("output_volume"),
-                fields
-                    .get("output_directory")
-                    .and_then(serde_json::Value::as_str),
-            ) {
-                write!(
-                    f,
-                    " volume {volume}, directory {directory} in capture order"
-                )?;
-            }
-            f.write_str("]\n")?;
+            crate::tool::output::write_omission(f, omitted, start, end, |f| {
+                f.write_str("; read this byte range from")?;
+                if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
+                    write!(f, " {spill}")?;
+                } else if let (Some(volume), Some(directory)) = (
+                    fields.get("output_volume"),
+                    fields
+                        .get("output_directory")
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                    write!(
+                        f,
+                        " volume {volume}, directory {directory} in capture order"
+                    )?;
+                }
+                Ok(())
+            })?;
         }
         write!(f, "{}{}", self.tail[0], self.tail[1])?;
         if let Some(message) = fields
