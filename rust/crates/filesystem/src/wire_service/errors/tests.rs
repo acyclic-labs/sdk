@@ -365,6 +365,7 @@ fn every_native_materialization_category_keeps_its_wire_code() {
         (E::ExternalMutation, Code::Aborted),
         (E::UnexpectedBackup, Code::FailedPrecondition),
         (E::UnsupportedRename, Code::Unimplemented),
+        (E::MountBoundary, Code::FailedPrecondition),
         (E::Cancelled, Code::Cancelled),
         (E::OriginalWorkPoisoned, Code::Internal),
         (E::MissingCustody, Code::Internal),
