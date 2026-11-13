@@ -141,7 +141,7 @@ pub(super) async fn stock_count_tokens(
             return Err(error);
         }
         match &event {
-            ModelEvent::Wait(_) => {
+            ModelEvent::Wait(_) | ModelEvent::Trace { .. } => {
                 let call = call.get_or_insert_with(OperationId::new);
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("count:{}:{call}:{sequence}", turn.1), work)

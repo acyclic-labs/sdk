@@ -177,7 +177,7 @@ fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn 
             None,
         )
         .ok_or("member diagnostic must retain the original status")?;
-        for error in [error, E::Refused(refusal)] {
+        for error in [error.clone(), error.with_refusal(refusal)] {
             let error = authority(AuthorityStoreError::NativeStream(error));
             let response = status(&error);
             assert_eq!(

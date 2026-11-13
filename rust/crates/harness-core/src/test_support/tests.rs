@@ -608,7 +608,7 @@ async fn counted(
     let mut events = provider.count_tokens(request, 0);
     while let Some(event) = events.next().await {
         match event? {
-            ModelEvent::Wait(_) => {}
+            ModelEvent::Wait(_) | ModelEvent::Trace { .. } => {}
             ModelEvent::Counted { count } => return Ok(count),
             _ => {
                 return Err(crate::Error::Invalid(

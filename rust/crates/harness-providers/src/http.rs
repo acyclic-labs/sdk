@@ -7,6 +7,7 @@ use futures::StreamExt as _;
 pub(crate) use acyclic_harness_core::http::owned_bytes;
 pub use acyclic_harness_core::http::{HttpRequest, HttpResponse, HttpTransport};
 pub(crate) mod bounded;
+pub(crate) mod phase;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod refusal_tests;
 
@@ -95,14 +96,11 @@ impl ReqwestTransport {
                 .filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?))),
             std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.unix_ms()?),
         );
-        let request_id = if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
-            response
-                .headers_mut()
-                .remove("x-request-id")
-                .or_else(|| response.headers_mut().remove("request-id"))
-        } else {
-            None
-        };
+        // The provider's identifier for this attempt joins its own logs to the journal.
+        let request_id = response
+            .headers_mut()
+            .remove("x-request-id")
+            .or_else(|| response.headers_mut().remove("request-id"));
         let body = response
             .bytes_stream()
             .map(move |chunk| chunk.map_err(|error| reqwest_failure(native, &error)));

@@ -3,6 +3,54 @@ use bytes::Bytes;
 use wire::{session_data::Item, session_frame::Body};
 
 #[test]
+fn closed_diagnostics_preserve_every_declared_category() {
+    let mut old_decoder_misclassifies = 0;
+    for category in StreamError::ALL {
+        let canonical = crate::wire_codec::status::canonical(&category);
+        let diagnostic = acyclic_auth::refusal::Refusal::capture(
+            canonical.code,
+            "caller diagnostic",
+            b"",
+            &Default::default(),
+            canonical,
+            None,
+        )
+        .expect("noncanonical message");
+        let original = category.clone().with_refusal(diagnostic);
+        let frame = crate::session::Frame::closed(
+            wire::SessionChannel {
+                channel_id: 1,
+                generation: 1,
+            },
+            original,
+        );
+        let decoded = round_trip(frame.wire()).expect("real protobuf close frame");
+        let Some(Body::Closed(closed)) = decoded.body else {
+            panic!("not a close")
+        };
+        let error = closed_error(&closed);
+        assert_eq!(error.category(), category);
+        assert_eq!(tonic::Status::from(&error).message(), "caller diagnostic");
+        let source = std::error::Error::source(&error).expect("retained refusal");
+        let parts = source
+            .source()
+            .expect("original failure")
+            .downcast_ref::<acyclic_auth::refusal::Parts>()
+            .expect("typed status");
+        assert_eq!(parts.message, "caller diagnostic");
+        let old = crate::wire_codec::status(&tonic::Status::new(
+            tonic::Status::from(&category).code(),
+            &closed.message,
+        ));
+        old_decoder_misclassifies += usize::from(old.category() != category);
+    }
+    assert!(
+        old_decoder_misclassifies > 0,
+        "fixture must detect category inference from diagnostics"
+    );
+}
+
+#[test]
 fn actor_call_chunks_preserve_order_total_and_finite_fragment_work() {
     let total = crate::MAX_RECORD_BYTES + 1;
     let mut data = wire::SessionData {

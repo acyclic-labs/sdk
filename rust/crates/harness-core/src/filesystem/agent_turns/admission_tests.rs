@@ -1523,9 +1523,7 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
         let stop = acyclic_actors::guest::CancellationToken::new();
         let opening = host.open(
             &state,
-            OperationId::from_bytes([198; 16]),
-            0,
-            1,
+            crate::agent::TurnIdentity::new(OperationId::from_bytes([198; 16]), 0, 1),
             &input,
             stop.clone(),
         );

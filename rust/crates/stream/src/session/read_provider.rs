@@ -36,7 +36,7 @@ impl StreamProvider for ReadProvider {
     }
 
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
-        self.client.heads(request, 0).await
+        self.client.heads(request, self.client.credential()).await
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {

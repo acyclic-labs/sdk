@@ -79,6 +79,39 @@ pub struct OpenControl {
     pub custody: Option<crate::core::RuntimeAuthority>,
 }
 
+/// Original run and input coordinates, retained together across host adapters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TurnIdentity {
+    /// Execution identity of this turn.
+    pub turn: OperationId,
+    /// First turn's identity, retained by goal continuations.
+    pub run: OperationId,
+    /// Original accepted input.
+    pub inbox: u64,
+    /// Exclusive input frontier admitted by this actor delivery.
+    pub cursor: u64,
+}
+
+impl TurnIdentity {
+    /// A turn starting its own run at an original input cut.
+    #[must_use]
+    pub const fn new(turn: OperationId, inbox: u64, cursor: u64) -> Self {
+        Self {
+            turn,
+            run: turn,
+            inbox,
+            cursor,
+        }
+    }
+
+    /// Retain an earlier run when opening a self-continuation.
+    #[must_use]
+    pub const fn in_run(mut self, run: OperationId) -> Self {
+        self.run = run;
+        self
+    }
+}
+
 fn is_manifest(part: &ModelContentPart) -> bool {
     matches!(
         part,
@@ -270,15 +303,14 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
                 .then(|| "this host does not restore generation-linked history".to_owned()))
         })
     }
-    /// Opens `turn` for `agent`, whose model-visible input is `input`.
+    /// Opens `turn` in its original `run` for `agent`, whose model-visible
+    /// input is `input`. Goal self-continuations retain the first turn's run.
     /// `cursor` is this original actor delivery's exclusive inbox cursor;
     /// together with the retained queue it distinguishes consumed responses.
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
-        turn: OperationId,
-        inbox: u64,
-        cursor: u64,
+        identity: TurnIdentity,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
@@ -317,13 +349,11 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
-        turn: OperationId,
-        inbox: u64,
-        cursor: u64,
+        identity: TurnIdentity,
         input: &'a ModelContent,
         stop: acyclic_actors::guest::CancellationToken,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>> {
-        (**self).open(agent, turn, inbox, cursor, input, stop)
+        (**self).open(agent, identity, input, stop)
     }
 }
 
@@ -900,15 +930,22 @@ async fn settle_selection(
     .with_observed_prefix(agent.steered_through);
     Ok(TurnStep {
         checkpoint: None,
-        outs: settled(&entry)?,
+        outs: settled(agent, &entry)?,
         wait: Wait::Input,
         drops: None,
     })
 }
 
 /// An entry's append, retaining the documents it announced.
-fn appended(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
-    let mut outs = vec![Out::Conversation(entry.encode()?)];
+fn appended(agent: &AgentState, entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
+    let turn = turn_id(agent, &entry.input)?;
+    let mut outs = vec![
+        Out::Conversation(entry.encode()?),
+        Out::TurnDone {
+            turn,
+            run: entry.goal.unwrap_or(turn),
+        },
+    ];
     if let Some(selection) = &entry.notices {
         outs.push(Out::Notices(selection.clone()));
     }
@@ -929,8 +966,8 @@ fn appended(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
 
 /// A settled entry's appends: the entry, indexed as the agent's latest
 /// checkpoint when it is one.
-fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
-    let mut outs = appended(entry)?;
+fn settled(agent: &AgentState, entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
+    let mut outs = appended(agent, entry)?;
     if entry.checkpoint().is_some() {
         outs.push(Out::Checkpoint);
     }
@@ -1047,7 +1084,7 @@ async fn failed(
     let entry = interrupted(agent, open, turn, inbox, input, notices, outcome).await?;
     let step = TurnStep {
         checkpoint: None,
-        outs: settled(&entry)?,
+        outs: settled(agent, &entry)?,
         wait: Wait::Input,
         drops: None,
     };
@@ -1083,6 +1120,37 @@ async fn settle_effects(
         let mut outs = super::effect_outs(agent, effects.recorded().await.map_err(host_error)?);
         outs.append(&mut step.outs);
         step.outs = outs;
+    }
+    if open
+        .journal
+        .run_admission()
+        .is_some_and(|source| source.value.no_progress_turns.is_some())
+        && let Some(run) = step.outs.iter().find_map(|out| match out {
+            Out::TurnDone { run, .. } => Some(*run),
+            _ => None,
+        })
+    {
+        let source = crate::supervision::Position {
+            stream: agent.path.conversation()?,
+            sequence: agent.conversation_tail,
+        };
+        if let Some(projection) = open
+            .journal
+            .settle_progress(&source)
+            .await
+            .map_err(host_error)?
+        {
+            let control = projection.checkpoint.control();
+            step.outs.push(Out::Commit(projection.effect));
+            if let Some(control) = control {
+                step.wait = if control.action == crate::supervision::Action::Stop {
+                    Wait::Done(super::AgentOutcome::Archived)
+                } else {
+                    Wait::Input
+                };
+                step.outs.push(Out::Supervised { run, control });
+            }
+        }
     }
     Ok(step)
 }
@@ -1170,7 +1238,13 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             let content = model_input_at(&agent.path, inbox, &input)?;
             let Some(open) = opened(
                 self.host
-                    .open(agent, turn, inbox, cursor, &content, stop.clone())
+                    .open(
+                        agent,
+                        TurnIdentity::new(turn, inbox, cursor)
+                            .in_run(super::goal::continuing(&agent.path, &input).unwrap_or(turn)),
+                        &content,
+                        stop.clone(),
+                    )
                     .await,
                 &stop,
             )?
@@ -1207,7 +1281,13 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     &*open.journal,
                 )
                 .await;
-            if stop.is_cancelled() && !matches!(progress, Ok(ExecutionProgress::Ready(_))) {
+            let progress = ExecutionProgress::controlled(progress);
+            if stop.is_cancelled()
+                && !matches!(
+                    progress,
+                    Ok(ExecutionProgress::Ready(_) | ExecutionProgress::Controlled(_))
+                )
+            {
                 self.host.settle(agent, turn).await.map_err(host_error)?;
                 // A cancel or archive stops this turn: it settles durably as
                 // a cancelled entry holding its prompt and the answer it
@@ -1222,12 +1302,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     TurnOutcome::Cancelled,
                 )
                 .await?;
-                return Ok(TurnStep {
-                    checkpoint: None,
-                    outs: settled(&entry)?,
-                    wait: Wait::Input,
-                    drops: None,
-                });
+                return settle_effects(
+                    agent,
+                    &open,
+                    TurnStep {
+                        checkpoint: None,
+                        outs: settled(agent, &entry)?,
+                        wait: Wait::Input,
+                        drops: None,
+                    },
+                )
+                .await;
             }
             let progress = match progress {
                 Ok(progress) => progress,
@@ -1252,6 +1337,38 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .map_err(host_error)?;
             }
             let step = match progress {
+                ExecutionProgress::Controlled(control) => {
+                    let stop = control.action == crate::supervision::Action::Stop;
+                    if stop {
+                        self.host.settle(agent, turn).await.map_err(host_error)?;
+                    }
+                    let mut outs = pending_spawns(agent, &open).await?;
+                    outs.push(Out::Supervised {
+                        run: super::goal::continuing(&agent.path, &input).unwrap_or(turn),
+                        control: control.clone(),
+                    });
+                    TurnStep {
+                        checkpoint: if stop {
+                            None
+                        } else {
+                            Some(encode(&Checkpoint {
+                                inbox,
+                                input: input.clone(),
+                                segment,
+                                announcements: announced(&open),
+                                opened: true,
+                                notices: notices.clone(),
+                            })?)
+                        },
+                        outs,
+                        wait: if stop {
+                            Wait::Done(super::AgentOutcome::Archived)
+                        } else {
+                            Wait::Continue
+                        },
+                        drops: None,
+                    }
+                }
                 ExecutionProgress::Ready(output) => {
                     self.host.settle(agent, turn).await.map_err(host_error)?;
                     // An active goal continues the agent through its own inbox;
@@ -1313,9 +1430,9 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .with_observed_prefix(agent.steered_through);
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.continuation.is_some() {
-                        appended(&entry)?
+                        appended(agent, &entry)?
                     } else {
-                        settled(&entry)?
+                        settled(agent, &entry)?
                     };
                     outs.extend(goal.continuation);
                     outs.extend(goal.notice);

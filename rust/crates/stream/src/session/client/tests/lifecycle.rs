@@ -16,6 +16,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
                 abandoned: Arc::new(gate::Gate::new()),
             },
             revisions: Arc::default(),
+            credential: 0,
         },
         receiver,
     )

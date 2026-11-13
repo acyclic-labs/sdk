@@ -508,19 +508,13 @@ fn validate_reply(
             AgentReply::ClientFiles { snapshot },
             AgentCommand::ClientFiles {
                 agent,
-                session,
+                root,
                 paths,
                 after,
+                ..
             },
         ) => {
-            return validate_files(snapshot, paths, after.as_ref(), |file| {
-                acyclic_harness_core::client_files::volume(
-                    file.volume().provider().clone(),
-                    agent,
-                    *session,
-                )
-                .is_ok_and(|volume| &volume == file.volume())
-            });
+            return validate_files(snapshot, paths, after.as_ref(), *root, agent);
         }
         (
             AgentReply::ClientFiles { snapshot },
@@ -530,14 +524,13 @@ fn validate_reply(
                 after,
             },
         ) => {
-            return validate_files(snapshot, paths, after.as_ref(), |file| {
-                // Binding roles do not prescribe a volume name.
-                file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner()
-                        == &VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-                            agent.id_bytes(),
-                        ))
-            });
+            return validate_files(
+                snapshot,
+                paths,
+                after.as_ref(),
+                acyclic_harness_core::client_files::FileRoot::Private {},
+                agent,
+            );
         }
         (
             AgentReply::FilePreviews { snapshot },
@@ -1876,20 +1869,118 @@ mod tests {
         );
         Ok(())
     }
+    #[test]
+    fn retained_client_file_captures_remain_positive_decoder_inputs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (name, bytes, query) in [
+            (
+                "committed-snapshot",
+                include_bytes!("../../../fuzz/corpus/client_files/committed-snapshot").as_slice(),
+                false,
+            ),
+            (
+                "conditional-publication",
+                include_bytes!("../../../fuzz/corpus/client_files/conditional-publication")
+                    .as_slice(),
+                false,
+            ),
+            (
+                "stream-query-snapshot",
+                include_bytes!("../../../fuzz/corpus/client_files/stream-query-snapshot")
+                    .as_slice(),
+                true,
+            ),
+        ] {
+            let split = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or("capture has no reply separator")?;
+            let command = crate::PreparedCommand::decode_whole(&bytes[..split])?;
+            let reply = decode_agent_reply(&bytes[split + 1..], &command)??;
+            match (command, reply) {
+                (AgentCommand::ClientFiles { .. }, AgentReply::ClientFiles { snapshot }) => {
+                    if query {
+                        assert!(
+                            snapshot.files.values().flatten().any(|file| matches!(
+                                file.source,
+                                acyclic_harness_core::client_files::FileSource::Query { .. }
+                            )),
+                            "{name} lost its positive stream query"
+                        );
+                    }
+                }
+                (
+                    AgentCommand::PublishClientFiles { .. },
+                    AgentReply::ClientFilesPublished { .. },
+                ) => {}
+                _ => panic!("{name} decoded as another operation"),
+            }
+        }
+        let invalid = include_bytes!("../../../fuzz/corpus/client_files/mismatched-reply-path");
+        let split = invalid
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or("negative capture has no reply separator")?;
+        let command = crate::PreparedCommand::decode_whole(&invalid[..split])?;
+        assert!(
+            decode_agent_reply(&invalid[split + 1..], &command).is_err(),
+            "mismatched authored reply path was admitted"
+        );
+        Ok(())
+    }
 }
 
 fn validate_files(
     snapshot: &acyclic_harness_core::client_files::ClientFiles,
     paths: &[String],
-    after: Option<&acyclic_harness_core::resources::GenerationRef>,
-    owns: impl Fn(&acyclic_harness_core::conversation::FileRef) -> bool,
+    after: Option<&acyclic_harness_core::client_files::FileCut>,
+    root: acyclic_harness_core::client_files::FileRoot,
+    agent: &AgentPath,
 ) -> Result<(), CommandError> {
-    if after != Some(&snapshot.generation)
+    use acyclic_harness_core::client_files::{FileRoot, FileSource};
+    let selected = match root {
+        FileRoot::ClientSession { session } => acyclic_harness_core::client_files::volume(
+            snapshot.volume.provider().clone(),
+            agent,
+            session,
+        )
+        .is_ok_and(|volume| volume == snapshot.volume),
+        FileRoot::Private {} => {
+            snapshot.volume.class() == VolumeClass::AgentPrivate
+                && snapshot.volume.owner()
+                    == &VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                        agent.id_bytes(),
+                    ))
+        }
+        FileRoot::Home {} => true, // Original admitted binding is host-resolved.
+    };
+    if snapshot.root == root
+        && selected
+        && snapshot.cut.version == 1
+        && after.is_none_or(|after| !after.same_inputs(&snapshot.cut))
         && snapshot.files.len() == paths.len()
         && paths.iter().all(|path| {
             snapshot.files.get(path).is_some_and(|file| {
-                file.as_ref()
-                    .is_none_or(|file| file.file.path() == path && owns(&file.file))
+                file.as_ref().is_none_or(|file| {
+                    let provenance = match &file.source {
+                        FileSource::Authored { file } => {
+                            file.path() == path && file.volume() == &snapshot.volume
+                        }
+                        FileSource::Query { view, input, .. } => {
+                            !view.is_empty()
+                                && snapshot
+                                    .cut
+                                    .queries
+                                    .get(&input.stream)
+                                    .is_some_and(|through| input.sequence < *through)
+                        }
+                    };
+                    provenance
+                        && file
+                            .descriptor()
+                            .verify(file.text.as_bytes(), &mut None)
+                            .is_ok()
+                })
             })
         })
     {

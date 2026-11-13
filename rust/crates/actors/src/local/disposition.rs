@@ -295,17 +295,17 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         if matches!(cause, GuestError::PreconditionChanged) {
             return Err(Error::PreconditionChanged(Vec::new()));
         }
+        if matches!(cause, GuestError::Pending(_)) {
+            return Err(Error::Handler(cause.clone()));
+        }
         let original = super::owned(previous, epoch)?;
-        let Trigger::Record {
-            subscription,
-            sequence,
-        } = trigger
-        else {
-            return Err(Error::Invalid("failed input is not a record delivery"));
-        };
-        if *sequence != input.sequence {
+        let (subscription, sequence) = trigger
+            .record_position()
+            .ok_or(Error::Invalid("failed input is not a record delivery"))?;
+        if sequence != input.sequence {
             return Err(Error::Invalid("failed input differs from its trigger"));
         }
+        super::validate_selection(trigger, Some(input))?;
         let source = original
             .subscriptions
             .get(subscription)
@@ -323,7 +323,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             failed: Some(InputV1 {
                 state: previous.path.to_string(),
                 revision: previous.tail,
-                subscription: subscription.clone(),
+                subscription: subscription.to_owned(),
                 source: source.path.to_string(),
                 input: Some(wire_codec::record_wire(
                     Record {

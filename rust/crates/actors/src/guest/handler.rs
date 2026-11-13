@@ -38,6 +38,15 @@ pub struct Interrupt {
 }
 
 impl Manifest {
+    pub(crate) fn validate_external(&self, ids: &[String]) -> Result<(), GuestError> {
+        if ids.iter().any(|id| !self.subscriptions.contains(id)) {
+            return Err(GuestError::Decode(
+                "undeclared external subscription".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_interrupts(&self) -> Result<(), GuestError> {
         if self.interrupts.iter().any(|filter| {
             filter.value_prefix.is_empty() || !self.subscriptions.contains(&filter.subscription)
@@ -58,6 +67,18 @@ pub enum Trigger {
         /// Zero-based source record sequence.
         sequence: u64,
     },
+    /// Consume the next record selected by an exact authenticated index key.
+    /// Unrelated source records do not require deliveries or checkpoints.
+    KeyedRecord {
+        /// Manifest subscription identity.
+        subscription: String,
+        /// Original committed subscription cursor, before sparse selection.
+        from: u64,
+        /// Selected source record sequence, at or after `from`.
+        sequence: u64,
+        /// Exact key that the original source record must carry.
+        key: Bytes,
+    },
     /// Consume only the currently retained alarm generation.
     Alarm {
         /// Generation captured when this wake was queued.
@@ -65,6 +86,24 @@ pub enum Trigger {
         /// Clock observation admitted by the host, in Unix milliseconds.
         now_unix_ms: u64,
     },
+}
+
+impl Trigger {
+    /// Source identity and selected sequence; absent for alarm deliveries.
+    pub fn record_position(&self) -> Option<(&str, u64)> {
+        match self {
+            Self::Record {
+                subscription,
+                sequence,
+            }
+            | Self::KeyedRecord {
+                subscription,
+                sequence,
+                ..
+            } => Some((subscription, *sequence)),
+            Self::Alarm { .. } => None,
+        }
+    }
 }
 
 /// One instance-bound input: the actor's own stream and its next sequence.
@@ -172,6 +211,10 @@ pub struct Transition {
     pub checkpoint: Checkpoint,
     /// Alarm mutation, including clear-generation fencing.
     pub alarm: AlarmChange,
+    /// Close admission in this same checkpoint publication. The current
+    /// delivery settles normally; only an external owner can resume the
+    /// paused actor. False preserves ordinary admission.
+    pub pause: bool,
     /// Effects published in the same commit as the consumed input, never an
     /// independent best-effort dispatch path. A hard effect joins the actor's
     /// own writes; a soft one (a send guarded by `Present{to}` and
@@ -267,6 +310,23 @@ pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
     ) -> GuestFuture<'a, ()>;
 }
 
+/// Independent configured admission reservations in the same dispatcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdmissionClass {
+    /// Ordinary application work.
+    Work,
+    /// Host-owned control work with an independent configured reservation.
+    Control,
+}
+impl AdmissionClass {
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Work => 0,
+            Self::Control => 1,
+        }
+    }
+}
+
 /// The sole durable record-handler contract, independent of host and OS.
 pub trait Handler: acyclic_stream::ProviderPlatform {
     /// The package's immutable code, codec, subscriptions and bindings.
@@ -282,10 +342,54 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
     ) -> GuestFuture<'a, bool> {
         Box::pin(async { Ok(true) })
     }
+    /// Host scheduling class; this grants no additional provider authority.
+    /// A busy application's reservation cannot consume control admission.
+    fn admission_class(&self, _actor: &ActorReference) -> AdmissionClass {
+        AdmissionClass::Work
+    }
+    /// Whether to retain a paused actor's resident cache. False evicts only
+    /// host memory and subscriptions after a confirmed paused cut; durable
+    /// state remains intact. Owner resume publishes the ordinary activation.
+    fn retain_paused(&self, _actor: &ActorReference, _checkpoint: Option<&Checkpoint>) -> bool {
+        true
+    }
+    /// Declared subscriptions whose producers cannot append this runtime's
+    /// activation entry. The shared dispatcher follows these sources directly;
+    /// ordinary producer-activated subscriptions retain no idle follow.
+    ///
+    /// A follow is a wake only. The actor's checkpoint remains the authority for
+    /// input consumption. An absent source waits on its primitive creation event.
+    fn external_subscriptions(&self) -> &[String] {
+        &[]
+    }
+    /// Deterministic exact-key selection from the package and committed
+    /// checkpoint. None consumes the dense source. Both finite delivery reads
+    /// and external/interrupt follows use this same selection. A changed key
+    /// starts at the committed cursor, never a notification's lookahead cursor.
+    fn subscription_key(
+        &self,
+        _id: &str,
+        _checkpoint: Option<&Checkpoint>,
+    ) -> Result<Option<Bytes>, GuestError> {
+        Ok(None)
+    }
+    /// Subscriptions that retain original sequence order when they select
+    /// different keys of the same source. The host point-selects each declared
+    /// input and admits the earliest source record. Other sources retain fair
+    /// scheduling. The default needs only the first available input read.
+    fn ordered_subscriptions(&self) -> &[String] {
+        &[]
+    }
     /// Original host-bound admission fences, applied to both success and failure
     /// replies at the sole publication boundary. Guests cannot remove them.
-    fn publication_conditions(&self) -> Vec<CommitCondition> {
+    fn publication_conditions(&self, _actor: &ActorReference) -> Vec<CommitCondition> {
         Vec::new()
+    }
+    /// Whether this host package can recompute a definitively refused
+    /// publication when only foreign conditional observations changed. Own
+    /// state conflicts still fence placement; identical refusals never spin.
+    fn revalidate_foreign_conflicts(&self, _actor: &ActorReference) -> bool {
+        false
     }
     /// Expose a resumable await in an already committed checkpoint. Hosts must
     /// validate its original journal publication and suspend old execution
@@ -305,7 +409,7 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
         cancellation: super::CancellationToken,
     ) -> GuestFuture<'a, Transition>;
 
-    /// Settle a definitively refused publication from its original delivery and
+    /// Settle a failed handler or definitively refused publication from its original delivery and
     /// checkpoint. The runtime publishes this transition once under a distinct
     /// retry identity, with the same admission fences. Unknown outcomes and
     /// backpressure never enter this hook. The original manifest deadline and

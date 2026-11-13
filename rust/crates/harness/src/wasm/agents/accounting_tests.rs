@@ -168,7 +168,7 @@ async fn counted(provider: &HostModel, request: &PreparedModelRequest) -> Result
     let mut events = provider.count_tokens(request, 0);
     while let Some(event) = events.next().await {
         match event? {
-            ModelEvent::Wait(_) => {}
+            ModelEvent::Wait(_) | ModelEvent::Trace { .. } => {}
             ModelEvent::Counted { count } => return Ok(count),
             _ => return Err(Error::Invalid("counter emitted generation output".into())),
         }

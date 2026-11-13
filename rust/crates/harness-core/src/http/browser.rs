@@ -13,6 +13,11 @@ use web_sys::{
 #[path = "browser_delay.rs"]
 mod timer;
 
+/// Monotonic coordinates in the current realm; unknown without `performance.now`.
+pub fn monotonic_now() -> Option<std::time::Duration> {
+    timer::monotonic_now()
+}
+
 /// Browser HTTP with an explicitly owned fetch function.
 pub struct BrowserTransport(Function);
 
@@ -97,17 +102,12 @@ impl HttpTransport for BrowserTransport {
                     }),
                 std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.unix_ms()?),
             );
-            let request_id = if crate::model::RESEARCH_CAPTURE_ENABLED {
-                response
-                    .headers()
-                    .get("x-request-id")
-                    .ok()
-                    .flatten()
-                    .or_else(|| response.headers().get("request-id").ok().flatten())
-                    .and_then(|value| ::http::HeaderValue::from_str(&value).ok())
-            } else {
-                None
-            };
+            let request_id = headers
+                .get("x-request-id")
+                .ok()
+                .flatten()
+                .or_else(|| headers.get("request-id").ok().flatten())
+                .and_then(|value| ::http::HeaderValue::from_str(&value).ok());
             let Some(body) = response.body() else {
                 return Ok(HttpResponse {
                     status,

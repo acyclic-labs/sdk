@@ -916,21 +916,30 @@ where
             }
             AgentCommand::ClientFiles {
                 agent,
-                session,
+                root,
+                publication,
                 paths,
                 after,
             } => {
                 let agent = self.within_tree(agent)?;
                 Ok(AgentReply::ClientFiles {
-                    snapshot: self
-                        .bound
-                        .client_files(agent, *session, paths, after.as_ref())
-                        .await?,
+                    snapshot: match publication {
+                        Some(operation) => {
+                            self.bound
+                                .files_at_publication(agent, *root, paths, *operation)
+                                .await?
+                        }
+                        None => {
+                            self.bound
+                                .files(agent, *root, paths, after.as_ref())
+                                .await?
+                        }
+                    },
                 })
             }
             AgentCommand::PublishClientFiles {
                 agent,
-                session,
+                root,
                 operation,
                 changes,
             } => {
@@ -938,7 +947,7 @@ where
                 Ok(AgentReply::ClientFilesPublished {
                     generation: self
                         .bound
-                        .publish_client_files(agent, *session, *operation, changes)
+                        .publish_files(agent, *root, *operation, changes)
                         .await?,
                 })
             }
@@ -1982,11 +1991,56 @@ fn parse_children_cursor(cursor: &str) -> Result<(CommitId, StreamPath), Error> 
     ))
 }
 
+impl<P, O> Server<P, O>
+where
+    P: AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn actor_failure(&self, agent: AgentPath) -> BoxProviderFuture<'static, StreamError> {
+        let server = self.this.clone();
+        Box::pin(async move {
+            let Some(server) = server.upgrade() else {
+                return StreamError::Unavailable;
+            };
+            let actors = server.bound.agents();
+            let actor = match actors.actor(&agent) {
+                Ok(actor) => actor,
+                Err(error) => return StreamError::unavailable_with_cause(&error),
+            };
+            let failure = match actors.runtime().delivery_failure(&actor) {
+                Ok(failure) => failure,
+                Err(error) => return StreamError::unavailable_with_cause(&error),
+            };
+            drop(server);
+            StreamError::unavailable_with_cause(&failure.await)
+        })
+    }
+}
+
 impl<P, O> CallProvider for Server<P, O>
 where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn failure(
+        &self,
+        subscription: &acyclic_stream::wire::SessionSubscription,
+    ) -> Option<BoxProviderFuture<'static, StreamError>> {
+        use acyclic_stream::wire::session_subscription::Kind;
+        let agent = match subscription.kind.as_ref()? {
+            Kind::Follow(follow) if follow.until.is_none() => {
+                let path =
+                    acyclic_stream::wire_codec::session::stream_path(&follow.resource).ok()?;
+                AgentPath::containing(&path)?
+            }
+            _ => return None,
+        };
+        if self.within_tree(&agent).is_err() {
+            return None;
+        }
+        Some(self.actor_failure(agent))
+    }
+
     fn target(
         &self,
         invocation: &[u8],

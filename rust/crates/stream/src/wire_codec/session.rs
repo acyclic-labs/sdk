@@ -16,6 +16,29 @@ pub const MAX_ACTOR_CALL_REPLY_BYTES: usize = crate::MAX_COMMAND_BYTES + 128;
 /// It is the only non-error close code; any other code is a [`StreamError`].
 pub const END_CODE: &str = "end";
 
+/// Decode a channel's category together with the diagnostic its owner sent.
+/// A close without an additional message uses its canonical category text.
+#[must_use]
+pub fn closed_error(closed: &wire::SessionClosed) -> StreamError {
+    let category = StreamError::from_session_close(&closed.code);
+    let canonical = tonic::Status::from(&category);
+    if closed.message.is_empty() || closed.message == canonical.message() {
+        return category;
+    }
+    acyclic_auth::refusal::Refusal::capture(
+        canonical.code() as i32,
+        &closed.message,
+        b"",
+        &http::HeaderMap::new(),
+        super::status::canonical(&category),
+        None,
+    )
+    .map_or_else(
+        || category.clone(),
+        |refusal| category.clone().with_refusal(refusal),
+    )
+}
+
 /// One input frame on its original call generation. No total length or EOF
 /// is inferred from the data; only the ordered input terminal closes it.
 pub fn input_sequence(next: u64, data: &wire::SessionData) -> Result<u64, StreamError> {

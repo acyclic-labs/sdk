@@ -35,7 +35,10 @@ impl ModelEventAdmission {
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         self.validate_cardinality(limits, io)?;
-        if !matches!(event, ModelEvent::Wait(_) | ModelEvent::Counted { .. }) {
+        if !matches!(
+            event,
+            ModelEvent::Wait(_) | ModelEvent::Trace { .. } | ModelEvent::Counted { .. }
+        ) {
             return Err(stock_boundary(
                 io,
                 Invalid,
@@ -284,6 +287,7 @@ impl ModelEventAdmission {
             }
             ModelEvent::Completed { .. } => self.completed = true,
             ModelEvent::Wait(_)
+            | ModelEvent::Trace { .. }
             | ModelEvent::Counted { .. }
             | ModelEvent::Content { .. }
             | ModelEvent::MessageCompleted { .. }

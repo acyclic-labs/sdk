@@ -243,7 +243,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 Poll::Ready(Ok(()))
             }
-            Poll::Ready((actors, Some(error))) => Poll::Ready(Err((actors, error))),
+            Poll::Ready((actors, Some(error))) => {
+                for actor in &actors {
+                    self.subscription_failed(actor, &error);
+                }
+                Poll::Ready(Err((actors, error)))
+            }
             Poll::Pending => Poll::Pending,
         }
     }

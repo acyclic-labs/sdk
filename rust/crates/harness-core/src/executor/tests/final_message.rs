@@ -561,9 +561,17 @@ fn assistant_part_admission_keeps_existing_history_and_retires_rejected_payload(
     Ok(())
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
+    use acyclic_stream::trace::{Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
     use futures::FutureExt as _;
+
+    #[cfg(target_arch = "wasm32")]
+    assert!(
+        crate::http::browser::monotonic_now().is_some(),
+        "the browser test runtime supplies a monotonic clock"
+    );
 
     for (completed, closed, delta) in [
         (true, false, false),
@@ -571,7 +579,31 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
         (false, true, true),
         (false, false, true),
     ] {
-        let mut events = Vec::new();
+        let id = SpanId {
+            process: [2; 16],
+            sequence: 0,
+        };
+        let spans = [
+            TraceRecord::V1(SpanEvent::Started {
+                id,
+                parent: None,
+                name: "model.response_headers".into(),
+                mechanism: Mechanism::RoundTrip,
+                at_ns: 10,
+                guarantee: Some("receive_response_headers".into()),
+            }),
+            TraceRecord::V1(SpanEvent::Finished {
+                id,
+                at_ns: 20,
+                bytes: None,
+                result: Outcome::Succeeded,
+            }),
+        ];
+        let mut events: Vec<_> = spans
+            .iter()
+            .cloned()
+            .map(|record| ScriptedEvent::Event(ModelEvent::Trace { record }))
+            .collect();
         // Generated harness events control first-delta and missing-producer cases.
         if delta {
             events.push(ScriptedEvent::Event(ModelEvent::Content {
@@ -658,6 +690,22 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             );
         }
         assert_eq!(provider.requests().len(), 2);
+        let phases = futures::executor::block_on(async {
+            let records = journal.0.lock().unwrap().clone();
+            let mut phases = Vec::new();
+            for record in records {
+                if let Some(ModelEvent::Trace { record }) =
+                    super::super::model_observation::load(&journal, &record.event, None).await?
+                {
+                    phases.push(record);
+                }
+            }
+            Ok::<_, Error>(phases)
+        })?;
+        assert_eq!(
+            phases, spans,
+            "header phases survive an unfinished model body and replay"
+        );
         let usage: Vec<_> = journal
             .0
             .lock()
@@ -698,25 +746,14 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
                 record.cache.is_some(),
                 cfg!(feature = "research") && index == 1
             );
-            #[cfg(all(feature = "research", not(target_arch = "wasm32")))]
-            {
-                assert_eq!(record.ttft_ns.is_some(), delta && index == 1);
-                assert!(
-                    record
-                        .ttft_ns
-                        .zip(record.latency_ns)
-                        .is_none_or(|(first, total)| first <= total)
-                );
-            }
-            #[cfg(not(all(feature = "research", not(target_arch = "wasm32"))))]
-            {
-                let _ = index;
-                assert_eq!(record.ttft_ns, None);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
+            assert_eq!(record.ttft_ns.is_some(), delta && index == 1);
+            assert!(
+                record
+                    .ttft_ns
+                    .zip(record.latency_ns)
+                    .is_none_or(|(first, total)| first <= total)
+            );
             assert!(record.latency_ns.is_some());
-            #[cfg(target_arch = "wasm32")]
-            assert!(record.latency_ns.is_none());
         }
     }
     Ok(())

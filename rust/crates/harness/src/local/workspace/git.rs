@@ -302,7 +302,7 @@ impl Commands<'_> {
                     .pending_transition()
                     .await
                     .map_err(storage)?;
-                    if !matches!(*error, Error::Conflict(_))
+                    if !matches!(*error, Error::MergeConflict { .. })
                         || !pending.is_some_and(|pending| {
                             pending.request
                                 == Some(acyclic_fs::OperationId::from_bytes(
@@ -549,6 +549,7 @@ impl Commands<'_> {
             Ok(output) => output,
             Err(
                 error @ (Error::Conflict(_)
+                | Error::MergeConflict { .. }
                 | Error::Invalid(_)
                 | Error::NotFound(_)
                 | Error::Unsupported(_)),

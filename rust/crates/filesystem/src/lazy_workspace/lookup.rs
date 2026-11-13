@@ -114,8 +114,13 @@ impl<
             return Ok(());
         }
         let state = self.state(ctx).await?;
-        if self.tombstoned(state.overlay, path, ctx).await? {
-            return Err(LazyWorkspaceError::Concurrent);
+        // The caller already owns its original read. Retaining that knowledge
+        // must not replace a newer source cut or resurrect a removed path.
+        if matches!(lookup, LazyLookup::Source { source, .. } | LazyLookup::Shadow { source, .. }
+            if *source != state.source)
+            || self.tombstoned(state.overlay, path, ctx).await?
+        {
+            return Ok(());
         }
         let overlay = self
             .observed_overlay(state.overlay, path, lookup, ctx)
@@ -328,24 +333,41 @@ impl<
         // A fresh native link count can fall to one after another alias was
         // unlinked. Its stable identity still belongs to authored data/shadows.
         if node.kind != SourceNodeKind::Directory
-            && (basis.unobserved || node.link_count != Some(1))
+            && (basis.unobserved || node.link_count != Some(1) || frozen.is_some())
         {
             let id = self.source_file_id(&node.file_identity, ctx)?;
-            let record = accounted!(ctx, |work, cancel| checkout
-                .read_file_record_by_id(id, work, cancel));
-            let shadow = match record {
-                Ok(record) => Some((
-                    record,
-                    crate::WorkspaceMetadata::from_engine(
-                        checkout
-                            .read_metadata_with_accounting(record.file_id, ctx, cancellation(ctx))
-                            .await?,
-                    ),
-                )),
-                Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {
-                    self.shadow_record(state.shadows, id, ctx).await?
-                }
-                Err(error) => return Err(error),
+            let single_source = !basis.unobserved && node.link_count == Some(1);
+            let shadow = if single_source {
+                self.shadow_records(state.shadows, id, ctx)
+                    .await?
+                    .and_then(|records| records.at_source(source, node.version))
+            } else {
+                let record = accounted!(ctx, |work, cancel| checkout
+                    .read_file_record_by_id(id, work, cancel));
+                let shadow = match record {
+                    Ok(record) => Some((
+                        record,
+                        crate::WorkspaceMetadata::from_engine(
+                            checkout
+                                .read_metadata_with_accounting(
+                                    record.file_id,
+                                    ctx,
+                                    cancellation(ctx),
+                                )
+                                .await?,
+                        ),
+                    )),
+                    Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => self
+                        .shadow_records(state.shadows, id, ctx)
+                        .await?
+                        .and_then(|records| {
+                            records.authored.or_else(|| {
+                                frozen.and_then(|_| records.at_source(source, node.version))
+                            })
+                        }),
+                    Err(error) => return Err(error),
+                };
+                shadow
             };
             if let Some((record, metadata)) = shadow {
                 return Ok((

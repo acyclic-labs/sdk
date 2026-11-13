@@ -1,0 +1,28 @@
+--- a/rust/crates/harness/src/local/checkout_tools/capture/progress.rs
++++ b/rust/crates/harness/src/local/checkout_tools/capture/progress.rs
+@@ -166,16 +166,19 @@
+                     .await;
+             }
+             let after = publication.generation();
+-            let before = publication
+-                .predecessor(WorkBudget::UNBOUNDED, &cancellation)
++            let (parents, _allocation) = after
++                .parents(WorkBudget::UNBOUNDED, &cancellation)
+                 .await
+                 .map_err(storage)?
+                 .value;
+-            let Some(before) = before else {
+-                return context
+-                    .record_native_progress(NativeCaptureEvidence::Unavailable { operation }, None)
+-                    .await;
++            let [before] = parents.as_slice() else {
++                return Err(Error::Invalid("native DATA receipt has no unique parent".into()));
+             };
++            let before = view.workspace()
++                .generation(*before, WorkBudget::UNBOUNDED, &cancellation)
++                .await
++                .map_err(storage)?
++                .value;
+             let changed = after
+                 .content_changed_from(&before, WorkBudget::UNBOUNDED, &cancellation)
+                 .await

@@ -85,9 +85,7 @@ pub(crate) fn events_named<'a>(
         let mut input = core::pin::pin!(input);
         let mut state = State::new(maximum);
         state.set_origin(origin)?;
-        if acyclic_harness_core::model::RESEARCH_CAPTURE_ENABLED {
-            state.request_id(request_id.as_ref().and_then(|value| value.to_str().ok()))?;
-        }
+        state.request_id(request_id.as_ref().and_then(|value| value.to_str().ok()))?;
         while let Some(data) = input.next().await {
             let data = data?;
             let data = data.data();

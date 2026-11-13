@@ -10,7 +10,40 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[path = "supervision.rs"]
+mod supervision;
+
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
+
+#[tokio::test]
+async fn physical_private_state_needs_no_global_mount_registry() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let unavailable = fixture._directory.path().join("unavailable-global-state");
+    std::fs::write(&unavailable, "a file cannot contain a mount registry").unwrap();
+    let mut command = graphcoder_command(&fixture);
+    command
+        .env("XDG_STATE_HOME", &unavailable)
+        .env("LOCALAPPDATA", &unavailable)
+        .arg("--settings-root")
+        .arg(&fixture.settings)
+        .arg("--host-state-directory")
+        .arg(fixture._directory.path().join("private-state"))
+        .arg("--workspace-mounting")
+        .arg("physical")
+        .arg("--catalog")
+        .arg(&model.catalog)
+        .args(["--model", "graphcoder-qual/tiny", "exec", "answer"]);
+    let output = capture(command, "").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(model.generated(), 1);
+    assert!(unavailable.is_file());
+    model.close().await;
+}
 
 #[tokio::test]
 async fn installers_observe_the_shipping_product_name_and_version() {
@@ -226,6 +259,37 @@ async fn model_adapter(
     response: &'static str,
     adapter: &str,
 ) -> Model {
+    model_with_status(directory, adapter, status, response, move |_, _, _| {
+        response.to_owned()
+    })
+    .await
+}
+
+async fn model_responses(directory: &Path, responses: Vec<String>, adapter: &str) -> Model {
+    assert!(!responses.is_empty());
+    model_with(directory, adapter, move |_, _, index| {
+        responses[index.min(responses.len() - 1)].clone()
+    })
+    .await
+}
+
+async fn model_with<F>(directory: &Path, adapter: &str, reply: F) -> Model
+where
+    F: Fn(&axum::http::HeaderMap, &Value, usize) -> String + Clone + Send + Sync + 'static,
+{
+    model_with_status(directory, adapter, axum::http::StatusCode::OK, "", reply).await
+}
+
+async fn model_with_status<F>(
+    directory: &Path,
+    adapter: &str,
+    status: axum::http::StatusCode,
+    response: &'static str,
+    reply: F,
+) -> Model
+where
+    F: Fn(&axum::http::HeaderMap, &Value, usize) -> String + Clone + Send + Sync + 'static,
+{
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -247,10 +311,14 @@ async fn model_adapter(
             } else {
                 "/responses"
             },
-            post(move |Json(body): Json<Value>| {
-                recorded.lock().unwrap().push(body);
-                async move { ([("content-type", "text/event-stream")], response) }
-            }),
+            post(
+                move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                    let mut recorded = recorded.lock().unwrap();
+                    let response = reply(&headers, &body, recorded.len());
+                    recorded.push(body);
+                    async move { (status, [("content-type", "text/event-stream")], response) }
+                },
+            ),
         );
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -284,9 +352,20 @@ async fn model_adapter(
 }
 
 #[tokio::test]
-async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
+async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices() {
     const CHAT: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"fixture answer\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-    for (unchecked, session_client) in [(false, false), (true, false), (false, true), (true, true)]
+    for (choice, session_client) in [
+        "automatic",
+        "argument",
+        "file",
+        "invalid_file",
+        "explicit_model",
+        "explicit_compaction",
+        "explicit_both",
+        "invalid_model",
+    ]
+    .into_iter()
+    .flat_map(|choice| [false, true].map(|session| (choice, session)))
     {
         let fixture = fixture();
         let model = model_adapter(
@@ -296,22 +375,112 @@ async fn chat_without_a_counter_starts_with_explicit_no_compaction() {
             "chat",
         )
         .await;
-        let mut args = vec!["-p", "hello"];
-        if unchecked {
-            args.push("--no-compaction");
-        }
+        let compaction = match choice {
+            "file" | "explicit_model" | "invalid_model" => "\n[compaction]\nkind = 'disabled'\n",
+            "invalid_file" | "explicit_compaction" | "explicit_both" => {
+                "\n[compaction]\nkind = 'unrecognized'\n"
+            }
+            _ => "",
+        };
+        let default_model =
+            if matches!(choice, "explicit_model" | "explicit_both" | "invalid_model") {
+                ""
+            } else {
+                "tiny"
+            };
+        std::fs::write(
+            fixture.settings.join(".codex/config.toml"),
+            format!("model = '{default_model}'\nmodel_provider = 'graphcoder-qual'\n{compaction}"),
+        )
+        .unwrap();
+        let mut command = graphcoder_command(&fixture);
+        let plugins = task_plugins(&fixture);
+        command
+            .arg("--home-file")
+            .arg(&plugins)
+            .arg("--settings-root")
+            .arg(&fixture.settings)
+            .arg("--catalog")
+            .arg(&model.catalog)
+            .args(["--operation", "settings-policy", "-p", "hello"]);
         if session_client {
-            args.push("--new-session");
+            command.arg("--new-session");
         }
-        let output = graphcoder(&fixture, &model.catalog, args, "").await;
-        if unchecked {
-            assert_eq!(succeeded(&output), "fixture answer\n");
-            assert_eq!(model.generated(), 1);
-        } else {
-            assert!(!output.status.success());
+        if matches!(choice, "argument" | "explicit_compaction" | "explicit_both") {
+            command.arg("--no-compaction");
+        }
+        if matches!(choice, "explicit_model" | "explicit_both") {
+            // Launch requirements name the effective model: role policy wins
+            // over the requested fallback even when that fallback is explicit.
+            let selected = acyclic_harness::templates::root()
+                .unwrap()
+                .model
+                .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+            command.arg("--model").arg(selected);
+        }
+        let output = capture(command, "").await;
+        if matches!(
+            choice,
+            "automatic"
+                | "argument"
+                | "file"
+                | "explicit_model"
+                | "explicit_compaction"
+                | "explicit_both"
+        ) {
             assert!(
-                String::from_utf8_lossy(&output.stderr)
-                    .contains("configure a verified input token counter"),
+                output.status.success(),
+                "{choice} session={session_client}: {output:?}"
+            );
+            assert_eq!(succeeded(&output), "fixture answer\n");
+            let selected = acyclic_harness::templates::root()
+                .unwrap()
+                .model
+                .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+            let wire_model = selected.split_once('/').unwrap().1;
+            assert_eq!(
+                model.requests.lock().unwrap()[0]["model"],
+                wire_model,
+                "{choice} session={session_client}: effective model was ignored"
+            );
+            // Query the original owner policy through ordinary execution admission.
+            // Exact replay never generates, but an incorrect automatic/disabled
+            // choice changes whether --no-compaction can attach to this owner.
+            let mut admission = graphcoder_command(&fixture);
+            admission.args([
+                "--operation",
+                "settings-policy",
+                "--model",
+                &selected,
+                "--no-compaction",
+                "-p",
+                "hello",
+            ]);
+            let checked = capture(admission, "").await;
+            assert_eq!(
+                checked.status.success(),
+                choice != "automatic",
+                "{choice} session={session_client}: compaction admission {checked:?}"
+            );
+            if choice == "automatic" {
+                assert!(String::from_utf8_lossy(&checked.stderr).contains("--no-compaction"));
+            }
+            assert_eq!(
+                model.generated(),
+                1,
+                "policy preflight or replay generated again"
+            );
+        } else {
+            assert!(
+                !output.status.success(),
+                "{choice} session={session_client}: {output:?}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(match choice {
+                    "invalid_file" => "compaction",
+                    "invalid_model" => "model must be a nonempty string",
+                    _ => unreachable!("only invalid selected defaults refuse startup"),
+                }),
                 "{output:?}"
             );
             assert_eq!(
@@ -378,7 +547,11 @@ fn task_plugins(fixture: &Fixture) -> String {
 }
 
 fn graphcoder_command(fixture: &Fixture) -> Command {
-    let mut command = Command::new(acyclic_test_support::cargo_binary!("acyclic"));
+    cli_command(fixture, acyclic_test_support::cargo_binary!("acyclic"))
+}
+
+fn cli_command(fixture: &Fixture, executable: PathBuf) -> Command {
+    let mut command = Command::new(executable);
     fixture.custody.configure(|key, value| {
         command.env(key, value);
     });

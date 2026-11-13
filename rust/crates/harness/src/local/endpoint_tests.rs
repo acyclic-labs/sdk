@@ -4,7 +4,8 @@ use crate::local::{
     tests::{text, volume, volume_config},
 };
 use acyclic_stream::{
-    AppendRequest, IdempotencyKey, PersistenceCut, StreamError, StreamPath, StreamProviderExt,
+    AppendRequest, IdempotencyKey, PersistenceCut, StreamError, StreamPath, StreamProvider,
+    StreamProviderExt,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -44,6 +45,18 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         .get()
         .ok_or_else(|| Error::Invalid("missing owner".into()))?;
     let server = Arc::clone(hosted.server());
+    let directory_credential = server
+        .bound()
+        .session_credential(
+            server.root(),
+            server.resource(),
+            &server.session_resource(),
+            local.clock.clone(),
+        )
+        .await
+        .map_err(exchange)?;
+    let directory_credential =
+        acyclic_auth::credential::capability_text(&directory_credential.credential);
     let credential = server
         .bound()
         .client_credential(server.root(), server.resource(), local.clock.clone())
@@ -272,7 +285,17 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .map(|error| error.category()),
             Some(StreamError::AccessDenied)
         );
-        assert!(connection.select(foreign).await.is_err());
+        assert!(connection.select(foreign.clone()).await.is_err());
+        // The same transport constructor must honor an authenticated directory
+        // owner even though its local attachment mode is not a directory.
+        let options = acyclic_harness_client::ConnectionOptions::from_env(
+            Some(&endpoint),
+            Some(&directory_credential),
+        )
+        .map_err(exchange)?;
+        let directory = Connection::connect(&options).await?;
+        assert!(!directory.directory);
+        assert_eq!(directory.select(foreign.clone()).await?.root(), &foreign);
         Ok(())
     };
     let checked = tokio::select! {
@@ -626,7 +649,8 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     let AgentReply::ClientFiles { snapshot } = connection
         .execute(&AgentCommand::ClientFiles {
             agent: connection.root.clone(),
-            session,
+            root: crate::client_files::FileRoot::ClientSession { session },
+            publication: None,
             paths: vec!["layout.json".into()],
             after: None,
         })
@@ -638,9 +662,10 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     };
     let files = AgentCommand::ClientFiles {
         agent: connection.root.clone(),
-        session,
+        root: crate::client_files::FileRoot::ClientSession { session },
+        publication: None,
         paths: vec!["layout.json".into()],
-        after: Some(snapshot.generation.clone()),
+        after: Some(snapshot.cut.clone()),
     };
     let waiting_files = connection.execute(&files);
     tokio::pin!(waiting_files);
@@ -653,7 +678,7 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         &connection.root,
         session,
         &paths,
-        Some(&snapshot.generation),
+        Some(&snapshot.cut),
     );
     tokio::pin!(host_files);
     assert!(futures::poll!(&mut host_files).is_pending());
@@ -786,5 +811,607 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         "unrelated command refusal was rewritten: {error}"
     );
     assert_eq!(provider.request_count(), 0);
+    Ok(())
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn agent_file_roots_share_conditional_publication_and_follow_over_remote_sessions()
+-> Result<()> {
+    use crate::{
+        client_files::{ClientFileChange, FileRoot},
+        local::agent_conversation::Conversation,
+        server::{Hosted, ServerConfig},
+        supervision::Lifecycle,
+    };
+    let directory = tempfile::tempdir().map_err(exchange)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    // The model only answers; file and spawn operations use the normal client.
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project, provider.clone())?.without_default_tools(),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let local = Conversation::open(connection.clone());
+    let mut observer = local.observe(None).await?;
+    loop {
+        if matches!(observer.next().await?, Event::Status(status) if matches!(status.phase, crate::agent::Phase::Idle))
+        {
+            break;
+        }
+    }
+    let hosted = harness
+        .agents
+        .get()
+        .ok_or_else(|| Error::Conflict("test host missing".into()))?;
+    let changes = hosted.server().bound().changes().map_err(exchange)?;
+    let composition = Hosted::new(
+        hosted.server().clone(),
+        harness.clock.clone(),
+        harness.clone(),
+        Some(Arc::new(changes)),
+    )
+    .with_completion(hosted.runtime.completion());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(exchange)?;
+    let (ready, announced) = tokio::sync::oneshot::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut tasks = tokio::task::JoinSet::new();
+    tasks.spawn(crate::server::serve(
+        listener,
+        ServerConfig::new(composition),
+        move |endpoint| {
+            let credential = endpoint
+                .observation
+                .as_ref()
+                .map(|observation| observation.credential.clone());
+            let _ = ready.send((endpoint.endpoint.clone(), credential));
+        },
+        async move {
+            let _ = stopped.await;
+        },
+    ));
+    let (url, credential) = announced.await.map_err(exchange)?;
+    let credential = credential
+        .ok_or_else(|| Error::Conflict("server did not publish a client credential".into()))?;
+    let options =
+        acyclic_harness_client::ConnectionOptions::from_env(Some(&url), Some(&credential))
+            .map_err(exchange)?;
+    let remote_connection = super::Connection::connect(&options)
+        .await
+        .map_err(|error| exchange(format_args!("remote admission: {error}")))?;
+    let remote = Conversation::open(remote_connection.clone());
+    assert_eq!(local.task(), remote.task());
+    let paths = vec!["control/pause".to_owned(), "notes/steer.md".to_owned()];
+    let mut sources = Vec::new();
+    for root in [FileRoot::Private {}, FileRoot::Home {}] {
+        let initial = remote
+            .files(root, paths.clone(), None)
+            .await
+            .map_err(|error| exchange(format_args!("remote initial files {root:?}: {error}")))?;
+        assert!(initial.files.values().all(Option::is_none));
+        let operation = crate::OperationId::new();
+        let changes = vec![
+            ClientFileChange {
+                path: paths[0].clone(),
+                expected: None,
+                text: Some("pause".into()),
+            },
+            ClientFileChange {
+                path: paths[1].clone(),
+                expected: None,
+                text: Some("Investigate the failure.\n".into()),
+            },
+        ];
+        let (published, generation) = futures::try_join!(
+            local.files(root, paths.clone(), Some(initial.cut)),
+            remote.publish_files(root, operation, changes.clone()),
+        )?;
+        assert_eq!(published.cut.generation, generation);
+        assert_eq!(
+            published.volume,
+            published.files[&paths[0]]
+                .as_ref()
+                .unwrap()
+                .original()
+                .unwrap()
+                .volume()
+                .clone()
+        );
+        assert_eq!(
+            local.publish_files(root, operation, changes).await?,
+            generation,
+            "exact replay changed the publication cut"
+        );
+        let pause = published.files[&paths[0]]
+            .as_ref()
+            .unwrap()
+            .original()
+            .unwrap()
+            .clone();
+        let steer = published.files[&paths[1]]
+            .as_ref()
+            .unwrap()
+            .original()
+            .unwrap()
+            .clone();
+        let appended = "Investigate the failure.\nThen run the focused check.\n";
+        remote
+            .publish_files(
+                root,
+                crate::OperationId::new(),
+                vec![ClientFileChange {
+                    path: paths[1].clone(),
+                    expected: Some(steer.clone()),
+                    text: Some(appended.into()),
+                }],
+            )
+            .await?;
+        assert!(
+            remote
+                .publish_files(
+                    root,
+                    crate::OperationId::new(),
+                    vec![ClientFileChange {
+                        path: paths[1].clone(),
+                        expected: Some(steer),
+                        text: Some("stale replacement".into()),
+                    }]
+                )
+                .await
+                .is_err(),
+            "stale source overwrote an appended delta"
+        );
+        let read = local.files(root, paths.clone(), None).await?;
+        assert_eq!(read.files[&paths[1]].as_ref().unwrap().text, appended);
+        sources.push(pause);
+    }
+    // A source in another bound volume cannot authorize an otherwise identical path.
+    assert!(
+        remote
+            .publish_files(
+                FileRoot::Private {},
+                crate::OperationId::new(),
+                vec![ClientFileChange {
+                    path: paths[0].clone(),
+                    expected: sources.get(1).cloned(),
+                    text: Some("wrong root".into()),
+                }]
+            )
+            .await
+            .is_err()
+    );
+    remote
+        .publish_files(
+            FileRoot::Private {},
+            crate::OperationId::new(),
+            vec![ClientFileChange {
+                path: paths[0].clone(),
+                expected: sources.first().cloned(),
+                text: None,
+            }],
+        )
+        .await?;
+    assert!(local.files(FileRoot::Private {}, paths, None).await?.files["control/pause"].is_none());
+    assert!(
+        provider.request(0).is_none(),
+        "file control publication dispatched a model"
+    );
+    let mut local_feed = connection.supervision().await?;
+    let mut remote_feed = remote_connection.supervision().await?;
+    // The same ordinary remote publication now drives the host-owned control
+    // actor. These waits prove actuation, rather than just file visibility.
+    for paused in [true, false] {
+        let event = local_feed.next().await?;
+        assert_eq!(event.run, None);
+        assert!(matches!(
+            (&event.event, paused),
+            (crate::supervision::Lifecycle::Paused { signal: None }, true)
+                | (crate::supervision::Lifecycle::Resumed {}, false)
+        ));
+        assert_eq!(event, remote_feed.next().await?);
+    }
+    let input = local.send("healthy", "Finish this healthy turn.").await?;
+    let (started_position, local_started) = local_feed.next_record().await?;
+    assert!(matches!(
+        local_started.event,
+        crate::supervision::Lifecycle::Started { input: accepted } if accepted == input
+    ));
+    assert_eq!(local_started, remote_feed.next().await?);
+    local.settle("healthy", input, &mut observer).await?;
+    let local_cut = local_feed.root_cut().await?;
+    let remote_cut = remote_feed.root_cut().await?;
+    assert!(!local_feed.reached(&local_cut)?);
+    assert!(!remote_feed.reached(&remote_cut)?);
+    let (done_position, local_done) = local_feed.next_record().await?;
+    assert_eq!(local_done.run, local_started.run);
+    assert!(
+        matches!(local_done.event, crate::supervision::Lifecycle::TurnDone { turn } if Some(turn) == local_started.run)
+    );
+    assert_eq!(local_done, remote_feed.next().await?);
+    assert!(local_feed.reached(&local_cut)?);
+    assert!(remote_feed.reached(&remote_cut)?);
+    let foreign = connection.follow_tree(StreamPath::new("inbox")?).await?;
+    assert!(foreign.reached(&local_cut).is_err());
+    let stream = harness.agent_stream.as_ref().unwrap();
+    let record = |path, from| acyclic_stream::ReadRequest {
+        path,
+        from,
+        limit: 1,
+        key: None,
+        at_least: Default::default(),
+    };
+    use futures::TryStreamExt as _;
+    // Source and event must share the exact original commit, for admission
+    // and settlement. A separate best-effort lifecycle write cannot pass.
+    let mut source = stream
+        .read(record(
+            local_started.source.stream.clone(),
+            local_started.source.sequence,
+        ))
+        .await?;
+    let source = source.try_next().await?.unwrap();
+    let mut events = stream
+        .read(record(
+            crate::supervision::streams::path(connection.root())?,
+            started_position.sequence,
+        ))
+        .await?;
+    let event = events.try_next().await?.unwrap();
+    assert_eq!(source.commit_id, event.commit_id);
+    let mut source = stream
+        .read(record(
+            local_done.source.stream.clone(),
+            local_done.source.sequence,
+        ))
+        .await?;
+    let source = source.try_next().await?.unwrap();
+    let mut events = stream
+        .read(record(
+            crate::supervision::streams::path(connection.root())?,
+            done_position.sequence,
+        ))
+        .await?;
+    let event = events.try_next().await?.unwrap();
+    assert_eq!(source.commit_id, event.commit_id);
+    assert_eq!(
+        stream
+            .tail(crate::supervision::streams::path(connection.root())?)
+            .await?,
+        done_position.sequence + 1,
+        "healthy turn emitted a supervision signal"
+    );
+    assert_eq!(done_position.sequence, started_position.sequence + 1);
+    let measured_reply = || {
+        crate::test_support::ScriptedTurn::Events(vec![
+            crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Content {
+                delta: "done".into(),
+            }),
+            crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
+            }),
+        ])
+    };
+    // Descendant observation is enrolled on the same transport pool. The
+    // original root capability remains narrow. Selecting a read-only view
+    // retains the original caller's command authority, while its raw follows
+    // are restricted to the selected observation credential.
+    let spawn = async |from: &super::Connection, name: &str| -> Result<crate::agent::AgentPath> {
+        provider.extend([measured_reply()]);
+        let AgentReply::Spawned { agent, .. } = from
+            .execute(&AgentCommand::Spawn {
+                parent: from.root().clone(),
+                id: crate::agent::IntentId::try_from(name).map_err(exchange)?,
+                brief: crate::model::ModelContent::Text(format!("{name} task")),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Conflict("spawn reply differs".into()));
+        };
+        Ok(agent)
+    };
+    eprintln!("client file journey: spawning observed children");
+    let sibling = spawn(&remote_connection, "observed-sibling").await?;
+    let child = spawn(&remote_connection, "observed-child").await?;
+    let child_connection = remote_connection.select(child.clone()).await?;
+    assert_ne!(
+        child_connection.session.credential(),
+        remote_connection.session.credential()
+    );
+    let local_child = connection.select(child.clone()).await?;
+    assert_ne!(
+        local_child.session.credential(),
+        connection.session.credential(),
+        "local selection opened a new session instead of enrolling its view"
+    );
+    assert_eq!(local_child.select(sibling.clone()).await?.root(), &sibling);
+    eprintln!("client file journey: opening local child supervision");
+    let mut local_child_feed = local_child.supervision_own().await?;
+    assert_eq!(
+        child_connection.select(sibling.clone()).await?.root(),
+        &sibling
+    );
+    assert_eq!(
+        child_connection
+            .select(connection.root().clone())
+            .await?
+            .root(),
+        connection.root(),
+    );
+    let sibling_source = crate::supervision::streams::path(&sibling)?;
+    assert!(
+        child_connection
+            .session
+            .follow(acyclic_stream::FollowRequest::new(sibling_source, 0))
+            .await
+            .is_err()
+    );
+    eprintln!("client file journey: opening remote child supervision");
+    let mut child_feed = child_connection.supervision_own().await?;
+    let child_conversation = Conversation::open(child_connection.clone());
+    // Complete the real mock-model child turn before publishing its pause.
+    loop {
+        if matches!(child_feed.next().await?.event, Lifecycle::TurnDone { .. }) {
+            break;
+        }
+    }
+    // A non-root observer uses each discovering parent's narrow read grant
+    // at every depth, while selections retain the original caller identity.
+    eprintln!("client file journey: opening subtree supervision");
+    let mut subtree = child_connection.supervision().await?;
+    eprintln!("client file journey: spawning grandchild");
+    let grandchild = spawn(&child_connection, "observed-grandchild").await?;
+    let grandchild_connection = child_connection.select(grandchild).await?;
+    eprintln!("client file journey: spawning great-grandchild");
+    let descendant = spawn(&grandchild_connection, "observed-great-grandchild").await?;
+    assert_eq!(
+        child_connection.select(descendant.clone()).await?.root(),
+        &descendant
+    );
+    let descendant_connection = grandchild_connection.select(descendant.clone()).await?;
+    eprintln!("client file journey: opening descendant supervision");
+    let mut descendant_feed = descendant_connection.supervision_own().await?;
+    loop {
+        if matches!(
+            descendant_feed.next().await?.event,
+            Lifecycle::TurnDone { .. }
+        ) {
+            break;
+        }
+    }
+    let descendant_conversation = Conversation::open(descendant_connection.clone());
+    descendant_conversation
+        .publish_files(
+            FileRoot::Private {},
+            crate::OperationId::new(),
+            vec![ClientFileChange {
+                path: "control/pause".into(),
+                expected: None,
+                text: Some(String::new()),
+            }],
+        )
+        .await?;
+    eprintln!("client file journey: awaiting descendant pause");
+    let descendant_pause = loop {
+        let event = descendant_feed
+            .next()
+            .await
+            .map_err(|error| connection.stream_failure(error))?;
+        if matches!(event.event, Lifecycle::Paused { signal: None }) {
+            break event;
+        }
+    };
+    eprintln!("client file journey: awaiting subtree pause");
+    let subtree_pause = loop {
+        let event = subtree.next().await?;
+        if event.agent == descendant && matches!(event.event, Lifecycle::Paused { signal: None }) {
+            break event;
+        }
+    };
+    assert_eq!(subtree_pause, descendant_pause);
+    drop(subtree);
+    drop(descendant_conversation);
+    drop(descendant_feed);
+    drop(descendant_connection);
+    drop(grandchild_connection);
+    child_conversation
+        .publish_files(
+            FileRoot::Private {},
+            crate::OperationId::new(),
+            vec![ClientFileChange {
+                path: "control/pause".into(),
+                expected: None,
+                text: Some(String::new()),
+            }],
+        )
+        .await?;
+    eprintln!("client file journey: awaiting child pause");
+    let child_pause = loop {
+        let event = child_feed.next().await?;
+        if matches!(event.event, Lifecycle::Paused { signal: None }) {
+            break event;
+        }
+    };
+    eprintln!("client file journey: awaiting local child pause");
+    let local_child_pause = loop {
+        let event = local_child_feed.next().await?;
+        if matches!(event.event, Lifecycle::Paused { signal: None }) {
+            break event;
+        }
+    };
+    assert_eq!(local_child_pause, child_pause);
+    eprintln!("client file journey: awaiting root tree pause");
+    let tree_pause = loop {
+        let event = remote_feed.next().await?;
+        if event.agent == child && matches!(event.event, Lifecycle::Paused { signal: None }) {
+            break event;
+        }
+    };
+    assert_eq!(child_pause, tree_pause);
+
+    // Default status files use the very same remote file path and original
+    // streams. A healthy run has no synthetic all-clear files. Follow each
+    // committed input cut; no readiness probe or timer is involved.
+    eprintln!("client file journey: reading signal files");
+    let signal_path = "status/supervision/spend.json".to_owned();
+    let initial = remote
+        .files(FileRoot::Private {}, vec![signal_path.clone()], None)
+        .await?;
+    assert!(initial.files[&signal_path].is_none());
+    let mut policy = crate::supervision::Policy::default();
+    policy.reservation.tokens = Some(1);
+    provider.extend([measured_reply()]);
+    eprintln!("client file journey: running reserved signal producer");
+    let (projected, outcome) = {
+        let observing = async {
+            let mut cut = initial.cut;
+            loop {
+                let snapshot = remote
+                    .files(FileRoot::Private {}, vec![signal_path.clone()], Some(cut))
+                    .await?;
+                if snapshot.files[&signal_path].is_some() {
+                    break Ok::<_, Error>(snapshot);
+                }
+                cut = snapshot.cut;
+            }
+        };
+        let running =
+            local.run_until_goal(crate::OperationId::new(), "Complete this task.", &policy);
+        tokio::pin!(observing, running);
+        tokio::select! {
+            projected = &mut observing => (projected?, running.await?),
+            outcome = &mut running => {
+                let outcome = outcome?;
+                // A terminal source cut must already contain its signal. Inspect
+                // that finite snapshot before awaiting the file follower, so a
+                // missing projection fails rather than waiting for another turn.
+                let settled = remote
+                    .files(FileRoot::Private {}, vec![signal_path.clone()], None)
+                    .await?;
+                assert!(settled.files[&signal_path].is_some(),
+                    "terminal run has no signal file: {outcome:?}; cut {:?}", settled.cut);
+                (observing.await?, outcome)
+            }
+        }
+    };
+    assert!(matches!(
+        outcome,
+        crate::local::agent_conversation::RunOutcome::Terminal {
+            action: crate::supervision::Action::Pause,
+            signal: Some(crate::supervision::Kind::Spend)
+        }
+    ));
+    let value = projected.files[&signal_path].as_ref().unwrap();
+    assert!(
+        value.original().is_none(),
+        "query invented an authored precondition"
+    );
+    let signal: crate::supervision::Signal = serde_json::from_str(&value.text).map_err(exchange)?;
+    assert_eq!(signal.kind, crate::supervision::Kind::Spend);
+    assert!(
+        matches!(&value.source, crate::client_files::FileSource::Query { input, .. }
+        if input.stream == crate::supervision::streams::path(connection.root())?
+        && input.sequence < projected.cut.queries[&input.stream])
+    );
+    if std::env::var_os("ACYCLIC_CAPTURE_CLIENT_FILES").is_some() {
+        let command = AgentCommand::ClientFiles {
+            agent: connection.root().clone(),
+            root: FileRoot::Private {},
+            publication: None,
+            paths: vec![signal_path.clone()],
+            after: None,
+        };
+        let reply = remote_connection.execute(&command).await?;
+        let mut bytes = acyclic_harness_client::PreparedCommand::new(&command)
+            .map_err(exchange)?
+            .command()
+            .to_vec();
+        bytes.push(0);
+        bytes.extend(
+            acyclic_harness_client::encode_agent_reply(&Ok(reply), &command).map_err(exchange)?,
+        );
+        println!(
+            "CLIENT_FILES_QUERY_CORPUS {}",
+            serde_json::to_string(&bytes).map_err(exchange)?
+        );
+    }
+    let selected = local
+        .files(FileRoot::Private {}, vec![signal_path.clone()], None)
+        .await?;
+    let unchanged = remote
+        .files(FileRoot::Private {}, vec![signal_path.clone()], None)
+        .await?;
+    assert_eq!(
+        selected.cut.generation, unchanged.cut.generation,
+        "reading a default view published an authored generation"
+    );
+    remote
+        .publish_files(
+            FileRoot::Private {},
+            crate::OperationId::new(),
+            vec![ClientFileChange {
+                path: signal_path.clone(),
+                expected: None,
+                text: Some("owner override".into()),
+            }],
+        )
+        .await?;
+    let overridden = local
+        .files(FileRoot::Private {}, vec![signal_path.clone()], None)
+        .await?;
+    let authored = overridden.files[&signal_path].as_ref().unwrap();
+    assert_eq!(authored.text, "owner override");
+    assert!(
+        overridden.cut.queries.is_empty(),
+        "overridden view still did query work"
+    );
+    remote
+        .publish_files(
+            FileRoot::Private {},
+            crate::OperationId::new(),
+            vec![ClientFileChange {
+                path: signal_path.clone(),
+                expected: authored.original().cloned(),
+                text: None,
+            }],
+        )
+        .await?;
+    let revealed = remote
+        .files(FileRoot::Private {}, vec![signal_path.clone()], None)
+        .await?;
+    assert_eq!(
+        revealed.files[&signal_path].as_ref().unwrap().text,
+        value.text
+    );
+    assert!(
+        revealed.files[&signal_path]
+            .as_ref()
+            .unwrap()
+            .original()
+            .is_none()
+    );
+
+    drop(child_conversation);
+    drop(local_child_feed);
+    drop(local_child);
+    drop(child_feed);
+    drop(child_connection);
+    drop(local_feed);
+    drop(remote_feed);
+    drop(remote_connection);
+    drop(connection);
+    drop(remote);
+    drop(observer);
+    drop(local);
+    let _ = stop.send(());
+    tasks
+        .join_next()
+        .await
+        .ok_or_else(|| Error::Conflict("serving task absent".into()))?
+        .map_err(exchange)??;
     Ok(())
 }

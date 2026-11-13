@@ -100,6 +100,85 @@ pub trait StreamProviderExt: StreamProvider {
         at_least: RevisionCut,
     ) -> impl std::future::Future<Output = Result<Option<Record>, StreamError>> + ProviderTask;
 
+    /// One indexed point read strictly before an original exclusive cut.
+    /// No head read is needed when the caller already owns that cut. `None`
+    /// selects the last unkeyed record; zero is known absence without IO.
+    fn latest_before(
+        &self,
+        path: StreamPath,
+        key: Option<Bytes>,
+        before: u64,
+        at_least: RevisionCut,
+    ) -> impl Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
+        async move {
+            use futures::StreamExt as _;
+            if before == 0 {
+                return Ok(None);
+            }
+            let mut selector = key.map(|key| ReadKeySeek::latest(key, before));
+            let mut from = if selector.is_some() { 0 } else { before - 1 };
+            let mut records = self
+                .read(ReadRequest {
+                    key: selector.clone(),
+                    path,
+                    from,
+                    limit: 1,
+                    at_least,
+                })
+                .await?;
+            let record = records.next().await.transpose()?;
+            if let Some(record) = &record {
+                if record.sequence >= before {
+                    return Err(StreamError::InvalidResponse);
+                }
+                if let Some(selector) = &mut selector {
+                    selector.advance(&mut from, record.sequence, record.headers.keys())?;
+                }
+            }
+            Ok(record)
+        }
+    }
+
+    /// Select the latest record, optionally keyed, at a captured head with the condition that
+    /// fences that observation in the caller's original publication. The head
+    /// read buys this optimistic fence; the bounded key read cannot include a
+    /// later append. Absence is fenced too. Neither operation scans history.
+    fn latest_fenced(
+        &self,
+        path: StreamPath,
+        key: Option<Bytes>,
+        at_least: RevisionCut,
+    ) -> impl Future<Output = Result<(Option<Record>, CommitCondition), StreamError>> + ProviderTask
+    {
+        async move {
+            let request = HeadsRequest {
+                retained: Default::default(),
+                durable_through: None,
+                projection: HeadProjection::Tail,
+                paths: std::iter::once(path.clone()).collect(),
+                children: None,
+                limit: 1,
+                at_least,
+            };
+            let heads = self.heads(request.clone()).await?;
+            heads.validate_for(&request)?;
+            let (before, condition) = match heads.heads.first().and_then(Option::as_ref) {
+                Some(head) => (
+                    head.tail,
+                    CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: head.tail,
+                    },
+                ),
+                None => (0, CommitCondition::Absent { path: path.clone() }),
+            };
+            let record = self
+                .latest_before(path, key, before, RevisionCut::of(heads.snapshot))
+                .await?;
+            Ok((record, condition))
+        }
+    }
+
     /// Waits for the authority snapshot to cover the caller's minimum cut.
     fn wait_applied(
         &self,
@@ -274,20 +353,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         key: Bytes,
         at_least: RevisionCut,
     ) -> impl std::future::Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
-        async move {
-            use futures::StreamExt as _;
-            self.read(ReadRequest {
-                key: Some(ReadKeySeek::latest(key, u64::MAX)),
-                path,
-                from: 0,
-                limit: 1,
-                at_least,
-            })
-            .await?
-            .next()
-            .await
-            .transpose()
-        }
+        self.latest_before(path, Some(key), u64::MAX, at_least)
     }
 
     fn wait_applied(

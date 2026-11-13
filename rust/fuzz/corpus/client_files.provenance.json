@@ -1,5 +1,5 @@
 {
-  "source": "16934fe1b5",
+  "source": "c7a627b8e7619dee4a69f4af6fd26591dfa319a8",
   "platform": "Linux x86_64",
   "producer": "graphcoder::view::session::tests::session_files_resume_reopen_and_version_refusal",
   "entrypoints": [
@@ -10,24 +10,29 @@
     "encode_agent_reply",
     "ContentPublisher::stage_changes"
   ],
-  "origin": "Actual local session publication and query; public encoder output retained after decoding the real command result. The configured model is not invoked by this storage journey.",
+  "origin": "Actual local session publication and query; original command and public encoder output captured from the successful production storage journey. The configured model was not invoked.",
   "derivations": {
     "unsupported-layout-version": "version changed from 1 to 2 in captured layout",
     "duplicate-request-path": "first actual requested path appended to captured request",
     "mismatched-reply-path": "one same-length file path substitution in the original encoded reply"
   },
   "sha256": {
-    "committed-snapshot": "6c9a064d354ec81eaf3bd55603815f063b47c98c23081f4bdc0b9e1798f3f04a",
-    "layout-v1": "a0caa01df556b29a87bed995a8939e526f46cb3d40bd5a00333272e84b051e4f",
-    "duplicate-request-path": "ece1ae5f0ed25ac07a00a7f2e9ce5ec207c93460cd4aea9b9deb50b10901415e",
-    "unsupported-layout-version": "3f66813f4df2d42634b5030bfb88ffe3ed5e9bfaa8c7575dd9e7aab0a2ab2af0",
-    "mismatched-reply-path": "647b70914365c4c33e4062cba76c53fcb870d9d195de2c06bc0262c3d8a15fa1",
-    "conditional-publication": "1df167575e11128237996833567adefebf1a5b44257209fba624be78e576aae4"
+    "committed-snapshot": "b42df34983410a02458b4a1ff191867f229d1f6c3964e7b147f19d9d487d0db4",
+    "conditional-publication": "f264d7d4e0c45a7c0599461045fc0b857d72273a5585d6321eb300c0ab43b39a",
+    "layout-v1": "35596ff46be9dbca2bae48d7cefc537adaa8fd91168d77a18b4bda8ffa0969ad",
+    "duplicate-request-path": "f83385bfa12908193df1355f977fabfafa966329ab11110515a98d309e960419",
+    "mismatched-reply-path": "bd9ebd0c21eec43bd218fc67e6d090c5b2a624008969ec115cba6d90beb5e29d",
+    "unsupported-layout-version": "574e094d38bcceebb6d5ff6d7ce5eddc1469ee3227f10d80187823b184bdbdad",
+    "stream-query-snapshot": "98fd312521ae1a22df399bfb5a604cb6f0ac19eab8eacc8e54c9b3fdc8cf831d"
   },
   "additional_captures": {
     "conditional-publication": {
-      "source": "b15534c27a",
+      "source": "c7a627b8e7619dee4a69f4af6fd26591dfa319a8",
       "origin": "Actual Connection::execute PublishClientFiles command and original encoded committed reply, captured in the same resume/version test."
+    },
+    "stream-query-snapshot": {
+      "source": "cdd30fd1fd985504b6d48c7976b74f3dda4bd3eb",
+      "origin": "Actual Connection::execute ClientFiles command and original encoded query snapshot from local::endpoint::tests::agent_file_roots_share_conditional_publication_and_follow_over_remote_sessions with ACYCLIC_CAPTURE_CLIENT_FILES=1. Current exact-decimal JSON wire, retained without editing bytes."
     }
   }
 }

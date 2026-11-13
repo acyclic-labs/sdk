@@ -68,7 +68,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         volume: &VolumeRef,
         clock: Arc<dyn UnixMillisClock>,
         calls: &[&str],
-        directory: Option<&str>,
+        directory: Option<(&str, &acyclic_stream::StreamPath)>,
     ) -> Result<AgentObservation> {
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
@@ -103,7 +103,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         volume: &'a VolumeRef,
         clock: &'a dyn UnixMillisClock,
         calls: &'a [&'a str],
-        directory: Option<&'a str>,
+        directory: Option<(&'a str, &'a acyclic_stream::StreamPath)>,
         audience: String,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<(String, Vec<u8>, String)>> {
         Box::pin(async move {
@@ -176,6 +176,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let status = stream(agent.status())?;
             let children = stream(agent.children())?;
             let diagnostics = stream(crate::agent::Diagnostic::directory(agent))?;
+            let supervision = stream(
+                crate::supervision::streams::path(agent)
+                    .map_err(|_| crate::agent::Error::Record("invalid supervision source")),
+            )?;
             let tree = agent.depth() == 0;
             let membership = stream(if tree {
                 agent.membership_tree()
@@ -203,14 +207,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 ]
             };
             grants.push((diagnostics.as_str(), true, &["streams/read"]));
+            grants.push((
+                supervision.as_str(),
+                false,
+                &["streams/read", "streams/follow"],
+            ));
             grants.extend(calls.iter().map(|calls| (*calls, false, invoke)));
             let directory_streams = [
                 acyclic_stream::wire_codec::session::stream_resource(crate::agent::AGENTS),
                 acyclic_stream::wire_codec::session::stream_resource(crate::agent::STATUSES),
                 acyclic_stream::wire_codec::session::stream_resource("harness/membership"),
             ];
-            if let Some(directory) = directory {
+            let directory_source = directory.map(|(_, source)| {
+                acyclic_stream::wire_codec::session::stream_resource(source.as_str())
+            });
+            if let Some((directory, _)) = directory {
                 grants.push((directory, false, invoke));
+                if let Some(source) = &directory_source {
+                    grants.push((source.as_str(), false, observe));
+                }
                 for stream in &directory_streams {
                     grants.push((stream.as_str(), true, observe));
                 }

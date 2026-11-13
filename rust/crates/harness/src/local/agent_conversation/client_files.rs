@@ -1,8 +1,8 @@
-//! Session files use the conversation's existing authenticated connection.
+//! File roots use the conversation's existing authenticated connection.
 use super::*;
 use crate::{
     OperationId,
-    client_files::{ClientFileChange, ClientFiles, FilePreviews},
+    client_files::{ClientFileChange, ClientFiles, FileCut, FilePreviews, FileRoot},
     resources::GenerationRef,
 };
 use futures::future::LocalBoxFuture;
@@ -119,6 +119,27 @@ impl VisibleFiles {
 }
 
 impl Conversation {
+    /// Select a UI session through the same file-root query as agent files.
+    pub async fn client_files(
+        &self,
+        session: OperationId,
+        paths: Vec<String>,
+        after: Option<FileCut>,
+    ) -> Result<ClientFiles> {
+        self.files(FileRoot::ClientSession { session }, paths, after)
+            .await
+    }
+
+    /// Publish UI-session files through the common conditional publisher.
+    pub async fn publish_client_files(
+        &self,
+        session: OperationId,
+        operation: OperationId,
+        changes: Vec<ClientFileChange>,
+    ) -> Result<GenerationRef> {
+        self.publish_files(FileRoot::ClientSession { session }, operation, changes)
+            .await
+    }
     /// Bounded authored-file previews with the original publication follow.
     pub async fn agent_file_previews(
         &self,
@@ -145,7 +166,7 @@ impl Conversation {
     pub async fn agent_files(
         &self,
         paths: Vec<String>,
-        after: Option<GenerationRef>,
+        after: Option<FileCut>,
     ) -> Result<ClientFiles> {
         match self
             .connection
@@ -168,19 +189,41 @@ impl Conversation {
         OperationId::from_bytes(self.agent().id_bytes())
     }
 
-    /// Snapshot explicit session paths, optionally waiting for the original
-    /// filesystem publication event after a previously observed generation.
-    pub async fn client_files(
+    /// Snapshot explicit agent file paths, optionally waiting for the original
+    /// filesystem/query publication events after a previously observed cut.
+    pub async fn files(
         &self,
-        session: OperationId,
+        root: FileRoot,
         paths: Vec<String>,
-        after: Option<GenerationRef>,
+        after: Option<FileCut>,
+    ) -> Result<ClientFiles> {
+        self.selected_files(root, paths, after, None).await
+    }
+
+    /// Read original files by their protected conditional-publication identity.
+    pub async fn files_at_publication(
+        &self,
+        root: FileRoot,
+        paths: Vec<String>,
+        operation: OperationId,
+    ) -> Result<ClientFiles> {
+        self.selected_files(root, paths, None, Some(operation))
+            .await
+    }
+
+    async fn selected_files(
+        &self,
+        root: FileRoot,
+        paths: Vec<String>,
+        after: Option<FileCut>,
+        publication: Option<OperationId>,
     ) -> Result<ClientFiles> {
         match self
             .connection
             .execute(&AgentCommand::ClientFiles {
                 agent: self.agent().clone(),
-                session,
+                root,
+                publication,
                 paths,
                 after,
             })
@@ -193,9 +236,9 @@ impl Conversation {
 
     /// Publish an atomic conditional file batch. An uncertain outcome retains
     /// the caller's operation identity and exact original source descriptors.
-    pub async fn publish_client_files(
+    pub async fn publish_files(
         &self,
-        session: OperationId,
+        root: FileRoot,
         operation: OperationId,
         changes: Vec<ClientFileChange>,
     ) -> Result<GenerationRef> {
@@ -203,7 +246,7 @@ impl Conversation {
             .connection
             .execute(&AgentCommand::PublishClientFiles {
                 agent: self.agent().clone(),
-                session,
+                root,
                 operation,
                 changes,
             })

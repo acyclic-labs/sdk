@@ -62,15 +62,31 @@ pub enum GuestError {
     /// Artifact encoder failed.
     #[error("checkpoint encode failed: {0}")]
     Encode(String),
-    /// Guest handler failed; the host must discard its heap.
+    /// Guest handler failed definitively; the host must discard its heap.
     #[error("guest handler failed: {0}")]
     Handler(String),
+    /// External work is undecided. Retain its delivery without a failure
+    /// transition that could acknowledge or replace the original operation.
+    #[error("guest handler pending: {0}")]
+    Pending(String),
     /// A capability call named a request whose handler invocation ended:
     /// it returned, timed out or was cancelled.
     #[error("host request is revoked")]
     Revoked,
 }
 
+impl GuestError {
+    /// Adds operation context without changing pending versus definitive failure.
+    /// Structured guest refusals retain their original identity.
+    #[must_use]
+    pub fn with_context(self, context: &str) -> Self {
+        match self {
+            Self::Pending(message) => Self::Pending(format!("{context}: {message}")),
+            Self::Handler(message) => Self::Handler(format!("{context}: {message}")),
+            other => other,
+        }
+    }
+}
 /// Artifact codec hooks for exactly one checkpoint byte format.
 #[derive(TS)]
 #[ts(bound = "State: TS")]

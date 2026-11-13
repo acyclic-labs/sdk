@@ -413,6 +413,11 @@ impl ModelProvider for ResolvedModel {
                             let custody = work.claim(event.logical_owned_bytes()?, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
                             yield (event, custody);
                         }
+                        crate::admission::Event::Trace(record) => {
+                            let event = ModelEvent::Trace { record };
+                            let custody = work.claim(event.logical_owned_bytes()?, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+                            yield (event, custody);
+                        }
                         crate::admission::Event::Ready((count, custody)) => {
                             let mut custody = custody.ok_or(acyclic_harness_core::Error::NativeBoundary {
                                 code: acyclic_harness_core::wire::ErrorCode::Invalid,
@@ -495,6 +500,7 @@ impl ModelProvider for ResolvedModel {
             while let Some(event) = events.next().await {
                 match event? {
                     crate::admission::Event::Wait(wait) => yield ModelEvent::Wait(wait),
+                    crate::admission::Event::Trace(record) => yield ModelEvent::Trace { record },
                     crate::admission::Event::Ready((count, _custody)) => yield ModelEvent::Counted { count },
                 }
             }

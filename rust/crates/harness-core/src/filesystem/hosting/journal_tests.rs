@@ -256,12 +256,12 @@ async fn workspace_queries_keep_subdirectory_read_grants_without_widening_them()
                 ClientFileChange {
                     path: "ui/title".into(),
                     expected: None,
-                    text: "scoped title".into(),
+                    text: Some("scoped title".into()),
                 },
                 ClientFileChange {
                     path: "outside".into(),
                     expected: None,
-                    text: "must not be disclosed".into(),
+                    text: Some("must not be disclosed".into()),
                 },
             ],
         )
@@ -572,6 +572,68 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
             .0,
         b"streamed"
     );
+    let mut activity_context = context.clone();
+    activity_context.output_activity = true;
+    let mut log = crate::runtime::ToolOutputLog::new(activity_context.clone());
+    let chunk = log.publish_chunk("stderr/0", b"observed").await?;
+    assert_eq!(chunk.volume(), file.volume());
+    let activity_path = crate::runtime::tool_output_activity_path(turn, context.operation_id());
+    let (_, bytes, _) = reader
+        .read_tool_path(&format!("volume:///output/{activity_path}"), None, None)
+        .await?;
+    let activity: crate::runtime::ToolOutputActivity = serde_json::from_slice(&bytes)?;
+    assert_eq!(activity.through, 1);
+    assert_eq!(log.publish_chunk("stderr/0", b"observed").await?, chunk);
+    let second = log.publish_chunk("stderr/1", b"next").await?;
+    assert_eq!(log.publish_chunk("stderr/0", b"observed").await?, chunk);
+    let third = log.publish_chunk("stderr/2", b"last").await?;
+    let mut recovered = crate::runtime::ToolOutputLog::new(activity_context.clone());
+    assert_eq!(
+        recovered.publish_chunk("stderr/0", b"observed").await?,
+        chunk
+    );
+    assert_eq!(recovered.publish_chunk("stderr/1", b"next").await?, second);
+    assert_eq!(recovered.publish_chunk("stderr/2", b"last").await?, third);
+    let (_, bytes, _) = reader
+        .read_tool_path(&format!("volume:///output/{activity_path}"), None, None)
+        .await?;
+    let activity: crate::runtime::ToolOutputActivity = serde_json::from_slice(&bytes)?;
+    assert_eq!(
+        activity.through, 3,
+        "chunk replay changed the activity cursor"
+    );
+    assert!(log.publish_chunk("stderr/0", b"replacement").await.is_err());
+    log.finish().await?;
+    let terminal = activity_context
+        .read_output_file_once("completed.json")
+        .await?
+        .ok_or("physical completion missing")?;
+    let completed: crate::runtime::ToolOutputCompletion = serde_json::from_slice(&terminal.1)?;
+    assert_eq!(
+        (completed.turn, completed.call),
+        (turn, context.operation_id())
+    );
+    recovered.finish().await?;
+    assert_eq!(
+        context
+            .read_output_file_once("completed.json")
+            .await?
+            .ok_or("completion replay missing")?,
+        terminal,
+        "completion replay changed its original publication",
+    );
+    assert!(
+        task.stage_file(
+            Some(chunk.volume()),
+            OperationId::new(),
+            &activity_path,
+            b"forged",
+            "application/json",
+            "activity.json",
+        )
+        .await
+        .is_err()
+    );
     Ok(())
 }
 
@@ -717,5 +779,111 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
             assert!(page.is_none() && closed);
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
+    use crate::client_files::{ClientFileChange, FileRoot};
+    use acyclic_stream::StreamProviderExt as _;
+    let (bound, agent) = binding().await?;
+    let root = FileRoot::Private {};
+    let paths = vec!["notes.txt".to_owned()];
+    bound
+        .publish_files(
+            &agent,
+            root,
+            OperationId::from_bytes([71; 16]),
+            &[ClientFileChange {
+                path: paths[0].clone(),
+                expected: None,
+                text: Some("before".into()),
+            }],
+        )
+        .await?;
+    let original = bound.files(&agent, root, &paths, None).await?;
+    let file = original.files[&paths[0]]
+        .as_ref()
+        .ok_or("missing authored file")?
+        .original()
+        .ok_or("expected authored source")?
+        .clone();
+    let state = bound.agents().state(&agent).await?;
+    let reference = super::super::super::bounded_io::content_workspace(
+        &bound.volumes.provider,
+        state.volumes[0].volume()?,
+        None,
+    )?;
+    let workspace = bound.volumes.open(&reference, None).await?;
+    let source =
+        acyclic_fs::session::changes_path(&bound.volumes.filesystem, workspace.id().volume_id())?;
+    let before = bound.agents.provider().tail(source.clone()).await?;
+    let waiting = bound.files(&agent, root, &paths, Some(&original.cut));
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    // Conditional file updates retain a new operation annotation even for the
+    // same text. A clean transaction exercises an actually unchanged candidate.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut transaction = workspace
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::from_bytes([72; 16]),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let published = transaction
+        .commit(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
+            },
+        )
+        .await?
+        .value;
+    assert!(matches!(
+        published,
+        acyclic_fs::TransactionCommit::Committed(_)
+    ));
+    let unchanged = bound.files(&agent, root, &paths, None).await?;
+    assert!(unchanged.cut.same_inputs(&original.cut));
+    assert!(
+        bound.agents.provider().tail(source).await? > before,
+        "unchanged publication did not exercise the changes producer"
+    );
+    assert!(
+        futures::poll!(waiting.as_mut()).is_pending(),
+        "unchanged cut ended the watch"
+    );
+    bound
+        .publish_files(
+            &agent,
+            root,
+            OperationId::from_bytes([73; 16]),
+            &[ClientFileChange {
+                path: paths[0].clone(),
+                expected: Some(file),
+                text: Some("after".into()),
+            }],
+        )
+        .await?;
+    let changed = waiting.await?;
+    assert!(!changed.cut.same_inputs(&original.cut));
+    assert_eq!(
+        changed.files[&paths[0]]
+            .as_ref()
+            .ok_or("changed file missing")?
+            .text,
+        "after"
+    );
     Ok(())
 }
