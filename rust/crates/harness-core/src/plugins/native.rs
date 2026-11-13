@@ -56,6 +56,7 @@ pub struct EnabledData {
     pub descriptions: Vec<String>,
     /// Pure after-hooks bound to the original admitted module cut.
     pub after: Vec<AfterHook>,
+    custody: Option<std::sync::Arc<acyclic_fs::NativeAllocation>>,
 }
 
 /// Loads the plugins `plugins.ts` enables over `layers` (lowest first), as
@@ -355,6 +356,28 @@ async fn load_enabled(
                 })?;
         }
         loaded.value.names.push(name.clone());
+    }
+    if let Some(mut custody) = loaded.custody.take() {
+        let work = custody.work();
+        let bytes = crate::core::owned_sum([
+            acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<
+                acyclic_fs::NativeAllocation,
+            >()
+            .map_err(|cause| LoadFailure::Operational(cause.into()))?,
+            std::mem::size_of::<std::sync::Arc<acyclic_fs::NativeAllocation>>() as u64,
+        ])?;
+        let mut shared = work
+            .claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)
+            .map_err(|cause| LoadFailure::Operational(cause.into()))?;
+        custody
+            .absorb(&mut shared)
+            .map_err(|cause| LoadFailure::Operational(cause.into()))?;
+        let custody = std::sync::Arc::new(custody);
+        loaded
+            .value
+            .rules
+            .retain_native(std::sync::Arc::clone(&custody));
+        loaded.value.custody = Some(custody);
     }
     Ok(Enabled(loaded))
 }
