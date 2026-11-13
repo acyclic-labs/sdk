@@ -5338,6 +5338,15 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
 /// queued input and the shared serving loop for unrelated work.
 #[tokio::test]
 async fn lost_model_producer_fails_actor_waiters_without_settling_input() -> Result<()> {
+    lost_model_producer(false).await
+}
+
+#[tokio::test]
+async fn served_lost_model_producer_preserves_actor_failure() -> Result<()> {
+    lost_model_producer(true).await
+}
+
+async fn lost_model_producer(wire: bool) -> Result<()> {
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -5377,7 +5386,52 @@ async fn lost_model_producer_fails_actor_waiters_without_settling_input() -> Res
         )
         .await?,
     );
-    let connection = harness.connect().await?;
+    let mut transport = None;
+    let connection = if wire {
+        harness.agents().await?;
+        let hosted = harness
+            .agents
+            .get()
+            .ok_or_else(|| Error::Invalid("agents not admitted".into()))?;
+        let server = Arc::clone(hosted.server());
+        let credential = server
+            .bound()
+            .client_credential(server.root(), server.resource(), harness.clock.clone())
+            .await
+            .map_err(agent)?;
+        let credential = acyclic_auth::credential::capability_text(&credential.credential);
+        let changes = server.bound().changes().map_err(agent)?;
+        let composition = crate::server::Hosted::new(
+            server,
+            harness.clock.clone(),
+            harness.clone(),
+            Some(Arc::new(changes)),
+        )
+        .with_completion(hosted.runtime.completion());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(agent)?;
+        let (ready, endpoint) = oneshot::channel();
+        let (stop, stopped) = oneshot::channel();
+        let serving = tokio::spawn(crate::server::serve(
+            listener,
+            crate::server::ServerConfig::new(composition),
+            move |endpoint| {
+                let _ = ready.send(endpoint.endpoint.clone());
+            },
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        let endpoint = endpoint.await.map_err(agent)?;
+        transport = Some((stop, serving));
+        let options =
+            acyclic_harness_client::ConnectionOptions::from_env(Some(&endpoint), Some(&credential))
+                .map_err(agent)?;
+        crate::local::Connection::connect(&options).await?
+    } else {
+        harness.connect().await?
+    };
     let client = Conversation::open(connection.clone());
     // Create the conversation through its actual first turn before testing
     // out-of-range follows: an absent stream intentionally waits for creation.
@@ -5566,5 +5620,9 @@ async fn lost_model_producer_fails_actor_waiters_without_settling_input() -> Res
     assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
     assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
     assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
+    if let Some((stop, serving)) = transport {
+        let _ = stop.send(());
+        serving.await.map_err(agent)??;
+    }
     Ok(())
 }
