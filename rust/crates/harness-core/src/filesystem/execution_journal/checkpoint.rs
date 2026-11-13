@@ -252,6 +252,7 @@ where
             crate::distributed::execution_path(operation, work)
         })?;
         _anchor_path_hold = io
+            .filter(|io| io.original_native_work().is_none())
             .map(|io| io.guard_owned(path.as_str().len() as u64))
             .transpose()?;
         let _anchor_hold;

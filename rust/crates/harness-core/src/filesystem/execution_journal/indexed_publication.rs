@@ -94,6 +94,7 @@ where
             crate::distributed::execution_path(operation, work)
         })?;
         execution_hold = io
+            .filter(|io| io.original_native_work().is_none())
             .map(|io| io.guard_owned(execution.as_str().len() as u64))
             .transpose()?;
         let mut history = io.map(PreparationIo::history_io);
