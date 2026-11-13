@@ -2182,7 +2182,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await;
         let mut records = match records {
             Ok(records) => records,
-            Err(error) if matches!(error.category(), StreamError::NotFound | StreamError::OutOfRange) => return Ok(None),
+            Err(error)
+                if matches!(
+                    error.category(),
+                    StreamError::NotFound | StreamError::OutOfRange
+                ) =>
+            {
+                return Ok(None);
+            }
             Err(error) => return Err(error.into()),
         };
         let Some(record) = records.next().await.transpose()? else {
