@@ -215,7 +215,7 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
             )
             .await
             .ok()
-            .map(|result| result.value)
+            .and_then(|result| result.value.into_unbounded().ok())
         }
         _ => None,
     };
