@@ -55,11 +55,11 @@ impl Head {
     }
 
     pub(crate) async fn load<P: acyclic_stream::StreamProvider + ?Sized>(
-        self,
+        mut self,
         provider: &P,
     ) -> Result<AgentState, Error> {
-        let entries = match &self.initial {
-            Some(entries) => entries.clone(),
+        let entries = match self.initial.take() {
+            Some(entries) => entries,
             None => self.table.load(provider).await?,
         };
         self.restore(entries)
