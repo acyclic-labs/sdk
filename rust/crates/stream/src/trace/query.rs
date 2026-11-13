@@ -53,6 +53,9 @@ pub struct MechanismTotals {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuerySnapshot<'a> {
+    /// Largest cumulative suppression report from any one producer in this window.
+    /// A lower bound on omissions, not their sum; zero does not prove coverage.
+    pub largest_reported_suppression: u64,
     /// Original comparisons, including their coverage and last evidence.
     pub comparisons: &'a BTreeMap<ComparisonKind, ComparisonTotals>,
     /// Equal complete request digests in observed original comparisons.
@@ -86,6 +89,15 @@ pub struct QuerySnapshot<'a> {
 /// One new query observation, using the caller's explicit outlier policy.
 #[derive(Debug)]
 pub enum Observation {
+    /// A later terminal reported omitted starts; this neither starts nor settles work.
+    Coverage {
+        /// Original reporting span.
+        id: SpanId,
+        /// Original publication containing this report.
+        evidence: RetainedRecord,
+        /// Cumulative omitted starts in the reporting producer.
+        suppressed: u64,
+    },
     /// Equality computed from original descriptors, independent of span timing
     /// and of whether the preceding publication is in the selected window.
     Compared {
@@ -211,6 +223,7 @@ pub struct TraceQuery<S> {
     active_waits: usize,
     missing_guarantees: u128,
     unpaired_finishes: u128,
+    largest_reported_suppression: u64,
 }
 
 impl<S> TraceQuery<S> {
@@ -229,6 +242,7 @@ impl<S> TraceQuery<S> {
             active_waits: 0,
             missing_guarantees: 0,
             unpaired_finishes: 0,
+            largest_reported_suppression: 0,
         }
     }
 
@@ -286,6 +300,7 @@ impl<S> TraceQuery<S> {
             active_waits: self.active_waits,
             missing_guarantees: self.missing_guarantees,
             unpaired_finishes: self.unpaired_finishes,
+            largest_reported_suppression: self.largest_reported_suppression,
         }
     }
 
@@ -403,6 +418,15 @@ impl<S> TraceQuery<S> {
         evidence: RetainedRecord,
     ) -> Result<Observation, QueryError> {
         let observation = match event {
+            SpanEvent::Coverage { id, suppressed } => {
+                self.largest_reported_suppression =
+                    self.largest_reported_suppression.max(suppressed);
+                Observation::Coverage {
+                    id,
+                    evidence,
+                    suppressed,
+                }
+            }
             SpanEvent::Compared { id, comparison } => {
                 let identical = comparison.previous_digest == comparison.current_digest;
                 let total = self.comparisons.entry(comparison.kind).or_default();

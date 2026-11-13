@@ -129,6 +129,13 @@ pub struct Comparison {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "event", rename_all = "snake_case"))]
 pub enum SpanEvent {
+    /// Coverage lost to publication backpressure, observed by a later terminal.
+    Coverage {
+        /// Reporting span and producer incarnation.
+        id: SpanId,
+        /// Cumulative suppressed starts in this producer; never sum repeated reports.
+        suppressed: u64,
+    },
     /// Original request-path comparison; it neither starts nor settles work.
     Compared {
         /// Owning span, without reconstructing its parent or clock.

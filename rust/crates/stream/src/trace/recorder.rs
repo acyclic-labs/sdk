@@ -251,6 +251,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
 
     fn encode(event: SpanEvent) -> Result<(Vec<u8>, IdempotencyKey), StreamError> {
         let (id, phase) = match &event {
+            SpanEvent::Coverage { id, .. } => (id, 5),
             SpanEvent::Started { id, .. } => (id, 0),
             SpanEvent::Finished { id, .. } => (id, 1),
             SpanEvent::Compared { id, comparison } => (
@@ -369,10 +370,31 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
     ) -> Result<crate::AppendPending, StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         let _executor = self.executor.get().map(tokio::runtime::Handle::enter);
+        let coverage = match &event {
+            SpanEvent::Finished { id, .. } => {
+                let suppressed = self.suppressed_spans();
+                if suppressed == 0 {
+                    None
+                } else {
+                    Some(
+                        Self::encode(SpanEvent::Coverage {
+                            id: *id,
+                            suppressed,
+                        })?
+                        .0,
+                    )
+                }
+            }
+            _ => None,
+        };
         let (bytes, idempotency_key) = Self::encode(event)?;
+        let mut records = vec![bytes.into()];
+        if let Some(coverage) = coverage {
+            records.push(coverage.into());
+        }
         let request = crate::AppendRequest {
             path: self.stream.path().clone(),
-            records: vec![bytes.into()],
+            records,
             if_tail: None,
             idempotency_key,
         };

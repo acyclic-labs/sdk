@@ -972,7 +972,22 @@ mod replay_tests {
         );
         let terminal = root.finish_submitted(None, Outcome::Succeeded)?;
         terminal.result().await?.as_ref().map_err(Clone::clone)?;
-        assert_eq!(trace.tail().await?, 6);
+        let mut completed = 1;
+        while completed < 3 {
+            if matches!(query.next().await?, Some(Observation::Completed { .. })) {
+                completed += 1;
+            }
+        }
+        let tail = trace.tail().await?;
+        assert_eq!(tail, 8);
+        let mut replay = TraceQuery::new(trace.read(0, 8).await?, Default::default());
+        while replay.next().await?.is_some() {}
+        assert_eq!(
+            replay
+                .snapshot(0, tail, Some(tail), 0)
+                .largest_reported_suppression,
+            7
+        );
         Ok(())
     }
 
