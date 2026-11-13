@@ -591,7 +591,7 @@ async fn withdrawn_spill_restores_resident_selection_before_file_reuse()
 
         store.relieve_window(&mut work).await?;
         assert_eq!(store.index().resident_bytes, 0);
-        assert_eq!(store.index().spilled_objects, objects.len());
+        assert_eq!(store.index().spilled.len(), objects.len());
         assert!(store.index().order.is_empty());
         for (id, bytes) in objects {
             assert_eq!(
@@ -1287,4 +1287,73 @@ async fn stale_spilled_pin_progresses_with_a_queued_collector_and_publication()
 #[should_panic(expected = "collector overtook its spill-backed pin")]
 async fn stale_spilled_pin_negative_control_detects_early_retirement() {
     stale_spilled_pin_and_publication(false).await.unwrap();
+}
+
+#[tokio::test]
+async fn physical_spill_reuses_retired_middle_extent_without_overwriting_survivors()
+-> Result<(), Box<dyn std::error::Error>> {
+    async fn physical_length(store: &LocalStaged) -> Result<u64, std::io::Error> {
+        let spill = store.spill_io.read().await;
+        Ok(spill
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("missing spill"))?
+            .as_file()
+            .metadata()?
+            .len())
+    }
+    for reuse in [true, false] {
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let token = CancellationToken::new();
+        let (first, first_bytes) =
+            spill_bytes_fixture(&store, &token, vec![61; 257].into()).await?;
+        let (retired, _) = spill_bytes_fixture(&store, &token, vec![62; 521].into()).await?;
+        let (last, last_bytes) = spill_bytes_fixture(&store, &token, vec![63; 769].into()).await?;
+        let length = physical_length(&store).await?;
+        {
+            // Same exclusive file lease required by collection and durable retirement.
+            let _spill = store.spill_io.write().await;
+            store.index_mut().remove(retired);
+        }
+        let (replacement, replacement_bytes) =
+            spill_bytes_with_reuse_fixture(&store, &token, vec![64; 513].into(), reuse).await?;
+        let reused = physical_length(&store).await? == length;
+        assert_eq!(
+            reused, reuse,
+            "file-length oracle missed append-only negative control"
+        );
+        for (id, expected) in [
+            (first, first_bytes),
+            (last, last_bytes),
+            (replacement, replacement_bytes),
+        ] {
+            let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+            assert_eq!(
+                store
+                    .read(id, expected.len() as u64, &mut work)
+                    .await?
+                    .bytes,
+                expected
+            );
+        }
+        // Recovered bytes were promoted under the original read lease. Coalesced
+        // spans can hold an object larger than either retired neighbor.
+        let before = physical_length(&store).await?;
+        let (whole, bytes) =
+            spill_bytes_with_reuse_fixture(&store, &token, vec![65; 1_400].into(), reuse).await?;
+        let reused = physical_length(&store).await? == before;
+        assert_eq!(
+            reused, reuse,
+            "coalescing oracle missed append-only negative control"
+        );
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &token);
+        assert_eq!(
+            store
+                .read(whole, bytes.len() as u64, &mut work)
+                .await?
+                .bytes,
+            bytes
+        );
+    }
+    Ok(())
 }

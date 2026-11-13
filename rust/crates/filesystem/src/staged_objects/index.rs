@@ -95,9 +95,13 @@ pub(super) struct Index {
     pub(super) next_order: u64,
     next_incarnation: u64,
     pub(super) resident_bytes: u64,
-    pub(super) spilled_objects: usize,
-    // Append offset of the spill file; space is reused only once no staged
-    // object remains spilled.
+    /// Live physical extents in file order, for bounded collection pages.
+    /// The map length is the spilled count; there is no separate counter.
+    /// Identity breaks ties for empty objects sharing a zero-length range.
+    pub(super) spilled: BTreeMap<(u64, ObjectId), u64>,
+    /// Coalesced holes, ordered by length for logarithmic best-fit reuse.
+    free: std::collections::BTreeSet<(u64, u64)>,
+    // Highest admitted spill byte. Holes can be reused before this edge.
     pub(super) spill_end: u64,
     // Objects the durable provider acknowledged while the collection's sweep
     // count was `drained_at`. Only a sweep removes a durable object, so while
@@ -167,7 +171,11 @@ impl Index {
         self.next_order += 1;
         self.resident_bytes = self.resident_bytes.saturating_add(resident_length(&object));
         self.order.insert(order, object_id);
-        if let Some(Staged::Spilled { .. }) = self.objects.insert(
+        if let Some(Staged::Spilled {
+            offset,
+            stored_length,
+            ..
+        }) = self.objects.insert(
             object_id,
             Staged::Resident {
                 object,
@@ -177,7 +185,7 @@ impl Index {
                 decoded: OnceLock::new(),
             },
         ) {
-            self.spilled_objects -= 1;
+            self.retire_spilled(offset, object_id, stored_length);
         }
         Ok(())
     }
@@ -212,10 +220,98 @@ impl Index {
         // The caller owns the preallocated vector and its native custody.
     }
 
+    /// The existing exclusive file lease keeps this choice stable until the
+    /// physical write finishes. Failed/withdrawn writes consume no free span.
+    pub(super) fn spill_offset(&self, length: u64) -> Result<u64, ObjectStoreError> {
+        let offset = if length == 0 {
+            self.spill_end
+        } else {
+            self.free
+                .range((length, 0)..)
+                .next()
+                .map_or(self.spill_end, |&(_, offset)| offset)
+        };
+        offset
+            .checked_add(length)
+            .ok_or(crate::WorkError::Overflow)?;
+        Ok(offset)
+    }
+
+    fn occupy_spill(&mut self, offset: u64, length: u64) {
+        if length == 0 {
+            return;
+        }
+        let end = offset
+            .checked_add(length)
+            .expect("spill range checked before physical write");
+        if offset >= self.spill_end {
+            if offset > self.spill_end {
+                self.free.insert((offset - self.spill_end, self.spill_end));
+            }
+            self.spill_end = end;
+            return;
+        }
+        let &(available, start) = self
+            .free
+            .range((length, 0)..)
+            .next()
+            .expect("exclusive spill lease retains the selected free span");
+        assert_eq!(
+            start, offset,
+            "selected spill span changed before completion"
+        );
+        self.free.remove(&(available, start));
+        if available > length {
+            self.free.insert((available - length, end));
+        }
+    }
+
+    /// Neighboring live extents identify both bordering holes, so a second
+    /// offset-ordered free index is unnecessary. Empty objects occupy no range.
+    fn retire_spilled(&mut self, offset: u64, object_id: ObjectId, length: u64) {
+        self.spilled.remove(&(offset, object_id));
+        if length == 0 {
+            return;
+        }
+        let key = (offset, object_id);
+        let previous = self
+            .spilled
+            .range(..key)
+            .rev()
+            .find(|(_, length)| **length != 0)
+            .map_or(0, |(&(start, _), &length)| start + length);
+        let next = self
+            .spilled
+            .range(key..)
+            .find(|(_, length)| **length != 0)
+            .map_or(self.spill_end, |(&(start, _), _)| start);
+        if previous < offset {
+            self.free.remove(&(offset - previous, previous));
+        }
+        let end = offset + length;
+        if end < next {
+            self.free.remove(&(next - end, end));
+        }
+        self.free.insert((next - previous, previous));
+    }
+
+    /// The file is closed/truncated under its exclusive lease before reset.
+    pub(super) fn reset_spill(&mut self) {
+        assert!(self.spilled.is_empty());
+        self.free.clear();
+        self.spill_end = 0;
+    }
+
     /// Records victims written at `offset` onward as spilled. Each is still
     /// resident: only spills and drains move objects, and both hold the
     /// spill file exclusively.
-    pub(super) fn mark_spilled(&mut self, victims: &[(ObjectId, OwnedBytes)], mut offset: u64) {
+    pub(super) fn mark_spilled(
+        &mut self,
+        victims: &[(ObjectId, OwnedBytes)],
+        mut offset: u64,
+        length: u64,
+    ) {
+        self.occupy_spill(offset, length);
         for (object_id, bytes) in victims {
             let stored_length = byte_length(bytes);
             if let Some(staged) = self.objects.get_mut(object_id) {
@@ -231,12 +327,11 @@ impl Index {
                     length,
                     stored_length,
                 };
-                self.spilled_objects += 1;
+                self.spilled.insert((offset, *object_id), stored_length);
                 self.resident_bytes = self.resident_bytes.saturating_sub(resident);
             }
             offset = offset.saturating_add(stored_length);
         }
-        self.spill_end = offset;
     }
 
     /// Forgets one object the durable provider has acknowledged, and
@@ -256,7 +351,13 @@ impl Index {
                 self.order.remove(&order);
                 self.resident_bytes = self.resident_bytes.saturating_sub(resident_length(&object));
             }
-            Some(Staged::Spilled { .. }) => self.spilled_objects -= 1,
+            Some(Staged::Spilled {
+                offset,
+                stored_length,
+                ..
+            }) => {
+                self.retire_spilled(offset, object_id, stored_length);
+            }
             None => {}
         }
     }
@@ -281,4 +382,102 @@ fn exhausted_resident_incarnation_refuses_without_reusing_a_retired_slot() {
     assert!(index.order.is_empty());
     assert_eq!(index.next_order, next_order);
     assert_eq!(index.resident_bytes, 0);
+}
+
+#[cfg(test)]
+#[test]
+fn spill_range_simulation_preserves_bytes_across_reuse_and_promotion() {
+    // Exercise the real staging index against a separate byte-addressed medium.
+    // The medium oracle detects reuse of any live interval, not just map shape.
+    let mut index = Index::default();
+    let mut medium = Vec::new();
+    let mut live = Vec::<HashedObject>::new();
+    let mut seed = 0x86a9_71c3_u64;
+    for step in 0_u64..768 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        if !live.is_empty() && seed % 3 == 0 {
+            let position = (seed as usize) % live.len();
+            let object = live.swap_remove(position);
+            index.remove(object.object_id());
+        } else {
+            let mut bytes = if step == 0 {
+                Vec::new()
+            } else {
+                step.to_le_bytes().to_vec()
+            };
+            if step != 0 {
+                bytes.resize(8 + (seed as usize % 113), (seed >> 32) as u8);
+            }
+            let object = HashedObject::new(crate::ObjectKind::BlobChunk, bytes.into());
+            index.admit_resident(object.clone()).unwrap();
+            live.push(object);
+        }
+        // Promote a physical object through the same index transition as read_private.
+        if !live.is_empty() && seed % 5 == 0 {
+            let object = live[(seed as usize) % live.len()].clone();
+            if matches!(
+                index.objects.get(&object.object_id()),
+                Some(Staged::Spilled { .. })
+            ) {
+                index.insert_resident(object).unwrap();
+            }
+        }
+        let residents = index.order.values().copied().collect::<Vec<_>>();
+        for id in residents {
+            let Some(Staged::Resident { object, order, .. }) = index.objects.get(&id) else {
+                panic!("resident order points at a nonresident");
+            };
+            let bytes = object.stored_bytes().clone();
+            let order = *order;
+            index.order.remove(&order);
+            let offset = index.spill_offset(byte_length(&bytes)).unwrap();
+            let end = offset as usize + bytes.len();
+            medium.resize(medium.len().max(end), 0);
+            medium[offset as usize..end].copy_from_slice(&bytes);
+            let length = byte_length(&bytes);
+            index.mark_spilled(&[(id, bytes)], offset, length);
+        }
+        for object in &live {
+            let id = object.object_id();
+            let Lookup::Spilled {
+                offset,
+                stored_length,
+                ..
+            } = index.lookup(id)
+            else {
+                panic!("simulation did not spill a surviving object");
+            };
+            assert_eq!(
+                &medium[offset as usize..(offset + stored_length) as usize],
+                object.stored_bytes().as_slice(),
+                "live bytes were overwritten at step {step}",
+            );
+        }
+        let mut intervals = index
+            .spilled
+            .iter()
+            .map(|(&(offset, _), &length)| (offset, length))
+            .chain(index.free.iter().map(|&(length, offset)| (offset, length)))
+            .collect::<Vec<_>>();
+        intervals.retain(|(_, length)| *length != 0);
+        intervals.sort_unstable();
+        let mut cursor = 0;
+        for (offset, length) in intervals {
+            assert_eq!(offset, cursor, "overlap or untracked range at step {step}");
+            cursor += length;
+        }
+        assert_eq!(cursor, index.spill_end);
+        // With no surviving extents, the real exclusive lease closes the file.
+        if live.is_empty() {
+            index.reset_spill();
+            medium.clear();
+        }
+    }
+    for object in live {
+        index.remove(object.object_id());
+    }
+    index.reset_spill();
+    assert!(index.spilled.is_empty() && index.free.is_empty());
 }

@@ -407,7 +407,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     // Admission crosses the original resident window and writes its real
     // spill. Publication must authenticate those physical bytes once while
     // carrying the remaining resident seal without another hash.
-    assert_eq!(store.index().spilled_objects, 2);
+    assert_eq!(store.index().spilled.len(), 2);
     assert!(store.spill_io.read().await.is_some());
     let spilled_bytes = store.index().spill_end;
     for truncated in [false, true] {
@@ -458,7 +458,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
             NativeMaterializationWork::accounting_state_bytes()
         );
         assert_eq!(store.index().objects.len(), closure.len());
-        assert_eq!(store.index().spilled_objects, 2);
+        assert_eq!(store.index().spilled.len(), 2);
         assert_eq!(store.index().spill_end, spilled_bytes);
         for &id in &closure {
             assert!(
@@ -492,7 +492,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
         )
         .await?;
     assert!(store.index().objects.is_empty());
-    assert_eq!(store.index().spilled_objects, 0);
+    assert_eq!(store.index().spilled.len(), 0);
     assert_eq!(store.index().spill_end, 0);
     assert!(store.spill_io.read().await.is_none());
     assert_eq!(work.receipt().object_bytes_read, spilled_bytes);
@@ -546,7 +546,7 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
         assert_eq!(unfunded.spent().backend_write_operations, 0);
         assert_eq!(unfunded.spent().object_bytes_written, 0);
         assert_eq!(store.index().order.len(), ids.len());
-        assert_eq!(store.index().spilled_objects, 0);
+        assert_eq!(store.index().spilled.len(), 0);
         assert!(spill_file.is_none());
     }
     let mut budget = native_write_budget();
@@ -561,7 +561,7 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
     assert_eq!(denied.receipt().backend_write_operations, 0);
     assert_eq!(denied.receipt().object_bytes_written, 0);
     assert_eq!(store.index().spill_end, 0);
-    assert_eq!(store.index().spilled_objects, 0);
+    assert_eq!(store.index().spilled.len(), 0);
     assert_eq!(store.index().order.len(), ids.len());
     // A refused spill leaves no spill file, so it holds no descriptor.
     assert!(spill_file.is_none());
@@ -575,7 +575,7 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
         .await?;
     assert!(work.receipt().backend_write_operations > 0);
     assert_eq!(work.receipt().object_bytes_written, store.index().spill_end);
-    assert!(store.index().spilled_objects > 0);
+    assert!(!store.index().spilled.is_empty());
     Ok(())
 }
 
@@ -606,7 +606,7 @@ async fn native_flush_spilled_read_denial_keeps_private_remainder()
     assert_eq!(work.receipt().backend_write_operations, 0);
     assert_eq!(work.receipt().object_bytes_read, 0);
     assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
-    assert_eq!(store.index().spilled_objects, 1);
+    assert_eq!(store.index().spilled.len(), 1);
     Ok(())
 }
 

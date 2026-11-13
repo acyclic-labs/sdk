@@ -243,8 +243,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         let (empty, truncate) = {
             let index = self.index();
             (
-                index.spilled_objects == 0,
-                index.spilled_objects == 0 && index.spill_end != 0,
+                index.spilled.is_empty(),
+                index.spilled.is_empty() && index.spill_end != 0,
             )
         };
         if let Some(file) = spill.as_ref().filter(|_| truncate) {
@@ -258,7 +258,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     .expect("unmetered unit construction cannot fail")
                     .await?;
             }
-            self.index_mut().spill_end = 0;
+            self.index_mut().reset_spill();
         }
         if empty {
             // Nothing is spilled: the unlinked file closes, holding no

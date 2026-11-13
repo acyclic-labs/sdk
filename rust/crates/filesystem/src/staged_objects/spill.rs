@@ -16,8 +16,9 @@ impl<S> Drop for SpillSelection<'_, S> {
             return;
         }
         let mut index = self.store.index_mut();
-        if index.spilled_objects == 0 {
+        if index.spilled.is_empty() {
             *self.spill = None;
+            index.reset_spill();
         }
         for (id, _) in self.victims {
             if let Some(Staged::Resident { order, .. }) = index.objects.get(id) {
@@ -37,7 +38,7 @@ impl<S> StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        let (victims, offset) = {
+        let victims = {
             let mut index = self.index_mut();
             if index.resident_bytes <= MAXIMUM_RESIDENT_BYTES {
                 return Ok(());
@@ -45,17 +46,20 @@ impl<S> StagedObjects<S> {
             let mut victims = Retained::allocate(index.order.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             index.spill_victims(&mut victims.value);
-            (victims, index.spill_end)
+            victims
         };
-        let spilled = victims.value.iter().fold(0_u64, |sum, (_, bytes)| {
-            sum.saturating_add(byte_length(bytes))
-        });
         let mut selection = SpillSelection {
             store: self,
             spill,
             victims: &victims.value,
             committed: false,
         };
+        // Establish withdrawal restoration before either checked size or offset.
+        let spilled = victims.value.iter().try_fold(0_u64, |sum, (_, bytes)| {
+            sum.checked_add(byte_length(bytes))
+                .ok_or(crate::WorkError::Overflow)
+        })?;
+        let offset = self.index().spill_offset(spilled)?;
         let result = async {
             if work.original.is_none() {
                 work.accounting()
@@ -149,7 +153,8 @@ impl<S> StagedObjects<S> {
         }
         .await;
         result?;
-        self.index_mut().mark_spilled(&victims.value, offset);
+        self.index_mut()
+            .mark_spilled(&victims.value, offset, spilled);
         selection.committed = true;
         Ok(())
     }
