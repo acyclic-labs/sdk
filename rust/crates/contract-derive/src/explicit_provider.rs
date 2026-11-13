@@ -31,7 +31,9 @@ pub(crate) fn expand(contract: ItemTrait, arc: bool) -> syn::Result<TokenStream>
             match arg {
                 FnArg::Receiver(_) => {
                     args.push(quote!(self));
-                    arc_args.push(quote!(&**self));
+                    if arc {
+                        arc_args.push(quote!(&**self));
+                    }
                 }
                 FnArg::Typed(arg) => {
                     let Pat::Ident(name) = &*arg.pat else {
@@ -42,7 +44,9 @@ pub(crate) fn expand(contract: ItemTrait, arc: bool) -> syn::Result<TokenStream>
                     };
                     let name = &name.ident;
                     args.push(quote!(#name));
-                    arc_args.push(quote!(#name));
+                    if arc {
+                        arc_args.push(quote!(#name));
+                    }
                 }
             }
         }
@@ -55,10 +59,12 @@ pub(crate) fn expand(contract: ItemTrait, arc: bool) -> syn::Result<TokenStream>
             #(#attrs)*
             #sig { <Self as #target>::#method_name(#(#args),*) #wait }
         });
-        arc_forwarding.push(quote! {
-            #(#attrs)*
-            #sig { <__Inner as #name>::#method_name(#(#arc_args),*) #wait }
-        });
+        if arc {
+            arc_forwarding.push(quote! {
+                #(#attrs)*
+                #sig { <__Inner as #name>::#method_name(#(#arc_args),*) #wait }
+            });
+        }
     }
     // rustc expands cfg_attr before invoking this attribute macro. Preserve
     // async_trait in either form so trait and forwarding impl have identical
