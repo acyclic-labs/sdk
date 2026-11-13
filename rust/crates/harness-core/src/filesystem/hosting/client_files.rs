@@ -155,7 +155,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
         use crate::client_files::FileSource;
         let (volume, scope, verifier) = self.file_volume(agent, root, false).await?;
         if matches!(root, FileRoot::ClientSession { .. }) {
-            self.volumes.create_volume(&volume).await.map_err(turn)?;
+            self.volumes
+                .create_volume_admitted(
+                    &volume,
+                    match &self.admission {
+                        TurnAdmission::Admitted { scope, .. } => Some(scope),
+                        _ => None,
+                    },
+                )
+                .await
+                .map_err(turn)?;
         }
         let publisher = FilesystemContentPublisher::new(
             self.volumes.clone(),
@@ -286,7 +295,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             None
         };
         let selected = if !watching && matches!(root, FileRoot::ClientSession { .. }) {
-            self.volumes.create_volume(&volume).await.map_err(turn)?
+            self.volumes
+                .create_volume_admitted(
+                    &volume,
+                    match &self.admission {
+                        TurnAdmission::Admitted { scope, .. } => Some(scope),
+                        _ => None,
+                    },
+                )
+                .await
+                .map_err(turn)?
         } else {
             self.volumes.resolve(&reference, None).await.map_err(turn)?
         };
@@ -525,7 +543,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
             )
             .await?;
         if matches!(root, FileRoot::ClientSession { .. }) {
-            self.volumes.create_volume(&volume).await.map_err(turn)?;
+            self.volumes
+                .create_volume_admitted(
+                    &volume,
+                    match &self.admission {
+                        TurnAdmission::Admitted { scope, .. } => Some(scope),
+                        _ => None,
+                    },
+                )
+                .await
+                .map_err(turn)?;
         }
         let publisher = FilesystemContentPublisher::new(
             self.volumes.clone(),

@@ -43,7 +43,6 @@ pub(super) async fn local_journal_compaction_preserves_context_settlement_and_re
                 metadata: Default::default(),
                 current_input_index: Some(0),
             },
-            None,
             &request,
             None,
         )
