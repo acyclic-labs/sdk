@@ -393,3 +393,12 @@ Both mutations run against the same property and shipping completion path.
 visits preserve the original owner; async storage calls retain the original
 `AuthorityWork`, buffers and publication holds. Counts describe the wrapped
 provider boundary, rather than physical traffic hidden inside a provider.
+
+## Git compatibility history
+
+`git log` returns a bounded first-parent history page: 100 commits by default, or
+an explicit `-n <count>`, `-<count>` or `--max-count=<count>`. Its `Commits` result
+contains `commits` and `next`, the first unread commit identity. Continue with
+`git log <next>` (or `GitCommand::Log` with that hexadecimal `object`) until `next`
+is absent. Continuation names immutable history and remains stable when HEAD
+advances; the page size never limits the total history that can be read.

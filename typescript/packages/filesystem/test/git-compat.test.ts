@@ -32,7 +32,7 @@ describe("Git compatibility command codec", () => {
     const commands: readonly GitCompatCommand[] = [
       { kind: "status" },
       { kind: "diff", cached: true },
-      { kind: "log", maximum: 20 },
+      { kind: "log", maximum: 20, object: commit },
       { kind: "show", object: "HEAD" },
       { kind: "add", paths: ["."] },
       { kind: "commit", message: "message", author: "agent", authoredAtSeconds: 10n },
@@ -55,6 +55,9 @@ describe("Git compatibility command codec", () => {
       { kind: "bisect", arguments: ["start", "bad", "good"] },
     ];
     expect(commands.map((command) => JSON.parse(stringifyGitCompatCommand(command)))).toHaveLength(23);
+    expect(JSON.parse(stringifyGitCompatCommand(commands[2]!))).toEqual({
+      kind: "log", maximum: 20, object: commit,
+    });
     expect(JSON.parse(stringifyGitCompatCommand(commands[9]!))).toEqual({
       kind: "reset", target: "HEAD", mode: "hard",
     });
