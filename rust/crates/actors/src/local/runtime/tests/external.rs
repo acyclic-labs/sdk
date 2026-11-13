@@ -61,6 +61,7 @@ async fn control_admission_progresses_with_saturated_work_and_default_is_unbound
         }
         .with_control_capacity(Some(1))?;
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
             handler.clone(),
             Arc::new(SystemClock),
@@ -230,6 +231,7 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
         )?;
         manifest.subscriptions.push("z".into());
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), store.root().clone()),
             Arc::new(OrderedPackage {
                 package,
@@ -330,6 +332,7 @@ async fn ordered_source_backlog_yields_to_an_unrelated_ready_input() -> TestResu
         manifest.subscriptions = ["a", "b", "z"].into_iter().map(str::to_owned).collect();
         manifest.interrupts[0].subscription = "a".into();
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), store.root().clone()),
             Arc::new(OrderedPackage {
                 package,
@@ -448,6 +451,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
             keyed,
         });
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
             handler.clone(),
             Arc::new(SystemClock),
@@ -554,6 +558,7 @@ async fn external_sources_wake_shared_dispatch_and_preserve_committed_cursors() 
         assert!(runtime.release(&address));
         append_source(&*provider, &source, 2 * width, keyed).await?;
         let reopened = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
             handler,
             Arc::new(SystemClock),

@@ -58,7 +58,12 @@ async fn self_pause_retention(retain: bool) -> TestResult {
         calls: AtomicUsize::new(0),
         retain,
     });
-    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     runtime.track(address.clone())?;
     runtime.drain_actor(&address).await?;
     let parked = runtime.store.load(&address).await?;
@@ -74,6 +79,7 @@ async fn self_pause_retention(retain: bool) -> TestResult {
     // Reopening cannot admit the queued source while the pause is durable.
     drop(runtime);
     let reopened = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(SystemClock),
