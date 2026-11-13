@@ -510,15 +510,20 @@ mod indexed_trace_tests {
             .await?
             .into_owned();
         let parent = root.id();
-        assert_eq!(
-            root.within(provider.latest_before(
+        let (selected, condition) = root
+            .within(provider.latest_fenced(
                 data.path().clone(),
                 Some(bytes::Bytes::from_static(b"selected")),
-                1,
-                Default::default()
+                Default::default(),
             ))
-            .await?,
-            original
+            .await?;
+        assert_eq!(selected, original);
+        assert_eq!(
+            condition,
+            CommitCondition::Tail {
+                path: data.path().clone(),
+                expected: 1
+            }
         );
         assert!(
             root.within(provider.latest(
@@ -549,6 +554,13 @@ mod indexed_trace_tests {
             Default::default(),
         );
         query.next().await?;
+        query.next().await?;
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
+            if start.name == "stream.latest_fence" && start.mechanism == Mechanism::ProviderCall
+                && start.parent == Some(parent)
+                && start.guarantee.as_deref() == Some("original_head_cut_for_optimistic_publication_fence"))
+        );
         for expected_bytes in [8, 0] {
             query.next().await?;
             assert!(
@@ -564,7 +576,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            6,
+            8,
             "zero cuts and diagnostic reads must not emit provider work"
         );
         assert_eq!(
@@ -579,7 +591,7 @@ mod indexed_trace_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            6,
+            8,
             "the request owner must not leak into unrelated work"
         );
         Ok(())

@@ -188,8 +188,29 @@ pub trait StreamProviderExt: StreamProvider {
                 limit: 1,
                 at_least,
             };
-            let heads = self.heads(request.clone()).await?;
-            heads.validate_for(&request)?;
+            let work = async {
+                let heads = self.heads(request.clone()).await?;
+                heads.validate_for(&request)?;
+                Ok::<_, StreamError>(heads)
+            };
+            #[cfg(feature = "serde")]
+            let heads = if crate::trace::is_source(&path) {
+                work.await?
+            } else {
+                crate::trace::observe(
+                    crate::trace::Request {
+                        name: "stream.latest_fence",
+                        mechanism: crate::trace::Mechanism::ProviderCall,
+                        parent: None,
+                        guarantee: Some("original_head_cut_for_optimistic_publication_fence"),
+                    },
+                    work,
+                    |_| None,
+                )
+                .await?
+            };
+            #[cfg(not(feature = "serde"))]
+            let heads = work.await?;
             let (before, condition) = match heads.heads.first().and_then(Option::as_ref) {
                 Some(head) => (
                     head.tail,
