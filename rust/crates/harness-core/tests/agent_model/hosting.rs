@@ -544,6 +544,68 @@ async fn staged_waking_notices_keep_entries_bounded_and_replay_exact() -> Result
             Some(acyclic_harness_core::AgentId::from_bytes(agent.id_bytes())),
         )
         .await?;
+    // An undelivered operation retains its publication when producer placement
+    // changes. Its immutable source and bytes must still match on every retry.
+    let saved_request = intent("saved-notice");
+    let Sender::User { principal } = super::user() else {
+        return Err("expected user sender".into());
+    };
+    let sender = format!("user:{principal}");
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
+    for part in [
+        agent.as_str(),
+        "notice",
+        sender.as_str(),
+        saved_request.as_str(),
+    ] {
+        hash.update(&(part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    let operation = acyclic_harness_core::OperationId::from_bytes(identity);
+    let saved_path = format!("inputs/{operation}-{}.json", blake3::hash(&original));
+    let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
+        bound.volumes().clone(),
+        file.volume(),
+        &bound.issuer().verifier(&mut None)?,
+        &scope,
+        1 << 20,
+        None,
+    )?;
+    use acyclic_harness_core::conversation::ContentPublisher as _;
+    let (saved, _) = publisher
+        .stage_once(
+            operation,
+            &saved_path,
+            &original,
+            acyclic_harness_core::agent::NOTICE_MEDIA_TYPE,
+            "notice",
+            Default::default(),
+        )?
+        .await?;
+    let replayed = bound
+        .stage_notice(&agent, &super::user(), &saved_request, &notice)
+        .await?;
+    let InboxRecord::Notice {
+        notice: NoticePayload::Waking(replayed),
+        ..
+    } = replayed
+    else {
+        return Err("saved waking notice was not replayed".into());
+    };
+    assert_eq!(replayed.as_ref(), &saved);
+    assert!(
+        bound
+            .stage_notice(
+                &agent,
+                &super::user(),
+                &saved_request,
+                &event("changed".into())
+            )
+            .await
+            .is_err()
+    );
     let reader = FilesystemContentVerifier::new(
         bound.volumes().clone(),
         &bound.issuer().verifier(&mut None)?,

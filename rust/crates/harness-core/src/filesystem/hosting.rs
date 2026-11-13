@@ -1188,12 +1188,7 @@ where
         let operation = OperationId::from_bytes(operation);
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
-        let path = || {
-            format!(
-                "{directory}/{operation}-{}.{extension}",
-                blake3::hash(source)
-            )
-        };
+        let leaf = format!("{operation}-{}.{extension}", blake3::hash(source));
         let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
@@ -1204,23 +1199,31 @@ where
             None,
         )
         .map_err(turn)?;
+        let (prior, _) = publisher
+            .observe_staged_once(
+                operation,
+                None,
+                self.maximum_bytes,
+                ContentAccess::default(),
+            )
+            .map_err(turn)?
+            .await
+            .map_err(turn)?;
+        if prior
+            .as_ref()
+            .is_some_and(|file| file.path().rsplit('/').next() != Some(leaf.as_str()))
+        {
+            return Err(Error::Conflict("input identity reused with changed source"));
+        }
         let Some((bytes, media_type)) = payload else {
-            let (staged, _) = publisher
-                .observe_staged_once(
-                    operation,
-                    None,
-                    self.maximum_bytes,
-                    ContentAccess::default(),
-                )
-                .map_err(turn)?
-                .await
-                .map_err(turn)?;
-            if staged.as_ref().is_some_and(|file| file.path() != path()) {
-                return Err(Error::Conflict("input identity reused with changed source"));
-            }
-            return Ok(staged);
+            return Ok(prior);
         };
-        let path = path();
+        // Placement is selected only for a new operation. Replays retain the
+        // original publication and still verify its bytes and metadata below.
+        let path = prior.as_ref().map_or_else(
+            || format!("{directory}/{leaf}"),
+            |file| file.path().to_owned(),
+        );
         let staged = publisher
             .stage_once(
                 operation,
