@@ -440,6 +440,7 @@ impl crate::NativeStreamProvider for LocalStream {
                     None,
                     meter,
                     || futures::future::ready(Ok(())),
+                    None,
                     accepted,
                     Ok,
                 )
@@ -458,12 +459,14 @@ impl crate::NativeStreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         before: crate::NativeCommitGuard,
     ) -> crate::NativeProviderFuture<'_, CommitOutcome, crate::NativeCommitError> {
+        let (reads, check) = before.into_parts();
         LocalStream::guarded_commit(
             self,
             request,
             deadline,
             meter,
-            before,
+            check,
+            Some(reads),
             false,
             crate::WriteOutcome::into_commit,
         )

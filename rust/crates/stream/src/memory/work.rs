@@ -101,6 +101,58 @@ impl MemoryStream {
             .map(|entry| entry.is_some())
     }
 
+    /// The cut a guarded Commit's guard can observe: whether its key has a
+    /// replay, the tails of the request's own paths (conditions and mutation
+    /// paths) and of the paths the guard declares it reads, and the subtree
+    /// each fork shares. Paths are permanent and tails only grow, so the sum
+    /// of `tail + 1` over present paths moves exactly when one of them
+    /// changes. A fork shares its source's whole subtree, and the namespace
+    /// rebuilds every ancestor of a changed path, so a source's node is a new
+    /// node exactly when anything at or under it changed; the cut holds that
+    /// node, so its identity is never reused while compared. A change under a
+    /// branch the fork excludes moves it too, refusing conservatively.
+    /// Commits anywhere else in the store never move it. Both native
+    /// providers compare this one cut before and after the guard.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn guard_cut_locked(
+        &self,
+        state: &State,
+        request: &CommitRequest,
+        reads: &[StreamPath],
+    ) -> Result<GuardCut, StreamError> {
+        let replayed = self
+            .replay(state, request.idempotency_key.as_bytes())?
+            .is_some();
+        let tails = request
+            .conditions()
+            .map(CommitCondition::path)
+            .chain(request.mutations().map(CommitMutation::path))
+            .chain(reads)
+            .map(|path| state.tail(path).map_or(0, |tail| u128::from(tail) + 1))
+            .sum();
+        let sources = request.mutations().filter_map(|mutation| match mutation {
+            CommitMutation::Fork { source, .. } => Some(source),
+            CommitMutation::Append { .. } => None,
+        });
+        let (mut subtrees, allocation) = self.vector(sources.clone().count())?;
+        subtrees.extend(sources.map(|source| state.paths.node(source).cloned()));
+        Ok(GuardCut {
+            replayed,
+            tails,
+            subtrees,
+            _allocation: allocation,
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn guard_cut(
+        &self,
+        request: &CommitRequest,
+        reads: &[StreamPath],
+    ) -> Result<GuardCut, StreamError> {
+        self.guard_cut_locked(&*self.state.read().await, request, reads)
+    }
+
     fn publish<T>(
         &self,
         bytes: usize,
@@ -216,6 +268,12 @@ impl MemoryStream {
         self.adopt(bytes)
     }
 
+    /// Charges a guard's declared read list, held while its guard runs, to
+    /// the commit's meter: `capacity` is the list's capacity.
+    pub(crate) fn reads_claim(&self, capacity: usize) -> Result<Allocation, StreamError> {
+        self.adopt(capacity * std::mem::size_of::<StreamPath>())
+    }
+
     fn digest(&self, request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
         crate::request::normalize_commit_with(request, |length| self.vector(length))?;
         let bytes = commit_hash_bytes(request);
@@ -243,4 +301,31 @@ fn inspect<T>(meter: &Arc<dyn NativeReadMeter>, lookup: impl FnOnce() -> T) -> s
     recorded?;
     examined?;
     Ok(value)
+}
+
+/// See [`MemoryStream::guard_cut`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct GuardCut {
+    replayed: bool,
+    tails: u128,
+    subtrees: Vec<Option<Arc<NamespaceNode>>>,
+    _allocation: Allocation,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PartialEq for GuardCut {
+    fn eq(&self, other: &Self) -> bool {
+        self.replayed == other.replayed
+            && self.tails == other.tails
+            && self.subtrees.len() == other.subtrees.len()
+            && self
+                .subtrees
+                .iter()
+                .zip(&other.subtrees)
+                .all(|pair| match pair {
+                    (Some(before), Some(after)) => Arc::ptr_eq(before, after),
+                    (None, None) => true,
+                    _ => false,
+                })
+    }
 }

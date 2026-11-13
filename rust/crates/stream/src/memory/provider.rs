@@ -649,11 +649,13 @@ impl crate::NativeStreamProvider for MemoryStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         before: crate::NativeCommitGuard,
     ) -> crate::NativeProviderFuture<'_, CommitOutcome, crate::NativeCommitError> {
+        let (reads, check) = before.into_parts();
         self.guarded_commit(
             request,
             deadline,
             meter,
-            before,
+            check,
+            Some(reads),
             false,
             crate::WriteOutcome::into_commit,
         )
@@ -751,6 +753,7 @@ impl crate::NativeStreamProvider for MemoryStream {
                     None,
                     meter,
                     || futures::future::ready(Ok(())),
+                    None,
                     accepted,
                     Ok,
                 )
@@ -772,6 +775,7 @@ impl MemoryStream {
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
+        reads: Option<Vec<StreamPath>>,
         accepted: bool,
         convert: C,
     ) -> crate::NativeProviderFuture<'_, T, E>
@@ -791,8 +795,11 @@ impl MemoryStream {
                         let provider = self.with_context(Arc::clone(&work));
                         let result = async {
                             let _input = provider.request_claim(&request).map_err(E::from)?;
+                            let _reads = provider
+                                .reads_claim(reads.as_ref().map_or(0, Vec::capacity))
+                                .map_err(E::from)?;
                             let digest = provider.digest(&mut request).map_err(E::from)?;
-                            let decision = {
+                            let cut = {
                                 let state = provider.state.read().await;
                                 if let Some(replay) = provider
                                     .replay(&state, request.idempotency_key.as_bytes())
@@ -821,12 +828,26 @@ impl MemoryStream {
                                     .map(|outcome| (outcome, claim))
                                     .map_err(E::from);
                                 }
-                                state.decision
+                                // An unguarded Commit observes nothing before
+                                // its locked plan, which rechecks its key.
+                                match &reads {
+                                    Some(reads) => Some(
+                                        provider
+                                            .guard_cut_locked(&state, &request, reads)
+                                            .map_err(E::from)?,
+                                    ),
+                                    None => None,
+                                }
                             };
                             before().await?;
                             let _publication = provider.publication.lock().await;
                             let mut state = provider.state.write().await;
-                            if state.decision != decision {
+                            if let (Some(cut), Some(reads)) = (cut, &reads)
+                                && provider
+                                    .guard_cut_locked(&state, &request, reads)
+                                    .map_err(E::from)?
+                                    != cut
+                            {
                                 return Err(E::from(StreamError::PrefixNotRetained));
                             }
                             let bytes = request

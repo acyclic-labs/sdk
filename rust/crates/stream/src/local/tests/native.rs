@@ -922,105 +922,284 @@ async fn native_guard_denial_reads_same_provider_without_lock_and_preserves_type
     Ok(())
 }
 
-#[tokio::test]
-async fn native_guard_returns_canonical_drift_before_an_explicit_new_request()
--> Result<(), Box<dyn std::error::Error>> {
-    async fn check<P: crate::NativeStreamProvider + Clone + 'static>(
-        provider: &P,
-    ) -> Result<(IdempotencyKey, Arc<Meter>), Box<dyn std::error::Error>> {
-        let request = keyed_commit("guard-drift-target", 0)?;
-        let key = request.idempotency_key.clone();
-        let meter = Arc::new(Meter::local());
-        let calls = Arc::new(AtomicU64::new(0));
-        let callback_provider = provider.clone();
-        let callback_meter = Arc::clone(&meter);
-        let callback_calls = Arc::clone(&calls);
-        let before = move || {
-            let provider = callback_provider.clone();
-            let meter = Arc::clone(&callback_meter);
-            let calls = Arc::clone(&callback_calls);
+/// Which commit lands while a guarded Commit's guard runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Intervening {
+    /// An append to the guarded Commit's own mutation path.
+    Target,
+    /// An append to a path the guarded Commit conditions.
+    Condition,
+    /// An append to the path the guard may declare it reads.
+    Read,
+    /// An append under the source the guarded Commit forks, whose subtree the
+    /// fork shares; the source's own tail holds still.
+    Subtree,
+    /// An append to a path nothing here names.
+    Other,
+    /// The guarded Commit itself, under its own key.
+    Key,
+}
+
+fn plain_append(path: StreamPath) -> CommitRequest {
+    CommitRequest {
+        deadline_unix_millis: None,
+        effects: vec![crate::CommitEffect::hard(
+            Vec::new(),
+            vec![crate::CommitMutation::Append {
+                path,
+                records: vec![Bytes::from_static(b"intervening").into()],
+            }],
+        )],
+        idempotency_key: IdempotencyKey::unique(),
+    }
+}
+
+type Revision = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The guarded Commit of [`guard_drift_case`] `index`.
+fn drift_request(index: usize) -> Result<CommitRequest, StreamError> {
+    let path = |name: &str| StreamPath::new(format!("drift-{index}/{name}"));
+    Ok(CommitRequest {
+        deadline_unix_millis: None,
+        effects: vec![crate::CommitEffect::hard(
+            vec![
+                crate::CommitCondition::Present {
+                    path: path("condition")?,
+                },
+                crate::CommitCondition::Absent {
+                    path: path("copy")?,
+                },
+            ],
+            vec![
+                crate::CommitMutation::Append {
+                    path: path("target")?,
+                    records: vec![Bytes::from_static(b"guarded").into()],
+                },
+                crate::CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source: path("tree")?,
+                    destination: path("copy")?,
+                    at_tail: 1,
+                    records: Vec::new(),
+                },
+            ],
+        )],
+        idempotency_key: IdempotencyKey::new(Bytes::from(format!("drift-{index}")))?,
+    })
+}
+
+/// One case of the exhaustive drift model: a guarded Commit appends to its
+/// target under a condition on another path and forks a tree, and one commit
+/// lands while its guard runs. It drifts exactly when that commit lands on its
+/// own paths, under the tree it forks, on a declared read or under its key,
+/// and exactly once: the fresh invocation commits, or replays under its key
+/// without running the guard again.
+async fn guard_drift_case<P: crate::NativeStreamProvider + Clone + 'static>(
+    provider: &P,
+    index: usize,
+    intervening: Intervening,
+    declared: bool,
+    meter: &Arc<Meter>,
+    revision: Option<Revision>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let path = |name: &str| StreamPath::new(format!("drift-{index}/{name}"));
+    provider.commit(plain_append(path("condition")?)).await?;
+    provider.commit(plain_append(path("tree")?)).await?;
+    provider.commit(plain_append(path("tree/child")?)).await?;
+    let request = drift_request(index)?;
+    let other = match intervening {
+        Intervening::Target => plain_append(path("target")?),
+        Intervening::Condition => plain_append(path("condition")?),
+        Intervening::Read => plain_append(path("read")?),
+        Intervening::Subtree => plain_append(path("tree/child")?),
+        Intervening::Other => plain_append(path("other")?),
+        Intervening::Key => request.clone(),
+    };
+    let reads = if declared {
+        vec![path("read")?]
+    } else {
+        Vec::new()
+    };
+    let calls = Arc::new(AtomicU64::new(0));
+    let guard = {
+        let provider = provider.clone();
+        let meter = Arc::clone(meter);
+        let calls = Arc::clone(&calls);
+        move || {
+            let provider = provider.clone();
+            let meter = Arc::clone(&meter);
+            let calls = Arc::clone(&calls);
+            let other = other.clone();
+            let revision = revision.clone();
             async move {
                 if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                    let intervening = keyed_commit("guard-drift-other", 0)
-                        .map_err(NativeGuardFailure::Provider)?;
+                    let before = revision.as_ref().map(|revision| revision());
                     let result = provider
-                        .native_commit(intervening, None, meter.original())
+                        .native_commit(other, None, meter.original())
                         .await
                         .map_err(NativeGuardFailure::Io)??;
                     assert!(matches!(result.value(), CommitOutcome::Committed(_)));
                     drop(result);
-                    Ok(())
-                } else {
-                    Err(NativeGuardFailure::Owner(0x52))
+                    // Negative control: the deleted store-wide check compared
+                    // this revision across the guard, so it refused even a
+                    // disjoint intervening commit.
+                    if let (Some(before), Some(revision)) = (before, &revision) {
+                        assert!(revision() > before, "store-wide revision held still");
+                    }
                 }
+                Ok::<(), NativeGuardFailure>(())
             }
-        };
-        let result = provider
-            .native_commit_with_guard(request.clone(), None, meter.original(), before.clone())
-            .await?;
-        assert!(matches!(
-            result,
-            Err(NativeGuardFailure::Provider(StreamError::PrefixNotRetained))
-        ));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
-        assert_eq!(
-            provider.tail(StreamPath::new("guard-drift-target")?).await,
-            Err(StreamError::NotFound)
+        }
+    };
+    let drifts = match intervening {
+        Intervening::Other => false,
+        Intervening::Read => declared,
+        Intervening::Target | Intervening::Condition | Intervening::Subtree | Intervening::Key => {
+            true
+        }
+    };
+    let first = provider
+        .native_commit_reading_with_guard(
+            request.clone(),
+            reads.clone(),
+            None,
+            meter.original(),
+            guard.clone(),
+        )
+        .await?;
+    let committed = if drifts {
+        assert!(
+            matches!(
+                first,
+                Err(NativeGuardFailure::Provider(StreamError::PrefixNotRetained))
+            ),
+            "{intervening:?} declared={declared} did not drift"
         );
-        assert_eq!(
-            provider.tail(StreamPath::new("guard-drift-other")?).await?,
-            1
-        );
-        let result = provider
-            .native_commit_with_guard(request.clone(), None, meter.original(), before)
-            .await?;
-        assert!(matches!(result, Err(NativeGuardFailure::Owner(0x52))));
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
-        let accepted = provider
-            .native_commit(request.clone(), None, meter.original())
-            .await??;
-        assert!(matches!(accepted.value(), CommitOutcome::Committed(_)));
-        let replay = provider
-            .native_commit_with_guard(request, None, meter.original(), || {
-                std::future::ready(Err(NativeGuardFailure::Owner(0x53)))
-            })
-            .await??;
-        assert_eq!(replay.value(), accepted.value());
-        drop(replay);
-        drop(accepted);
-        assert_eq!(
-            provider
-                .tail(StreamPath::new("guard-drift-target")?)
-                .await?,
-            1
-        );
-        Ok((key, meter))
+        if intervening != Intervening::Key {
+            assert!(
+                provider
+                    .inspect_idempotency(request.idempotency_key.clone())
+                    .await?
+                    .is_none(),
+                "a drifted invocation published"
+            );
+        }
+        provider
+            .native_commit_reading_with_guard(request, reads, None, meter.original(), guard)
+            .await??
+    } else {
+        first.map_err(|error| format!("{intervening:?} declared={declared} refused: {error}"))?
+    };
+    assert!(matches!(committed.value(), CommitOutcome::Committed(_)));
+    drop(committed);
+    // The copy shares the tree as of the commit, whatever landed under it.
+    let child = if intervening == Intervening::Subtree {
+        2
+    } else {
+        1
+    };
+    assert_eq!(provider.tail(path("copy/child")?).await?, child);
+    let invoked = 1 + u64::from(drifts && intervening != Intervening::Key);
+    assert_eq!(calls.load(Ordering::SeqCst), invoked, "{intervening:?}");
+    Ok(())
+}
+
+/// Guarded Commits on disjoint paths all commit, even when each lands while
+/// another's guard runs: the outer guard runs the middle Commit, whose guard
+/// runs the inner one.
+async fn nested_disjoint_guards<P: crate::NativeStreamProvider + Clone + 'static>(
+    provider: &P,
+    meter: &Arc<Meter>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let inner = plain_append(StreamPath::new("disjoint/inner")?);
+    let middle = plain_append(StreamPath::new("disjoint/middle")?);
+    let outer = plain_append(StreamPath::new("disjoint/outer")?);
+    let middle_guard = {
+        let provider = provider.clone();
+        let meter = Arc::clone(meter);
+        move || {
+            let provider = provider.clone();
+            let meter = Arc::clone(&meter);
+            let inner = inner.clone();
+            async move {
+                let result = provider
+                    .native_commit_with_guard(inner, None, meter.original(), || {
+                        std::future::ready(Ok::<(), NativeGuardFailure>(()))
+                    })
+                    .await
+                    .map_err(NativeGuardFailure::Io)??;
+                assert!(matches!(result.value(), CommitOutcome::Committed(_)));
+                Ok::<(), NativeGuardFailure>(())
+            }
+        }
+    };
+    let outer_guard = {
+        let provider = provider.clone();
+        let meter = Arc::clone(meter);
+        move || {
+            let provider = provider.clone();
+            let meter = Arc::clone(&meter);
+            let middle = middle.clone();
+            let middle_guard = middle_guard.clone();
+            async move {
+                let result = provider
+                    .native_commit_with_guard(middle, None, meter.original(), middle_guard)
+                    .await
+                    .map_err(NativeGuardFailure::Io)??;
+                assert!(matches!(result.value(), CommitOutcome::Committed(_)));
+                Ok::<(), NativeGuardFailure>(())
+            }
+        }
+    };
+    let result = provider
+        .native_commit_with_guard(outer, None, meter.original(), outer_guard)
+        .await??;
+    assert!(matches!(result.value(), CommitOutcome::Committed(_)));
+    drop(result);
+    for path in ["disjoint/inner", "disjoint/middle", "disjoint/outer"] {
+        assert_eq!(provider.tail(StreamPath::new(path)?).await?, 1);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_guard_drifts_only_on_its_own_paths_key_and_declared_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cases = [
+        Intervening::Target,
+        Intervening::Condition,
+        Intervening::Read,
+        Intervening::Subtree,
+        Intervening::Other,
+        Intervening::Key,
+    ]
+    .into_iter()
+    .flat_map(|intervening| [false, true].map(|declared| (intervening, declared)))
+    .enumerate()
+    .collect::<Vec<_>>();
+
     let memory = MemoryStream::default();
-    let (_, memory_meter) = check(&memory).await?;
+    let memory_meter = Arc::new(Meter::local());
+    for &(index, (intervening, declared)) in &cases {
+        guard_drift_case(&memory, index, intervening, declared, &memory_meter, None).await?;
+    }
+    nested_disjoint_guards(&memory, &memory_meter).await?;
     drop(memory);
     memory_meter.assert_refunded();
     assert_eq!(memory_meter.held.load(Ordering::SeqCst), 0);
+
     let directory = tempfile::tempdir()?;
-    let limits = LocalStreamLimits::default();
-    let provider = LocalStream::open(directory.path(), limits).await?;
-    let (key, meter) = check(&provider).await?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let meter = Arc::new(Meter::local());
+    for &(index, (intervening, declared)) in &cases {
+        let revision = (intervening == Intervening::Other).then(|| {
+            let provider = provider.clone();
+            Arc::new(move || *provider.inner.revision.borrow()) as Revision
+        });
+        guard_drift_case(&provider, index, intervening, declared, &meter, revision).await?;
+    }
+    nested_disjoint_guards(&provider, &meter).await?;
     drop(provider);
-    let reopened = LocalStream::open(directory.path(), limits).await?;
-    assert!(reopened.inspect_idempotency(key).await?.is_some());
-    assert_eq!(
-        reopened.tail(StreamPath::new("guard-drift-other")?).await?,
-        1
-    );
-    assert_eq!(
-        reopened
-            .tail(StreamPath::new("guard-drift-target")?)
-            .await?,
-        1
-    );
-    drop(reopened);
     meter.assert_refunded();
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     Ok(())

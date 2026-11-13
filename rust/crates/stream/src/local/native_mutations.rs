@@ -5,6 +5,7 @@ impl LocalStream {
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
+        reads: Option<Vec<StreamPath>>,
         accepted: bool,
         convert: C,
     ) -> crate::NativeProviderFuture<'_, T, E>
@@ -31,7 +32,10 @@ impl LocalStream {
             let _handle = stream.handle.take();
             let mut failed = stream.inner.failed.subscribe();
             let provider = stream.inner.provider.with_context(Arc::clone(&work));
-            let input = match provider.request_claim(&request) {
+            let input = match provider.request_claim(&request).and_then(|request| {
+                let reads = provider.reads_claim(reads.as_ref().map_or(0, Vec::capacity))?;
+                Ok((request, reads))
+            }) {
                 Ok(input) => input,
                 Err(error) => {
                     return completion.complete(
@@ -46,7 +50,6 @@ impl LocalStream {
                 publication_scope(async move {
                     let _input = input;
                     let result = {
-                        let revision = *stream.inner.revision.borrow();
                         let replay = match provider.has_replay(&request.idempotency_key).await {
                             Ok(replay) => replay,
                             Err(error) => {
@@ -55,14 +58,38 @@ impl LocalStream {
                                     .map(|result| result.map_err(E::from));
                             }
                         };
+                        // A cached success runs no guard and returns its
+                        // receipt, so it observes no cut. An unguarded Commit
+                        // observes nothing before its locked plan, which
+                        // rechecks its key.
+                        let cut = match &reads {
+                            Some(reads) if !replay => {
+                                match provider.guard_cut(&request, reads).await {
+                                    Ok(cut) => Some(cut),
+                                    Err(error) => {
+                                        return work
+                                            .finish(Err(error))
+                                            .map(|result| result.map_err(E::from));
+                                    }
+                                }
+                            }
+                            _ => None,
+                        };
                         if !replay && let Err(error) = before().await {
                             return Ok(Err(error));
                         }
                         let visibility = stream.inner.visibility.write().await;
-                        if revision != *stream.inner.revision.borrow() {
-                            return work
-                                .finish(Err(StreamError::PrefixNotRetained))
-                                .map(|result| result.map_err(E::from));
+                        if let (Some(cut), Some(reads)) = (cut, &reads) {
+                            let drift = match provider.guard_cut(&request, reads).await {
+                                Ok(now) if now == cut => None,
+                                Ok(_) => Some(StreamError::PrefixNotRetained),
+                                Err(error) => Some(error),
+                            };
+                            if let Some(error) = drift {
+                                return work
+                                    .finish(Err(error))
+                                    .map(|result| result.map_err(E::from));
+                            }
                         }
                         let publication = stream.inner.publication.write().await;
                         let mut result = async {
