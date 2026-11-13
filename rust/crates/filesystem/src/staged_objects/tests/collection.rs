@@ -3,6 +3,133 @@ use crate::workspace::ForkOptions;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[tokio::test]
+async fn cancelled_collection_keeps_native_deallocation_before_extent_reuse()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::Schedule;
+    for (cut, bypass_order) in [
+        ("native:submitted", false),
+        ("native:completed", false),
+        ("native:submitted", true),
+    ] {
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let cancel = CancellationToken::new();
+        let (dead, _) = spill_bytes_fixture(&store, &cancel, vec![17; 1024 * 1024].into()).await?;
+        let (peer, peer_bytes) =
+            spill_bytes_fixture(&store, &cancel, vec![29; 65536].into()).await?;
+        let Lookup::Spilled {
+            offset,
+            stored_length,
+            ..
+        } = store.lookup(dead)
+        else {
+            return Err("discarded fixture was not spilled".into());
+        };
+        let collecting = store.collection.begin().await;
+        let marked = HashSet::from([peer.digest]);
+        let (schedule, mut events) = Schedule::new();
+        let mut sweep =
+            Box::pin(schedule.scope(store.sweep_private(&collecting, &marked, &cancel)));
+        let held = loop {
+            tokio::select! {
+                biased;
+                boundary = events.recv() => {
+                    let boundary = boundary.ok_or("deallocation boundary was lost")?;
+                    if boundary.name == cut { break boundary; }
+                    boundary.release();
+                }
+                result = sweep.as_mut() => {
+                    result?;
+                    return Err("collection ended before its physical cut".into());
+                }
+            }
+        };
+        // Withdraw the real collection observer after native acceptance. The
+        // accepted physical operation must retain ordering independently.
+        drop(sweep);
+        let expected = vec![53; stored_length as usize];
+        let mut completed_replacement = None;
+        let replacement = if bypass_order {
+            // Negative control: deliberately write outside the native driver's
+            // accepted fence. The delayed hole must erase these real bytes.
+            use std::io::{Seek, SeekFrom, Write};
+            let spill = store.spill_io.read().await;
+            let mut raw = spill
+                .as_ref()
+                .ok_or("missing spill")?
+                .as_file()
+                .try_clone()?;
+            raw.seek(SeekFrom::Start(offset))?;
+            raw.write_all(&expected)?;
+            None
+        } else {
+            let mut replacement = Box::pin(spill_bytes_fixture(
+                &store,
+                &cancel,
+                expected.clone().into(),
+            ));
+            if cut == "native:submitted" {
+                assert!(
+                    futures::poll!(replacement.as_mut()).is_pending(),
+                    "extent reuse escaped an accepted deallocation"
+                );
+                Some(replacement)
+            } else {
+                // Physical completion, rather than delivery to the cancelled
+                // observer, releases the original file fence.
+                completed_replacement = Some(replacement.await?);
+                None
+            }
+        };
+        held.release();
+        // Keep driving the original accepted operation after its observer has
+        // gone. No time or readiness loop decides when it has completed.
+        let drained = schedule.drained();
+        tokio::pin!(drained);
+        loop {
+            tokio::select! {
+                biased;
+                boundary = events.recv() => boundary.ok_or("native completion was lost")?.release(),
+                () = &mut drained => break,
+            }
+        }
+        let replacement = match replacement {
+            Some(replacement) => Some(replacement.await?),
+            None => completed_replacement,
+        };
+        let id = if let Some((id, _)) = replacement {
+            assert!(
+                matches!(store.lookup(id), Lookup::Spilled { offset: actual, .. } if actual == offset)
+            );
+            id
+        } else {
+            dead
+        };
+        let spill = store.spill_io.read().await;
+        let actual = read_spilled(
+            spill.as_ref().ok_or("missing spill")?,
+            &[(id, offset, stored_length)],
+        )
+        .await?
+        .pop()
+        .ok_or("missing physical replacement")?;
+        assert_eq!(
+            actual == expected,
+            !bypass_order,
+            "physical-byte oracle missed the unfenced-reuse negative control"
+        );
+        drop(spill);
+        let mut reading = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        assert_eq!(
+            store.read(peer, 65536, &mut reading).await?.bytes,
+            peer_bytes
+        );
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[tokio::test]
 async fn collection_deallocates_private_blocks_without_moving_a_live_peer()
 -> Result<(), Box<dyn std::error::Error>> {
     fn allocation(file: &std::fs::File) -> std::io::Result<u64> {
