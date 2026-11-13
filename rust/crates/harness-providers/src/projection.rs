@@ -232,16 +232,22 @@ pub(crate) fn body_named<'a>(
             effective_effort = Some(*effort);
             continue;
         }
-        if login_route && message.role == ModelRole::System {
-            system.push(text_content(&message.content, files)?);
-            continue;
-        }
-        if message.role == ModelRole::System
-            && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
-        {
+        // Routes without an in-place system role hoist only the leading system
+        // run into their system field. A system message after the conversation
+        // began (hook context, a settlement notice) keeps its position as user
+        // input: hoisting it would rewrite the cached span ahead of every
+        // message and leave the conversation ending on the model's own answer.
+        let hoisting = login_route || matches!(adapter, Adapter::Anthropic | Adapter::Gemini);
+        if message.role == ModelRole::System && hoisting && messages.is_empty() {
             system.push(text_content(&message.content, files)?);
         } else {
-            for projected in project_message(adapter, message, names, &call_ids, target, files)? {
+            let role = match message.role {
+                ModelRole::System if hoisting => "user",
+                role => wire_role(role),
+            };
+            for projected in
+                project_message(adapter, role, message, names, &call_ids, target, files)?
+            {
                 if message.role == ModelRole::Tool
                     && matches!(adapter, Adapter::Chat | Adapter::Responses)
                     && matches!(&projected, Message::Item(Item::Json(_)))
@@ -393,20 +399,24 @@ pub(crate) fn body_named<'a>(
     })
 }
 
+fn wire_role(role: ModelRole) -> &'static str {
+    match role {
+        ModelRole::System => "system",
+        ModelRole::User => "user",
+        ModelRole::Assistant => "assistant",
+        ModelRole::Tool => "tool",
+    }
+}
+
 fn project_message<'a>(
     adapter: Adapter,
+    role: &'static str,
     message: &'a ModelMessage,
     names: &'a crate::tool_names::Names<'_>,
     call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness_core::model::ReasoningOrigin,
     files: &mut FileText,
 ) -> Result<Vec<Message<'a>>> {
-    let role: &'static str = match message.role {
-        ModelRole::System => "system",
-        ModelRole::User => "user",
-        ModelRole::Assistant => "assistant",
-        ModelRole::Tool => "tool",
-    };
     let mut texts = Vec::new();
     let mut calls = Vec::new();
     let mut results = Vec::new();

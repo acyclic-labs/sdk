@@ -1064,10 +1064,8 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         inspection.snapshot().waits.elapsed_ns(),
         Some(2_007_000_000)
     );
-    assert_eq!(
-        inspection.snapshot().model,
-        Some(("morph", "morph-kimik31"))
-    );
+    // The fixture catalog serves the root role's model with its own binding.
+    assert_eq!(inspection.snapshot().model, Some(("scripted", "test")));
     assert_eq!(inspection.snapshot().open_children, Some(0));
     assert_eq!(
         inspection.snapshot().context,
@@ -1093,7 +1091,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         "inspection must retain the original monotonic duration"
     );
     assert_eq!(
-        &inspection.snapshot().providers["morph"],
+        &inspection.snapshot().providers["scripted"],
         inspection.snapshot().usage,
         "the admitted provider must receive the same original contribution"
     );
@@ -1548,13 +1546,14 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
         ])
     };
     let prices = Arc::new(ModelPrices::from_jsonl(
-        &["morph-kimik31", "morph-dsv41flash"]
+        // The fixture catalog serves both roles with its one binding.
+        &["test"]
             .into_iter()
             .map(|name| {
                 serde_json::to_string(&ModelPriceRecord {
                     version: 1,
                     revision: "chosen-price-1".into(),
-                    provider: "morph".into(),
+                    provider: "scripted".into(),
                     model: name.into(),
                     effective_at: 1,
                     currency: "USD".into(),

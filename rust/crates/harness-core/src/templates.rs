@@ -15,6 +15,71 @@ use std::sync::Arc;
 pub fn resolve_model<'a>(role: Option<&'a str>, fallback: Option<&'a str>) -> Option<&'a str> {
     role.or(fallback)
 }
+
+/// The model a root records when its composition serves `binding` and binds
+/// other selections through `models`. Role policy wins at admission
+/// ([`resolve_model`]), so a composition that cannot bind the root role's
+/// model is refused here, when it is constructed, instead of recording a model
+/// its turns cannot serve.
+///
+/// # Errors
+/// [`Error::Invalid`] when the root role selects another model and `models` is
+/// absent, or `models`' refusal of that model.
+pub fn root_model(binding: &str, models: Option<&crate::model::ModelResolver>) -> Result<String> {
+    let role = root()?.model;
+    let selection = resolve_model(role.as_deref(), Some(binding)).unwrap_or(binding);
+    if selection != binding {
+        models
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "the root role selects {selection}, which the fixed binding {binding} does not serve; bind a catalog that resolves the role model"
+                ))
+            })?
+            .resolve(selection)?;
+    }
+    Ok(selection.to_owned())
+}
+
+/// The model the root role selects, at `revision`: the binding of a provider
+/// that serves any model, so its composition is never refused by
+/// [`root_model`].
+///
+/// # Errors
+/// When the root role selects no model.
+pub fn root_role_model(revision: &str) -> Result<crate::model::Model> {
+    let role = root()?
+        .model
+        .ok_or_else(|| Error::Invalid("the root role selects no model".into()))?;
+    let (provider, name) = role
+        .split_once('/')
+        .ok_or_else(|| Error::Invalid("expected provider/model".into()))?;
+    crate::model::Model::new(provider.into(), name.into(), revision.into())
+}
+
+/// The model the shipped `name` role template selects, if any.
+///
+/// # Errors
+/// When no such template ships, or it does not parse.
+pub fn seed_model(name: &str) -> Result<Option<String>> {
+    let path = format!("templates/{name}/AGENT.md");
+    let bytes = crate::seed::file(&path)
+        .ok_or_else(|| Error::NotFound(format!("template {name} does not ship")))?;
+    Ok(parse(bytes)?.model)
+}
+
+/// Every model a shipped role template selects.
+///
+/// # Errors
+/// When a shipped template does not parse.
+pub fn role_models() -> Result<std::collections::BTreeSet<String>> {
+    let mut models = std::collections::BTreeSet::new();
+    for (path, bytes) in crate::seed::tree() {
+        if path.starts_with("templates/") && path.ends_with("/AGENT.md") {
+            models.extend(parse(bytes)?.model);
+        }
+    }
+    Ok(models)
+}
 const ROOT: &str = include_str!("seed/templates/orchestrator/AGENT.md");
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -266,5 +331,33 @@ mod model_precedence_tests {
             Some("other/parent")
         );
         assert_eq!(resolve_model(None, None), None);
+    }
+
+    #[test]
+    fn a_fixed_binding_serves_the_root_role_or_its_composition_is_refused() -> Result<()> {
+        let role = root()?
+            .model
+            .ok_or_else(|| Error::Invalid("the root role selects no model".into()))?;
+        assert!(role_models()?.contains(&role));
+        // The role's own binding needs no catalog.
+        assert_eq!(root_model(&role, None)?, role);
+        // Negative control: any other fixed binding without a catalog is refused.
+        assert!(matches!(
+            root_model("other/fixed", None),
+            Err(Error::Invalid(_))
+        ));
+        let refusing = crate::model::ModelResolver::new("other/fixed", |selection: &str| {
+            Err(Error::NotFound(selection.to_owned()))
+        });
+        assert!(root_model("other/fixed", Some(&refusing)).is_err());
+        let turns: Vec<crate::test_support::ScriptedTurn> = Vec::new();
+        let binding: crate::model::ModelBinding = (
+            crate::model::Model::new("other".into(), "fixed".into(), "1".into())?,
+            Arc::new(crate::test_support::ScriptedModelProvider::new(turns)),
+        );
+        let served =
+            crate::model::ModelResolver::new("other/fixed", move |_: &str| Ok(binding.clone()));
+        assert_eq!(root_model("other/fixed", Some(&served))?, role);
+        Ok(())
     }
 }

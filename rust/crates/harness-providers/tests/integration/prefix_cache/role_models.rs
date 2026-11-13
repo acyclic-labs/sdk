@@ -4,20 +4,20 @@ use super::*;
 use acyclic_harness::model::{ModelBinding, ModelResolver};
 
 struct Routes {
-    root: Arc<acyclic_harness_providers::ResolvedModel>,
+    /// The shared fixture catalog: the root's recorded binding serves its own
+    /// selection and every shipped role model.
+    roles: ModelResolver,
     child: Arc<acyclic_harness_providers::ResolvedModel>,
     misroute: bool,
 }
 
 impl Routes {
     fn resolve(&self, selection: &str) -> acyclic_harness::Result<ModelBinding> {
-        let provider = match selection {
-            "recorded/model" => self.root.clone(),
-            "workers/luna" if self.misroute => self.root.clone(),
-            "workers/luna" => self.child.clone(),
-            _ => return Err(acyclic_harness::Error::Invalid("unknown model".into())),
-        };
-        Ok((provider.model().clone(), provider))
+        match selection {
+            "workers/luna" if self.misroute => self.roles.resolve("recorded/model"),
+            "workers/luna" => Ok((self.child.model().clone(), self.child.clone())),
+            _ => self.roles.resolve(selection),
+        }
     }
 }
 
@@ -41,10 +41,11 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
         "messages",
         vec![
             text("root prelude"),
+            retrospective(),
             Step {
                 tools: [
                     ("kid", json!({"task":"Count","name":"kid","role":"worker"})),
-                    ("explicit", json!({"task":"Override","name":"explicit","role":"worker","model":"recorded/model"})),
+                    ("explicit", json!({"task":"Override","name":"explicit","role":"advisor","model":"recorded/model"})),
                     ("inherited", json!({"task":"Inherit","name":"inherited","role":"advisor"})),
                 ].into_iter().map(|(id, arguments)| Tool {
                     id: id.into(), name: "spawn".into(), namespace: None, arguments,
@@ -52,6 +53,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 ..Step::default()
             },
             text("delegated"),
+            retrospective(),
         ],
     );
     let native_parts = vec![
@@ -73,7 +75,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     } else {
         ("responses", program("add", "1 + 1"))
     };
-    let child = scripted(path, vec![first, text("two")]);
+    let child = scripted(path, vec![first, text("two"), retrospective()]);
     let root_model = Arc::new(resolve(
         Adapter::Anthropic,
         PromptCache::Native,
@@ -98,7 +100,10 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     spec.models.insert("luna".into(), model);
     catalog.register("workers".into(), spec)?;
     let routes = Arc::new(Routes {
-        root: root_model.clone(),
+        roles: acyclic_harness::test_support::role_models((
+            root_model.model().clone(),
+            root_model.clone(),
+        ))?,
         child: Arc::new(catalog.resolve("workers/luna")?),
         misroute,
     });
@@ -189,9 +194,8 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
             .await?
             .profile
             .ok_or("root profile")?
-            .model
-            .as_deref(),
-        Some("recorded/model")
+            .model,
+        acyclic_harness::templates::root()?.model
     );
     // A private role file, read by the original authorized template reader.
     let state = bound.agents().state(&root).await?;
@@ -217,6 +221,18 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     writer.stage(acyclic_harness::OperationId::new(),"templates/worker/AGENT.md",
         b"---\nversion: 1\ncontext: fork\nmay_spawn: [worker]\nmodel: workers/luna\n---\nCount carefully.",
         "text/markdown","AGENT.md",ContentAccess::default())?.await?;
+    // A role without a model: an explicit request is its fallback, otherwise
+    // the child inherits its parent's model.
+    writer
+        .stage(
+            acyclic_harness::OperationId::new(),
+            "templates/advisor/AGENT.md",
+            b"---\nversion: 1\ncontext: fresh\nmay_spawn: []\n---\nAdvise.",
+            "text/markdown",
+            "AGENT.md",
+            ContentAccess::default(),
+        )?
+        .await?;
     let prepare = bound
         .stage_text(
             &root,
@@ -286,7 +302,11 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 requests.2.iter().map(|request| String::from_utf8_lossy(&request.body)).collect::<Vec<_>>()
             )
         })?;
-    for name in ["explicit", "inherited"] {
+    let inherited = acyclic_harness::templates::root()?.model;
+    for (name, model) in [
+        ("explicit", Some("recorded/model")),
+        ("inherited", inherited.as_deref()),
+    ] {
         let path = bound
             .agents()
             .resolve_spawn_name(&root, name)
@@ -302,7 +322,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 .ok_or("profile")?
                 .model
                 .as_deref(),
-            Some("recorded/model")
+            model
         );
         bound.agents().drain(&path).await?;
     }
@@ -339,10 +359,16 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
     resumed.agents().drain(&kid).await?;
     drop(resumed);
     let resumed = make_bound(make_executors(root_model.clone())?)?;
-    // No model on the worker seed: descendants inherit their actual parent.
+    // The kid's own home is fresh, so its worker is the seed role: its model
+    // wins, and without one descendants inherit their actual parent.
+    let role = acyclic_harness::templates::seed_model("worker")?;
     assert_eq!(
-        resumed.child_profile(&kid, "worker").await?.model,
-        creation.model
+        resumed
+            .child_profile(&kid, "worker")
+            .await?
+            .model
+            .as_deref(),
+        acyclic_harness::templates::resolve_model(role.as_deref(), creation.model.as_deref())
     );
     let body = resumed
         .stage_text(
