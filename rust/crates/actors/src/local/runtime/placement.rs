@@ -11,6 +11,21 @@
 use super::*;
 use acyclic_stream::{CommitCondition, CommitEffect, CommitMutation};
 
+/// The external placement owner's event: `actor`, in an assigned shard, has
+/// due work but is not resident on this runtime. Called on the dispatcher, so
+/// it must not block; the owner answers with [`Runtime::place`]. It may be
+/// told of one actor more than once before that placement lands.
+pub trait PlacementRequests: acyclic_stream::ProviderPlatform + 'static {
+    /// `actor` has due work and is not resident here.
+    fn unplaced(&self, actor: &ActorReference);
+}
+
+impl<F: Fn(&ActorReference) + acyclic_stream::ProviderPlatform + 'static> PlacementRequests for F {
+    fn unplaced(&self, actor: &ActorReference) {
+        self(actor);
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Placement {
@@ -96,6 +111,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         )
         .await?;
         slot.refresh.store(false, Ordering::Release);
+        slot.unplaced.store(false, Ordering::Release);
         slot.waker.wake_by_ref();
         Ok(())
     }

@@ -46,7 +46,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
     /// own placement command, and admits only through [`Self::place`].
     #[must_use]
     pub fn with_external_placement(mut self) -> Self {
-        self.runtime = self.runtime.with_external_placement();
+        self.runtime = self.runtime.externally_placed();
         self
     }
 
@@ -72,6 +72,12 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         self.runtime.place(self.actor.clone(), index).await
     }
 
+    /// Observe the committed placement index and whether this host owns it.
+    /// An unpublished command leaves the index unchanged. Retain the exact
+    /// placement command through an uncertain publication result.
+    pub async fn placement_state(&self) -> Result<(u64, bool), Error> {
+        self.runtime.placement_state(&self.actor).await
+    }
     /// Commit a pause/resume fence without waiting for an active event.
     /// This neither delivers nor consumes input. Resume needs a platform wake.
     pub async fn pause(&self, paused: bool) -> Result<(), Error> {

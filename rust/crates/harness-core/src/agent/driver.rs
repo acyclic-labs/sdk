@@ -227,14 +227,21 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
-    /// Publishes workspace effects before any terminal turn record.
+    /// Saves workspace effects before a pending operation releases the delivery.
+    /// Unlike settlement, this does not complete the turn or merge a child.
+    /// Required, so no wrapping host can silently drop a save.
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>>;
+    /// Publishes workspace effects before any terminal turn record. Required
+    /// for the same reason as [`park`](Self::park).
     fn settle<'a>(
         &'a self,
-        _agent: &'a AgentState,
-        _turn: OperationId,
-    ) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>>;
     /// Open only the bounded resources a context control needs. Hosts without
     /// context controls refuse before opening an executor or dispatching a model.
     fn open_control<'a>(
@@ -270,6 +277,13 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
 }
 
 impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>> {
+        (**self).park(agent, operation)
+    }
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -1145,6 +1159,14 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 }
                 Err(error) => return Err(host_error(error)),
             };
+            if let ExecutionProgress::Pending(operation) = &progress {
+                // A parked delivery releases its workspace. Publish completed
+                // shell effects before a later delivery reopens the volume.
+                self.host
+                    .park(agent, *operation)
+                    .await
+                    .map_err(host_error)?;
+            }
             let step = match progress {
                 ExecutionProgress::Ready(output) => {
                     self.host.settle(agent, turn).await.map_err(host_error)?;

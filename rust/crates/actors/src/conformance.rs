@@ -1035,10 +1035,8 @@ pub async fn placement<P: StreamProvider + ?Sized>(
     let second = lab.spawn("second", &["emit"]).await?;
     let (clock, _time) = crate::local::ControlledClock::new(0);
     let clock: std::sync::Arc<dyn Clock> = std::sync::Arc::new(clock);
-    let owner = lab
-        .node(std::sync::Arc::clone(&clock))?
-        .with_external_placement();
-    let other = lab.node(clock)?.with_external_placement();
+    let owner = lab.node(std::sync::Arc::clone(&clock))?.externally_placed();
+    let other = lab.node(clock)?.externally_placed();
     other.track(first.clone())?;
     lab.require(
         matches!(other.drain_actor(&first).await, Err(Error::Conflict)),

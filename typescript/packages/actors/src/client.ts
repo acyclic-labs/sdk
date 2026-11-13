@@ -325,7 +325,24 @@ function wasmBinding(): ActorsRustBinding {
   };
 }
 
+/** One strict Rust `guest::wire` delivery, as `decodeDelivery` projects it. */
+interface GuestDelivery {
+  readonly request: bigint;
+  /** Encoded ActorReference. */
+  readonly actor: Uint8Array;
+  readonly epoch: bigint;
+  readonly nowUnixMs: bigint;
+  readonly trigger:
+    | { readonly type: "record"; readonly subscription: string; readonly sequence: bigint; readonly record: {
+      readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array;
+      readonly committedAtMicros: bigint; readonly origin: string; } }
+    | { readonly type: "alarm"; readonly generation: bigint; readonly nowUnixMs: bigint };
+  readonly checkpoint: { readonly codec: { readonly name: string; readonly version: string }; readonly bytes: Uint8Array } | null;
+}
+
 interface WasmActorsModule extends ActorsNominalBinding {
+  readonly decodeDelivery: (bytes: Uint8Array) => GuestDelivery;
+  readonly encodeTransition: (codecName: string, codecVersion: string, checkpoint: Uint8Array, response: Uint8Array | null) => Uint8Array;
   readonly validateDeploymentBinding: (name: string, capability: string, resource: string, account: Uint8Array, namespace: string | undefined, worker: string | undefined, stateTransaction: boolean, guestAdmission: string | undefined) => void;
   readonly default: (input?: unknown) => Promise<unknown>;
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };

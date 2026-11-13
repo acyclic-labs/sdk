@@ -335,6 +335,34 @@ async fn copied_workspace_round_trips_binary_edits_deletions_and_original_turn()
             .as_ref(),
         b"binary"
     );
+    // A later delivery binds another Machine from the published volume.
+    let (_resumed_issuer, _resumed_scope, resumed) =
+        workspace_fixture_for_mode(volume.clone(), true).await?;
+    let resumed = host.bind_machine_workspace(resumed).await?;
+    let output = resumed.run_shell(acyclic_harness_core::OperationId::new(), acyclic_harness_core::tools::ShellInput { command: "test $(wc -c < binary) -eq 2 && test $(cat nested/new) = created && printf resumed > nested/new".into(), cwd: None, timeout_ms: None, background: false, target: None }, 4096, None).await?;
+    assert_eq!(output.value["exit_code"], 0);
+    resumed
+        .settle_workspace(acyclic_harness_core::OperationId::new())
+        .await?;
+    let generation = selected
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map_err(|e| e.error)?
+        .value;
+    assert_eq!(
+        generation
+            .read(
+                "/nested/new",
+                u64::MAX,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .map_err(|e| e.error)?
+            .value
+            .as_ref(),
+        b"resumed"
+    );
     workspace
         .run_shell(
             acyclic_harness_core::OperationId::new(),

@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { ActorsDomain, ActorsPackage } from "./generated/acyclic_cloudflare_conformance.js";
+import { ActorsDomain, ActorsPackage, openActorJournal } from "./generated/acyclic_cloudflare_conformance.js";
 import { WasmActorHost, WasmStream } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import { SqliteEventStorage, SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
@@ -28,8 +28,9 @@ function route(value: string): Route {
 export class Actors extends DurableObject<Env> {
   private readonly routes = new SqliteEventStorage(this.ctx.storage, "actors-routing");
   private readonly metadata = new SqliteEventStorage(this.ctx.storage, "actors-discovery");
+  private discoveryPaths: string[] = [];
   private readonly domain = Promise.resolve().then(async () => {
-    const provider = await WasmStream.openJournal({
+    const provider = await openActorJournal({
       configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => this.journal.configure(configuration, maximum, authority),
       flush: () => this.journal.flush(),
       read: (index: number, page: number) => this.journal.read(index, page),
@@ -41,8 +42,8 @@ export class Actors extends DurableObject<Env> {
         await this.ctx.storage.setAlarm(Date.now());
         return head;
       },
-    }, {});
-    return ActorsDomain.open(streamProviderPort(provider), async (address: Uint8Array, paused: boolean) => {
+    });
+    const domain = await ActorsDomain.open(streamProviderPort(provider), async (address: Uint8Array, paused: boolean) => {
       await this.discover();
       if (this.routes.get(key(address)) === undefined) refuse("pause-owner");
       await this.owner(address).pause(paused);
@@ -53,9 +54,11 @@ export class Actors extends DurableObject<Env> {
       ++this.calls.wake;
       await this.owner(address).wake();
     });
+    this.discoveryPaths = domain.schedulingPaths();
+    return domain;
   });
   private readonly journal = new SqliteJournal(this.ctx.storage, "actors", changes => {
-    if (changes.some(([path]) => path === root)) {
+    if (changes.some(([path]) => this.discoveryPaths.includes(path))) {
       const generation = Number(this.metadata.get("generation") ?? "0") + 1;
       if (!Number.isSafeInteger(generation)) refuse("discovery-generation");
       this.metadata.put("generation", String(generation)); this.metadata.put("pending", "1");
@@ -82,7 +85,7 @@ export class Actors extends DurableObject<Env> {
     const generation = this.metadata.get("generation");
     let full;
     do {
-      const page = await (await this.domain).created(BigInt(this.metadata.get("cursor") ?? "0")) as { actors: Uint8Array[]; next: bigint; full: boolean };
+      const page = await (await this.domain).created(BigUint64Array.from((JSON.parse(this.metadata.get("cursor") ?? "[]") as string[]).map(BigInt))) as { actors: Uint8Array[]; next: bigint[]; full: boolean };
       for (const address of page.actors) {
         const name = key(address);
         if (this.routes.get(name) === undefined) {
@@ -90,7 +93,7 @@ export class Actors extends DurableObject<Env> {
         }
         await this.owner(address).admit(this.ctx.id.name!, address);
       }
-      this.metadata.put("cursor", String(page.next));
+      this.metadata.put("cursor", JSON.stringify(page.next.map(String)));
       full = page.full;
     } while (full);
     if (generation === this.metadata.get("generation")) this.metadata.put("pending", "0");
@@ -153,6 +156,10 @@ export class Actors extends DurableObject<Env> {
       try { await this.owner(address).reset(); } catch { reset = true; }
       if (!reset || before === await this.owner(address).incarnation()) refuse("physical-restart");
     }
+  }
+  async verifyDiscovery() {
+    await (await this.domain).verifyDiscovery();
+    return { discovery: "passed", alarm_admission: "passed" };
   }
   async run(bench: boolean) {
     if (await this.ctx.storage.get("ran")) refuse("fresh-domain");

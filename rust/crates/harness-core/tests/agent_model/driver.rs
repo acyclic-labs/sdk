@@ -123,6 +123,7 @@ struct Script {
     progress: Mutex<VecDeque<ExecutionProgress<TurnOutput>>>,
     failure: Mutex<Option<CoreError>>,
     operations: Mutex<Vec<OperationId>>,
+    publications: Mutex<Vec<OperationId>>,
     effects: Mutex<Vec<TurnEffect>>,
 }
 
@@ -200,6 +201,23 @@ impl Executor for Script {
 struct Host(Arc<Script>, Option<Arc<Goal>>);
 
 impl TurnHost for Host {
+    fn park<'a>(
+        &'a self,
+        _: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async move {
+            self.0.publications.lock().expect("lock").push(operation);
+            Ok(())
+        })
+    }
+    fn settle<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn open_control<'a>(
         &'a self,
         _: &'a AgentState,
@@ -248,6 +266,20 @@ impl TurnHost for Host {
 struct Announcing(Host, Arc<Mutex<Roster>>);
 
 impl TurnHost for Announcing {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        self.0.park(agent, operation)
+    }
+    fn settle<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        self.0.settle(agent, turn)
+    }
     fn open_control<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -657,6 +689,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
         )
         .await?;
         let waiting = intent(&approval_intent(approval));
+        assert_eq!(*script.publications.lock().expect("lock"), vec![approval]);
         assert_eq!(
             first.state.phase,
             Phase::WaitingApproval {

@@ -283,7 +283,7 @@ async fn placement_finishes_failed_and_cancelled_custody_recovery() -> Result<()
         Arc::new(crate::conformance::Package::new()?),
         Arc::new(super::super::runtime::SystemClock),
     )
-    .with_external_placement();
+    .externally_placed();
     assert!(matches!(
         runtime.place(actor.clone(), 1).await,
         Err(Error::Handler(GuestError::Handler(message))) if message == "interrupted custody recovery"

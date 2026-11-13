@@ -99,6 +99,7 @@ impl acyclic_stream::NativeStreamProvider for RefusesAppend {}
 
 #[tokio::test]
 async fn interrupted_diagnostic_staging_preserves_the_original_driver_result() -> Result {
+    #[derive(Clone)]
     struct FailsDifferently {
         calls: Arc<AtomicUsize>,
         original: String,
@@ -123,89 +124,153 @@ async fn interrupted_diagnostic_staging_preserves_the_original_driver_result() -
             })
         }
     }
-    let root = AgentPath::root(&id(19));
-    let original = format!("{}original suffix", "é\u{0001}".repeat(65536));
-    let expected = Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
-        original.clone(),
-    )))
-    .to_string();
-    let diagnostic = Diagnostic {
-        agent: root.clone(),
-        digest: *blake3::hash(expected.as_bytes()).as_bytes(),
-        bytes: expected.len() as u64,
-    };
-    let provider = Arc::new(RefusesAppend {
-        inner: MemoryStream::default(),
-        path: diagnostic.path()?,
-        refusals: AtomicUsize::new(0),
-        single_refusal: false,
-        // One full original record commits before the second append fails.
-        diagnostic_chunk: Some(1),
-    });
-    let calls = Arc::new(AtomicUsize::new(0));
-    let host = AgentHost::new(
-        provider.clone(),
-        FailsDifferently {
+    struct Rebinding {
+        provider: Arc<RefusesAppend>,
+        driver: FailsDifferently,
+        baseline: AgentHandler<RefusesAppend, FailsDifferently>,
+        retain: bool,
+    }
+    impl Handler for Rebinding {
+        fn manifest(&self) -> &Manifest {
+            self.baseline.manifest()
+        }
+        fn on_record<'a>(
+            &'a self,
+            delivery: Delivery,
+            checkpoint: Option<&'a Checkpoint>,
+            cancellation: CancellationToken,
+        ) -> GuestFuture<'a, Transition> {
+            Box::pin(async move {
+                let handler = AgentHandler::new(
+                    actor_store(&self.provider).map_err(|error| {
+                        acyclic_actors::guest::GuestError::Handler(error.to_string())
+                    })?,
+                    self.driver.clone(),
+                    self.manifest().limits,
+                )?;
+                let handler = if self.retain {
+                    handler.with_diagnostics_from(&self.baseline)?
+                } else {
+                    handler
+                };
+                handler.on_record(delivery, checkpoint, cancellation).await
+            })
+        }
+    }
+    for retain in [false, true] {
+        let root = AgentPath::root(&id(19));
+        let original = format!("{}original suffix", "é\u{0001}".repeat(65536));
+        let expected = Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
+            original.clone(),
+        )))
+        .to_string();
+        let diagnostic = Diagnostic {
+            agent: root.clone(),
+            digest: *blake3::hash(expected.as_bytes()).as_bytes(),
+            bytes: expected.len() as u64,
+        };
+        let provider = Arc::new(RefusesAppend {
+            inner: MemoryStream::default(),
+            path: diagnostic.path()?,
+            refusals: AtomicUsize::new(0),
+            single_refusal: false,
+            // One full original record commits before the second append fails.
+            diagnostic_chunk: Some(1),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let driver = FailsDifferently {
             calls: calls.clone(),
             original,
-        },
-        ActorReference::new(b"account", b"agents", b"owner")?,
-        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-        Arc::new(SystemClock),
-    )?;
-    let mut adoption = adopted(id(19));
-    adoption.brief = Some(driver::file("fail")?);
-    assert_eq!(
-        host.create(&intent("diagnostic-recovery"), adoption)
-            .await?,
-        root
-    );
-    // Ordinary input waits for its next event after this storage failure. It
-    // must retain the original error rather than re-enter the driver then.
-    let failures = host.runtime().drain().await;
-    assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        values(provider.as_ref(), diagnostic.path()?).await?.len(),
-        1
-    );
-    host.send(
-        &root,
-        &user(),
-        &InboxRecord::Message(Message {
-            from: user(),
-            id: intent("next-input"),
-            body: Box::new(driver::file("next")?),
-            re: None,
-            attachments: None,
-        }),
-    )
-    .await?;
-    host.drain(&root).await?;
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.refusals.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        host.state(&root).await?.phase,
-        Phase::Done {
-            outcome: AgentOutcome::FailedDiagnostic {
-                diagnostic: diagnostic.clone()
-            },
+        };
+        let baseline = AgentHandler::new(
+            actor_store(&provider)?,
+            driver.clone(),
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        )?;
+        let host = AgentHost::hosting(
+            provider.clone(),
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            Arc::new(Rebinding {
+                provider: provider.clone(),
+                driver,
+                baseline,
+                retain,
+            }),
+            Arc::new(SystemClock),
+            None,
+        )?;
+        let mut adoption = adopted(id(19));
+        adoption.brief = Some(driver::file("fail")?);
+        assert_eq!(
+            host.create(&intent("diagnostic-recovery"), adoption)
+                .await?,
+            root
+        );
+        // Ordinary input waits for its next event after this storage failure. It
+        // must retain the original error rather than re-enter the driver then.
+        let failures = host.runtime().drain().await;
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            values(provider.as_ref(), diagnostic.path()?).await?.len(),
+            1
+        );
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::Message(Message {
+                from: user(),
+                id: intent("next-input"),
+                body: Box::new(driver::file("next")?),
+                re: None,
+                attachments: None,
+            }),
+        )
+        .await?;
+        host.drain(&root).await?;
+        if !retain {
+            // Negative control: a fresh unbound handler reruns the driver and
+            // abandons the already committed prefix of the original diagnostic.
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                values(provider.as_ref(), diagnostic.path()?).await?.len(),
+                1
+            );
+            assert_ne!(
+                host.state(&root).await?.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::FailedDiagnostic {
+                        diagnostic: diagnostic.clone()
+                    },
+                }
+            );
+            continue;
         }
-    );
-    let mut complete = String::new();
-    while complete.len() < expected.len() {
-        let page = diagnostic
-            .read_text_with(complete.len() as u64, 65536, |request| {
-                provider.read(request)
-            })
-            .await?;
-        complete.push_str(&page.text);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.refusals.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            host.state(&root).await?.phase,
+            Phase::Done {
+                outcome: AgentOutcome::FailedDiagnostic {
+                    diagnostic: diagnostic.clone()
+                },
+            }
+        );
+        let mut complete = String::new();
+        while complete.len() < expected.len() {
+            let page = diagnostic
+                .read_text_with(complete.len() as u64, 65536, |request| {
+                    provider.read(request)
+                })
+                .await?;
+            complete.push_str(&page.text);
+        }
+        assert_eq!(complete, expected);
+        let snapshot = host.state(&root).await?;
+        host.drain(&root).await?;
+        assert_eq!(host.state(&root).await?, snapshot);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
-    assert_eq!(complete, expected);
-    let snapshot = host.state(&root).await?;
-    host.drain(&root).await?;
-    assert_eq!(host.state(&root).await?, snapshot);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
 

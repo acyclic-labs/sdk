@@ -356,6 +356,30 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
     Ok(manifest)
 }
 
+/// Every field of a delivery, interrupt query or transition except the
+/// checkpoint's artifact bytes, bounded by what the Streams contract commits:
+/// the effects are one commit; the delivered and interrupting records, the
+/// response, the participant's custody intent and the state record (codec
+/// and subscriptions) are each one record; the actor, state path and record
+/// origins are paths; and 4 KiB covers every tag, length and integer.
+pub const ENVELOPE_BYTES: u64 = (acyclic_stream::MAX_COMMAND_BYTES
+    + 4 * acyclic_stream::MAX_RECORD_BYTES
+    + 4 * acyclic_stream::MAX_PATH_BYTES
+    + 4096) as u64;
+
+/// Upper bound on any delivery, interrupt query or transition encoded for an
+/// actor whose checkpoint is at most `checkpoint_bytes`. With no checkpoint
+/// limit, the checkpoint lives in one state record. A guest call bounded by
+/// this can never refuse a transition the core could publish.
+#[must_use]
+pub const fn envelope_bytes(checkpoint_bytes: Option<u64>) -> u64 {
+    let checkpoint = match checkpoint_bytes {
+        Some(bytes) => bytes,
+        None => acyclic_stream::MAX_RECORD_BYTES as u64,
+    };
+    checkpoint.saturating_add(ENVELOPE_BYTES)
+}
+
 /// Encode one delivery and the actor's committed checkpoint for a guest.
 #[must_use]
 pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> Vec<u8> {
@@ -788,6 +812,81 @@ mod tests {
         assert_eq!(decode_delivery(&bytes)?, (delivery, Some(committed)));
         bytes.extend_from_slice(&[0x78, 0x01]);
         assert!(decode_delivery(&bytes).is_err());
+        Ok(())
+    }
+
+    /// A delivery and a transition carrying a checkpoint at the admitted
+    /// maximum, with every other field at its Streams limit, fit the bound.
+    ///
+    /// Negative control: a checkpoint larger than admitted by the envelope
+    /// does not, so the bound follows the admitted checkpoint size.
+    #[test]
+    fn envelope_bound_holds_at_the_admitted_checkpoint_maximum()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const ADMITTED: u64 = 1 << 20;
+        let bound = envelope_bytes(Some(ADMITTED));
+        let checkpoint = |bytes: u64| -> Result<Checkpoint, Box<dyn std::error::Error>> {
+            Ok(Checkpoint {
+                codec: CodecIdentity {
+                    name: "codec".into(),
+                    version: "1".into(),
+                },
+                bytes: vec![7; usize::try_from(bytes)?].into(),
+            })
+        };
+        let record = Bytes::from(vec![1; acyclic_stream::MAX_RECORD_BYTES]);
+        let delivery = Delivery {
+            request: crate::guest::RequestId::new(u64::MAX),
+            actor: ActorReference::new(b"account", b"namespace", b"actor")?,
+            epoch: u64::MAX,
+            trigger: Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: u64::MAX,
+            },
+            now_unix_ms: u64::MAX,
+            record: Some(acyclic_stream::Record {
+                sequence: u64::MAX,
+                value: record.clone().into(),
+                commit_id: CommitId::from_bytes([9; 32]),
+                committed_at_micros: u64::MAX,
+                headers: Default::default(),
+                origin: StreamPath::new("agents/a/inbox")?,
+            }),
+            subscriptions: SubscriptionCuts::new(
+                StreamPath::new("actors/state")?,
+                CommitId::from_bytes([17; 32]),
+                [(
+                    "inbox".into(),
+                    Subscription {
+                        path: StreamPath::new("agents/a/inbox")?,
+                        cursor: u64::MAX,
+                    },
+                )]
+                .into(),
+            ),
+        };
+        let admitted = checkpoint(ADMITTED)?;
+        assert!(encode_delivery(&delivery, Some(&admitted)).len() as u64 <= bound);
+        let path = StreamPath::new("agents/a/outbox")?;
+        let records = acyclic_stream::MAX_COMMAND_BYTES / acyclic_stream::MAX_RECORD_BYTES - 1;
+        let mut transition = transition()?;
+        transition.response = Some(record.clone());
+        transition.checkpoint = admitted;
+        transition.effects = vec![acyclic_stream::CommitEffect {
+            conditions: Vec::new(),
+            mutations: vec![CommitMutation::Append {
+                path,
+                records: vec![record.clone().into(); records],
+            }],
+            soft: false,
+        }];
+        transition.participant = Some(Participant {
+            kind: "spawn".into(),
+            plan: record,
+        });
+        assert!(encode_transition(&transition)?.len() as u64 <= bound);
+        transition.checkpoint = checkpoint(ADMITTED + ENVELOPE_BYTES)?;
+        assert!(encode_transition(&transition)?.len() as u64 > bound);
         Ok(())
     }
 
