@@ -1134,6 +1134,10 @@ where
     ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
+        let directory = match &input {
+            StagedInput::Notice(_) => "inputs/notices",
+            StagedInput::Text { .. } | StagedInput::Content(_) => "inputs",
+        };
         let encoded;
         let (source, payload, extension) = match input {
             StagedInput::Notice(notice) => {
@@ -1184,7 +1188,12 @@ where
         let operation = OperationId::from_bytes(operation);
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
-        let path = || format!("inputs/{operation}-{}.{extension}", blake3::hash(source));
+        let path = || {
+            format!(
+                "{directory}/{operation}-{}.{extension}",
+                blake3::hash(source)
+            )
+        };
         let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
