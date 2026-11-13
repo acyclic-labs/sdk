@@ -16,11 +16,11 @@ pub struct OperationPublication<A: 'static, O: 'static> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> OperationPublication<A, O> {
-    /// Recover the effective serial predecessor from this operation's original
-    /// authority position and digest. A clean publication may reuse the same
-    /// generation on both sides. Generation parents describe content ancestry,
-    /// not publication order. Workspace creation has no predecessor.
-    pub async fn predecessor_generation<W: crate::facade::FsWork>(
+    /// Resolves the actual serial predecessor of this publication, fenced by
+    /// its original authority position and digest. An unchanged publication can
+    /// retain its predecessor's generation; that generation's DAG parent is
+    /// not the predecessor of this operation. Workspace creation has none.
+    pub async fn predecessor<W: crate::facade::FsWork>(
         &self,
         work: W,
         cancellation: &CancellationToken,
@@ -28,6 +28,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> OperationP
         let mut accounting = work.accounting(cancellation);
         let workspace = &self.generation.workspace;
         let result = async {
+            accounting.check()?;
             let Some((position, digest)) = self.predecessor else {
                 return Ok(None);
             };
@@ -103,11 +104,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 crate::kernel::retire_allocation(allocation, 0, &mut accounting)?;
                 return Ok(None);
             };
-            let predecessor = match record.sequence.get().checked_sub(1) {
-                Some(0) => None,
-                Some(position) => Some((crate::Sequence::new(position), record.previous_digest)),
-                None => return Err(FsError::InvalidAuthorityHistory.into()),
-            };
             let bytes =
                 if !self.volume.fs.authority().retains_operation_payload() && evidence.is_some() {
                     record.payload.len() as u64
@@ -124,6 +120,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                     return Err(error.into());
                 }
             }
+            let predecessor = record
+                .sequence
+                .get()
+                .checked_sub(1)
+                .filter(|position| *position != 0)
+                .map(|position| (crate::Sequence::new(position), record.previous_digest));
             drop(record);
             let allocation = if bytes != 0 {
                 Some(crate::kernel::RetainedAllocation::transfer(
@@ -136,12 +138,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
                 None
             };
             Ok(Some(OperationPublication {
-                predecessor,
                 generation: Generation {
                     workspace: self.clone(),
                     id,
                     publication_closure: None,
                 },
+                predecessor,
                 evidence,
                 _allocation: allocation,
             }))

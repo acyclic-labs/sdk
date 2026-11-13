@@ -65,7 +65,7 @@ async fn exercise_original_publication<
     assert_eq!(publication.generation().id(), original.id());
     assert_eq!(publication.evidence(), Some(b"original context".as_slice()));
     let predecessor = publication
-        .predecessor_generation(budget, &cancellation)
+        .predecessor(budget, &cancellation)
         .await?
         .value
         .ok_or("clean publication lost its predecessor")?;
@@ -226,7 +226,7 @@ async fn clean_publication_predecessor<
         .value
         .ok_or("clean receipt missing")?;
     let predecessor = publication
-        .predecessor_generation(budget, cancellation)
+        .predecessor(budget, cancellation)
         .await?
         .value
         .ok_or("clean predecessor missing")?;
