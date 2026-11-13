@@ -1,5 +1,5 @@
 use sdk_docs::rustdoc_digest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -643,10 +643,12 @@ fn assert_executed_profiles(output: &Path, rustdoc: &Path, expected: &[(&str, us
             rustdoc.join(relative).is_file(),
             "every execution must retain its Rustdoc output"
         );
-        assert!(rustdoc
-            .join(relative)
-            .with_extension("source.sha256")
-            .is_file());
+        assert!(
+            rustdoc
+                .join(relative)
+                .with_extension("source.sha256")
+                .is_file()
+        );
     }
     assert_eq!(
         rows.len(),

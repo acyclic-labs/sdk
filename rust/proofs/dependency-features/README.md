@@ -13,3 +13,14 @@ lockfile error. Reverse the patch before any subsequent proof.
 The patch reproduces the previous bare workspace declaration while the shared
 tonic default features are disabled. The normal manifest retains the former
 native feature selection; wasm dependencies remain codegen-only.
+
+Use the build image's POSIX `grep` for the diagnostic assertion; do not add a
+ripgrep prerequisite to this proof:
+
+```sh
+grep -Eq '^error\[E043[23]\]:.*(codegen|transport)' "$negative_log"
+```
+
+The error must come from the real generated client/server compile after the
+feature-removal patch. A missing verifier executable, dependency/lockfile
+failure, or a successful compile is not negative evidence.
