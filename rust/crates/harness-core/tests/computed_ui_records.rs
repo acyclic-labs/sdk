@@ -1120,6 +1120,101 @@ fn accounted_agent_records_share_version_shape_and_whole_input_validation() -> R
 }
 
 #[tokio::test]
+async fn stream_ui_chunks_large_child_pages_at_one_exact_cut() -> Result {
+    use acyclic_fs::demand::{ViewProvider, ViewQuery};
+    use acyclic_harness_core::{
+        agent::{AgentId, IntentId, create_root, spawn},
+        ui::{Cut, StreamUiProvider, View},
+    };
+    use acyclic_stream::{CommitOutcome, MAX_ITEMS};
+    use std::sync::Arc;
+
+    let streams = Arc::new(MemoryStream::default());
+    let root = create_root(
+        &IntentId::try_from("large-page-root".to_owned())?,
+        adoption(AgentId::from_bytes([1; 16])),
+    )?;
+    let agent = root.child;
+    assert!(matches!(
+        streams.commit(root.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let page_size = MAX_ITEMS as u32 + 1;
+    let provider = StreamUiProvider::new(
+        streams.clone(),
+        Arc::new(NoContent),
+        agent.clone(),
+        View::new(page_size)?,
+        [7; 16],
+        navigation,
+    );
+    let cancellation = CancellationToken::new();
+    let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut ctx = KernelAccounting::NativeOriginal {
+        work: &native,
+        cancellation: &cancellation,
+    };
+    let empty_reference = provider.reference(&mut ctx).await?;
+    let first_path = namespace("/children/pages/0.md");
+    let empty = provider
+        .snapshot(empty_reference, ViewQuery::Open(&first_path), &mut ctx)
+        .await?;
+    let children = empty.children(0)?.ok_or("empty page")?;
+    assert!(children.children.is_empty());
+    assert!(!children.more);
+    drop(empty);
+
+    let mut expected = Vec::new();
+    for index in 0..page_size + 2 {
+        let child = spawn(
+            &agent,
+            &IntentId::try_from(format!("child-{index}"))?,
+            1,
+            adoption(AgentId::from_bytes(u128::from(index + 2).to_be_bytes())),
+        )?;
+        expected.push(StreamPath::new(child.child.as_str())?);
+        assert!(matches!(
+            streams.commit(child.request).await?,
+            CommitOutcome::Committed(_)
+        ));
+    }
+    expected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    let frozen = provider.reference(&mut ctx).await?;
+    // A later membership publication must not leak into any chunk of this page.
+    let later = spawn(
+        &agent,
+        &IntentId::try_from("later".to_owned())?,
+        1,
+        adoption(AgentId::from_bytes([9; 16])),
+    )?;
+    assert!(matches!(
+        streams.commit(later.request).await?,
+        CommitOutcome::Committed(_)
+    ));
+    let baseline = native.live_allocation_bytes();
+    for (page, range, more) in [
+        (0, 0..page_size as usize, true),
+        (1, page_size as usize..expected.len(), false),
+        (2, expected.len()..expected.len(), false),
+    ] {
+        let path = namespace(&format!("/children/pages/{page}.md"));
+        let prepared = provider
+            .snapshot(frozen.clone(), ViewQuery::Open(&path), &mut ctx)
+            .await?;
+        let children = prepared.children(page)?.ok_or("selected page")?;
+        assert_eq!(
+            children.children, &expected[range],
+            "large UI page offset or cut changed"
+        );
+        assert_eq!(children.more, more);
+        drop(prepared);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn stream_ui_uses_frozen_inputs_and_direct_child_navigation() -> Result {
     use acyclic_harness_core::{
         agent::{AgentId, IntentId, create_root, spawn},

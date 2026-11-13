@@ -346,8 +346,8 @@ async fn routed_forks_retain_both_layers_after_independent_provider_progress() {
             .as_slice(),
         b"old context"
     );
-    // Publication uses the same retained source selector as reads, including
-    // after reopening the child while both upstream providers have advanced.
+    // Authored writes retain the child's selector. Native publication separately
+    // requires that selector still match the live providers.
     let child_basis = reopened.snapshot(accounting!()).await.unwrap();
     let (commit, published) = reopened
         .write_at_snapshot::<_, _, Box<dyn std::error::Error + Send + Sync>>(
@@ -365,15 +365,10 @@ async fn routed_forks_retain_both_layers_after_independent_provider_progress() {
         .unwrap();
     assert!(matches!(commit, TransactionCommit::Committed(_)));
     assert_eq!(published.unwrap().source, child_basis.source);
-    let publication = reopened.publication_snapshot(accounting!()).await.unwrap();
-    assert_eq!(
-        publication
-            .lazy_snapshot(accounting!())
-            .unwrap()
-            .unwrap()
-            .source,
-        child_basis.source
-    );
+    assert!(matches!(
+        reopened.publication_snapshot(accounting!()).await,
+        Err(LazyWorkspaceError::StaleSource)
+    ));
     assert_eq!(
         reopened
             .read("/ui/authored.txt", 64, accounting!())

@@ -117,7 +117,7 @@ impl<
         let cut = self.publication_cut(None, ctx).await?;
         let generation = self.head(ctx).await?;
         ctx.check()?;
-        if self.source_reference(ctx).await? != cut.source {
+        if self.source.reference(ctx).await? != cut.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok(NativePublicationSnapshot {
@@ -222,7 +222,9 @@ impl<
             bytes_copied: std::mem::size_of::<LazyPublicationCut>() as u64,
             ..WorkCounters::UNCHARGED
         })?;
-        if self.source_reference(ctx).await? != state.source {
+        // Frozen reads use the retained selector, but publication must still
+        // qualify that cut against the provider's live reference.
+        if self.source.reference(ctx).await? != state.source {
             return Err(LazyWorkspaceError::StaleSource);
         }
         Ok(LazyPublicationCut {
