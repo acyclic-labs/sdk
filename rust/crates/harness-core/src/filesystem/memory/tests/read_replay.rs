@@ -161,7 +161,7 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
     .await?;
     assert!(source[918094..].starts_with(initial["text"].as_str().unwrap().as_bytes()));
     let authored = initial["version"].as_str().unwrap();
-    let content = serde_json::to_string(&file).unwrap();
+    let content = crate::tool::files::encode_version(&file, None).unwrap().0;
     storage
         .stage(
             OperationId::new(),

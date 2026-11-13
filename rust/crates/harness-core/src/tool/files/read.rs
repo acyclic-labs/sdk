@@ -332,7 +332,7 @@ mod checks {
                     (cursor as u64, source.len() as u64), Some(maximum), None, None).unwrap();
                 let invocation = ToolInvocation {
                     operation_id:crate::OperationId::new(),call_id:"page".into(),name:"read".into(),
-                    arguments:serde_json::json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":cursor,"end":source.len()}}),
+                    arguments:serde_json::json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"range":{"start":cursor,"end":source.len()}}),
                 };
                 let tool = super::super::read().unwrap();
                 let value = tool.projection.project(&invocation, &result, None).unwrap().0;
@@ -354,7 +354,7 @@ mod checks {
             prop_assert_eq!(assembled.as_str(), source.as_str());
             let tiny: String = source.chars().take(40).collect();
             let file = crate::tool::tests::file(tiny.as_bytes()).unwrap();
-            let version = serde_json::to_string(&file).unwrap();
+            let version = crate::tool::files::encode_version(&file, None).unwrap().0;
             let exact = serde_json::json!({"kind":"json","value":{"path":file.path(),"version":version,"text":tiny,
                 "page":{"start":0,"end":tiny.len(),"offset":0,"total":tiny.len(),"eof":true}}});
             let credit = serde_json::to_vec(&exact).unwrap().len() as u64;

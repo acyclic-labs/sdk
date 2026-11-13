@@ -458,7 +458,7 @@ mod tests {
                 )?,
                 call_id: call_id.clone(),
                 name: tool.definition.name.clone(),
-                arguments: serde_json::json!({"path": file.path(), "version": serde_json::to_string(&file).map_err(export_error)?}),
+                arguments: serde_json::json!({"path": file.path(), "version": crate::tool::files::encode_version(&file, None)?.0}),
             };
             let bare = serde_json::to_vec(&invocation).map_err(export_error)?;
             assert!(serde_json::from_slice::<RecordedAdmission<'_>>(&bare).is_err());

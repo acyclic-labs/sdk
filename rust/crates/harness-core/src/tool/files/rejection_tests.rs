@@ -123,7 +123,7 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
             operation_id: crate::OperationId::new(),
             call_id: "selection".into(),
             name: "read".into(),
-            arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":start,"end":end}}),
+            arguments: json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"range":{"start":start,"end":end}}),
         };
         let result = FileTool::Read.preflight(&scope, None, &invocation, Some(&original));
         if rejected {
@@ -137,7 +137,7 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
         crate::conversation::Limits::default(),
     )?;
     for arguments in [
-        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
+        json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0}),
         json!({"path":"../private"}),
         json!({"path":".system/private"}),
     ] {

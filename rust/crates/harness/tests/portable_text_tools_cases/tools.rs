@@ -187,7 +187,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: read_operation,
         call_id: "read".into(),
         name: read_tool.definition.name.clone(),
-        arguments: json!({"path":source.path(),"version":serde_json::to_string(&source).unwrap()}),
+        arguments: json!({"path":source.path(),"version":files::encode_version(&source, None).unwrap().0}),
     };
     let expected_read = json!({"file":files::FileReadSource::Content(source.clone()),"text":"one two","page":{"offset":0,"start":0,"end":7,"total":7,"eof":true}});
     assert_eq!(
@@ -223,7 +223,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: operation,
         call_id: "edit".into(),
         name: tool.definition.name.clone(),
-        arguments: json!({"path":source.path(),"version":serde_json::to_string(&source).unwrap(),"old_text":"two","new_text":"three"}),
+        arguments: json!({"path":source.path(),"version":files::encode_version(&source, None).unwrap().0,"old_text":"two","new_text":"three"}),
     };
     let context = ToolContext::new(task.clone(), operation, "edit")?;
     let first = tool

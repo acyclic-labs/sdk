@@ -14,13 +14,18 @@ pub(super) fn bind_seed_files(
                     && matches!(call.name.as_str(), "read" | "edit")
                     && let Some(path) = call.arguments.get("version").and_then(Value::as_str)
                 {
-                    call.arguments["version"] = serde_json::to_string(
+                    let file: acyclic_harness::conversation::FileRef = serde_json::from_value(
                         references
                             .get(path)
-                            .ok_or_else(|| format!("unknown seed file: {path}"))?,
+                            .ok_or_else(|| format!("unknown seed file: {path}"))?
+                            .clone(),
                     )
-                    .map_err(|error| error.to_string())?
-                    .into();
+                    .map_err(|error| error.to_string())?;
+                    call.arguments["version"] =
+                        acyclic_harness::tool::files::encode_version(&file, None)
+                            .map_err(|error| error.to_string())?
+                            .0
+                            .into();
                 }
             }
         }

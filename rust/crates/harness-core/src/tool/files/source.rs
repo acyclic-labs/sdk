@@ -48,6 +48,7 @@ pub enum FileReadSource {
 impl FileReadSource {
     pub(super) fn same_source(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Content(left), Self::Content(right)) => left.same_identity(right),
             (Self::Authored(selected), Self::Content(file))
             | (Self::Content(file), Self::Authored(selected)) => selected.matches_content(file),
             _ => self == other,

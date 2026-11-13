@@ -313,7 +313,7 @@ mod tests {
             operation_id: crate::OperationId::new(),
             call_id: "file-projection".into(),
             name: "read".into(),
-            arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
+            arguments: json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0}),
         };
         let published = ToolResult {
             value: json!(FileResult { file: file.clone() }),
@@ -338,8 +338,7 @@ mod tests {
                 let validator = compile_json_schema(&schema, "file projection", &mut None)?;
                 assert!(validator.is_valid(&projection));
                 if mode == ProjectionMode::Full {
-                    let mut expected =
-                        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()});
+                    let mut expected = json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0});
                     if let Some(text) = result.value.get("text") {
                         expected["text"] = text.clone();
                     }
@@ -418,7 +417,7 @@ mod tests {
             &mut None,
         )?;
         assert!(input.is_valid(
-            &json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()})
+            &json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0})
         ));
         assert!(output.is_valid(&canonical));
         let envelope = project_json(&result, None)?.0;

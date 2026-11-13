@@ -473,7 +473,7 @@ async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) 
                 );
             }
             (false, crate::tool::files::FileReadSource::Content(selected)) => {
-                assert_eq!(selected, file);
+                assert!(selected.same_identity(&file));
             }
             (_, selected) => panic!("read returned another source kind: {selected:?}"),
         }
@@ -530,7 +530,7 @@ async fn check_auxiliary_publication(mounting: crate::local::WorkspaceMounting) 
             full_context.clone(),
             crate::tool::files::read()?,
             serde_json::json!({
-                "path": path, "version": serde_json::to_string(&other).map_err(storage)?,
+                "path": path, "version": crate::tool::files::encode_version(&other, None)?.0,
             })
         )
         .await

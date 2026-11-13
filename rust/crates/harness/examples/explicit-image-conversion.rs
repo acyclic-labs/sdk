@@ -149,8 +149,7 @@ impl ToolExecutor for ImageConversion {
                 let read = ToolInvocation {
                     arguments: json!({
                         "path": input.source.path(),
-                        "version": serde_json::to_string(&input.source)
-                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        "version": acyclic_harness::tool::files::encode_version(&input.source, None)?.0,
                     }),
                     ..invocation.clone()
                 };

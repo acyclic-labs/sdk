@@ -39,11 +39,12 @@ proptest::proptest! {
         let script = vec![ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::ToolCall(
             ToolCall::new("call".into(), name.into(), json!({"path":"seed","version":"seed","range":{"start":2,"end":4},"text":text})),
         ))]), ScriptedTurn::Text(text.clone())];
-        let reference = json!({"immutable":"generation", "path":"seed", "text":text});
+        let file: acyclic_harness::conversation::FileRef = serde_json::from_str(include_str!("../../fixtures/v2/file-ref.json"))?;
+        let reference = serde_json::to_value(&file)?;
         let references = std::collections::BTreeMap::from([("seed".into(), reference.clone())]);
         let bound = super::local_case::bind_seed_files(script.clone(), &references).unwrap();
         let mut expected = serde_json::to_value(&script)?;
-        expected[0][0]["arguments"]["version"] = serde_json::to_string(&reference)?.into();
+        expected[0][0]["arguments"]["version"] = acyclic_harness::tool::files::encode_version(&file, None)?.0.into();
         proptest::prop_assert_eq!(serde_json::to_value(bound)?, expected);
         proptest::prop_assert!(super::local_case::bind_seed_files(script, &Default::default()).is_err());
     }

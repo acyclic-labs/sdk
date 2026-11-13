@@ -3,8 +3,7 @@ use super::*;
 use proptest::prelude::*;
 
 fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
-    let mut arguments =
-        serde_json::json!({"path":file.path(),"version":serde_json::to_string(file).unwrap()});
+    let mut arguments = serde_json::json!({"path":file.path(),"version":crate::tool::files::encode_version(file, None).unwrap().0});
     if let Some((start, end)) = range {
         arguments["range"] = serde_json::json!({"start":start,"end":end});
     }
@@ -23,7 +22,7 @@ fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
                 call_id: "reused".into(),
                 name: "read".into(),
                 content: ToolResultContent::Json {
-                    value: serde_json::json!({"path":file.path(),"version":serde_json::to_string(file).unwrap(),"text":"rules"}),
+                    value: serde_json::json!({"path":file.path(),"version":crate::tool::files::encode_version(file, None).unwrap().0,"text":"rules"}),
                 },
             }),
         },

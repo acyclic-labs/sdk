@@ -105,7 +105,7 @@ pub fn contract() -> std::result::Result<Value, Failure> {
     let read_input = ReadFileInput {
         wait: false,
         path: file.path().into(),
-        version: Some(serde_json::to_string(&file)?),
+        version: Some(files::encode_version(&file, None)?.0),
         range: Some(TextRange { start: 5, end: 9 }),
         selection: None,
     };
@@ -166,7 +166,7 @@ pub fn contract() -> std::result::Result<Value, Failure> {
     let exact_input = ReadFileInput {
         wait: false,
         path: file.path().into(),
-        version: Some(serde_json::to_string(&file)?),
+        version: Some(files::encode_version(&file, None)?.0),
         range: None,
         selection: None,
     };

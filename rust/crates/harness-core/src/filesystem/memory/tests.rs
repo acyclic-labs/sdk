@@ -57,7 +57,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             "one.txt",
         )
         .await?;
-    let expected_projection = json!({"kind":"json","value":{"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":"pinned text",
+    let expected_projection = json!({"kind":"json","value":{"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"text":"pinned text",
         "page":{"start":0,"end":11,"offset":0,"total":11,"eof":true}}});
     let render_bytes = serde_json::to_vec(&expected_projection)
         .map_err(|error| Error::Invalid(error.to_string()))?
@@ -75,7 +75,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         operation_id: OperationId::new(),
         call_id: "read-1".into(),
         name: "read".into(),
-        arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
+        arguments: json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0}),
     };
     let own_tool = tool.clone();
     let own_invocation = invocation.clone();
@@ -404,9 +404,9 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
                 limits,
             )?;
             for (name, arguments) in [
-                ("read", json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()})),
+                ("read", json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0})),
                 ("write", json!({"path":"notes/two.txt","content":"two"})),
-                ("edit", json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"old_text":"one","new_text":"two"})),
+                ("edit", json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"old_text":"one","new_text":"two"})),
             ] {
                 let invocation = ToolInvocation {
                     operation_id: OperationId::new(),
@@ -667,6 +667,9 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         let (content, _bytes, _retained) = context.read_tool_path("notes/one.txt", Some(&source.generation), None).await?;
         assert!(source.path_selection().matches_content(&content));
         assert_eq!(source.byte_length, content.descriptor().byte_length());
+        let content_version = crate::tool::files::encode_version(&content, None)?.0;
+        assert!(!content_version.contains("display_name"));
+        assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":content_version})).await?.1.value["text"], "one");
         let mut complete = crate::tool::ToolResult { value: json!({"file":{"content":content},"text":"one"}) };
         let pinned = ToolInvocation { arguments: json!({"path":"notes/one.txt","version":version}), ..invocation.clone() };
         read.projection.project(&pinned, &complete, None)?;
@@ -706,12 +709,18 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert_eq!(call(&denied, &read, json!({"path":"notes/one.txt","version":range_version,"range":{"start":0,"end":2}})).await.unwrap_err().code(), crate::wire::ErrorCode::Unauthorized);
         assert!(call(&task, &read, json!({"path":"notes/other.txt","version":range_version,"range":{"start":0,"end":2}})).await.is_err());
 
-        task.stage_file(None, OperationId::new(), "notes/one.txt", b"two", "text/plain", "one.txt").await?;
+        let current = task.stage_file(None, OperationId::new(), "notes/one.txt", b"two", "text/plain", "A readable label").await?;
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":range_version,"range":{"start":0,"end":2}})).await?.1.value, range_result.value);
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":range_version})).await?.1.value["text"], "one");
         assert_eq!(call(&task, &edit, json!({"path":"notes/one.txt","version":range_version,"old_text":"one","new_text":"stale"})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
         assert_eq!(call(&task, &edit, json!({"path":"notes/one.txt","version":version,"old_text":"one","new_text":"stale"})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
-        let (invocation, result) = call(&task, &edit, json!({"path":"notes/one.txt","old_text":"two","new_text":"three"})).await?;
+        assert_eq!(call(&task, &edit, json!({"path":"notes/one.txt","version":content_version,"old_text":"one","new_text":"stale"})).await.unwrap_err().code(), crate::wire::ErrorCode::Conflict);
+        let publication_call = ToolInvocation { operation_id: OperationId::new(), call_id: "publication".into(), name: "write".into(), arguments: json!({"path":"notes/one.txt"}) };
+        let publication = crate::tool::files::write()?.projection.project(&publication_call, &ToolResult { value: json!({"file":current}) }, None)?.0;
+        let current_version = publication["value"]["version"].as_str().expect("opaque publication token");
+        assert!(!current_version.contains("display_name"));
+        assert!(!current_version.contains("A readable label"));
+        let (invocation, result) = call(&task, &edit, json!({"path":"notes/one.txt","version":current_version,"old_text":"two","new_text":"three"})).await?;
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt"})).await?.1.value["text"], "three");
         // Replay observes the original publication, even after the path moves.
         task.stage_file(None, OperationId::new(), "notes/one.txt", b"later", "text/plain", "one.txt").await?;

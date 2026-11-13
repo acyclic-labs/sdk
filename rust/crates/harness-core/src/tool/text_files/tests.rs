@@ -43,7 +43,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     let mut work = super::super::edit::allocation(None, 0)?;
     let file = crate::tool::tests::file(b"ababa")?;
     let input = invocation(
-        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":1,"end":4}}),
+        json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"range":{"start":1,"end":4}}),
     );
     let result = ToolResult {
         value: json!({"file":{"content":file},"text":"bab"}),
@@ -60,7 +60,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
         if mode == ProjectionMode::Full {
             assert_eq!(
                 projected,
-                json!({"kind":"json","value":{"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":"bab"}})
+                json!({"kind":"json","value":{"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"text":"bab"}})
             );
         } else {
             assert_reference(&projected, &file)?;
@@ -149,7 +149,7 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
     let file = crate::tool::tests::file(b"ababa")?;
     let adapter = FileTool::Read;
     let input = invocation(
-        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":1,"end":4}}),
+        json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"range":{"start":1,"end":4}}),
     );
     let empty = RuntimeScope::new(Capabilities::default(), Limits::default())?;
     assert!(adapter.authorize(None, None, &input, None).is_err());
@@ -172,7 +172,7 @@ fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Resu
                 .preflight(
                     &scope,
                     None,
-                    &invocation(json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":range})),
+                    &invocation(json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"range":range})),
                     None
                 )
                 .is_err(),

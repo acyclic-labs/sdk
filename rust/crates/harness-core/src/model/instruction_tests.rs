@@ -37,7 +37,7 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                         content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
                             "call".into(),
                             "read".into(),
-                            serde_json::json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
+                            serde_json::json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0}),
                         ))),
                     },
                     ModelMessage {
@@ -46,7 +46,7 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                             call_id: "call".into(),
                             name: "read".into(),
                             content: ToolResultContent::Json {
-                                value: serde_json::json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"text":body}),
+                                value: serde_json::json!({"path":file.path(),"version":crate::tool::files::encode_version(&file, None).unwrap().0,"text":body}),
                             },
                         }),
                     },

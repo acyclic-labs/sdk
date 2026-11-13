@@ -1,6 +1,7 @@
 use super::*;
 
 const AUTHORED: &str = "authored-path-v2:";
+const CONTENT: &str = "content-version-v1:";
 
 /// Exercises both real decoders and the original native result custody.
 #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
@@ -75,7 +76,9 @@ impl SelectedVersion {
     }
     pub(super) fn matches_source(&self, source: &FileReadSource) -> bool {
         match (self, source) {
-            (Self::Content(expected), FileReadSource::Content(actual)) => expected == actual,
+            (Self::Content(expected), FileReadSource::Content(actual)) => {
+                expected.same_identity(actual)
+            }
             (Self::Authored(expected), FileReadSource::Authored(actual)) => {
                 expected.matches_source(actual)
             }
@@ -156,13 +159,28 @@ pub(super) fn decode_selection(
                 crate::wire::ErrorCode::Invalid,
             )?;
             (SelectedVersion::Authored(file), reservation)
-        } else {
-            let (file, reservation) = io.decode::<FileRef>(
+        } else if let Some(selected) = version.strip_prefix(CONTENT) {
+            let (file, mut reservation) = io.decode::<crate::conversation::FileVersion>(
                 std::marker::PhantomData,
-                version.as_bytes(),
+                selected.as_bytes(),
                 crate::wire::ErrorCode::Invalid,
             )?;
-            (SelectedVersion::Content(file), reservation)
+            let copied = file.display_bytes() as u64;
+            let additional = (std::mem::size_of::<SelectedVersion>() as u64)
+                .checked_sub(std::mem::size_of::<crate::conversation::FileVersion>() as u64)
+                .and_then(|base| base.checked_add(copied))
+                .ok_or_else(|| Error::tool_rejected("file version ownership overflow"))?;
+            reservation.absorb(io.reserve_decode(additional)?)?;
+            work.charge(acyclic_fs::WorkCounters {
+                bytes_copied: copied,
+                ..Default::default()
+            })?;
+            (SelectedVersion::Content(file.into_file()), reservation)
+        } else {
+            return Err(super::executor::rejection(
+                Some(work),
+                "unsupported file version token; use the version returned by read or publication",
+            ));
         };
         crate::executor::with_history_io(Some(&io), |history| file.validate(history))
             .map_err(Error::tool_input)?;
@@ -177,20 +195,29 @@ pub(super) fn decode_selection(
         SelectedVersion::Authored(
             serde_json::from_str(selected).map_err(|error| Error::Invalid(error.to_string()))?,
         )
-    } else {
+    } else if let Some(selected) = version.strip_prefix(CONTENT) {
         SelectedVersion::Content(
-            serde_json::from_str(version).map_err(|error| Error::Invalid(error.to_string()))?,
+            serde_json::from_str::<crate::conversation::FileVersion>(selected)
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .into_file(),
         )
+    } else {
+        return Err(super::executor::rejection(
+            None,
+            "unsupported file version token; use the version returned by read or publication",
+        ));
     };
     file.validate(&mut None)?;
     Ok((file, None))
 }
 
-pub(crate) fn encode_version(
+/// Encodes the opaque immutable selection accepted by every file tool. Display
+/// metadata is excluded. The returned custody owns native result bytes.
+pub fn encode_version(
     file: &FileRef,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(String, acyclic_fs::NativeCustody)> {
-    encode_token(file, "", work)
+    encode_token(&file.version_identity(), CONTENT, work)
 }
 
 pub(super) fn encode_source(
@@ -268,3 +295,6 @@ impl From<FileReadSource> for SelectedVersion {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

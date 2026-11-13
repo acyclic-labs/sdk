@@ -611,7 +611,8 @@ fn notebook_cells_use_bounded_original_ranges_and_reject_invalid_sources() -> Re
 
     // The original complete descriptor selects the same cell even when its
     // source body exceeds file credit. The ordinary complete read still fails.
-    invocation.arguments["version"] = json!(serde_json::to_string(&file).unwrap());
+    invocation.arguments["version"] =
+        json!(crate::tool::files::encode_version(&file, None).unwrap().0);
     let pinned = runtime.block_on(
         tool.executor
             .execute(invocation.clone(), Some(context.clone())),
@@ -1010,7 +1011,7 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
 
     // A complete descriptor and an authored token share the same bounded
     // selection. The full-body read remains an independent negative control.
-    let content_version = serde_json::to_string(&file).unwrap();
+    let content_version = crate::tool::files::encode_version(&file, None).unwrap().0;
     let complete = runtime.block_on(read(&task, Some(&content_version)))?.0;
     assert_eq!(complete["text"], expected["text"]);
     assert_eq!(complete["page"], expected["page"]);

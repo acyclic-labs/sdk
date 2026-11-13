@@ -7,9 +7,8 @@ struct Descriptor<'a>(&'a FileDescriptor);
 
 impl Serialize for Canonical<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut fields = serializer.serialize_map(Some(5))?;
+        let mut fields = serializer.serialize_map(Some(4))?;
         fields.serialize_entry("descriptor", &Descriptor(&self.0.descriptor))?;
-        fields.serialize_entry("display_name", &self.0.display_name)?;
         fields.serialize_entry("path", &self.0.path)?;
         fields.serialize_entry("version", &self.0.version)?;
         fields.serialize_entry(
@@ -96,7 +95,7 @@ mod tests {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<[u8; 32]> {
         crate::executor::json::canonical_json_digest(
-            file,
+            &Canonical(file),
             Some(crate::store::default_projection_read_limits().maximum_bytes),
             work,
         )
@@ -107,7 +106,7 @@ mod tests {
         for file in files()? {
             assert_eq!(
                 serde_json::to_vec(&Canonical(&file)).unwrap(),
-                crate::contract::canonical_json_bytes(&file)?
+                crate::contract::canonical_json_bytes(&Canonical(&file))?
             );
             let mut previous = None;
             let old =
@@ -137,6 +136,13 @@ mod tests {
                 &mut None,
             )?;
             ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &file)?;
+            let mut renamed = file.clone();
+            renamed.display_name = "presentation-only.txt".into();
+            assert_eq!(
+                renamed.read_capability(&mut None)?,
+                file.read_capability(&mut None)?
+            );
+            ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &renamed)?;
             let mut changed = file.clone();
             changed.version = format!("{}-changed", changed.version).into_boxed_str();
             assert!(
@@ -160,7 +166,7 @@ mod tests {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         for file in files()? {
             let expected = file.read_capability(&mut None)?;
-            let bytes = crate::contract::canonical_json_bytes(&file)?.len() as u64;
+            let bytes = crate::contract::canonical_json_bytes(&Canonical(&file))?.len() as u64;
             let cancellation = CancellationToken::new();
             let mut budget = acyclic_fs::performance::work_budget(20_000, 1_048_576);
             budget.bytes_copied = expected.len() as u64;

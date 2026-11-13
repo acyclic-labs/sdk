@@ -1,5 +1,7 @@
 use super::*;
 mod canonical;
+mod version;
+pub(crate) use version::FileVersion;
 
 /// Immutable byte descriptor checked before a file is admitted.
 #[derive(
@@ -218,6 +220,22 @@ impl PartialEq for FileRef {
 impl Eq for FileRef {}
 
 impl FileRef {
+    /// Immutable selection fields, excluding presentation metadata. The file
+    /// tool's opaque version codec and read authority share this identity.
+    pub(crate) fn version_identity(&self) -> impl Serialize + '_ {
+        canonical::Canonical(self)
+    }
+
+    /// Whether both references select the same immutable bytes and descriptor,
+    /// independently of their human-facing display names.
+    #[must_use]
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.volume == other.volume
+            && self.path == other.path
+            && self.version == other.version
+            && self.descriptor == other.descriptor
+    }
+
     pub(crate) fn publication_witness(&self) -> Option<&PublicationWitness> {
         self.publication.as_deref()
     }
