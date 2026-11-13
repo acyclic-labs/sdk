@@ -54,6 +54,13 @@ pub enum CredentialError {
     /// Empty or header-delimited credentials fail before transport.
     #[error("invalid credential")]
     Invalid,
+    /// The credential cannot be represented as an HTTP header.
+    #[error("invalid credential header")]
+    Header(#[source] http::header::InvalidHeaderValue),
+    /// The credential cannot be represented as native gRPC metadata.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+    #[error("invalid credential metadata")]
+    Metadata(#[source] tonic::metadata::errors::InvalidMetadataValueBytes),
     /// The provider names the channel's own transport identity and has no
     /// bearer to resolve; only transports that honor it may dispatch.
     #[error("credential is the channel's transport identity")]
@@ -66,7 +73,9 @@ impl CredentialError {
     #[must_use]
     pub const fn denial_cause(&self) -> Option<crate::DenialCause> {
         match self {
-            Self::Invalid => Some(crate::DenialCause::Malformed),
+            Self::Invalid | Self::Header(_) => Some(crate::DenialCause::Malformed),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+            Self::Metadata(_) => Some(crate::DenialCause::Malformed),
             Self::Cache { cause, .. } => *cause,
             Self::Provider(_) | Self::TransportIdentity => None,
         }
@@ -378,23 +387,111 @@ pub fn bearer_bytes(value: &str) -> bytes::Bytes {
     crate::operation::ProtectedBytes::new(bytes).into_bytes()
 }
 
+fn validated_bearer(value: &str) -> Result<bytes::Bytes, CredentialError> {
+    if !valid_credential(value) {
+        return Err(CredentialError::Invalid);
+    }
+    Ok(bearer_bytes(value))
+}
+
+/// Construct sensitive HTTP authorization, retaining protected bytes through clones.
+/// This checks representation, not the authority or freshness of a credential.
+///
+/// # Errors
+/// Malformed credentials retain their original header parser failure when present.
+pub fn bearer_header(value: &str) -> Result<http::HeaderValue, CredentialError> {
+    let mut header = http::HeaderValue::from_maybe_shared(validated_bearer(value)?)
+        .map_err(CredentialError::Header)?;
+    header.set_sensitive(true);
+    Ok(header)
+}
+
+/// Construct sensitive native gRPC authorization over the same protected bytes.
+/// This checks representation, not the authority or freshness of a credential.
+///
+/// # Errors
+/// Malformed credentials retain their original metadata parser failure when present.
+#[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+pub fn bearer_metadata(
+    value: &str,
+) -> Result<tonic::metadata::MetadataValue<tonic::metadata::Ascii>, CredentialError> {
+    let mut metadata = tonic::metadata::MetadataValue::try_from(validated_bearer(value)?)
+        .map_err(CredentialError::Metadata)?;
+    metadata.set_sensitive(true);
+    Ok(metadata)
+}
+
 /// Admit an origin only: no embedded credential, query, fragment or path.
 /// HTTPS is required except for the loopback hosts used by local tools.
 pub fn endpoint(value: &str) -> Result<url::Url, CredentialError> {
-    let url = url::Url::parse(value).map_err(|_| CredentialError::Invalid)?;
-    let local = url.host_str() == Some("localhost")
-        || matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
-        || matches!(url.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
-    if url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && url.path() == "/"
-        && url.host().is_some()
-        && (url.scheme() == "https" || url.scheme() == "http" && local)
-    {
+    let url = admit_endpoint(value).map_err(|_| CredentialError::Invalid)?;
+    if url.path() == "/" {
         Ok(url)
     } else {
         Err(CredentialError::Invalid)
     }
+}
+
+/// Transport endpoint refusal without retaining URL user information.
+#[derive(Debug, thiserror::Error)]
+pub enum EndpointError {
+    /// Original URL parser failure.
+    #[error(transparent)]
+    Parse(#[from] url::ParseError),
+    /// HTTP is permitted only for literal loopback hosts or localhost.
+    #[error("insecure endpoint")]
+    Insecure,
+    /// Authority must not carry credentials.
+    #[error("endpoint contains credentials")]
+    Credentials,
+    /// A query is not a route base.
+    #[error("endpoint contains a query")]
+    Query,
+    /// A fragment is not a route base.
+    #[error("endpoint contains a fragment")]
+    Fragment,
+}
+
+/// Whether a parsed URL/URI host is a loopback IP literal or localhost.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn admit_endpoint(value: &str) -> Result<url::Url, EndpointError> {
+    let url = url::Url::parse(value)?;
+    if url.host().is_none()
+        || !(url.scheme() == "https"
+            || url.scheme() == "http" && url.host_str().is_some_and(is_loopback_host))
+    {
+        return Err(EndpointError::Insecure);
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(EndpointError::Credentials);
+    }
+    if url.query().is_some() {
+        return Err(EndpointError::Query);
+    }
+    if url.fragment().is_some() {
+        return Err(EndpointError::Fragment);
+    }
+    Ok(url)
+}
+
+/// Admit an HTTPS or loopback HTTP route base, retaining its path prefix.
+/// The final slash makes relative route joins stay below that prefix.
+pub fn base_endpoint(value: &str) -> Result<url::Url, EndpointError> {
+    let mut url = admit_endpoint(value)?;
+    if !url.path().ends_with('/') {
+        url.path_segments_mut()
+            .map_err(|()| EndpointError::Insecure)?
+            .push("");
+    }
+    Ok(url)
 }

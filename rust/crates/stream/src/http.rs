@@ -9,7 +9,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::Value;
-use std::{net::IpAddr, sync::Arc};
+use std::sync::Arc;
 use tracing::{Span, field::Empty};
 mod session;
 mod shared;
@@ -81,32 +81,17 @@ impl HttpStream {
         maximum: usize,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
-        let mut endpoint = Url::parse(endpoint).map_err(ConnectError::caused)?;
-        let loopback = endpoint.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .parse::<IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback) {
-            return Err(ConnectError::refused("insecure_endpoint"));
-        }
-        if !endpoint.username().is_empty() || endpoint.password().is_some() {
-            return Err(ConnectError::refused("endpoint_credentials"));
-        }
-        if endpoint.query().is_some() {
-            return Err(ConnectError::refused("endpoint_query"));
-        }
-        if endpoint.fragment().is_some() {
-            return Err(ConnectError::refused("endpoint_fragment"));
-        }
+        use acyclic_auth::credential::EndpointError;
+        let endpoint =
+            acyclic_auth::credential::base_endpoint(endpoint).map_err(|error| match error {
+                EndpointError::Parse(error) => ConnectError::caused(error),
+                EndpointError::Insecure => ConnectError::refused("insecure_endpoint"),
+                EndpointError::Credentials => ConnectError::refused("endpoint_credentials"),
+                EndpointError::Query => ConnectError::refused("endpoint_query"),
+                EndpointError::Fragment => ConnectError::refused("endpoint_fragment"),
+            })?;
         if maximum == 0 {
             return Err(ConnectError::refused("zero_response_capacity"));
-        }
-        if !endpoint.path().ends_with('/') {
-            endpoint.set_path(&format!("{}/", endpoint.path()));
         }
         let authorization = token.map(credential_header).transpose()?;
         let mut client = Client::builder()
@@ -498,13 +483,12 @@ impl StreamProvider for HttpStream {
 impl crate::NativeStreamProvider for HttpStream {}
 
 fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
-    if !acyclic_auth::credential::valid_credential(token) {
-        return Err(ConnectError::refused("invalid_credential"));
-    }
-    let mut value = HeaderValue::from_maybe_shared(acyclic_auth::credential::bearer_bytes(token))
-        .map_err(ConnectError::caused)?;
-    value.set_sensitive(true);
-    Ok(value)
+    acyclic_auth::credential::bearer_header(token).map_err(|error| match error {
+        acyclic_auth::credential::CredentialError::Invalid => {
+            ConnectError::refused("invalid_credential")
+        }
+        error => ConnectError::caused(error),
+    })
 }
 
 // Dropping a pending physical HTTP request cancels that request, independently

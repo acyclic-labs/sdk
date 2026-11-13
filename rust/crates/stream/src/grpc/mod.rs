@@ -48,8 +48,11 @@ pub enum ConnectError {
     /// Endpoint URI was invalid or the TLS connection failed.
     #[error("invalid or unavailable Stream endpoint: {0}")]
     Endpoint(#[from] tonic::transport::Error),
-    /// Customer endpoints must use authenticated TLS.
-    #[error("Stream endpoints must use https")]
+    /// The endpoint URI was representable but URL admission could not parse it.
+    #[error("invalid Stream endpoint URL: {0}")]
+    EndpointUrl(#[source] url::ParseError),
+    /// Endpoint violates the selected TLS or loopback transport policy.
+    #[error("Stream endpoint violates the selected transport policy")]
     InsecureEndpoint,
     /// Bearer credential cannot be represented as HTTP metadata.
     #[error("invalid Stream bearer credential")]
@@ -264,18 +267,22 @@ impl Client {
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token.as_ref())?;
-        let endpoint = acyclic_auth::channel::endpoint(endpoint.as_ref())?;
-        let uri = endpoint.uri();
-        let loopback = uri.host().is_some_and(|host| {
-            let host = host.trim_start_matches('[').trim_end_matches(']');
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        });
-        if uri.scheme_str() != Some("http") || !loopback {
+        let admitted = acyclic_auth::credential::base_endpoint(endpoint.as_ref()).map_err(
+            |error| match error {
+                acyclic_auth::credential::EndpointError::Parse(source) => {
+                    match acyclic_auth::channel::endpoint(endpoint.as_ref()) {
+                        Err(error) => ConnectError::Endpoint(error),
+                        Ok(_) => ConnectError::EndpointUrl(source),
+                    }
+                }
+                _ => ConnectError::InsecureEndpoint,
+            },
+        )?;
+        if admitted.scheme() != "http" {
             return Err(ConnectError::InsecureEndpoint);
         }
+        // Connect to the admitted authority, including numeric-host normalization.
+        let endpoint = acyclic_auth::channel::endpoint(admitted.as_str())?;
         Ok(Self::from_channel(
             endpoint.tcp_nodelay(true).connect().await?,
             authorization,
@@ -525,13 +532,8 @@ pub(crate) async fn request_authorization(
 }
 
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
-    if !acyclic_auth::credential::valid_credential(bearer_token) {
-        return Err(ConnectError::InvalidCredential);
-    }
-    let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(bearer_token))
-        .map_err(|_| ConnectError::InvalidCredential)?;
-    value.set_sensitive(true);
-    Ok(value)
+    acyclic_auth::credential::bearer_metadata(bearer_token)
+        .map_err(|_| ConnectError::InvalidCredential)
 }
 
 /// Whether the outcome of an attempt is unknown because the transport was lost.
