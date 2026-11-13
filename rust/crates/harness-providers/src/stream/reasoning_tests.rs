@@ -128,8 +128,10 @@ proptest! {
             let replay: Vec<ModelEvent> = serde_json::from_slice(&encoded).unwrap();
             prop_assert_eq!(&events, &replay);
             let result = projection(&provider, replay);
+            // OAR-RSN-02: a run of reasoning items is complete when its
+            // paired call follows the run; only a run nothing answers refuses.
             let incomplete = adapter == Adapter::Responses && order.iter().enumerate().any(|(index, reasoning)| {
-                *reasoning && order.get(index + 1) != Some(&false)
+                *reasoning && !order[index..].contains(&false)
             });
             prop_assert_eq!(result.is_err(), incomplete, "incomplete native pairs must refuse");
             if incomplete { continue; }

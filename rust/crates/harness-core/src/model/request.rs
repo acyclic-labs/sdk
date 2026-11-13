@@ -396,7 +396,7 @@ impl ModelRequest {
                     || matches!(role, ModelRole::Assistant | ModelRole::Tool)
                 {
                     return Err(Error::Invalid(
-                        "notices require an event boundary with only file attachments".into(),
+                        "notices require an event boundary with only text and file content".into(),
                     ));
                 }
             }
