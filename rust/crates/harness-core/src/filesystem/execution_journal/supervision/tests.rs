@@ -495,7 +495,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
             crate::executor::stage_json(&journal, run, "policy", &policy, None).await?;
         let admission =
             crate::executor::stage_json(&journal, run, "admission", &declaration, None).await?;
-        let (clock, _time) = acyclic_actors::local::ControlledClock::new(100);
+        let (clock, mut time) = acyclic_actors::local::ControlledClock::new(100);
         let mut journal = journal
             .with_clock(Arc::new(clock))
             .with_run_admission(Some(RunAdmissionSource {
@@ -683,6 +683,18 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 assert!(signal.is_none(), "check counted a replay or another turn");
             }
         }
+        // The same admitted clock that stamped quiet supervision owns the
+        // preparation deadline. A system-clock fallback would release this
+        // historical deadline immediately instead of following its owner.
+        let deadline = crate::executor::ExecutionJournal::preparation_deadline(&journal, 110)?;
+        tokio::pin!(deadline);
+        assert!(futures::poll!(&mut deadline).is_pending());
+        time.advance_to(109)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(futures::poll!(&mut deadline).is_pending());
+        time.advance_to(110)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        deadline.await?;
     }
     Ok(())
 }
