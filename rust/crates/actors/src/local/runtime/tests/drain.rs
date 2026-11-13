@@ -7,7 +7,12 @@ async fn delayed_activation_cannot_redeliver_a_failed_attempt() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let handler = Arc::new(Gated::new()?);
-    let runtime = Runtime::new(store.clone(), handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store.clone(),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     let address = spawn_with(&store, "one-activation", &[b"emit"]).await?;
     runtime.track(address.clone())?;
     for recover in [false, true] {
@@ -62,7 +67,12 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let handler = Arc::new(Gated::new()?);
-    let runtime = Runtime::new(store.clone(), handler.clone(), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store.clone(),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
     let address = spawn_with(&store, "failure-observed", &[b"emit"]).await?;
     let mut failed = runtime.delivery_failure(&address)?;
     assert_eq!(
