@@ -156,7 +156,7 @@ impl ToolPolicy for PhysicalPolicy {
         _: Option<&PreparationIo>,
     ) -> Result<Option<ExecutionGrant>> {
         assert!(!self.deny);
-        let capability = tool.executor.capability().unwrap_or(tool);
+        let capability = tool.executor.capability().map(Arc::as_ref).unwrap_or(tool);
         assert!(std::ptr::addr_eq(
             Arc::as_ptr(&capability.executor),
             Arc::as_ptr(&self.executor),

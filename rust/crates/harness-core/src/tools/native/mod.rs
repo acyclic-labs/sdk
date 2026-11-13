@@ -262,7 +262,7 @@ impl NativeTools {
             .iter()
             .map(|(name, ..)| {
                 tools.get_shared(name, None, None).map(|tool| {
-                    tool.map(|tool| Arc::clone(tool.executor.capability_owner().unwrap_or(tool)))
+                    tool.map(|tool| Arc::clone(tool.executor.capability().unwrap_or(tool)))
                 })
             })
             .collect::<Result<Vec<_>>>()?;

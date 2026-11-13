@@ -795,7 +795,7 @@ impl<'io> StockExecution<'io> {
     ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
     {
         // A native declaration is granted by the capability it stands for.
-        let granted = tool.executor.capability().unwrap_or(tool);
+        let granted = tool.executor.capability().map(Arc::as_ref).unwrap_or(tool);
         let capability = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:call:{}", granted.definition.name), work)
         })?;
@@ -870,7 +870,7 @@ impl<'io> StockExecution<'io> {
         // call's original ledger; the prompt's custody is held while it settles.
         // Policy and approval judge the canonical call, whatever its spelling.
         let original_canonical = tool.executor.canonical(invocation, self.native_work())?;
-        let judged_tool = tool.executor.capability().unwrap_or(tool);
+        let judged_tool = tool.executor.capability().map(Arc::as_ref).unwrap_or(tool);
         let normalize =
             original_canonical.as_deref().unwrap_or(invocation).name != judged_tool.definition.name;
         // A selected revision retains its journal spelling, while every policy

@@ -79,7 +79,7 @@ impl ToolExecutor for Adapter {
             .record_kind(&adapted.invocation, result, work)
     }
 
-    fn capability_owner(&self) -> Option<&Arc<Tool>> {
+    fn capability(&self) -> Option<&Arc<Tool>> {
         Some(&self.capability)
     }
 

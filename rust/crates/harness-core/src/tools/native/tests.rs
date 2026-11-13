@@ -224,7 +224,7 @@ fn family_shell_binding_keeps_one_selection_and_the_original_capability() -> Res
         if profile != NativeToolProfile::Google {
             assert_eq!(canonical.invocation.arguments["timeout_ms"], 137);
         }
-        let owner = selected.executor.capability_owner().unwrap();
+        let owner = selected.executor.capability().unwrap();
         assert!(
             Arc::ptr_eq(owner, &original),
             "family change replaced original authority"
@@ -292,7 +292,7 @@ fn check_aliases(profile: NativeToolProfile, registry: &ToolRegistry) -> Result<
             let tool = selected.get(&definition.name, None, None)?.unwrap();
             assert_eq!(tool.definition, *definition);
             assert!(
-                std::ptr::eq(tool.executor.capability().unwrap(), original),
+                std::ptr::eq(tool.executor.capability().unwrap().as_ref(), original),
                 "native alias replaced the original capability owner"
             );
         }
