@@ -44,7 +44,7 @@ pub(super) mod view_table;
 #[cfg(any(target_os = "linux", target_os = "macos", windows, loom))]
 pub(super) mod views;
 
-#[cfg(windows)]
+#[cfg(any(target_os = "macos", windows))]
 pub(super) use root::claim_issued_destination;
 pub(crate) use root::{IssuedDestination, shared_view_destination};
 pub use root::{

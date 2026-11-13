@@ -9,6 +9,7 @@ pub(super) struct DriverSessionResources {
     pub(super) credit: NativeWorkReservation,
     pub(super) native: Mutex<DarwinOwned<usize>>,
     pub(super) sdk_credit: NativeWorkReservation,
+    _registration: Option<super::shared_instance::RootRegistration>,
     _allocation: NativeAllocation,
 }
 
@@ -40,7 +41,13 @@ impl DriverSessionResources {
         work: &Work,
         owned: bool,
     ) -> Result<Arc<Self>, NativeMountError> {
-        Self::new_target(CallbackTarget::View(context), destination, work, owned)
+        Self::new_target(
+            CallbackTarget::View(context),
+            destination,
+            work,
+            owned,
+            None,
+        )
     }
 
     #[allow(
@@ -52,6 +59,7 @@ impl DriverSessionResources {
         destination: &Path,
         work: &Work,
         owned: bool,
+        registration: Option<super::shared_instance::RootRegistration>,
     ) -> Result<Arc<Self>, NativeMountError> {
         let probe = MountProbe::new(destination, work)?;
         // Both the stopping caller and the provider's retirement owner can
@@ -103,6 +111,7 @@ impl DriverSessionResources {
             credit,
             native: Mutex::new(DarwinOwned::empty(0)),
             sdk_credit: cleanup,
+            _registration: registration,
             _allocation: allocation,
         });
         if let Some(task) = &mut owner.state().control.direct {
@@ -215,6 +224,11 @@ impl DarwinMountSession {
         if out.is_some() {
             return Err(NativeMountError::ControlPending);
         }
+        if request.shared {
+            return super::shared_instance::SharedDarwinView::start_into(
+                request, source, original, out, retirement,
+            );
+        }
         let mut context =
             DarwinMountContext::new(source, request.writable, &request.destination, original)?;
         context
@@ -232,13 +246,32 @@ impl DarwinMountSession {
             original,
             retirement.is_some(),
         )?;
+        let failure = Arc::clone(&resources.context()?.handler_failure);
+        Self::start_resources(resources, failure, original, out, retirement, prepare)
+    }
+
+    pub(super) fn start_resources<F>(
+        resources: Arc<DriverSessionResources>,
+        handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
+        original: &Work,
+        out: &mut Option<Self>,
+        retirement: &mut Option<crate::native_mount::NativeMountRetirement>,
+        prepare: F,
+    ) -> Result<(), NativeMountError>
+    where
+        F: FnOnce(&mut crate::native_mount::NativeMountRetirement) -> Result<(), NativeMountError>,
+    {
+        if out.is_some() {
+            return Err(NativeMountError::ControlPending);
+        }
         *out = Some(Self {
-            handler_failure: Arc::clone(&resources.context()?.handler_failure),
+            handler_failure,
             unmount: resources,
             thread: None,
             loop_finished_before_teardown: None,
             loop_result: None,
             native_root_identity: None,
+            shared: None,
         });
         let session = out.as_mut().ok_or(NativeMountError::ControlPending)?;
         let owned = (Arc::clone(&session.unmount), original.clone());

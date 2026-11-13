@@ -9,18 +9,11 @@ fn shared_callbacks_keep_their_view(substitute_handle: bool) -> TestResult {
     let (second_source, _, second_work) = checkout_context(MountPublication::Manual)?;
     let root = tempfile::tempdir()?;
     let views = SharedViews::new(root.path(), &first_work)?;
-    let mut first = views.insert(
-        b"first".to_vec(),
-        first_source.clone(),
-        true,
-        root.path(),
-        &first_work,
-    )?;
+    let mut first = views.insert(b"first".to_vec(), first_source.clone(), true, &first_work)?;
     let second = views.insert(
         b"second".to_vec(),
         second_source.clone(),
         true,
-        root.path(),
         &second_work,
     )?;
     let target = CallbackTarget::Shared(Arc::clone(&views));
@@ -117,4 +110,155 @@ fn shared_callbacks_route_paths_and_handles_and_retire_only_their_view() -> Test
 #[should_panic(expected = "foreign handle crossed a view boundary")]
 fn shared_callback_negative_control_substitutes_the_receivers_handle() {
     shared_callbacks_keep_their_view(true).expect("real callback fixture");
+}
+
+#[test]
+fn root_listing_fills_the_native_frame_across_internal_pages() -> TestResult {
+    use super::super::requests::CallbackTarget;
+    use super::super::shared::SharedViews;
+
+    unsafe extern "C" fn collect(
+        output: *mut c_void,
+        name: *const c_char,
+        _metadata: *const libc::stat,
+        after: libc::off_t,
+        _flags: c_int,
+    ) -> c_int {
+        // SAFETY: this test retains the collection and the bridge's terminated
+        // name through the synchronous callback, which never stores a pointer.
+        let (output, name) = unsafe {
+            (
+                &mut *output.cast::<Vec<(Vec<u8>, i64)>>(),
+                CStr::from_ptr(name),
+            )
+        };
+        output.push((name.to_bytes().to_vec(), after));
+        0
+    }
+    let (source, _, work) = checkout_context(MountPublication::Manual)?;
+    let root = tempfile::tempdir()?;
+    let views = SharedViews::new(root.path(), &work)?;
+    let mut owners = Vec::new();
+    for number in 0..65 {
+        owners.push(views.insert(number.to_string().into_bytes(), source.clone(), true, &work)?);
+    }
+    let target = CallbackTarget::Shared(views);
+    let address = &target as *const CallbackTarget as usize;
+    // SAFETY: the root exposes no named attributes; size probes need no buffer.
+    assert_eq!(
+        unsafe {
+            super::super::attribute_ops::acyclic_fs_darwin_mount_listxattr(
+                address,
+                c"/".as_ptr(),
+                ptr::null_mut(),
+                0,
+            )
+        },
+        0
+    );
+    assert_eq!(
+        unsafe {
+            acyclic_fs_darwin_mount_getxattr(
+                address,
+                c"/".as_ptr(),
+                c"missing".as_ptr(),
+                ptr::null_mut(),
+                0,
+            )
+        },
+        -libc::ENOATTR
+    );
+    let mut output: Vec<(Vec<u8>, i64)> = Vec::new();
+    // SAFETY: the typed target, output vector and filler live through the call.
+    assert_eq!(
+        unsafe {
+            super::super::directory::acyclic_fs_darwin_mount_readdir(
+                address,
+                c"/".as_ptr(),
+                ptr::from_mut(&mut output).cast(),
+                collect,
+                0,
+            )
+        },
+        0
+    );
+    assert_eq!(
+        output.len(),
+        67,
+        "one internal page was mistaken for native EOF"
+    );
+    let after = output.last().ok_or("empty listing")?.1;
+    output.clear();
+    // SAFETY: same live owner and buffer, now resumed from its last cookie.
+    assert_eq!(
+        unsafe {
+            super::super::directory::acyclic_fs_darwin_mount_readdir(
+                address,
+                c"/".as_ptr(),
+                ptr::from_mut(&mut output).cast(),
+                collect,
+                after,
+            )
+        },
+        0
+    );
+    assert!(output.is_empty(), "resume cookie repeated a listed view");
+    Ok(())
+}
+
+#[test]
+fn task_views_share_one_real_nfs_session_and_retire_independently() -> TestResult {
+    use std::os::unix::fs::MetadataExt;
+
+    let (first_source, _, _) = checkout_context(MountPublication::Manual)?;
+    let (second_source, _, _) = checkout_context(MountPublication::Manual)?;
+    crate::native_mount::initialize_native_mount_services()?;
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let namespace = tempfile::tempdir()?;
+    let admitted = crate::hold_root(namespace.path())?;
+    let first_name = crate::native_mount::shared_view_destination(Some(&admitted))?;
+    let second_name = crate::native_mount::shared_view_destination(Some(&admitted))?;
+    let start = |destination: &Path, source: Arc<dyn MountFilesystem>| {
+        crate::native_mount::mount_native(
+            NativeMountRequest {
+                mount_id: crate::MountId::new(),
+                volume_id: crate::VolumeId::new(),
+                destination: destination.to_path_buf(),
+                writable: true,
+                shared: true,
+            },
+            source,
+        )
+    };
+    let mut first = start(first_name.path(), first_source)?;
+    let mut second = start(second_name.path(), second_source)?;
+    let first_driver = first.driver.as_ref().ok_or("first driver missing")?;
+    let second_driver = second.driver.as_ref().ok_or("second driver missing")?;
+    assert!(Arc::ptr_eq(&first_driver.unmount, &second_driver.unmount));
+    let physical = Arc::clone(&first_driver.unmount);
+    let first_path = first_name.path().join("same");
+    let second_path = second_name.path().join("same");
+    std::fs::write(&first_path, b"first")?;
+    std::fs::write(&second_path, b"second")?;
+    assert_eq!(std::fs::read(&first_path)?, b"first");
+    assert_eq!(std::fs::read(&second_path)?, b"second");
+    assert_ne!(
+        std::fs::metadata(&first_path)?.ino(),
+        std::fs::metadata(&second_path)?.ino()
+    );
+    first.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?;
+    assert!(!first_name.path().exists());
+    assert_ne!(
+        physical.pointer(),
+        0,
+        "one view detached its peer's physical session"
+    );
+    assert_eq!(std::fs::read(&second_path)?, b"second");
+    second.stop_with_context(&crate::native_mount::NativeSessionStopWork::AcceptedDrop)?;
+    assert_eq!(
+        physical.pointer(),
+        0,
+        "last view retained the physical session"
+    );
+    Ok(())
 }

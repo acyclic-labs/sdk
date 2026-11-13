@@ -31,6 +31,7 @@ pub(super) struct CacheEpochs {
 }
 
 pub(super) struct DarwinMountContext {
+    pub(super) root_inode: u64,
     pub(super) routing: Option<super::shared::ViewRouting>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
@@ -94,6 +95,20 @@ impl DarwinMountContext {
         destination: &Path,
         work: &Work,
     ) -> Result<Self, NativeMountError> {
+        let metadata =
+            crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {
+                start_stat(path, work)
+            })?;
+        Self::new_with_owner(source, writable, metadata.st_uid, metadata.st_gid, work)
+    }
+
+    pub(super) fn new_with_owner(
+        source: Arc<dyn MountFilesystem>,
+        writable: bool,
+        mount_uid: u32,
+        mount_gid: u32,
+        work: &Work,
+    ) -> Result<Self, NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
         let (source_original_work, callback_guard) =
             crate::native_mount::shared::metering::install(source.as_ref(), work)?;
@@ -105,25 +120,23 @@ impl DarwinMountContext {
                 "volume root is not a directory",
             ));
         }
-        let metadata =
-            crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {
-                start_stat(path, work)
-            })?;
         let mut inodes = DarwinOwned::empty(HashMap::new());
         grow_map(&mut inodes, work)?;
 
-        inodes.insert(root.node.file_id, next_native_id()?);
+        let root_inode = next_native_id()?;
+        inodes.insert(root.node.file_id, root_inode);
         let (handler_budget, handler_cancellation) = {
             let meter = work.state.lock();
             (meter.budget, meter.cancellation().clone())
         };
         Ok(Self {
+            root_inode,
             routing: None,
             source,
             clock: super::super::clock::Clock::capture(),
             writable,
-            mount_uid: metadata.st_uid,
-            mount_gid: metadata.st_gid,
+            mount_uid,
+            mount_gid,
             handler_failure: shared(
                 work,
                 DarwinOwned::empty(Mutex::new(DarwinCallbackState::default())),

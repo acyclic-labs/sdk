@@ -435,7 +435,7 @@ fn fsync_keeps_its_open_handle(bypass_handle: bool) -> TestResult {
     );
     let result = if bypass_handle {
         // The old bridge erased the handle and synced the context directly.
-        super::super::ffi(address, true, |context, work| {
+        super::super::ffi_path(address, std::ptr::null(), 0, true, |context, _, work| {
             context.sync(work)?;
             Ok(0)
         })

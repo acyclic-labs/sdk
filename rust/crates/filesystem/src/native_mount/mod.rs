@@ -241,7 +241,7 @@ fn start_driver_into<F>(
 where
     F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError>,
 {
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     if request.shared {
         return Err(NativeMountError::UnsupportedTarget);
     }

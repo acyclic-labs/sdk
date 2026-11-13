@@ -61,7 +61,9 @@ pub(in crate::native_mount) use reclaim::reclaim_stale_mounts;
 
 mod context;
 mod shared;
+mod shared_instance;
 use context::*;
+pub(in crate::native_mount) use shared_instance::hold as hold_shared_instance;
 
 mod requests;
 pub(super) use crate::native_mount::{callback_errno, shared::outcome::stops_mount as fatal};

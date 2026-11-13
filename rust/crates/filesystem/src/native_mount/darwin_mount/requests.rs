@@ -59,19 +59,6 @@ fn run_view<T>(
     context.run(authored_write, |work| operation(context, work))
 }
 
-pub(super) fn ffi<T: From<i32>>(
-    address: usize,
-    authored_write: bool,
-    operation: impl FnOnce(&DarwinMountContext, &Work) -> Result<T, NativeMountError>,
-) -> T {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match target(address)? {
-        CallbackTarget::View(context) => run_view(context, authored_write, operation),
-        CallbackTarget::Shared(_) => Err(libc::ESTALE),
-    }))
-    .unwrap_or(Err(libc::EIO))
-    .unwrap_or_else(|error| T::from(-error))
-}
-
 pub(super) fn ffi_path<T: From<i32>>(
     address: usize,
     path: *const c_char,

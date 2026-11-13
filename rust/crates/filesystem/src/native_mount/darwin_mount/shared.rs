@@ -8,7 +8,7 @@ pub(super) struct SharedViews {
     names: Arc<NamedViews<Vec<u8>, Arc<DarwinMountContext>>>,
     attributes: NativeStat,
     changed: AtomicU64,
-    handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
+    pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
     handles: RwLock<DarwinOwned<HashMap<u64, u64>>>,
     work: Work,
     _allocation: NativeAllocation,
@@ -82,12 +82,17 @@ impl SharedViews {
         name: Vec<u8>,
         source: Arc<dyn MountFilesystem>,
         writable: bool,
-        destination: &Path,
         work: &Work,
     ) -> Result<SharedView, NativeMountError> {
         let mut context = None;
         let entry = self.names.insert(name, |serial| {
-            let mut view = DarwinMountContext::new(source, writable, destination, work)?;
+            let mut view = DarwinMountContext::new_with_owner(
+                source,
+                writable,
+                self.attributes.uid,
+                self.attributes.gid,
+                work,
+            )?;
             view.routing = Some(ViewRouting {
                 views: Arc::downgrade(self),
                 serial,

@@ -1,6 +1,9 @@
 #[test]
 fn absent_callback_context_is_stale() {
-    assert_eq!(super::ffi(0, false, |_, _| Ok(0)), -libc::ESTALE);
+    assert_eq!(
+        super::ffi_path(0, c"/".as_ptr(), 0, false, |_, _, _| Ok(0)),
+        -libc::ESTALE
+    );
 }
 use super::attribute_ops::acyclic_fs_darwin_mount_getxattr;
 use super::directory::{DirectoryRead, advance_directory_to_offset, ensure_directory_page};

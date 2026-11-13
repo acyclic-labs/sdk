@@ -178,12 +178,11 @@ impl MountOptions {
         }
     }
 
-    /// Selects the native backend for an issued task view. Linux and Windows
-    /// share an instance; Darwin retains its existing per-view native session.
+    /// Selects the shared native instance for an issued task view on every OS.
     /// This choice stays below the common task-view API used by every host.
     #[must_use]
     pub(crate) const fn for_task_view(mut self) -> Self {
-        self.shared = cfg!(any(target_os = "linux", windows));
+        self.shared = cfg!(any(target_os = "linux", target_os = "macos", windows));
         self
     }
 
