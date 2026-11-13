@@ -64,7 +64,8 @@ pub(crate) fn native_sdk_result<T>(
             } else {
                 crate::wire::ErrorCode::Storage
             };
-            Err(Error::NativeStream {
+            Err(Error::StreamFailure {
+                native: true,
                 code,
                 source,
                 custody: None,

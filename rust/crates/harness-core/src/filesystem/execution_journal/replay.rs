@@ -21,25 +21,16 @@ where
     }
 
     pub(super) fn journal_read_stream_error(
-        _native_io: Option<&PreparationIo>,
+        io: Option<&PreparationIo>,
         code: crate::wire::ErrorCode,
         source: StreamError,
     ) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
-        if _native_io
-            .and_then(PreparationIo::original_native_work)
-            .is_some()
-        {
-            return Error::NativeStream {
-                code,
-                source,
-                custody: None,
-            };
-        }
-        if code == crate::wire::ErrorCode::Invalid {
-            Error::Invalid(source.to_string())
-        } else {
-            Error::Storage(source.to_string())
+        Error::StreamFailure {
+            code,
+            source,
+            native: io.is_some_and(|io| io.original_native_work().is_some()),
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
         }
     }
 

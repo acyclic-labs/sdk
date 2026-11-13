@@ -8,6 +8,53 @@ type Journal = FilesystemExecutionJournal<
     acyclic_fs::MemoryObjectBackend,
 >;
 
+#[test]
+fn journal_stream_boundary_retains_original_io_cause_and_outcome()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::error::Error as _;
+    let directory = tempfile::tempdir()?;
+    for code in [
+        crate::wire::ErrorCode::Invalid,
+        crate::wire::ErrorCode::Storage,
+        crate::wire::ErrorCode::Unavailable,
+    ] {
+        let original = std::fs::read(directory.path().join("missing")).unwrap_err();
+        assert_eq!(original.kind(), std::io::ErrorKind::NotFound);
+        let stream = StreamError::Unavailable.with_source(original);
+        let retained = stream.clone();
+        let error = Journal::journal_read_stream_error(None, code, stream);
+        assert_eq!(error.code(), code);
+        assert_eq!(error.uncertain(), code != crate::wire::ErrorCode::Invalid);
+        assert!(!error.is_native_failure());
+        let mut cause = error.source();
+        let mut found = None;
+        while let Some(source) = cause {
+            if let Some(original) = source.downcast_ref::<std::io::Error>() {
+                found = Some(original);
+                break;
+            }
+            cause = source.source();
+        }
+        let original = found.ok_or("journal boundary discarded original IO cause")?;
+        let mut cause = retained.source();
+        let mut shared = false;
+        while let Some(source) = cause {
+            if let Some(retained) = source.downcast_ref::<std::io::Error>() {
+                assert!(
+                    std::ptr::eq(original, retained),
+                    "boundary reconstructed the original cause"
+                );
+                shared = true;
+                break;
+            }
+            cause = source.source();
+        }
+        assert!(shared, "original retained source chain disappeared");
+        assert_eq!(original.kind(), std::io::ErrorKind::NotFound);
+    }
+    Ok(())
+}
+
 async fn journal() -> Result<(Journal, AuthorityRoot)> {
     let provider = ProviderRef::new("replay".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
