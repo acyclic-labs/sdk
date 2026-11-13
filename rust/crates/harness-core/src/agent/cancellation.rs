@@ -74,15 +74,10 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     agent: &super::AgentPath,
     outs: &[super::Out],
-    retired: Option<super::BoundaryCut>,
     request: &mut acyclic_stream::CommitRequest,
 ) -> Result<(), Error> {
     let mut completed = std::collections::BTreeSet::new();
     let mut records = Vec::new();
-    let mut ranges = Vec::new();
-    if let Some(retired) = retired {
-        ranges.push(retired);
-    }
     for out in outs {
         if let super::Out::InputCancelled {
             input,
@@ -98,7 +93,18 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 // A continuation can retire without a conversation entry.
                 // Index its run in the same terminal-fact append and commit
                 // as its physical input's cancellation, never a global floor.
-                records.push(goal_cancellation(run, *conversation)?);
+                records.push(acyclic_stream::AppendRecord {
+                    value: InputFact::Cancelled {
+                        conversation: *conversation,
+                    }
+                    .encode()?
+                    .into(),
+                    headers: acyclic_stream::RecordHeaders::new(
+                        vec![run.into_bytes().to_vec().into()],
+                        Vec::new(),
+                    )
+                    .map_err(Error::Stream)?,
+                });
             }
         }
         let super::Out::Conversation(record) = out else {
@@ -107,20 +113,11 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         let entry = super::ConversationEntry::decode(record)?;
         completed.insert(entry.inbox);
         let Some(cut) = entry.steering else { continue };
-        // Settlement carries its complete admitted interval. A parked turn's
-        // frontier is supplied separately, so neither path depends on a later
-        // cancellation delivery finding the retired input still queued.
-        ranges.push(super::BoundaryCut {
-            from: entry.inbox.saturating_add(1),
-            through: cut.through,
-        });
-    }
-    for cut in ranges {
-        let mut from = cut.from;
+        let mut from = entry.inbox.saturating_add(1);
         while from < cut.through {
             let limit = (cut.through - from).min(super::MAX_QUEUED as u64) as u32;
             let end = from + u64::from(limit);
-            let mut sources = provider
+            let mut records = provider
                 .read(ReadRequest {
                     key: None,
                     path: agent.inbox()?,
@@ -131,21 +128,17 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 .await
                 .map_err(Error::Stream)?;
             while from < end {
-                let record = sources
+                let record = records
                     .try_next()
                     .await
                     .map_err(Error::Stream)?
                     .filter(|record| record.sequence == from)
                     .ok_or(Error::Record("settled steering input is unavailable"))?;
-                let source = super::InboxRecord::decode(&record.value)?;
-                if matches!(source, super::InboxRecord::Message(_)) {
+                if matches!(
+                    super::InboxRecord::decode(&record.value)?,
+                    super::InboxRecord::Message(_)
+                ) {
                     completed.insert(from);
-                    if let Some(input) = super::input::input(from, source)
-                        && let Some(run) = super::goal::continuing(agent, &input.input)
-                        && let Some(conversation) = cancelled(provider, agent, from).await?
-                    {
-                        records.push(goal_cancellation(run, conversation)?);
-                    }
                 }
                 from += 1;
             }
@@ -186,20 +179,6 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         }
     }
     Ok(())
-}
-
-fn goal_cancellation(
-    run: crate::OperationId,
-    conversation: u64,
-) -> Result<acyclic_stream::AppendRecord, Error> {
-    Ok(acyclic_stream::AppendRecord {
-        value: InputFact::Cancelled { conversation }.encode()?.into(),
-        headers: acyclic_stream::RecordHeaders::new(
-            vec![run.into_bytes().to_vec().into()],
-            Vec::new(),
-        )
-        .map_err(Error::Stream)?,
-    })
 }
 
 pub(super) async fn cancelled<P: acyclic_stream::StreamProvider + ?Sized>(
