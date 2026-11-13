@@ -221,6 +221,8 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             Box::pin(async move {
                 let outs = match input {
                     Some(input) if self.answer => {
+                        let completed_goal = self.goal.filter(|_| matches!(&input.input,
+                            TurnInput::Message { from: Sender::Agent { path }, .. } if path == &state.path));
                         let steering =
                             (self.steering && input.inbox <= 2).then(|| SteeringTranscript {
                                 through: input.inbox + 3,
@@ -244,6 +246,9 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                         )];
                         if let Some(through) = through {
                             outs.push(Out::Steered(through));
+                        }
+                        if let Some(run) = completed_goal {
+                            outs.push(Out::GoalCompleted { run });
                         }
                         outs
                     }
@@ -551,6 +556,97 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                         .await,
                     Err(StreamError::NotFound)
                 ));
+                let run = acyclic_harness_core::OperationId::from_bytes([4; 16]);
+                let continuation = InboxRecord::Message(Message {
+                    from: Sender::Agent {
+                        path: recipient.clone(),
+                    },
+                    id: IntentId::try_from(format!("goal:{run}:1"))?,
+                    re: None,
+                    body: Box::new(super::driver::file("goal.md")?),
+                    attachments: None,
+                });
+                let from = Sender::Agent {
+                    path: recipient.clone(),
+                };
+                let Delivered::Committed { inbox } =
+                    host.send(&recipient, &from, &continuation).await?
+                else {
+                    return Err("continuation was not accepted".into());
+                };
+                let dropped = delivery == MessageDelivery::FollowUp;
+                if dropped {
+                    host.send(
+                        &recipient,
+                        &user(),
+                        &InboxRecord::Cancel(Cancellation {
+                            by: user(),
+                            id: intent("cancel-goal"),
+                            input: inbox,
+                            conversation: 1,
+                        }),
+                    )
+                    .await?;
+                }
+                host.drain(&recipient).await?;
+                let status = if dropped {
+                    SentReplyStatus::Dropped
+                } else {
+                    SentReplyStatus::Answered { sequence: 1 }
+                };
+                assert_eq!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await?,
+                    1
+                );
+                let terminal = destination
+                    .record_at(receiving.paths.outbox(&receiving.node)?, 0)
+                    .await?
+                    .ok_or("goal terminal missing")?;
+                assert_eq!(
+                    route::Publication::decode(&terminal.value)?.delivery()?,
+                    peer.result(receiving.node.clone(), &receipt, status)?
+                );
+                let reply = host.reply(&recipient, &intent("request"), 1).await?;
+                if dropped {
+                    assert!(matches!(reply, Reply::Dropped));
+                } else {
+                    assert!(matches!(reply, Reply::Answered { sequence: 1, .. }));
+                }
+                let mut facts = destination
+                    .read(ReadRequest {
+                        path: StreamPath::new(format!("{recipient}/context/input-events"))?,
+                        from: 0,
+                        limit: 1,
+                        key: Some(acyclic_stream::ReadKeySeek::exact(
+                            if dropped {
+                                run.into_bytes().to_vec()
+                            } else {
+                                inbox.to_be_bytes().to_vec()
+                            },
+                            u64::MAX,
+                        )),
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                assert_eq!(
+                    facts
+                        .try_next()
+                        .await?
+                        .ok_or("goal terminal fact missing")?
+                        .commit_id,
+                    terminal.commit_id,
+                    "goal result must share the original terminal commit"
+                );
+                assert_eq!(peer.deliver(&host, &receiving, &receipt).await?, expected);
+                host.drain(&recipient).await?;
+                assert_eq!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await?,
+                    1
+                );
                 continue;
             }
             let terminal_count = if steering { 4 } else { 1 };

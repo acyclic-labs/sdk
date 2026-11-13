@@ -3,6 +3,7 @@ use super::{AgentRecord as _, Error};
 use acyclic_stream::{ReadRequest, StreamPath, StreamProviderExt as _};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
+mod continuing;
 mod retirement;
 pub(super) use retirement::{RETIRE, open_retirement, retirement_participant};
 /// Terminal input facts share one stream's atomic order. The first indexed
@@ -10,8 +11,14 @@ pub(super) use retirement::{RETIRE, open_retirement, retirement_participant};
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum InputFact {
-    Cancelled { conversation: u64 },
+    Cancelled {
+        conversation: u64,
+    },
     Completed,
+    /// Physical inputs consumed by this goal; its terminal is published later.
+    Goal {
+        run: crate::OperationId,
+    },
 }
 
 impl super::AgentRecord for InputFact {}
@@ -86,6 +93,9 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     let mut ranges = Vec::new();
     let mut fence = None;
     let mut results = std::collections::BTreeMap::new();
+    let mut deferred =
+        std::collections::BTreeMap::<crate::OperationId, std::collections::BTreeSet<u64>>::new();
+    let mut goals = std::collections::BTreeMap::new();
     let mut sequence = conversation
         .checked_sub(
             outs.iter()
@@ -125,7 +135,18 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 // Index its run in the same terminal-fact append and commit
                 // as its physical input's cancellation, never a global floor.
                 records.push(goal_cancellation(run, *conversation)?);
+                goals.entry(run).or_insert(super::SentReplyStatus::Dropped);
             }
+        }
+        if let super::Out::GoalCompleted { run } = out {
+            goals.insert(
+                *run,
+                super::SentReplyStatus::Answered {
+                    sequence: sequence
+                        .checked_sub(1)
+                        .ok_or(Error::Record("goal completion has no conversation entry"))?,
+                },
+            );
         }
         let super::Out::Conversation(record) = out else {
             continue;
@@ -139,8 +160,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             .ok_or(Error::Record("agent conversation tail overflow"))?;
         // An initial goal entry can commit while its run still continues. It
         // is not an answer until the goal's terminal publication commits.
-        if entry.goal.is_none()
-            && agent.depth() == 0
+        if agent.depth() == 0
             && matches!(&entry.input, super::TurnInput::Message {
                 from: super::Sender::Agent { path }, ..
             } if path.depth() == 0 && path != agent)
@@ -155,16 +175,20 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             }
             if let Some(peer) = super::routing::notices::PeerInput::parse(agent, &source, &record)?
             {
-                results.insert(
-                    entry.inbox,
-                    peer.terminal(
-                        routing,
-                        within,
-                        super::SentReplyStatus::Answered {
-                            sequence: settled_at,
-                        },
-                    )?,
-                );
+                if let Some(run) = entry.goal {
+                    deferred.entry(run).or_default().insert(entry.inbox);
+                } else {
+                    results.insert(
+                        entry.inbox,
+                        peer.terminal(
+                            routing,
+                            within,
+                            super::SentReplyStatus::Answered {
+                                sequence: settled_at,
+                            },
+                        )?,
+                    );
+                }
             }
         }
         completed.insert(entry.inbox);
@@ -177,10 +201,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 from: entry.inbox.saturating_add(1),
                 through: cut.through,
             },
-            entry
-                .goal
-                .is_none()
-                .then_some((settled_at, observed_before)),
+            Some((settled_at, observed_before, entry.goal)),
         ));
     }
     for (cut, settled_at) in ranges {
@@ -208,7 +229,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                 let source = super::InboxRecord::decode(&record.value)?;
                 if matches!(source, super::InboxRecord::Message(_)) {
                     completed.insert(from);
-                    if let Some((settled_at, observed_before)) = settled_at
+                    if let Some((settled_at, observed_before, goal)) = settled_at
                         && let Some((routing, within)) = routing
                         && let std::collections::btree_map::Entry::Vacant(result) =
                             results.entry(from)
@@ -243,17 +264,26 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                         };
                         if from >= observed_before {
                             observe_fence(provider, agent, &mut fence).await?;
-                            let status = if cancelled(provider, agent, from)
+                            if cancelled(provider, agent, from)
                                 .await?
                                 .is_some_and(|frontier| frontier <= settled_at)
                             {
-                                super::SentReplyStatus::Dropped
+                                result.insert(peer.terminal(
+                                    routing,
+                                    within,
+                                    super::SentReplyStatus::Dropped,
+                                )?);
+                            } else if let Some(run) = goal {
+                                deferred.entry(run).or_default().insert(from);
                             } else {
-                                super::SentReplyStatus::Answered {
-                                    sequence: settled_at,
-                                }
-                            };
-                            result.insert(peer.terminal(routing, within, status)?);
+                                result.insert(peer.terminal(
+                                    routing,
+                                    within,
+                                    super::SentReplyStatus::Answered {
+                                        sequence: settled_at,
+                                    },
+                                )?);
+                            }
                         }
                     }
                     if let Some(input) = super::input::input(from, source)
@@ -267,6 +297,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
                             // A caller's requested frontier is not evidence of
                             // retirement; this commit's conversation cut is.
                             records.push(goal_cancellation(run, conversation)?);
+                            goals.entry(run).or_insert(super::SentReplyStatus::Dropped);
                         }
                     }
                 }
@@ -274,25 +305,37 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             }
         }
     }
+    if let Some((routing, within)) = routing {
+        for (run, status) in goals {
+            let mut inputs = continuing::inputs(provider, agent, run).await?;
+            if let Some(current) = deferred.get(&run) {
+                inputs.extend(current);
+            }
+            for input in inputs {
+                if let std::collections::btree_map::Entry::Vacant(result) = results.entry(input) {
+                    let record = super::reply::source_record(provider, agent.inbox()?, input)
+                        .await?
+                        .ok_or(Error::Record("goal peer input is unavailable"))?;
+                    let source = super::InboxRecord::decode(&record.value)?;
+                    let peer = super::routing::notices::PeerInput::parse(agent, &source, &record)?
+                        .ok_or(Error::Record("goal input is not an owned routed peer"))?;
+                    result.insert(peer.terminal(routing, within, status.clone())?);
+                }
+            }
+        }
+    }
+    for (run, inputs) in deferred {
+        for input in &inputs {
+            completed.remove(input);
+        }
+        records.extend(completion_records(
+            &InputFact::Goal { run },
+            inputs,
+            Some(continuing::key(agent, run)?),
+        )?);
+    }
     if !completed.is_empty() {
-        let value = InputFact::Completed.encode()?;
-        let per_record =
-            (acyclic_stream::MAX_RECORD_BYTES - value.len()) / std::mem::size_of::<u64>();
-        let keys = completed
-            .into_iter()
-            .map(|input| input.to_be_bytes().to_vec().into())
-            .collect::<Vec<_>>();
-        let completions = keys
-            .chunks(per_record)
-            .map(|keys| {
-                Ok(acyclic_stream::AppendRecord {
-                    value: value.clone().into(),
-                    headers: acyclic_stream::RecordHeaders::new(keys.to_vec(), Vec::new())
-                        .map_err(Error::Stream)?,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        records.extend(completions);
+        records.extend(completion_records(&InputFact::Completed, completed, None)?);
     }
     if !records.is_empty() || !results.is_empty() {
         let index = request
@@ -339,6 +382,37 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         }
     }
     Ok(fence.is_some())
+}
+
+/// Share terminal-fact batching; a goal key indexes the existing physical
+/// completion records instead of introducing a second pending-message log.
+fn completion_records(
+    fact: &InputFact,
+    inputs: std::collections::BTreeSet<u64>,
+    index: Option<Vec<u8>>,
+) -> Result<Vec<acyclic_stream::AppendRecord>, Error> {
+    let value = fact.encode()?;
+    let per_record =
+        (acyclic_stream::MAX_RECORD_BYTES - value.len() - index.as_ref().map_or(0, Vec::len))
+            / std::mem::size_of::<u64>();
+    let keys = inputs
+        .into_iter()
+        .map(|input| input.to_be_bytes().to_vec().into())
+        .collect::<Vec<acyclic_stream::OwnedBytes>>();
+    keys.chunks(per_record)
+        .map(|keys| {
+            let mut keys = keys.to_vec();
+            if let Some(index) = &index {
+                let at = keys.partition_point(|key| key.as_ref() < index.as_slice());
+                keys.insert(at, index.clone().into());
+            }
+            Ok(acyclic_stream::AppendRecord {
+                value: value.clone().into(),
+                headers: acyclic_stream::RecordHeaders::new(keys, Vec::new())
+                    .map_err(Error::Stream)?,
+            })
+        })
+        .collect()
 }
 
 /// Share the one terminal-fact cut across all decisions in this publication.
@@ -418,7 +492,7 @@ async fn cancelled_key<P: acyclic_stream::StreamProvider + ?Sized>(
     };
     Ok(match InputFact::decode(&record.value)? {
         InputFact::Cancelled { conversation } => Some(conversation),
-        InputFact::Completed => None,
+        InputFact::Completed | InputFact::Goal { .. } => None,
     })
 }
 
