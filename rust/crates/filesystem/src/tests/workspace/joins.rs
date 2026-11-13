@@ -354,6 +354,22 @@ async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_ord
             crate::test_support::put_generation_root(fs.objects(), &root).await?,
         );
         let target = unbounded!(workspace, generation(id))?;
+        // Parent duplicate validation sorts in the shared decoder. Measure that
+        // unchanged work directly so this bound isolates traversal storage.
+        let decoding = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut accounting = KernelAccounting::native(&decoding, &cancellation);
+        let (decoded, allocation) = crate::kernel::read_generation_root_with_accounting(
+            fs.objects(),
+            id.object_id(),
+            workspace.volume.config(),
+            &mut accounting,
+            &cancellation,
+        )
+        .await?;
+        let bytes = (decoded.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64;
+        Owned::new(decoded, allocation, bytes).retire(&mut accounting)?;
+        assert_eq!(decoding.live_allocation_bytes(), 0);
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
@@ -368,7 +384,13 @@ async fn common_ancestor_copy_work_grows_with_the_graph_instead_of_insertion_ord
             .await?;
         assert_eq!(ancestor.id, leaves[0]);
         assert_eq!(ancestor.volume_id, root.volume_id);
-        copied.push(original.receipt().bytes_copied);
+        copied.push(
+            original
+                .receipt()
+                .bytes_copied
+                .checked_sub(decoding.receipt().bytes_copied)
+                .ok_or("lineage decoding work exceeded the complete traversal")?,
+        );
         assert_eq!(original.live_allocation_bytes(), baseline);
     }
     assert!(copied[1] <= 4 * copied[0], "lineage copy work: {copied:?}");
