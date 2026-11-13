@@ -545,7 +545,7 @@ impl DarwinMountContext {
     }
 }
 
-fn start_stat(
+pub(super) fn start_stat(
     path: &CStr,
     work: &Work,
 ) -> Result<libc::stat, crate::NativeTreeMaterializationError> {

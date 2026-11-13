@@ -39,7 +39,7 @@ impl SharedViews {
     pub(super) fn new(destination: &Path, work: &Work) -> Result<Arc<Self>, NativeMountError> {
         let metadata =
             crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {
-                start_stat(path, work)
+                super::context::start_stat(path, work)
             })?;
         let attributes = NativeStat {
             inode: ROOT_INODE,

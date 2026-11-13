@@ -220,7 +220,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(
 ) -> c_int {
     ffi_path(address, path, handle, true, |context, path, work| {
         if handle == 0 {
-            context.lookup(&mount_path(path, work)?, work)?;
+            let path = mount_path(path, work)?;
+            context.lookup(&path, work)?;
         } else if !context
             .files
             .read()
