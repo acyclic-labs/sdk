@@ -59,60 +59,110 @@ impl Divergences {
     }
 }
 
-/// Runs `inputs` on a fresh harness and returns the run's recording.
-async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> Result<Recording> {
-    let directory = tempfile::tempdir().map_err(agent)?;
-    let project = volume(directory.path()).await?;
-    let harness = Arc::new(
-        super::open_scripted(
-            volume_config(directory.path(), project, provider)?
-                .compaction(crate::context::CompactionPolicy::Disabled)
-                .tool(tool),
-        )
-        .await?,
-    );
-    let mut client = ObservedConversation::open(&harness).await?;
-    for input in inputs {
-        client.send(input, input).await?;
-    }
-    client.conversation.recording().await
+/// Independent stores of the same admitted world. Model-visible home/shared
+/// slot identities must stay fixed; arbitrary discovery text is never normalized.
+struct ReplayFixture {
+    _directory: tempfile::TempDir,
+    owner: std::path::PathBuf,
+    signing: Arc<acyclic_native_runtime::signing_key::MemorySigningStore>,
 }
 
-/// A source run whose first turn reasons with native bytes and calls a tool.
-async fn source(tool: Tool) -> Result<(Recording, Vec<ModelRequest>)> {
-    let reasoning = ReasoningBlock {
-        kind: ReasoningKind::Signature,
-        text: Some("plan".into()),
-        origin: ReasoningOrigin {
-            provider: "scripted".into(),
-            model: "test".into(),
-            credential_scope: Some([7; 32]),
-        },
-        continuity: br#"{"thought":"plan","signature":"s="}"#.to_vec(),
-        outcome: ReasoningOutcome::PreservedReadable,
-    };
-    let provider = super::scripted([
-        ScriptedTurn::Events(
-            [
-                ModelEvent::ReasoningBlock { block: reasoning },
-                ModelEvent::ToolCall(ToolCall::new(
-                    "echo-1".into(),
-                    "example.echo".into(),
-                    serde_json::json!({"text": "x"}),
-                )),
-                ModelEvent::Completed {
-                    metadata: serde_json::json!({}),
-                },
-            ]
-            .map(ScriptedEvent::Event)
-            .into(),
-        ),
-        ScriptedTurn::Text("answer 0".into()),
-        ScriptedTurn::Text("answer 1".into()),
-    ]);
-    let recording = run(provider.clone(), tool, &["first", "second"]).await?;
-    assert_eq!(recording.len(), 3);
-    Ok((recording, provider.requests()))
+impl ReplayFixture {
+    async fn new() -> Result<Self> {
+        let directory = tempfile::tempdir().map_err(agent)?;
+        let project = volume(directory.path()).await?;
+        let signing = Arc::new(
+            acyclic_native_runtime::signing_key::MemorySigningStore::new().map_err(agent)?,
+        );
+        let config =
+            volume_config(directory.path(), project, super::text())?.signing_store(signing.clone());
+        let state = config.resolved_state_directory()?;
+        let harness = super::open_scripted(config).await?;
+        let owner = directory.path().join("initial-owner");
+        std::fs::copy(state.join("owner.v5"), &owner).map_err(agent)?;
+        harness.disconnect().await?;
+        Ok(Self {
+            _directory: directory,
+            owner,
+            signing,
+        })
+    }
+
+    /// Runs `inputs` on a fresh harness and returns the run's recording.
+    async fn run(
+        &self,
+        provider: Arc<dyn ModelProvider>,
+        tool: Tool,
+        inputs: &[&str],
+    ) -> Result<Recording> {
+        // Replay observes the same physical paths and initial owner, with no
+        // source conversation or generated file retained in the fresh stores.
+        let directory = &self._directory;
+        for name in ["state", "filesystem"] {
+            std::fs::remove_dir_all(directory.path().join(name)).map_err(agent)?;
+        }
+        let project = volume(directory.path()).await?;
+        let config = volume_config(directory.path(), project, provider)?
+            .signing_store(self.signing.clone())
+            .compaction(crate::context::CompactionPolicy::Disabled)
+            .tool(tool);
+        let state = config.resolved_state_directory()?;
+        std::fs::create_dir_all(&state).map_err(agent)?;
+        std::fs::copy(&self.owner, state.join("owner.v5")).map_err(agent)?;
+        let harness = Arc::new(super::open_scripted(config).await?);
+        let mut client = ObservedConversation::open(&harness).await?;
+        for input in inputs {
+            client.send(input, input).await?;
+        }
+        let recording = client.conversation.recording().await?;
+        drop(client);
+        let harness = Arc::try_unwrap(harness)
+            .map_err(|_| agent("replay observation retained the harness"))?;
+        harness.disconnect().await?;
+        Ok(recording)
+    }
+
+    /// A source run whose first turn reasons with native bytes and calls a tool.
+    async fn source(&self, tool: Tool, inputs: &[&str]) -> Result<(Recording, Vec<ModelRequest>)> {
+        let reasoning = ReasoningBlock {
+            kind: ReasoningKind::Signature,
+            text: Some("plan".into()),
+            origin: ReasoningOrigin {
+                provider: "scripted".into(),
+                model: "test".into(),
+                credential_scope: Some([7; 32]),
+            },
+            continuity: br#"{"thought":"plan","signature":"s="}"#.to_vec(),
+            outcome: ReasoningOutcome::PreservedReadable,
+        };
+        let provider = super::scripted(
+            [ScriptedTurn::Events(
+                [
+                    ModelEvent::ReasoningBlock { block: reasoning },
+                    ModelEvent::ToolCall(ToolCall::new(
+                        "echo-1".into(),
+                        "example.echo".into(),
+                        serde_json::json!({"text": "x"}),
+                    )),
+                    ModelEvent::Completed {
+                        metadata: serde_json::json!({}),
+                    },
+                ]
+                .map(ScriptedEvent::Event)
+                .into(),
+            )]
+            .into_iter()
+            .chain(
+                inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| ScriptedTurn::Text(format!("answer {index}"))),
+            ),
+        );
+        let recording = self.run(provider.clone(), tool, inputs).await?;
+        assert_eq!(recording.len(), inputs.len() + 1);
+        Ok((recording, provider.requests()))
+    }
 }
 
 /// Compare answers while retaining the distinct original dispatches of runs.
@@ -143,7 +193,10 @@ fn refused() -> Tool {
 
 #[tokio::test]
 async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
-    let (source, requests) = source(super::tool("example.echo")).await?;
+    let fixture = ReplayFixture::new().await?;
+    let (source, requests) = fixture
+        .source(super::tool("example.echo"), &["first", "second"])
+        .await?;
     let expected = Arc::new(source);
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
@@ -152,7 +205,9 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
         Arc::clone(&expected),
         divergences.clone(),
     ));
-    let replayed = run(replay.clone(), refused(), &["first", "second"]).await?;
+    let replayed = fixture
+        .run(replay.clone(), refused(), &["first", "second"])
+        .await?;
     assert_eq!(divergences.taken(), []);
     assert!(live.requests().is_empty());
     assert_eq!(replay.unused(), 0);
@@ -248,7 +303,9 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
         Arc::clone(&expected),
         divergences.clone(),
     ));
-    let replayed = run(replay.clone(), refused(), &["first", "changed"]).await?;
+    let replayed = fixture
+        .run(replay.clone(), refused(), &["first", "changed"])
+        .await?;
     let [divergence] = divergences.taken()[..] else {
         return Err(Error::Invalid("expected exactly one divergence".into()));
     };
@@ -263,7 +320,13 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
 
 #[tokio::test]
 async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
-    let expected = Arc::new(source(failing("source failure")).await?.0);
+    let fixture = ReplayFixture::new().await?;
+    let expected = Arc::new(
+        fixture
+            .source(failing("source failure"), &["first"])
+            .await?
+            .0,
+    );
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
@@ -271,7 +334,7 @@ async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
         Arc::clone(&expected),
         divergences.clone(),
     ));
-    let replayed = run(replay, refused(), &["first", "second"]).await?;
+    let replayed = fixture.run(replay, refused(), &["first"]).await?;
     assert_eq!(divergences.taken(), []);
     assert!(live.requests().is_empty());
     same_answers(&replayed, &expected);
