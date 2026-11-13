@@ -13,6 +13,7 @@ use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
 mod dispatcher;
+mod failure;
 mod interrupt;
 mod limits;
 mod pause;
@@ -47,7 +48,7 @@ use std::{
 };
 
 struct Slot {
-    failure: OnceLock<tokio::sync::watch::Sender<Option<DeliveryFailure>>>,
+    failure: OnceLock<Arc<failure::Signal>>,
     registration: Registration<ActorReference>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
@@ -87,6 +88,7 @@ impl Drop for EventDelivery {
 /// taken for settles with it.
 struct Settlement<'a> {
     actor: &'a ActorReference,
+    failures: &'a Arc<failure::Signals>,
     slot: &'a Slot,
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
@@ -101,17 +103,17 @@ impl Drop for Settlement<'_> {
         if self.failed {
             self.slot
                 .failure
-                .get_or_init(|| tokio::sync::watch::channel(None).0)
-                .send_replace(Some(self.cause.take().unwrap_or_else(|| DeliveryFailure {
+                .get_or_init(|| self.failures.signal(self.actor))
+                .failed(self.cause.take().unwrap_or_else(|| DeliveryFailure {
                     message: format!(
                         "actor {:?}: delivery producer disappeared before reporting an outcome",
                         self.actor
                     ),
-                })));
+                }));
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
         } else if let Some(failure) = self.slot.failure.get() {
-            failure.send_if_modified(|cause| cause.take().is_some());
+            failure.healthy();
         }
         flight.finish(self.failed);
         if let Some(work) = self.work.take() {
@@ -227,6 +229,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
     actors: [SyncMutex<HashMap<ActorReference, Arc<Slot>>>; 64],
+    failures: Arc<failure::Signals>,
     shards: RandomState,
     /// Host node incarnation retained in explicit placement commands.
     instance: uuid::Uuid,
@@ -254,6 +257,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             handler,
             clock,
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
+            failures: Arc::new(failure::Signals::default()),
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
             places: true,
@@ -383,31 +387,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Observe this actor's next failed delivery, including a failure already
-    /// retained by its current host. Registration admits no work. A later
-    /// successful delivery clears the failure under the same actor lock.
+    /// retained by this runtime. Registration admits no work. Observers
+    /// survive hibernation without retaining actor I/O. Recovery clears the
+    /// current failure, but cannot erase an event from an earlier observer.
     pub fn delivery_failure(
         &self,
         actor: &ActorReference,
     ) -> Result<BoxProviderFuture<'static, DeliveryFailure>, Error> {
         self.track(actor.clone())?;
         let slot = self.slot(actor).ok_or(Error::CompletionStopped)?;
-        let mut failure = slot
+        let failure = slot
             .failure
-            .get_or_init(|| tokio::sync::watch::channel(None).0)
-            .subscribe();
-        let actor = actor.clone();
-        Ok(Box::pin(async move {
-            loop {
-                if let Some(cause) = failure.borrow_and_update().clone() {
-                    return cause;
-                }
-                if failure.changed().await.is_err() {
-                    return DeliveryFailure {
-                        message: format!("actor {actor:?}: delivery host released"),
-                    };
-                }
-            }
-        }))
+            .get_or_init(|| self.failures.signal(actor))
+            .clone();
+        Ok(failure.observe())
     }
 
     /// Register an actor and request its first delivery attempt, as after
@@ -1236,6 +1229,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // actor's wake past every later checkpoint.
                 let mut settlement = Settlement {
                     actor,
+                    failures: &self.failures,
                     slot,
                     flight: Some(self.ready.flight(actor)),
                     work,
