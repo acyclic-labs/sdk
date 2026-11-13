@@ -47,7 +47,7 @@ pub enum StreamError {
     /// A member's original status beyond its canonical category. Recovery
     /// follows [`Self::category`]; diagnostics never grant retry permission.
     #[error("stream member refused{0}")]
-    Refused(#[source] acyclic_auth::refusal::Refusal),
+    Refused(#[source] StreamRefusal),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
@@ -57,6 +57,34 @@ pub enum StreamError {
     /// A minimum revision names another authority scope or incarnation.
     #[error("stream revision belongs to another authority or incarnation")]
     RevisionForeign,
+}
+
+/// A retained diagnostic paired with the category the protocol declared.
+/// Category is independent of the diagnostic's original status message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamRefusal {
+    category: &'static str,
+    diagnostic: acyclic_auth::refusal::Refusal,
+}
+
+impl std::ops::Deref for StreamRefusal {
+    type Target = acyclic_auth::refusal::Refusal;
+
+    fn deref(&self) -> &Self::Target {
+        &self.diagnostic
+    }
+}
+
+impl std::fmt::Display for StreamRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.diagnostic.fmt(formatter)
+    }
+}
+
+impl std::error::Error for StreamRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        std::error::Error::source(&self.diagnostic)
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -89,6 +117,14 @@ impl<'de> serde::Deserialize<'de> for StreamError {
 const NOT_BEFORE: &str = "not_before";
 
 impl StreamError {
+    /// Attach original diagnostics without changing this failure's category.
+    #[must_use]
+    pub fn with_refusal(self, diagnostic: acyclic_auth::refusal::Refusal) -> Self {
+        Self::Refused(StreamRefusal {
+            category: self.code(),
+            diagnostic,
+        })
+    }
     /// Unavailability attributed to its original producer failure. This
     /// retains the diagnostic through the canonical status/refusal codec;
     /// it never grants permission to retry an application failure.
@@ -107,7 +143,9 @@ impl StreamError {
             },
             None,
         )
-        .map_or(Self::Unavailable, Self::Refused)
+        .map_or(Self::Unavailable, |refusal| {
+            Self::Unavailable.with_refusal(refusal)
+        })
     }
     /// Every failure, in canonical code order.
     pub const ALL: [Self; 16] = [
@@ -153,7 +191,9 @@ impl StreamError {
             },
             None,
         )
-        .map_or(Self::OutOfRange, Self::Refused)
+        .map_or(Self::OutOfRange, |refusal| {
+            Self::OutOfRange.with_refusal(refusal)
+        })
     }
 
     /// The authority time a [`Self::not_before`] refusal carries.
@@ -179,9 +219,8 @@ impl StreamError {
     #[must_use]
     pub fn category(&self) -> Self {
         match self {
-            Self::Refused(refusal) => refusal.original().map_or(Self::Unavailable, |parts| {
-                Self::from_grpc_status(parts.code, &parts.message)
-            }),
+            Self::Refused(refusal) => Self::from_code(refusal.category)
+                .expect("retained refusal category comes from StreamError::code"),
             error => error.clone(),
         }
     }
@@ -224,7 +263,7 @@ impl StreamError {
             Self::Capacity => "capacity",
             Self::AccessDenied => "access_denied",
             Self::Unavailable => "unavailable",
-            Self::Refused(_) => self.category().code(),
+            Self::Refused(refusal) => refusal.category,
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",
