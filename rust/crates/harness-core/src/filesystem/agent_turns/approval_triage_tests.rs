@@ -378,7 +378,7 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
             id: crate::agent::IntentId::try_from("approval-summary")?,
             notice: Box::new(summary.clone()),
         })?,
-        &reader,
+        reader.as_ref(),
     )
     .await?;
     let crate::model::ModelContent::Part(crate::model::ModelContentPart::Notices { notices }) =
