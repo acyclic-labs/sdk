@@ -327,30 +327,39 @@ fn socket() -> io::Result<OwnedFd> {
 }
 
 fn admission_file() -> io::Result<File> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::MetadataExt;
     let namespace =
         |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
-    // SAFETY: geteuid has no arguments or failure case.
-    let user = unsafe { libc::geteuid() };
-    let path = format!(
-        "/tmp/acyclic-mount-host-{user}-{}-{}.lock",
-        namespace("mnt")?,
-        namespace("net")?
-    );
+    let root = dirs::runtime_dir()
+        .or_else(dirs::home_dir)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| io::Error::other("mount-host private user directory unavailable"))?;
+    let directory = admission_directory(&root)?;
+    let path = directory.join(format!("{}-{}.lock", namespace("mnt")?, namespace("net")?));
     // Never unlink this authority inode: replacing it would split the lock.
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.uid() != user || metadata.mode() & 0o077 != 0 {
+    crate::private_file::open_or_create(&path)
+}
+
+fn admission_directory(root: &std::path::Path) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    // A checked child in /tmp is insufficient: another user can reserve its
+    // name first. The parent itself must already belong to this user and
+    // exclude changes by other users before we create any shared authority.
+    let metadata = std::fs::symlink_metadata(root)?;
+    if !metadata.is_dir()
+        || metadata.uid() != crate::private_file::effective_user()
+        || metadata.mode() & 0o022 != 0
+    {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
-    Ok(file)
+    let directory = root.join(".acyclic-mount-host");
+    match crate::private_file::create_directory(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    crate::private_file::validate_directory(&directory)?;
+    Ok(directory)
 }
 
 fn admission_events(file: &File) -> io::Result<OwnedFd> {

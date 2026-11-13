@@ -55,6 +55,44 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
         return Ok(());
     }
 
+    // An attacker can reserve the former public pathname without any access
+    // to the user's private root. Actual admission must ignore that entry.
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let namespace =
+        |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
+    let poisoned = std::path::PathBuf::from(format!(
+        "/tmp/acyclic-mount-host-{}-{}-{}.lock",
+        crate::private_file::effective_user(),
+        namespace("mnt")?,
+        namespace("net")?
+    ));
+    std::os::unix::fs::symlink("/dev/null", &poisoned)?;
+    struct Poisoned(std::path::PathBuf);
+    impl Drop for Poisoned {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _poisoned = Poisoned(poisoned);
+
+    let private = tempfile::tempdir()?;
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o777))?;
+    assert_eq!(
+        admission_directory(private.path()).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied,
+        "a public parent lets another user reserve the authority name"
+    );
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))?;
+    let alias = private.path().join(".acyclic-mount-host");
+    std::os::unix::fs::symlink("/tmp", &alias)?;
+    assert_eq!(
+        admission_directory(private.path()).unwrap_err().kind(),
+        io::ErrorKind::PermissionDenied,
+        "an alias cannot supply private directory custody"
+    );
+    std::fs::remove_file(alias)?;
+    admission_directory(private.path())?;
+
     let (first, second) = std::thread::scope(|scope| -> Result<_, Box<dyn std::error::Error>> {
         let (bound, saw_bound) = sync_channel(1);
         let (listen, may_listen) = sync_channel(1);
