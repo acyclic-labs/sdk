@@ -227,6 +227,31 @@ impl ModelEventAdmission {
             .count
             .checked_add(1)
             .ok_or_else(|| stock_boundary(io, Invalid, "model event count overflow"))?;
+        let overflow = || stock_boundary(io, Invalid, "model output size overflow");
+        let mut reasoning_bytes = self.reasoning_bytes;
+        let mut abandoned = self.abandoned;
+        match event {
+            ModelEvent::Restarted => {
+                abandoned = ModelAbandonedOutput {
+                    attempts: abandoned.attempts.checked_add(1).ok_or_else(overflow)?,
+                    content_bytes: abandoned
+                        .content_bytes
+                        .checked_add(self.text_bytes)
+                        .ok_or_else(overflow)?,
+                    reasoning_bytes: abandoned
+                        .reasoning_bytes
+                        .checked_add(reasoning_bytes)
+                        .ok_or_else(overflow)?,
+                };
+                reasoning_bytes = 0;
+            }
+            ModelEvent::Reasoning { delta } => {
+                reasoning_bytes = reasoning_bytes
+                    .checked_add(delta.len() as u64)
+                    .ok_or_else(overflow)?;
+            }
+            _ => {}
+        }
         match event {
             ModelEvent::Restarted => {
                 for call in self.calls.drain(..) {
@@ -268,6 +293,8 @@ impl ModelEventAdmission {
         }
         self.count = count;
         self.text_bytes = text_bytes;
+        self.reasoning_bytes = reasoning_bytes;
+        self.abandoned = abandoned;
         Ok(())
     }
 }

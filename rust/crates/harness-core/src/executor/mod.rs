@@ -79,7 +79,8 @@ pub use model_usage::codec_fuzz as model_usage_codec_fuzz;
 pub mod read_set;
 pub(crate) use model_usage::validate as validate_model_usage;
 pub use model_usage::{
-    ContextUsage, ModelTokenUsage, ModelUsagePage, ModelUsageRecord, usage_page,
+    ContextUsage, ModelAbandonedOutput, ModelTokenUsage, ModelUsagePage, ModelUsageRecord,
+    usage_page,
 };
 mod tool_usage;
 pub use tool_usage::ToolUsage;
@@ -750,6 +751,12 @@ pub struct ModelEventAdmission {
     pub completed: bool,
     #[doc(hidden)]
     pub text_bytes: u64,
+    /// Reasoning delta bytes streamed by the current transport attempt.
+    #[doc(hidden)]
+    pub reasoning_bytes: u64,
+    /// Output streamed by attempts that a restart abandoned.
+    #[doc(hidden)]
+    pub abandoned: ModelAbandonedOutput,
 }
 
 #[cfg(test)]
