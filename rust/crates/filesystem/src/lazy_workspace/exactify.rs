@@ -455,7 +455,15 @@ impl<
                 } else {
                     None
                 };
-                let key = exactify_batch_key(cut.id, root, batch as u64);
+                // Recovery may have terminally fenced an earlier publication
+                // of this same content cut. A new conditional binding revision
+                // owns a new attempt; immutable scratch forks keep their key.
+                let key = exactify_batch_key(
+                    cut.id,
+                    root,
+                    batch as u64,
+                    current.as_ref().map(|state| state.revision),
+                );
                 let checkout = workspace
                     .checkout_accounted(
                         crate::model::GenerationSelector::Exact(generation),

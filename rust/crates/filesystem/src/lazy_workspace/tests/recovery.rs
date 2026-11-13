@@ -326,13 +326,14 @@ async fn exactification_recovery_seals_the_original_operation_before_rollback() 
         let root = attach(&fs, Arc::clone(&source), store.clone())
             .await
             .unwrap();
+        let cut = root.snapshot(accounting!()).await.unwrap();
         let prior = root.state(accounting!()).await.unwrap();
         let lookup = root.inspect("/file.txt", accounting!()).await.unwrap();
         let overlay = root
             .observed_overlay(prior.overlay, "/file.txt", &lookup.0, accounting!())
             .await
             .unwrap();
-        let key = IdempotencyKey::new();
+        let key = super::super::work::exactify_batch_key(cut.id, "/", 0, Some(prior.revision));
         let mut transaction = root
             .workspace()
             .begin_transaction(key, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -479,5 +480,21 @@ async fn exactification_recovery_seals_the_original_operation_before_rollback() 
                 Some(LazyOverlayChange::Observe { .. })
             ));
         }
+        // The fenced old attempt must remain terminal, while a new call on
+        // the recovered binding can materialize the same logical content cut.
+        let fresh = reopened
+            .exactify("/", crate::PublicationPermit::Unrestricted, accounting!())
+            .await
+            .unwrap();
+        assert!(
+            fresh
+                .stat(
+                    "/file.txt",
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .await
+                .is_ok()
+        );
     }
 }

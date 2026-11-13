@@ -142,12 +142,22 @@ pub(super) fn exactify_batch_key(
     snapshot_id: LazySnapshotId,
     root: &str,
     index: u64,
+    binding_revision: Option<u64>,
 ) -> IdempotencyKey {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-fs-lazy-exactify-batch-v1\0");
+    hasher.update(b"acyclic-fs-lazy-exactify-batch-v2\0");
     hasher.update(&snapshot_id.into_bytes());
     hasher.update(root.as_bytes());
     hasher.update(&index.to_le_bytes());
+    match binding_revision {
+        Some(revision) => {
+            hasher.update(&[1]);
+            hasher.update(&revision.to_le_bytes());
+        }
+        None => {
+            hasher.update(&[0]);
+        }
+    }
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
     IdempotencyKey::from_bytes(bytes)
