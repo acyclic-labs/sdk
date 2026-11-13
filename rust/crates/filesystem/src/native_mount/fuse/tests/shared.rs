@@ -372,9 +372,9 @@ pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_a
 }
 
 fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::error::Error>> {
-    // A live facade and its notification sinks must not retain a device after
-    // the original packet server has stopped. Check physical ownership before
-    // issuing a lookup, so the old-source negative cannot strand a kernel call.
+    // A live facade and its notification sinks retain control, never the
+    // physical device. Stop must retire the external connection before a fresh
+    // lookup; the pending-owner proof covers the old in-process negative.
     let device_count = || -> std::io::Result<usize> {
         let mut count = 0;
         for entry in std::fs::read_dir("/proc/self/fd")? {
@@ -401,14 +401,10 @@ fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::er
             .cloned()
             .ok_or("live FUSE transport")?
     };
-    assert_eq!(device_count()?, before + 1);
+    assert_eq!(device_count()?, before, "the SDK owner retained /dev/fuse");
     io.stop();
-    let remaining = device_count()?;
-    // Always clean up this exact mount, including the negative control.
-    if remaining != before {
-        let _ = live.stop();
-        assert_eq!(remaining, before, "the stopped server retained /dev/fuse");
-    }
+    // Physical retirement is proved by the failed fresh kernel lookup and
+    // stop's original-host receipt below, not by this owner's descriptor count.
     let error = std::fs::metadata(server_root.path().join("after-server-exit"))
         .expect_err("a terminated connection refuses a fresh lookup");
     assert!(matches!(

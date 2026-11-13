@@ -314,9 +314,7 @@ impl FuseSession {
                 work,
             );
             *device = received
-                .map(|descriptor| {
-                    super::host_io::HostIo::new(std::fs::File::from(descriptor), work).map(Arc::new)
-                })
+                .map(|descriptor| super::host_io::HostIo::host(descriptor, work).map(Arc::new))
                 .transpose()?;
             opened?;
             // State retains the actual device throughout handshake and rollback.

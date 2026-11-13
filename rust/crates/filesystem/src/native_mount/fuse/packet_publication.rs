@@ -5,6 +5,7 @@ use super::packet::{OUTPUT_HEADER, PacketOutput, PacketRequest};
 use super::packet_dispatch::PacketFailure;
 use super::packet_response::PacketResponse;
 use super::packet_session::PacketSession;
+use acyclic_native_runtime::PacketDevicePublication;
 
 impl PacketSession {
     /// The publisher must complete the transport's descriptor/device operation
@@ -17,16 +18,33 @@ impl PacketSession {
         response: &mut [u8],
         publish: impl FnOnce(PacketResponse<'_>) -> Result<(), NativeMountError>,
     ) -> Result<bool, PacketFailure> {
+        self.publish_with_outcome(request, response, |reply| {
+            publish(reply).map(|()| PacketDevicePublication::Published)
+        })
+    }
+
+    pub(super) fn publish_with_outcome(
+        &self,
+        request: &PacketRequest<'_>,
+        response: &mut [u8],
+        publish: impl FnOnce(PacketResponse<'_>) -> Result<PacketDevicePublication, NativeMountError>,
+    ) -> Result<bool, PacketFailure> {
         match self.dispatch(request, response) {
             Ok(reply) => {
                 // On failure the pending reply closes the session before its
                 // original work and projection leases can be released.
-                publish(PacketResponse::new(
+                let outcome = publish(PacketResponse::new(
                     response,
                     reply.length(),
                     reply.payload(),
                 )?)?;
-                reply.delivered();
+                match outcome {
+                    PacketDevicePublication::Published => reply.delivered(),
+                    PacketDevicePublication::Rejected(libc::ENOENT) => {
+                        reply.rejected(request, response)?;
+                    }
+                    PacketDevicePublication::Rejected(errno) => return Err(errno.into()),
+                }
                 Ok(request.opcode != 38)
             }
             Err(error) => {
@@ -51,7 +69,7 @@ impl PacketSession {
         request: &PacketRequest<'_>,
         response: &mut [u8],
         errno: i32,
-        publish: impl FnOnce(PacketResponse<'_>) -> Result<(), NativeMountError>,
+        publish: impl FnOnce(PacketResponse<'_>) -> Result<PacketDevicePublication, NativeMountError>,
     ) -> Result<(), PacketFailure> {
         let result = (|| {
             let length = if matches!(request.opcode, 2 | 42) {
@@ -60,7 +78,11 @@ impl PacketSession {
                 PacketOutput::new(response, 0)?.finish(request.unique, Some(errno))?;
                 Some(OUTPUT_HEADER)
             };
-            publish(PacketResponse::new(response, length, None)?)?;
+            match publish(PacketResponse::new(response, length, None)?)? {
+                PacketDevicePublication::Published
+                | PacketDevicePublication::Rejected(libc::ENOENT) => {}
+                PacketDevicePublication::Rejected(errno) => return Err(errno.into()),
+            }
             Ok(())
         })();
         if result.is_err() {

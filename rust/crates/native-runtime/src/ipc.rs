@@ -16,6 +16,8 @@ pub use windows::PipeListener;
 mod unix;
 #[cfg(unix)]
 pub use unix::UnixListener;
+#[cfg(target_os = "linux")]
+pub(crate) use unix::socket_path;
 
 /// Stable local endpoint for a service's private directory. No shared temporary
 /// namespace or credential file participates in address selection.

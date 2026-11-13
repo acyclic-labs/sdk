@@ -14,7 +14,7 @@ pub fn check(input: &[u8]) {
 }
 
 fn check_round_trip(input: &[u8]) -> std::io::Result<()> {
-    let count = usize::from(input.first().copied().unwrap_or(0) % 5);
+    let count = usize::from(input.first().copied().unwrap_or(0) % 17);
     let payload = &input.get(1..).unwrap_or_default()[..input.len().saturating_sub(1).min(32)];
     // A path without an open handle: the descriptor census below counts every
     // remaining descriptor for this unique inode.
@@ -30,7 +30,7 @@ fn check_round_trip(input: &[u8]) -> std::io::Result<()> {
         .map(|_| source.try_clone())
         .collect::<std::io::Result<Vec<_>>>()?;
     let rights = files.iter().map(AsFd::as_fd).collect::<Vec<_>>();
-    let mut storage = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(4))];
+    let mut storage = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(16))];
     let mut control = SendAncillaryBuffer::new(&mut storage);
     if count != 0 {
         assert!(control.push(SendAncillaryMessage::ScmRights(&rights)));

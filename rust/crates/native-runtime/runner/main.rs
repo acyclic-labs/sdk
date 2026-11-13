@@ -18,15 +18,20 @@
 #![no_std]
 #![no_main]
 
+mod ancillary;
 #[path = "../src/execution/linux/device.rs"]
 mod device;
 #[path = "../src/execution/linux/entry.rs"]
 mod entry;
+mod fuse_protocol;
+mod packet_device;
+#[path = "../src/process_tree/packet_device_receipt.rs"]
+mod packet_device_receipt;
 #[path = "../src/process_tree/record.rs"]
 mod record;
 mod request;
 mod sys;
-use request::{DESCRIPTORS, Mapped, Received, Slot, Spec, array4, spec, word};
+use request::{DESCRIPTORS, Mapped, Received, Slot, Spec, array4, spec};
 #[path = "../src/process_tree/warden.rs"]
 mod warden;
 
@@ -64,6 +69,13 @@ core::arch::global_asm!(
 extern "C" fn start() -> ! {
     let code = match prepare() {
         Ok(()) => {
+            if sys::is_listener(CONTROL).unwrap_or(false) {
+                return sys::exit(if packet_device::serve(CONTROL).is_ok() {
+                    0
+                } else {
+                    1
+                });
+            }
             let mut body = Mapped::EMPTY;
             while let Ok(Some(received)) = receive(&mut body) {
                 launch(received, &mut body);
@@ -80,13 +92,25 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     sys::exit(127)
 }
 
-/// Keeps the control socket, received on standard input, and the null
-/// device as the standard streams; closes everything else inherited. A
-/// write to a reply its owner abandoned must not end the runner.
+/// Keeps the control socket received on stdin. Packet-host mode also keeps
+/// the admission lock and event queue on fds 4/5 and closes standard streams;
+/// process-runner mode retains its null standard streams. Close other inherited
+/// descriptors. An abandoned reply must not terminate the runner via SIGPIPE.
 fn prepare() -> Result<(), Errno> {
     sys::dup_onto(0, CONTROL, true)?;
-    sys::close_range(CONTROL.cast_unsigned() + 1, u32::MAX)?;
-    sys::dup_onto(1, 0, false)?;
+    if sys::is_listener(CONTROL).unwrap_or(false) {
+        // The host receives the independent admission lock and its close
+        // event queue through the two otherwise unused standard streams.
+        sys::dup_onto(1, 4, true)?;
+        sys::dup_onto(2, 5, true)?;
+        sys::close_range(6, u32::MAX)?;
+        for file in [0, 1, 2] {
+            sys::close(file);
+        }
+    } else {
+        sys::close_range(CONTROL.cast_unsigned() + 1, u32::MAX)?;
+        sys::dup_onto(1, 0, false)?;
+    }
     sys::set_signal(sys::SIGPIPE, true);
     Ok(())
 }
@@ -211,13 +235,33 @@ fn read_exact(mut bytes: &mut [u8]) -> Result<(), Errno> {
 /// Reads one request into `body`. `None` once the owner has closed the
 /// socket; an error leaves the stream unusable.
 fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
-    // A control message header, then the descriptors.
-    const HEADER: usize = 16;
     let mut length = [0_u8; 8];
+    let Some(mut received) = receive_handles(CONTROL, &mut length)? else {
+        return Ok(None);
+    };
+    let read = read_exact(length.get_mut(received.length..).unwrap_or_default())
+        .and_then(|()| usize::try_from(u64::from_ne_bytes(length)).map_err(|_| Errno(sys::EINVAL)))
+        .and_then(|length| {
+            body.reserve(length)?;
+            read_exact(body.bytes().get_mut(..length).unwrap_or_default())?;
+            Ok(length)
+        });
+    match read {
+        Ok(length) => {
+            received.length = length;
+            Ok(Some(received))
+        }
+        Err(error) => {
+            received.close();
+            Err(error)
+        }
+    }
+}
+fn receive_handles(socket: Fd, bytes: &mut [u8]) -> Result<Option<Received>, Errno> {
     let mut space = ControlSpace([0; 64]);
     let mut vector = sys::IoVector {
-        base: length.as_mut_ptr(),
-        length: length.len(),
+        base: bytes.as_mut_ptr(),
+        length: bytes.len(),
     };
     let mut header = sys::MessageHeader {
         name: 0,
@@ -229,73 +273,30 @@ fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
         flags: 0,
     };
     let read = loop {
-        match sys::receive(CONTROL, &mut header) {
+        match sys::receive(socket, &mut header) {
             Ok(read) => break read,
             Err(Errno(sys::EINTR)) => {}
             Err(error) => return Err(error),
         }
     };
+    let handles = ancillary::decode::<DESCRIPTORS>(
+        &space.0[..header.control_length.min(space.0.len())],
+        header.flags,
+        sys::close,
+    )
+    .map_err(|()| Errno(sys::EINVAL))?;
     let mut received = Received {
-        descriptors: [-1; DESCRIPTORS],
-        count: 0,
+        descriptors: handles.descriptors,
+        count: handles.count,
         length: 0,
     };
-    // Each control message: its length, level and type, then its data, the
-    // next one aligned to eight bytes.
-    let control = &space.0;
-    let filled = header.control_length.min(control.len());
-    let mut offset = 0;
-    while let Some(message) = control
-        .get(offset..filled)
-        .filter(|rest| rest.len() >= HEADER)
-    {
-        let message_length = message.get(..8).map_or(0, word).min(message.len());
-        let level = i32::from_ne_bytes(message.get(8..12).map(array4).unwrap_or_default());
-        let kind = i32::from_ne_bytes(message.get(12..16).map(array4).unwrap_or_default());
-        if message_length < HEADER {
-            break;
-        }
-        if level == sys::SOL_SOCKET && kind == sys::SCM_RIGHTS {
-            let data = message.get(HEADER..message_length).unwrap_or_default();
-            for fd in data.chunks_exact(4) {
-                let fd = Fd::from_ne_bytes(array4(fd));
-                if let Some(slot) = received.descriptors.get_mut(received.count) {
-                    *slot = fd;
-                    received.count += 1;
-                } else {
-                    sys::close(fd);
-                }
-            }
-        }
-        offset += message_length.next_multiple_of(8);
-    }
     if read == 0 {
         received.close();
         return Ok(None);
     }
-    let read = read_exact(length.get_mut(read..).unwrap_or_default())
-        .and_then(|()| usize::try_from(u64::from_ne_bytes(length)).map_err(|_| Errno(sys::EINVAL)))
-        .and_then(|length| {
-            body.reserve(length)?;
-            read_exact(body.bytes().get_mut(..length).unwrap_or_default())?;
-            Ok(length)
-        });
-    match read {
-        Ok(length) if header.flags & sys::MSG_CTRUNC == 0 => {
-            received.length = length;
-            Ok(Some(received))
-        }
-        Ok(_) => {
-            received.close();
-            Err(Errno(sys::EINVAL))
-        }
-        Err(error) => {
-            received.close();
-            Err(error)
-        }
-    }
+    received.length = read;
+    Ok(Some(received))
 }
-
 /// Space for control messages, aligned as their headers are.
 #[repr(C, align(8))]
 struct ControlSpace([u8; 64]);
