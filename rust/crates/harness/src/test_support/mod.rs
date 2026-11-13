@@ -165,16 +165,7 @@ pub fn local_harness_config(
             if selection == selected {
                 return Ok(model.clone());
             }
-            if !["morph/morph-kimik31", "morph/morph-dsv41flash"].contains(&selection) {
-                return Err(crate::Error::NotFound(format!("fixture model {selection}")));
-            }
-            let (provider, name) = selection
-                .split_once('/')
-                .ok_or_else(|| crate::Error::Invalid("fixture model key".into()))?;
-            let mut chosen = model.0.clone();
-            chosen.provider = provider.into();
-            chosen.name = name.into();
-            Ok((chosen, model.1.clone()))
+            Err(crate::Error::NotFound(format!("fixture model {selection}")))
         },
     ));
     let config = crate::LocalHarnessConfig::resolving(workspace, models, None)
