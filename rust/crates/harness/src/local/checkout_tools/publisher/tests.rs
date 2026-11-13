@@ -52,6 +52,12 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
     Ok((directory, fixture, publisher))
 }
 
+async fn before_checkout_admission<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(2), future)
+        .await
+        .expect("file destination refusal waited behind the held checkout guard")
+}
+
 #[tokio::test]
 async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<()> {
     let directory = temporary_directory()?;
@@ -77,14 +83,13 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
             media_type: "text/plain",
             display_name: "directory",
         }];
-        let batch = publisher
-            .stage_changes(
-                &publisher.volume,
-                OperationId::new(),
-                &changes,
-                crate::conversation::ContentAccess { ceiling, io: None },
-            )?
-            .await;
+        let batch = before_checkout_admission(publisher.stage_changes(
+            &publisher.volume,
+            OperationId::new(),
+            &changes,
+            crate::conversation::ContentAccess { ceiling, io: None },
+        )?)
+        .await;
         let error = batch.err().expect("directory batch must refuse");
         assert_eq!(error.code(), code, "{error:?}");
         if code == crate::wire::ErrorCode::Invalid {
@@ -93,16 +98,15 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
                 "{error:?}"
             );
         }
-        let result = publisher
-            .stage_once(
-                OperationId::new(),
-                "directory",
-                b"bytes",
-                "text/plain",
-                "directory",
-                crate::conversation::ContentAccess { ceiling, io: None },
-            )?
-            .await;
+        let result = before_checkout_admission(publisher.stage_once(
+            OperationId::new(),
+            "directory",
+            b"bytes",
+            "text/plain",
+            "directory",
+            crate::conversation::ContentAccess { ceiling, io: None },
+        )?)
+        .await;
         let error = match result {
             Err(error) => error,
             Ok(_) => return Err(Error::Invalid("directory publication was accepted".into())),
@@ -135,17 +139,16 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
         (&mixed[..1], crate::wire::ErrorCode::Invalid),
         (&mixed[..], crate::wire::ErrorCode::Unauthorized),
     ] {
-        let result = publisher
-            .stage_changes(
-                &publisher.volume,
-                OperationId::new(),
-                changes,
-                crate::conversation::ContentAccess {
-                    ceiling: Some(&create_only),
-                    io: None,
-                },
-            )?
-            .await;
+        let result = before_checkout_admission(publisher.stage_changes(
+            &publisher.volume,
+            OperationId::new(),
+            changes,
+            crate::conversation::ContentAccess {
+                ceiling: Some(&create_only),
+                io: None,
+            },
+        )?)
+        .await;
         assert_eq!(
             result.err().expect("directory batch must refuse").code(),
             code
