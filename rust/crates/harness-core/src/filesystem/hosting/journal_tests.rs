@@ -719,3 +719,82 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn prompt_history_streams_original_human_messages_in_bounded_ranges() -> TestResult {
+    use crate::agent::{InputPreviewStep, InputSelection, Message};
+    use futures::StreamExt as _;
+    let (bound, root) = binding().await?;
+    for (name, from, text) in [
+        (
+            "first",
+            Sender::User {
+                principal: "owner".into(),
+            },
+            "same🙂",
+        ),
+        (
+            "host",
+            Sender::Host {
+                host: "host".into(),
+            },
+            "host-only",
+        ),
+        (
+            "second",
+            Sender::User {
+                principal: "owner".into(),
+            },
+            "same🙂",
+        ),
+    ] {
+        let intent = IntentId::try_from(name)?;
+        let body = bound
+            .stage_text(&root, "message", &from, &intent, ("prompt", text))
+            .await?;
+        bound
+            .agents()
+            .send(
+                &root,
+                &from,
+                &InboxRecord::Message(Message {
+                    from: from.clone(),
+                    id: intent,
+                    body: Box::new(body),
+                    re: None,
+                    attachments: None,
+                }),
+            )
+            .await?;
+    }
+    let source = bound.input_preview_steps(root, 4, InputSelection::History);
+    futures::pin_mut!(source);
+    let mut messages: Vec<(u64, String)> = Vec::new();
+    while let Some(step) = source.next().await.transpose()? {
+        match step {
+            InputPreviewStep::Progress => {}
+            InputPreviewStep::MessageRange {
+                inbox,
+                offset,
+                preview,
+            } => {
+                assert!(preview.text.len() <= 4);
+                if offset == 0 {
+                    messages.push((inbox, String::new()));
+                }
+                let (selected, text) = messages.last_mut().expect("range has an original message");
+                assert_eq!(*selected, inbox);
+                assert_eq!(text.len() as u64, offset);
+                text.push_str(&preview.text);
+                assert!(text.len() as u64 <= preview.bytes);
+            }
+            InputPreviewStep::Selected(None) => break,
+            InputPreviewStep::Selected(Some(_)) => panic!("history became a latest-input prefix"),
+        }
+    }
+    assert_eq!(messages.len(), 2);
+    assert!(messages[0].0 > messages[1].0);
+    assert_eq!(messages[0].1, "same🙂");
+    assert_eq!(messages[1].1, "same🙂");
+    Ok(())
+}

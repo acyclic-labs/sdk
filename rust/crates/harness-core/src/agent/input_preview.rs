@@ -17,6 +17,8 @@ pub enum InputSelection {
     Latest,
     /// Every own unsettled message, newest first, in credited UTF-8 ranges.
     Pending,
+    /// Every original human prompt in this session, newest first, excluding inherited records.
+    History,
 }
 
 /// One credited source step, including work that disclosed no message.
@@ -24,9 +26,9 @@ pub enum InputSelection {
 pub enum InputPreviewStep {
     /// One source record was consumed without selecting a message.
     Progress,
-    /// One contiguous range of an original unsettled message. The complete
+    /// One contiguous range of an original selected message. The complete
     /// original length is in `preview.bytes`; no file identity consumes credit.
-    Pending {
+    MessageRange {
         /// Original inbox sequence, retained through settlement.
         inbox: u64,
         /// Byte offset in the original message.

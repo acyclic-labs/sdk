@@ -40,7 +40,7 @@ fn previews(
                 while let Some(event) = query.next().await? {
                     match event {
                         InputPreviewStep::Progress => tokio::task::yield_now().await,
-                        InputPreviewStep::Pending { .. } => return Err("preview query returned pending ranges".into()),
+                        InputPreviewStep::MessageRange { .. } => return Err("preview query returned pending ranges".into()),
                         InputPreviewStep::Selected(value) => return Ok::<_, Failure>(value),
                     }
                 }
