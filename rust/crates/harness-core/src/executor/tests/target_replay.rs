@@ -316,7 +316,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     for workspace in [&child, &root] {
         policy.version += 1;
         policy.layers[0][0].effect = acyclic_fs::access::Effect::Deny;
-        replace_replay_policy(workspace, &policy).await?;
+        crate::test_support::replace_policy(workspace, &policy).await?;
         let mut replay = vec![call_message(&invocation)];
         let refused = StockExecution::ordinary(&bound)
             .settle_tool_call(
@@ -333,7 +333,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         assert_eq!(replay.len(), 1, "denied output reached the model");
         policy.version += 1;
         policy.layers[0][0].effect = acyclic_fs::access::Effect::Allow;
-        replace_replay_policy(workspace, &policy).await?;
+        crate::test_support::replace_policy(workspace, &policy).await?;
         let mut replay = vec![call_message(&invocation)];
         assert!(matches!(
             StockExecution::ordinary(&bound)
@@ -446,56 +446,6 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
     assert!(matches!(
         RecordedCall::classify(&records).expect("valid claim"),
         RecordedCall::Started(_)
-    ));
-    Ok(())
-}
-
-async fn replace_replay_policy<
-    A: acyclic_fs::AsyncAuthorityStore,
-    O: acyclic_fs::AsyncObjectStore,
->(
-    workspace: &acyclic_fs::Workspace<A, O>,
-    policy: &acyclic_fs::access::Policy,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let mut checkout = workspace
-        .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?
-        .value;
-    checkout
-        .write_access_policy(
-            &serde_json::to_vec(policy)?,
-            acyclic_fs::NamedAttributeWriteMode::Replace,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-    let outcome = checkout
-        .commit::<acyclic_fs::FsError, _, _>(
-            acyclic_fs::OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-            |_| async {
-                Ok(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                })
-            },
-        )
-        .await?
-        .value;
-    assert!(matches!(
-        outcome,
-        acyclic_fs::LivePublicationObservation::Committed { .. }
     ));
     Ok(())
 }

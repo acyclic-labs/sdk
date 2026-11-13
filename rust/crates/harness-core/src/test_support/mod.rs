@@ -107,3 +107,8 @@ pub fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
 pub(crate) fn fresh_key() -> Result<acyclic_stream::IdempotencyKey, acyclic_stream::StreamError> {
     acyclic_stream::IdempotencyKey::new(uuid::Uuid::new_v4().as_bytes().to_vec())
 }
+
+#[cfg(test)]
+mod workspace_policy;
+#[cfg(test)]
+pub(crate) use workspace_policy::replace_policy;

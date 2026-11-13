@@ -50,14 +50,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let _key = io.guard_owned(bytes.capacity() as u64)?;
             let name = AttributeName::new(AttributeClass::PosixXattr, bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-            let recorded = read_file_annotation(&head, "", &name, None, Some(io)).await?;
-            let _recorded = recorded
-                .as_ref()
-                .map(|bytes| io.guard_bytes(bytes))
-                .transpose()?;
             let expected = include_bytes!("journal-policy.json");
-            if recorded.as_deref() == Some(expected.as_slice()) {
-                return Ok(());
+            let length = io.sdk(
+                head.named_attribute_value("/", &name, io, io.cancellation())
+                    .await,
+            )?;
+            // A different length proves inequality without loading a saved body.
+            if length.is_some_and(|(_, length)| length == expected.len() as u64) {
+                let recorded =
+                    read_file_annotation(&head, "", &name, Some(expected.len() as u64), Some(io))
+                        .await?;
+                let _recorded = recorded
+                    .as_ref()
+                    .map(|bytes| io.guard_bytes(bytes))
+                    .transpose()?;
+                if recorded.as_deref() == Some(expected.as_slice()) {
+                    return Ok(());
+                }
             }
             let grant = authorize().await?;
             if !grant

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": 3,
+  "version": 4,
   "layers": [[{
     "id": "host-custody",
     "effect": "allow",
@@ -14,6 +14,13 @@
     "principal": {"attributes": {}},
     "actions": ["read", "read-history"],
     "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/*"},
+    "conditions": {}
+  }, {
+    "id": "published-context",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["read", "read-history"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "inputs/context/**"},
     "conditions": {}
   }, {
     "id": "published-mention",

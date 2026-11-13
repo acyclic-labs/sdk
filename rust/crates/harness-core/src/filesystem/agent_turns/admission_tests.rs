@@ -1,61 +1,11 @@
 use super::*;
+use crate::test_support::replace_policy;
 use crate::{
     conversation::{ContentGrant, VolumeRef},
     core::AuthorityRoot,
     filesystem::workspace_ref,
     resources::ProviderRef,
 };
-use acyclic_fs::Workspace;
-
-async fn replace_policy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-    workspace: &Workspace<A, O>,
-    policy: &acyclic_fs::access::Policy,
-) -> Result<()> {
-    let cancel = acyclic_fs::CancellationToken::new();
-    let mut checkout = workspace
-        .checkout(
-            acyclic_fs::model::GenerationSelector::Head,
-            acyclic_fs::model::CheckoutMode::tracking_transaction(),
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancel,
-        )
-        .await
-        .map_err(|failure| Error::from(failure.error))?
-        .value;
-    checkout
-        .write_access_policy(
-            &serde_json::to_vec(policy).map_err(|error| Error::Invalid(error.to_string()))?,
-            acyclic_fs::NamedAttributeWriteMode::Replace,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancel,
-        )
-        .await
-        .map_err(|failure| Error::from(failure.error))?;
-    let result = checkout
-        .commit::<acyclic_fs::FsError, _, _>(
-            acyclic_fs::OperationId::new(),
-            None,
-            None,
-            None,
-            acyclic_fs::PublicationPermit::Unrestricted,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancel,
-            |_| {
-                std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await
-        .map_err(|failure| Error::from(failure.error))?
-        .value;
-    assert!(matches!(
-        result,
-        acyclic_fs::LivePublicationObservation::Committed { .. }
-    ));
-    Ok(())
-}
 
 #[tokio::test]
 async fn announcement_publication_preserves_workload_and_delegated_authority() -> Result<()> {
@@ -362,6 +312,27 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             file_bytes,
             None,
         )?;
+        let archived = host
+            .put_content(
+                &journal,
+                &control_grant,
+                "inputs/context/selected/AGENTS.md",
+                b"original checkout guidance",
+                "text/plain",
+                "AGENTS.md",
+                file_bytes,
+                &crate::IdempotencyKey::new("checkout-guidance")?,
+                None,
+                Default::default(),
+            )
+            .await?;
+        assert_eq!(
+            reader
+                .read(&archived, archived.descriptor().byte_length(), None, None)?
+                .await?
+                .as_ref(),
+            b"original checkout guidance",
+        );
         let manifest = host
             .put_content(
                 &journal,
@@ -511,6 +482,11 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             serde_json::from_slice(include_bytes!("../host/journal-policy.json"))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
         policy.layers[0].retain(|rule| rule.id != "published-input");
+        policy.layers[0][0].id = "saved-host-custody-".repeat(256);
+        assert!(
+            serde_json::to_vec(&policy)?.len()
+                > include_bytes!("../host/journal-policy.json").len()
+        );
         replace_policy(&workspace, &policy).await?;
         let refused = async { selected_reader.read(&input, 4096, None, None)?.await }
             .await
