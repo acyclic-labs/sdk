@@ -145,7 +145,7 @@ pub use records::{
     decode_record,
 };
 pub use reply::{Reply, SteeringReply, reply};
-pub use routing::{PeerRejectionRoute, PeerResultRoute, PeerRoute, Routing};
+pub use routing::{PeerAccountPolicy, PeerRejectionRoute, PeerResultRoute, PeerRoute, Routing};
 
 /// Agent model failures.
 #[derive(Debug, thiserror::Error)]

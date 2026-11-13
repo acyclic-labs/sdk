@@ -1,7 +1,79 @@
 //! Account admission reads directory rows, never a remote agent's state.
 use super::{Error, PeerRoute, route};
 use crate::agent::{SessionPublication, SessionRow};
+use acyclic_stream::session::CallAuthorization;
 use acyclic_stream::{CommitCondition, CommitEffect, HeadProjection, HeadsRequest, StreamProvider};
+use std::sync::Arc;
+
+/// Shared peer-message admission for an account's ordinary routing service.
+/// The host supplies the sender-bound grant and storage/residency policy;
+/// neither a node namespace grant nor directory membership supplies funding.
+pub struct PeerAccountPolicy<P: StreamProvider + ?Sized> {
+    provider: Arc<P>,
+    account_node: route::NodeId,
+    funded: Arc<dyn route::AdmissionPolicy>,
+}
+
+impl<P: StreamProvider + ?Sized> PeerAccountPolicy<P> {
+    /// Compose the account's required funding policy with the one peer schema
+    /// and current, conditionally guarded directory membership observation.
+    pub fn new(
+        provider: Arc<P>,
+        account_node: route::NodeId,
+        funded: Arc<dyn route::AdmissionPolicy>,
+    ) -> Self {
+        Self {
+            provider,
+            account_node,
+            funded,
+        }
+    }
+}
+
+impl<P: StreamProvider + ?Sized> route::AdmissionPolicy for PeerAccountPolicy<P> {
+    fn authorize(
+        &self,
+        authorization: &CallAuthorization,
+        message: &route::Envelope,
+    ) -> Result<(), acyclic_stream::StreamError> {
+        PeerRoute::parse(message).map_err(|_| acyclic_stream::StreamError::AccessDenied)?;
+        self.funded.authorize(authorization, message)
+    }
+
+    fn prepare<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        message: &'a route::Envelope,
+        destination: Option<&'a route::Placement>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<route::Admission, route::Error>> {
+        Box::pin(async move {
+            let peer = PeerRoute::parse(message).map_err(account_error)?;
+            let funded = self
+                .funded
+                .prepare(authorization, message, destination)
+                .await?;
+            // Funding may suspend. Do not read another membership cut after
+            // the sender's grant has been revoked during that preparation.
+            self.funded.authorize(authorization, message)?;
+            peer.account_admission(
+                self.provider.as_ref(),
+                destination,
+                &self.account_node,
+                funded,
+            )
+            .await
+            .map_err(account_error)
+        })
+    }
+}
+
+fn account_error(error: Error) -> route::Error {
+    match error {
+        Error::Stream(error) => route::Error::Stream(error),
+        Error::Actor(error) => route::Error::Actor(*error),
+        _ => route::Error::InvalidRecord,
+    }
+}
 
 impl PeerRoute<'_> {
     /// Join host-prepared storage admission to current account membership.

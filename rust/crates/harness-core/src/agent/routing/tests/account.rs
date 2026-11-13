@@ -7,32 +7,40 @@ use acyclic_stream::{
     BoxProviderFuture, StreamError,
     session::{CallAuthorization, Client},
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 type Provider = acyclic_stream::testing::Counted<MemoryStream>;
 
 // The fixture's signed per-session credential conveys its root's label and the
 // node relay scope together. There is no default grant or directory authority.
-struct PeerPolicy {
-    provider: Arc<Provider>,
-    node: route::NodeId,
+struct FundingPolicy {
     debit: StreamPath,
+    denied: AtomicBool,
+    pause: Mutex<Option<FundingPause>>,
 }
 
-impl route::AdmissionPolicy for PeerPolicy {
+struct FundingPause {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+impl route::AdmissionPolicy for FundingPolicy {
     fn authorize(
         &self,
         authorization: &CallAuthorization,
         message: &route::Envelope,
     ) -> Result<(), StreamError> {
         let principal = authorization.principal()?;
-        if principal.kind != PrincipalKind::Agent
+        if self.denied.load(Ordering::SeqCst)
+            || principal.kind != PrincipalKind::Agent
             || principal.id != acyclic_auth::encode_component(&message.sender.encode())
             || !principal
                 .roles
                 .iter()
                 .any(|role| role == crate::agent::SEND_PEER)
-            || PeerRoute::parse(message).is_err()
         {
             return Err(StreamError::AccessDenied);
         }
@@ -43,26 +51,30 @@ impl route::AdmissionPolicy for PeerPolicy {
         &'a self,
         _: &'a CallAuthorization,
         message: &'a route::Envelope,
-        destination: Option<&'a route::Placement>,
+        _: Option<&'a route::Placement>,
     ) -> BoxProviderFuture<'a, Result<route::Admission, route::Error>> {
         Box::pin(async move {
+            let pause = self
+                .pause
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?
+                .take();
+            if let Some(pause) = pause {
+                pause
+                    .entered
+                    .send(())
+                    .map_err(|_| StreamError::Unavailable)?;
+                pause.release.await.map_err(|_| StreamError::Unavailable)?;
+            }
             // A real companion append proves that preparation is not re-run
             // for an accepted intent or detached from its relay publication.
-            let funded = route::Admission::Allow(vec![CommitEffect::hard(
+            Ok(route::Admission::Allow(vec![CommitEffect::hard(
                 Vec::new(),
                 vec![CommitMutation::Append {
                     path: self.debit.clone(),
                     records: vec![message.request.idempotency_key.as_bytes().to_vec().into()],
                 }],
-            )]);
-            PeerRoute::parse(message)
-                .map_err(|_| route::Error::InvalidRecord)?
-                .account_admission(self.provider.as_ref(), destination, &self.node, funded)
-                .await
-                .map_err(|error| match error {
-                    Error::Stream(cause) => route::Error::Stream(cause),
-                    _ => route::Error::InvalidRecord,
-                })
+            )]))
         })
     }
 }
@@ -150,15 +162,20 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         ));
         publications.push(publication);
     }
+    let funding = Arc::new(FundingPolicy {
+        debit: debit.clone(),
+        denied: AtomicBool::new(false),
+        pause: Mutex::new(None),
+    });
     let service = Arc::new(route::AccountService::new(
         first.sender.account().clone(),
         provider.clone(),
         paths.clone(),
-        Arc::new(PeerPolicy {
-            provider: provider.clone(),
+        Arc::new(super::super::PeerAccountPolicy::new(
+            provider.clone(),
             node,
-            debit: debit.clone(),
-        }),
+            funding.clone(),
+        )),
     ));
     let client = Client::in_process_with_products(
         provider.clone(),
@@ -333,5 +350,39 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
             "the account router must not host a session inbox"
         );
     }
+    let revoked = peer_envelope(
+        &roots[0],
+        &roots[2],
+        "revoked-during-funding",
+        PeerRoute::parse(&first)?.admission.clone(),
+    )?;
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *funding.pause.lock().map_err(|_| "funding lock poisoned")? = Some(FundingPause {
+        entered,
+        release: resume,
+    });
+    let revoke = async {
+        ready.await?;
+        let before = provider.requests();
+        funding.denied.store(true, Ordering::SeqCst);
+        release.send(()).map_err(|_| "funding pause closed")?;
+        Ok::<_, Box<dyn std::error::Error>>(before)
+    };
+    let (result, before) = futures::join!(route::admit(&client, 0, &revoked, 4096), revoke);
+    assert!(
+        matches!(result, Err(route::Error::Stream(cause)) if cause.category() == StreamError::AccessDenied)
+    );
+    let after_revocation = provider.requests().since(before?);
+    assert_eq!(
+        after_revocation.control(),
+        0,
+        "revoked grant read another membership cut"
+    );
+    assert_eq!(
+        after_revocation.data(),
+        0,
+        "revoked grant published a storage debit or relay"
+    );
     Ok(())
 }
