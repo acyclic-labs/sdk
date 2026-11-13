@@ -1446,7 +1446,7 @@ fn settle_condition(state: &mut AgentState, reason: WaitReason) {
 }
 
 /// Whether a driver's effect fits the record that carries it.
-fn admissible(out: &Out) -> bool {
+fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
         Out::InputCancelled { .. } => true,
@@ -1463,11 +1463,19 @@ fn admissible(out: &Out) -> bool {
             ) && super::AgentRecord::check(record).is_ok()
                 && super::records::fits_frame(record)
         }
-        Out::Archive { .. }
-        | Out::Checkpoint
-        | Out::Announced(_)
-        | Out::Notices(_)
-        | Out::GoalCompleted { .. } => true,
+        Out::Archive { id, .. } => {
+            let by = super::Sender::Agent { path: path.clone() };
+            let archive = InboxRecord::Archive(super::Control {
+                by: by.clone(),
+                id: id.clone(),
+            });
+            let closed = super::Closed { by, id: id.clone() };
+            super::AgentRecord::check(&archive).is_ok()
+                && super::records::fits_frame(&archive)
+                && super::AgentRecord::check(&closed).is_ok()
+                && super::records::fits_frame(&closed)
+        }
+        Out::Checkpoint | Out::Announced(_) | Out::Notices(_) | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
     }
 }
@@ -1524,7 +1532,10 @@ fn admit_wait(
         }
         Phase::Done { outcome } => {
             let completion = report(state, &outcome);
-            if completion.as_ref().is_some_and(|out| !admissible(out)) {
+            if completion
+                .as_ref()
+                .is_some_and(|out| !admissible(out, &state.path))
+            {
                 return None;
             }
             Some((Wait::Done(outcome), staged, completion))
@@ -1634,7 +1645,7 @@ async fn run<T: TurnDriver + ?Sized>(
     }
     let base_conversation = conversation;
     let valid = turn.outs.iter().all(|out| {
-        if !admissible(out) {
+        if !admissible(out, &state.path) {
             return false;
         }
         if matches!(out, Out::Conversation(_)) {
@@ -1958,4 +1969,38 @@ async fn apply_spawns(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod generated_record_tests {
+    use super::super::AgentRecord as _;
+    use super::*;
+
+    #[test]
+    fn archive_effect_admission_accounts_for_the_sender_in_both_records() -> Result<(), Error> {
+        let root = AgentPath::root(&super::super::AgentId::from_bytes([1; 16]));
+        let segment = format!("/children/{}", root.id());
+        let oversized = AgentPath::try_from(format!(
+            "{}{}",
+            root.as_str(),
+            segment.repeat(super::super::records::MAX_RECORD_BYTES / segment.len() + 1)
+        ))?;
+        let id = IntentId::try_from("archive")?;
+        let effect = Out::Archive {
+            target: root.child(&root.id())?,
+            id: id.clone(),
+        };
+        for (path, fits) in [(&root, true), (&oversized, false)] {
+            let by = super::super::Sender::Agent { path: path.clone() };
+            let archive = InboxRecord::Archive(super::super::Control {
+                by: by.clone(),
+                id: id.clone(),
+            });
+            let closed = super::super::Closed { by, id: id.clone() };
+            assert_eq!(archive.encode().is_ok(), fits);
+            assert_eq!(closed.encode().is_ok(), fits);
+            assert_eq!(admissible(&effect, path), fits);
+        }
+        Ok(())
+    }
 }
