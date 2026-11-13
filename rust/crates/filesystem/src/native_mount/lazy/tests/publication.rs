@@ -178,6 +178,13 @@ async fn an_advance_records_only_a_moved_head_or_source() -> Result<(), Box<dyn 
         "a rebind to a new source epoch changes the view"
     );
     assert_ne!(view.binding_epoch(), binding);
+    let adopted = view.binding_epoch();
+    let changed = changes().map_err(|_| "poisoned observer")?;
+    // Adoption belongs to this mount, not to a publication read or a shared
+    // companion write. Repeating the same advance emits no invalidation.
+    view.advance_to_head_async().await?;
+    assert_eq!(view.binding_epoch(), adopted);
+    assert_eq!(changes().map_err(|_| "poisoned observer")?, changed);
     Ok(())
 }
 

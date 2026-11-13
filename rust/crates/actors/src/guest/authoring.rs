@@ -62,9 +62,13 @@ pub enum GuestError {
     /// Artifact encoder failed.
     #[error("checkpoint encode failed: {0}")]
     Encode(String),
-    /// Guest handler failed; the host must discard its heap.
+    /// Guest handler failed definitively; the host must discard its heap.
     #[error("guest handler failed: {0}")]
     Handler(String),
+    /// External work is undecided. Retain the delivery; no failure transition
+    /// may acknowledge its input or replace an unknown publication.
+    #[error("guest handler pending: {0}")]
+    Pending(String),
 }
 
 /// Artifact codec hooks for exactly one checkpoint byte format.

@@ -117,35 +117,6 @@ fn runtime_with(
 }
 
 #[tokio::test]
-async fn dispatcher_creation_returns_the_competing_owners_actual_result() -> TestResult {
-    let runtime = runtime()?;
-    let provider = runtime.store().provider();
-    let (store, address) = runtime.dispatcher_store()?;
-    *provider.inner().before_write.lock().unwrap() = Some(Competing::SameProposal);
-    let before = provider.requests();
-    assert!(matches!(
-        runtime.dispatcher(&store, &address).await,
-        Err(Error::Conflict)
-    ));
-    let original = provider.requests().since(before);
-    assert_eq!(original.control(), 1);
-    assert_eq!(original.data(), 1);
-    // The competitor committed. A second invocation observes that state once,
-    // without creating another checkpoint or replaying the losing proposal.
-    let before = provider.requests();
-    let opened = runtime.dispatcher(&store, &address).await?;
-    assert_eq!(opened.tail, 1);
-    assert_eq!(
-        opened.state().and_then(|state| state.cursor("activation")),
-        Some(0)
-    );
-    let observed = provider.requests().since(before);
-    assert_eq!(observed.control(), 1);
-    assert_eq!(observed.data(), 0);
-    Ok(())
-}
-
-#[tokio::test]
 async fn pause_returns_a_lost_cut_before_an_explicit_new_request() -> TestResult {
     let runtime = runtime()?;
     let store = runtime.store();

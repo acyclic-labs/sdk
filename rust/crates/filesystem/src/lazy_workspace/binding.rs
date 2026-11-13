@@ -96,6 +96,18 @@ impl<
         store: S,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
+        let lazy = Self::open_binding(workspace, source, store, ctx).await?;
+        lazy.recover_pending_remove(ctx).await?;
+        lazy.state(ctx).await?;
+        Ok(lazy)
+    }
+
+    async fn open_binding(
+        workspace: Workspace<A, O>,
+        source: Arc<D>,
+        store: S,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, LazyWorkspaceError> {
         let state = store
             .load_lazy_workspace(workspace.id(), ctx)
             .await?
@@ -121,16 +133,13 @@ impl<
                 .ok_or(LazyWorkspaceError::NotFound)?,
             ctx,
         )?;
-        let lazy = Self {
+        Ok(Self {
             workspace,
             source,
             store,
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
-        };
-        lazy.recover_pending_remove(ctx).await?;
-        lazy.state(ctx).await?;
-        Ok(lazy)
+        })
     }
 
     /// Authored SDK workspace supplying publication and lineage.
@@ -145,6 +154,19 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Self, LazyWorkspaceError> {
         Self::open(workspace, Arc::clone(&self.source), self.store.clone(), ctx).await
+    }
+
+    /// Open an inspection without taking over another workspace's recovery.
+    /// An unfinished fork/publication is refused without changing its owner.
+    pub async fn inspect_related(
+        &self,
+        workspace: Workspace<A, O>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, LazyWorkspaceError> {
+        let lazy = Self::open_binding(workspace, Arc::clone(&self.source), self.store.clone(), ctx)
+            .await?;
+        lazy.state(ctx).await?;
+        Ok(lazy)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -213,17 +235,15 @@ impl<
         Ok(state)
     }
 
-    /// Loads the ready binding at the source's current epoch. A source
-    /// shared by several workspaces advances its epoch when any of them
-    /// observes a change; that invalidates source cursors, not this
-    /// workspace's authored or observed state, so every reader of the
-    /// binding follows the newer epoch rather than treating it as stale.
+    /// Projects the source's current epoch without publishing read bookkeeping.
+    /// Only a workspace mutation persists a new binding. Concurrent readers
+    /// therefore cannot contend with that writer just to invalidate cursors.
     pub(crate) async fn current_binding(
         &self,
         missing: fn() -> LazyWorkspaceError,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
-        let state = self
+        let mut state = self
             .store
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
@@ -237,23 +257,13 @@ impl<
             return Err(LazyWorkspaceError::StaleSource);
         }
         state.require_ready_fork()?;
-        if state.source == source {
-            return Ok(state);
+        // A prepared operation owns its original source cut. A reader may
+        // project a newer ready binding, but cannot relabel an in-flight one.
+        if state.pending_remove.is_some() && state.source != source {
+            return Err(LazyWorkspaceError::StaleSource);
         }
-        let revision = state.revision;
-        let next = LazyWorkspaceState {
-            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-            source,
-            ..state
-        };
-        if self
-            .store
-            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next.clone(), ctx)
-            .await?
-        {
-            return Ok(next);
-        }
-        Err(LazyWorkspaceError::Concurrent)
+        state.source = source;
+        Ok(state)
     }
 
     /// Selects companion indexes for a retained mounted checkout without mutation.
@@ -333,6 +343,7 @@ impl<
                 .await?
                 .is_some(),
         };
+        let revision = state.revision;
         let next = LazyWorkspaceState {
             revision: state
                 .revision
@@ -349,11 +360,11 @@ impl<
                 pending.prior_shadows
             },
             pending_remove: None,
-            ..state.clone()
+            ..state
         };
         if self
             .store
-            .compare_and_swap_lazy_workspace(self.workspace.id(), state.revision, next, ctx)
+            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
             .await?
         {
             return Ok(());

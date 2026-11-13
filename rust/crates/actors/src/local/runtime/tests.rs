@@ -16,6 +16,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod clock;
 mod completion;
 mod drain;
+mod handler_failure;
 mod invocation_failure;
 mod pause;
 mod progress;
@@ -36,85 +37,32 @@ fn actor(id: &str) -> Result<ActorReference, Box<dyn std::error::Error>> {
     Ok(ActorReference::new(b"account", b"agents", id.as_bytes())?)
 }
 
-/// Retain only confirmed cursor progress. A competing writer returns the
-/// original conflict without reloading or advancing the losing cursor.
+/// Two discovery owners share no mutable checkpoint, even on an empty root.
 #[tokio::test]
-async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() -> TestResult {
+async fn concurrent_dispatchers_have_no_shared_bookkeeping_writer() -> TestResult {
     let provider = Arc::new(Counted::new(MemoryStream::default()));
-    let runtime = Runtime::new(
+    let first = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     );
-    let source = actor("cursor-input")?;
-    let mut inputs = PreparedPublish::foreign(key("dispatcher/inputs")?);
-    for _ in 0..7 {
-        inputs.join(runtime.store().activation(&source))?;
+    let second = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let first_run = first.run(|_, _| {});
+    let second_run = second.run(|_, _| {});
+    tokio::select! {
+        stopped = first_run => return Err(format!("first discovery owner stopped: {stopped:?}").into()),
+        stopped = second_run => return Err(format!("second discovery owner stopped: {stopped:?}").into()),
+        completed = async { tokio::try_join!(first.complete(), second.complete()) } => { completed?; },
     }
-    runtime.store().submit(inputs).await?;
-    let (store, actor) = runtime.dispatcher_store()?;
-    let before = provider.requests();
-    let opened = runtime.dispatcher(&store, &actor).await?;
     assert_eq!(
-        provider.requests().since(before).control(),
-        1,
-        "opening observes absence once, then retains the committed receipt"
+        provider.requests().data(),
+        2,
+        "only the two activation follows; no checkpoint publication"
     );
-    let before = provider.requests();
-    let first = runtime.advance_dispatcher(&store, opened, 3).await?;
-    assert_eq!(
-        provider.requests().since(before).control(),
-        0,
-        "confirmed progress must not reload its own publication"
-    );
-    assert_eq!(
-        first.state().and_then(|state| state.cursor("activation")),
-        Some(3)
-    );
-    let stale = store.load(&actor).await?;
-    assert_eq!(first.tail, stale.tail);
-    assert_eq!(first.anchor, stale.anchor);
-    let replaced = runtime.advance_dispatcher(&store, first, 5).await?;
-    let before = provider.requests();
-    assert!(matches!(
-        runtime.advance_dispatcher(&store, stale, 7).await,
-        Err(Error::Conflict)
-    ));
-    let lost = provider.requests().since(before);
-    assert_eq!(
-        lost.control(),
-        0,
-        "a lost publication must not reload state"
-    );
-    assert_eq!(lost.data(), 1, "a lost publication must not submit again");
-    let observed = store.load(&actor).await?;
-    assert_eq!(observed.tail, replaced.tail);
-    assert_eq!(observed.anchor, replaced.anchor);
-    assert_eq!(
-        observed
-            .state()
-            .and_then(|state| state.cursor("activation")),
-        Some(5)
-    );
-    // Only a new invocation may propose a cursor against this observed cut.
-    let before = provider.requests();
-    let reconciled = runtime.advance_dispatcher(&store, observed, 7).await?;
-    assert_eq!(
-        provider.requests().since(before).control(),
-        0,
-        "explicit publication uses its supplied state cut"
-    );
-    assert_eq!(provider.requests().since(before).data(), 1);
-    assert_eq!(reconciled.tail, replaced.tail + 1);
-    assert_eq!(
-        reconciled
-            .state()
-            .and_then(|state| state.cursor("activation")),
-        Some(7)
-    );
-    let committed = store.load(&actor).await?;
-    assert_eq!(reconciled.tail, committed.tail);
-    assert_eq!(reconciled.anchor, committed.anchor);
     Ok(())
 }
 
@@ -579,13 +527,8 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
             manifest,
             move |bytes, cancellation| {
                 let package = Arc::clone(&package);
-                Box::pin(async move {
-                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
-                    let transition = package
-                        .on_record(delivery, checkpoint.as_ref(), cancellation)
-                        .await?;
-                    wire::encode_transition(&transition)
-                }) as GuestFuture<'static, Vec<u8>>
+                Box::pin(async move { wire::invoke(package.as_ref(), &bytes, cancellation).await })
+                    as GuestFuture<'static, Vec<u8>>
             },
             move |query| -> crate::guest::GuestFuture<'static, bool> {
                 let handler = interrupt_package.clone();
@@ -675,13 +618,8 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
             manifest,
             move |bytes, cancellation| {
                 let package = Arc::clone(&package);
-                Box::pin(async move {
-                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
-                    let transition = package
-                        .on_record(delivery, checkpoint.as_ref(), cancellation)
-                        .await?;
-                    wire::encode_transition(&transition)
-                }) as GuestFuture<'static, Vec<u8>>
+                Box::pin(async move { wire::invoke(package.as_ref(), &bytes, cancellation).await })
+                    as GuestFuture<'static, Vec<u8>>
             },
             move |query| -> crate::guest::GuestFuture<'static, bool> {
                 let handler = interrupt_package.clone();
@@ -1103,20 +1041,25 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
     ));
     let launch = || {
         let host = Arc::clone(&runtime);
-        tokio::spawn(async move { host.run(|_, _| {}).await })
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let serving = host.run(|_, _| {});
+            let _ = started.send(());
+            serving.await
+        });
+        (task, ready)
     };
     let mut task = if precreated { None } else { Some(launch()) };
-    if let Some(task) = task.as_mut() {
-        let (dispatcher_store, dispatcher) = runtime.dispatcher_store()?;
-        let path = dispatcher_store.path(&dispatcher)?;
+    if let Some((task, ready)) = task.as_mut() {
+        ready.await?;
         tokio::select! {
-            stopped = task => return Err(format!("host stopped before dispatcher publication: {stopped:?}").into()),
-            ready = first_record(&observer, path) => { ready?; },
+            stopped = task => return Err(format!("host stopped before startup: {stopped:?}").into()),
+            ready = runtime.complete() => { ready?; },
         }
         assert_eq!(
-            provider.tail(root()?).await?,
-            0,
-            "starting a host must not append a synthetic activation"
+            runtime.counts(),
+            (0, 0),
+            "starting a host creates no synthetic bookkeeping actor"
         );
     }
     for index in 0..count {
@@ -1155,7 +1098,7 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
         ))?;
         PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     }
-    let mut task = task.unwrap_or_else(launch);
+    let (mut task, _) = task.take().unwrap_or_else(launch);
     let delivered = async {
         for index in 0..count {
             let record = first_record(&observer, StreamPath::new(format!("out/a{index}"))?).await?;
@@ -1182,8 +1125,8 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
     );
     assert_eq!(
         observer.requests().data(),
-        u64::try_from(count)? + u64::from(!precreated),
-        "one follow per first publication, including the dispatcher"
+        u64::try_from(count)?,
+        "one follow per actor's first publication; no dispatcher record"
     );
     Ok(())
 }

@@ -262,6 +262,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+    /// Transfer a private overlay into an immutable, handle-owned generation.
+    /// No authority head, companion state or saved workspace is published.
+    pub(crate) async fn into_checkpoint_generation(
+        self,
+        workspace: &crate::Workspace<A, O>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, WorkspaceError>
+    where
+        A: 'static,
+        O: 'static,
+    {
+        if workspace.volume.id != self.volume.id
+            || !workspace.volume.fs.same_deployment(&self.volume.fs)
+        {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let cancellation = accounting.cancellation();
+        let root = self
+            .checkpoint_root_with_accounting(accounting, cancellation)
+            .await?;
+        // The original checkout retains the working table through admission;
+        // the flush hold covers registration of the resulting generation.
+        let hold = self
+            .volume
+            .fs
+            .flush_join_parent_with_accounting(root, accounting, cancellation)
+            .await?;
+        let checkpoint = self
+            .volume
+            .unpublished_checkout(root, accounting, cancellation)
+            .await?;
+        let generation = crate::Generation::observed(workspace, checkpoint, accounting)?;
+        drop(hold);
+        Ok(generation)
+    }
+
     /// Writes the immutable generation-root checkpoint for the current sparse
     pub async fn checkpoint(
         &self,

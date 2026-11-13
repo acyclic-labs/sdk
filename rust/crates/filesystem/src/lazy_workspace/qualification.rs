@@ -141,12 +141,22 @@ impl<
                 return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
             }
         };
-        let state = self
+        let mut state = self
             .store
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
         state.require_ready_fork()?;
+        // Clean publications have no companion mutation. Their source epoch
+        // was projected into DATA, not written by a preceding reader. Prepared
+        // publications retain their exact stored source cut instead.
+        if state.pending_remove.is_none() {
+            let source = self.source.reference();
+            if state.source.identity != source.identity || state.source.epoch > source.epoch {
+                return Err(LazyWorkspaceError::StaleSource);
+            }
+            state.source = source;
+        }
         if state.schema_version != LAZY_STATE_SCHEMA
             || cut.workspace_id != self.workspace.id()
             || cut.config != self.workspace.volume.config
@@ -189,17 +199,8 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyPublicationCut, LazyWorkspaceError> {
         let state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-        state.require_ready_fork()?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
+            .current_binding(|| LazyWorkspaceError::OriginalSnapshotUnavailable, ctx)
+            .await?;
         match (operation, state.pending_remove.as_ref()) {
             (Some(op), Some(pending))
                 if state.overlay == pending.prepared_overlay

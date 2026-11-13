@@ -76,16 +76,10 @@ async fn clock_schedule(
         assert_eq!(state.alarm().deadline_unix_ms, Some(deadline));
         assert_eq!(state.alarm().delivered_generation, None);
     }
-    let activation_tail = provider.tail(root()?).await?;
-    let (dispatch_store, dispatch_actor) = runtime.dispatcher_store()?;
-    observe_while_running(
-        serving.as_mut(),
-        state_after(&dispatch_store, &dispatch_actor, |state| {
-            state
-                .cursor("activation")
-                .is_some_and(|cursor| cursor >= activation_tail)
-        }),
-    )
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok(())
+    })
     .await?;
 
     let mut early = clock.sleep_until(110);
@@ -394,16 +388,10 @@ fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
                     assert!(state.alarm().pending().is_some());
                     assert_eq!(state.alarm().delivered_generation, None);
                 }
-                let tail = provider.tail(root()?).await?;
-                let (dispatcher_store, dispatcher_actor) = runtime.dispatcher_store()?;
-                observe_while_running(
-                    serving.as_mut(),
-                    state_after(&dispatcher_store, &dispatcher_actor, |state| {
-                        state
-                            .cursor("activation")
-                            .is_some_and(|cursor| cursor >= tail)
-                    }),
-                )
+                observe_while_running(serving.as_mut(), async {
+                    runtime.complete().await?;
+                    Ok(())
+                })
                 .await?;
                 let mut context = Context::from_waker(&waker);
                 assert!(serving.as_mut().poll(&mut context).is_pending());

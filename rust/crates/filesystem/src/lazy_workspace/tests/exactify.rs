@@ -98,13 +98,24 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
 
 #[tokio::test]
 async fn historical_exactification_keeps_observations_and_refreshes_unresolved_paths() {
-    for observed in [false, true] {
+    for (observed, detached) in [(false, false), (true, false), (false, true), (true, true)] {
         let fs = Fs::memory();
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-        let root = attach(
+        let mut config = VolumeConfig::portable(crate::Lifecycle::Ephemeral);
+        // Root and file occupy distinct chunks, exercising immutable handback
+        // between batches as well as the ordinary publishing path.
+        config.limits.maximum_mutations_per_batch = 4;
+        let (root, _) = LazyWorkspace::attach(
             &fs,
+            "root",
             Arc::clone(&source),
             MemoryLazyWorkspaceStore::default(),
+            crate::VolumeInitialization {
+                config,
+                access_policy: None,
+            },
+            crate::OperationId::new(),
+            accounting!(),
         )
         .await
         .unwrap();
@@ -114,10 +125,39 @@ async fn historical_exactification_keeps_observations_and_refreshes_unresolved_p
         let cut = root.snapshot(accounting!()).await.unwrap();
         source.replace(Bytes::from_static(b"changed"));
         root.state(accounting!()).await.unwrap();
-        let exact = root
-            .exactify_snapshot(cut, "exact", IdempotencyKey::new(), accounting!())
-            .await
+        let exact = if detached {
+            let before = root
+                .store
+                .load_lazy_workspace(root.workspace.id(), accounting!())
+                .await
+                .unwrap();
+            let cancellation = CancellationToken::new();
+            let mut first = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let mut second = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let (exact, other) = futures::try_join!(
+                root.exact_generation(cut, &mut first),
+                root.exact_generation(cut, &mut second),
+            )
             .unwrap();
+            assert_eq!(exact.id(), other.id());
+            assert_eq!(exact.workspace_id(), root.workspace.id());
+            assert_eq!(
+                root.head(accounting!()).await.unwrap().id(),
+                cut.authored_generation
+            );
+            assert_eq!(
+                root.store
+                    .load_lazy_workspace(root.workspace.id(), accounting!())
+                    .await
+                    .unwrap(),
+                before
+            );
+            exact
+        } else {
+            root.exactify_snapshot(cut, "exact", IdempotencyKey::new(), accounting!())
+                .await
+                .unwrap()
+        };
         let bytes = exact
             .read(
                 "/file.txt",

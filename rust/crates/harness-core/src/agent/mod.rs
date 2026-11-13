@@ -171,6 +171,14 @@ pub enum Error {
 }
 
 impl Error {
+    /// Preserve undecided host work across the guest boundary.
+    pub(crate) fn into_guest(self) -> acyclic_actors::guest::GuestError {
+        if matches!(self, Self::IncompatibleCheckpointCodec) {
+            acyclic_actors::guest::GuestError::IncompatibleCodec
+        } else {
+            crate::Error::guest(self)
+        }
+    }
     /// Whether the failed work may yet succeed unchanged: a commit whose
     /// outcome is unknown, or a store that left its outcome undecided however
     /// that failure is wrapped. Only these retry; every other driver failure
@@ -186,6 +194,9 @@ impl Error {
             Self::Actor(error) => match &**error {
                 acyclic_actors::local::Error::Unknown { .. } => true,
                 acyclic_actors::local::Error::Stream(error) => error.uncertain(),
+                acyclic_actors::local::Error::Handler(
+                    acyclic_actors::guest::GuestError::Pending(_),
+                ) => true,
                 _ => false,
             },
             Self::Path(_)

@@ -1,4 +1,9 @@
 use super::*;
+
+pub(super) enum Exactification {
+    Publish(crate::PublicationPermit),
+    Detached,
+}
 impl<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -42,7 +47,7 @@ impl<
             publication_closure: None,
         };
         let (generation, overlay) = self
-            .exactify_into(root, cut, paths, start, permit, ctx)
+            .exactify_into(root, cut, paths, start, Exactification::Publish(permit), ctx)
             .await?;
         if let Some((source, node)) = observation {
             let state = self.state(ctx).await?;
@@ -65,6 +70,43 @@ impl<
             .await?;
         }
         Ok(generation)
+    }
+
+    /// Resolve a source cut without changing a workspace or binding. Recorded
+    /// observations retain their versions; unresolved paths use the live source,
+    /// just as they do in a fork of the cut.
+    /// The returned handle owns its collection registration. Callers retaining
+    /// its identity beyond the handle must use the ordinary generation pin API.
+    pub async fn exact_generation(
+        &self,
+        cut: LazySnapshotRef,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        self.validate_snapshot(cut, ctx).await?;
+        let source = self.source.reference();
+        if source.epoch < cut.source.epoch {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        ctx.charge(WorkCounters {
+            bytes_hashed: LazySnapshotRef::hash_bytes(cut.authored_generation),
+            ..WorkCounters::UNCHARGED
+        })?;
+        let cut = LazySnapshotRef::new(
+            cut.workspace_id,
+            cut.authored_generation,
+            source,
+            cut.overlay,
+            cut.shadows,
+        );
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let (paths, _) = self.enumerate_paths("/", cut, &state, ctx).await?;
+        let start = crate::Generation {
+            workspace: self.workspace.clone(),
+            id: cut.authored_generation,
+            publication_closure: None,
+        };
+        self.exactify_into("/", cut, paths, start, Exactification::Detached, ctx)
+            .await.map(|(generation, _)| generation)
     }
 
     /// Materializes `paths` of an immutable cut of this view, with their
@@ -410,7 +452,7 @@ impl<
             pinned,
             owned,
             head,
-            crate::PublicationPermit::Unrestricted,
+            Exactification::Publish(crate::PublicationPermit::Unrestricted),
             ctx,
         )
         .await
@@ -425,11 +467,11 @@ impl<
         cut: LazySnapshotRef,
         mut paths: Owned<Vec<String>>,
         start: crate::Generation<A, O>,
-        permit: crate::PublicationPermit,
+        mode: Exactification,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(crate::Generation<A, O>, LazyOverlayId), LazyWorkspaceError> {
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
-        let workspace = &start.workspace;
+        let workspace = start.workspace.clone();
         paths
             .value
             .sort_unstable_by(|a, b| exactify_path_order(a, b));
@@ -438,11 +480,11 @@ impl<
             let maximum = (limits.maximum_directory_page_entries as usize)
                 .min(limits.maximum_mutations_per_batch as usize / 4)
                 .max(1);
-            let mut generation = start.id;
+            let mut generation = start;
             let mut overlay = cut.overlay;
             for (batch, chunk) in paths.value.chunks(maximum).enumerate() {
                 ctx.check()?;
-                let live = workspace.id() == self.workspace.id();
+                let live = matches!(mode, Exactification::Publish(_)) && workspace.id() == self.workspace.id();
                 let current = if live {
                     let current = self.state(ctx).await?;
                     if current.overlay != overlay
@@ -458,14 +500,18 @@ impl<
                 let key = exactify_batch_key(cut.id, root, batch as u64);
                 let checkout = workspace
                     .checkout_accounted(
-                        crate::model::GenerationSelector::Exact(generation),
+                        crate::model::GenerationSelector::Exact(generation.id()),
                         crate::model::CheckoutMode::tracking_transaction(),
                         ctx,
                         cancellation(ctx),
                     )
                     .await?;
-                let mut transaction =
-                    crate::Transaction::from_checkout(workspace, checkout, key, false);
+                let mut transaction = crate::Transaction::from_checkout(
+                    &workspace,
+                    checkout,
+                    exactify_batch_key(cut.id, root, batch as u64),
+                    false,
+                );
                 for path in chunk {
                     let (lookup, _, guard) = self
                         .inspect_unauthored(
@@ -506,23 +552,24 @@ impl<
                     }
                 }
                 if !transaction.checkout.has_pending_mutations() {
+                    generation =
+                        crate::Generation::observed(&workspace, transaction.checkout, ctx)?;
                     continue;
                 }
-                let committed = match current {
-                    Some(current) => {
-                        self.commit_overlay(&mut transaction, current, overlay, key, permit, ctx)
-                            .await?
+                generation = match mode {
+                    Exactification::Publish(permit) => {
+                        let committed = match current {
+                            Some(current) => self.commit_overlay(&mut transaction, current, overlay, key, permit, ctx).await?,
+                            None => self.commit(&mut transaction, permit, ctx).await?,
+                        };
+                        match committed {
+                            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
+                            _ => return Err(LazyWorkspaceError::Concurrent),
+                        }
                     }
-                    None => self.commit(&mut transaction, permit, ctx).await?,
-                };
-                generation = match committed {
-                    TransactionCommit::Committed(generation)
-                    | TransactionCommit::AlreadyCommitted(generation) => generation.id(),
-                    _ => return Err(LazyWorkspaceError::Concurrent),
+                    Exactification::Detached => transaction.checkout.into_checkpoint_generation(&workspace, ctx).await?,
                 };
             }
-            let generation = accounted!(ctx, |work, cancel| workspace
-                .generation(generation, work, cancel))?;
             Ok((generation, overlay))
         }
         .await;

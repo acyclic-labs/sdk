@@ -16,18 +16,8 @@ where
         let (target, target_view) = self.agent_view(branch, current).await?;
         // Both sides must include the same inherited source namespace before
         // attributing parent changes against the refined common ancestor.
-        let parent_tree = self.lazy_current.tree(true, self.permit).await?;
-        let target_tree = target_view
-            .view()
-            .tree(
-                true,
-                if target.workspace_id == self.current.id() {
-                    self.permit
-                } else {
-                    PublicationPermit::Unrestricted
-                },
-            )
-            .await?;
+        let parent_tree = self.lazy_current.tree(false, self.permit).await?;
+        let target_tree = target_view.view().tree(false, self.permit).await?;
         let tracked_paths = GitCompatRepository::new(self.repository_id, self.store.clone())
             .tracked_paths()
             .await
@@ -164,7 +154,7 @@ where
             .find(|candidate| candidate.name == branch)
             .ok_or_else(|| Error::NotFound(branch.into()))?;
         let workspace = self.workspace(target.workspace_id).await?;
-        let target_view = self.lazy_current.related(workspace).await?;
+        let target_view = self.lazy_current.inspect_related(workspace).await?;
         Ok((target, target_view))
     }
 

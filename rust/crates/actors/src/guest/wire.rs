@@ -87,6 +87,8 @@ struct DeliveryWire {
     state_commit: Bytes,
     #[prost(string, tag = "10")]
     state_path: String,
+    #[prost(string, optional, tag = "11")]
+    failure: Option<String>,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -174,6 +176,40 @@ struct TransitionWire {
     response: Option<Bytes>,
     #[prost(message, repeated, tag = "10")]
     subscriptions: Vec<SubscriptionChangeWire>,
+    #[prost(message, optional, tag = "11")]
+    failure: Option<FailureWire>,
+    #[prost(bool, tag = "12")]
+    unhandled_failure: bool,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct FailureWire {
+    #[prost(oneof = "FailureKind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
+    kind: Option<FailureKind>,
+}
+
+#[derive(Clone, PartialEq, prost::Oneof)]
+enum FailureKind {
+    #[prost(bool, tag = "1")]
+    PreconditionChanged(bool),
+    #[prost(uint32, tag = "2")]
+    UnsupportedAbi(u32),
+    #[prost(bool, tag = "3")]
+    UnsupportedFormat(bool),
+    #[prost(bool, tag = "4")]
+    NestedMutation(bool),
+    #[prost(bool, tag = "5")]
+    MissingIdentity(bool),
+    #[prost(bool, tag = "6")]
+    IncompatibleCodec(bool),
+    #[prost(string, tag = "7")]
+    Decode(String),
+    #[prost(string, tag = "8")]
+    Encode(String),
+    #[prost(string, tag = "9")]
+    Handler(String),
+    #[prost(string, tag = "10")]
+    Pending(String),
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -357,6 +393,14 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
 /// Encode one delivery and the actor's committed checkpoint for a guest.
 #[must_use]
 pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> Vec<u8> {
+    encode_invocation(delivery, committed, None)
+}
+
+fn encode_invocation(
+    delivery: &Delivery,
+    committed: Option<&Checkpoint>,
+    failure: Option<String>,
+) -> Vec<u8> {
     encode(
         &DeliveryWire {
             actor: delivery.actor.encode().into(),
@@ -395,6 +439,7 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
                     cursor: cut.cursor,
                 })
                 .collect(),
+            failure,
         },
         DELIVERY_DOMAIN,
     )
@@ -402,6 +447,16 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
 
 /// Decode one canonical delivery and committed checkpoint inside a guest.
 pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), GuestError> {
+    let (delivery, checkpoint, failure) = decode_invocation(bytes)?;
+    if failure.is_some() {
+        return Err(invalid("failure invocation as delivery"));
+    }
+    Ok((delivery, checkpoint))
+}
+
+fn decode_invocation(
+    bytes: &[u8],
+) -> Result<(Delivery, Option<Checkpoint>, Option<String>), GuestError> {
     let wire: DeliveryWire = canonical(bytes, "delivery", DELIVERY_DOMAIN)?;
     if wire
         .subscriptions
@@ -460,7 +515,42 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
             .transpose()
             .map_err(|_| invalid("record"))?,
     };
-    Ok((delivery, wire.checkpoint.map(checkpoint)))
+    Ok((delivery, wire.checkpoint.map(checkpoint), wire.failure))
+}
+
+/// Execute one canonical invocation using the same failure hook as a linked
+/// handler. All typed outcomes cross the boundary as bytes, never exceptions.
+pub async fn invoke(
+    handler: &dyn Handler,
+    bytes: &[u8],
+    cancellation: CancellationToken,
+) -> Result<Vec<u8>, GuestError> {
+    let reply = async {
+        let (delivery, checkpoint, failure) = decode_invocation(bytes)?;
+        match failure {
+            Some(failure) => {
+                handler
+                    .on_failure(delivery, checkpoint.as_ref(), failure)
+                    .await
+            }
+            None => handler
+                .on_record(delivery, checkpoint.as_ref(), cancellation)
+                .await
+                .map(Some),
+        }
+    }
+    .await;
+    match reply {
+        Ok(Some(transition)) => encode_transition(&transition),
+        Ok(None) => Ok(encode(
+            &TransitionWire {
+                unhandled_failure: true,
+                ..Default::default()
+            },
+            TRANSITION_DOMAIN,
+        )),
+        Err(error) => encode_reply(Err(&error)),
+    }
 }
 
 /// Encode a guest's transition for its host.
@@ -493,17 +583,78 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
                 .iter()
                 .map(subscription_change_wire)
                 .collect(),
+            failure: None,
+            unhandled_failure: false,
         },
         TRANSITION_DOMAIN,
     ))
 }
 
-/// Decode a guest's canonical transition on its host. Effects arrive exactly
+/// Encode the handler's original outcome. A failure carries no candidate
+/// state or effects, and retains its type across process and guest boundaries.
+pub fn encode_reply(reply: Result<&Transition, &GuestError>) -> Result<Vec<u8>, GuestError> {
+    let error = match reply {
+        Ok(transition) => return encode_transition(transition),
+        Err(error) => error,
+    };
+    let kind = match error {
+        GuestError::PreconditionChanged => FailureKind::PreconditionChanged(true),
+        GuestError::UnsupportedAbi(version) => FailureKind::UnsupportedAbi(*version),
+        GuestError::UnsupportedFormat => FailureKind::UnsupportedFormat(true),
+        GuestError::NestedMutation => FailureKind::NestedMutation(true),
+        GuestError::MissingIdentity => FailureKind::MissingIdentity(true),
+        GuestError::IncompatibleCodec => FailureKind::IncompatibleCodec(true),
+        GuestError::Decode(message) => FailureKind::Decode(message.clone()),
+        GuestError::Encode(message) => FailureKind::Encode(message.clone()),
+        GuestError::Handler(message) => FailureKind::Handler(message.clone()),
+        GuestError::Pending(message) => FailureKind::Pending(message.clone()),
+    };
+    Ok(encode(
+        &TransitionWire {
+            failure: Some(FailureWire { kind: Some(kind) }),
+            ..Default::default()
+        },
+        TRANSITION_DOMAIN,
+    ))
+}
+
+/// Decode a guest's canonical reply, preserving an original typed failure.
+/// Effects arrive exactly
 /// as the guest wrote them. They omit the host-owned commit deadline, and each
 /// effect must be admissible: a hard guard joins the host's commit, while a
 /// soft effect without mutations could not show on replay whether it applied.
 pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
     let wire: TransitionWire = canonical(bytes, "transition", TRANSITION_DOMAIN)?;
+    transition(wire)
+}
+
+fn transition(wire: TransitionWire) -> Result<Transition, GuestError> {
+    if let Some(failure) = &wire.failure {
+        if wire
+            != (TransitionWire {
+                failure: Some(failure.clone()),
+                ..Default::default()
+            })
+        {
+            return Err(invalid("failure with candidate effects"));
+        }
+        return Err(match &failure.kind {
+            Some(FailureKind::PreconditionChanged(true)) => GuestError::PreconditionChanged,
+            Some(FailureKind::UnsupportedAbi(version)) => GuestError::UnsupportedAbi(*version),
+            Some(FailureKind::UnsupportedFormat(true)) => GuestError::UnsupportedFormat,
+            Some(FailureKind::NestedMutation(true)) => GuestError::NestedMutation,
+            Some(FailureKind::MissingIdentity(true)) => GuestError::MissingIdentity,
+            Some(FailureKind::IncompatibleCodec(true)) => GuestError::IncompatibleCodec,
+            Some(FailureKind::Decode(message)) => GuestError::Decode(message.clone()),
+            Some(FailureKind::Encode(message)) => GuestError::Encode(message.clone()),
+            Some(FailureKind::Handler(message)) => GuestError::Handler(message.clone()),
+            Some(FailureKind::Pending(message)) => GuestError::Pending(message.clone()),
+            _ => invalid("failure kind"),
+        });
+    }
+    if wire.unhandled_failure {
+        return Err(invalid("unhandled failure as transition"));
+    }
     let alarm = match wire.alarm.ok_or_else(|| invalid("alarm"))? {
         AlarmWire::Keep(true) => AlarmChange::Keep,
         AlarmWire::Set(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
@@ -594,6 +745,31 @@ where
         let call = (self.call)(encode_delivery(&delivery, checkpoint), cancellation);
         Box::pin(async move { decode_transition(&call.await?) })
     }
+
+    fn on_failure<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        failure: String,
+    ) -> GuestFuture<'a, Option<Transition>> {
+        let call = (self.call)(
+            encode_invocation(&delivery, checkpoint, Some(failure)),
+            CancellationToken::new(),
+        );
+        Box::pin(async move {
+            let reply: TransitionWire = canonical(&call.await?, "transition", TRANSITION_DOMAIN)?;
+            if reply
+                == (TransitionWire {
+                    unhandled_failure: true,
+                    ..Default::default()
+                })
+            {
+                Ok(None)
+            } else {
+                transition(reply).map(Some)
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -644,6 +820,38 @@ mod tests {
                 SubscriptionChange::Remove { id: "old".into() },
             ],
         })
+    }
+
+    #[test]
+    fn failure_replies_preserve_disposition_and_reject_candidate_effects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for error in [
+            GuestError::PreconditionChanged,
+            GuestError::UnsupportedAbi(7),
+            GuestError::UnsupportedFormat,
+            GuestError::NestedMutation,
+            GuestError::MissingIdentity,
+            GuestError::IncompatibleCodec,
+            GuestError::Decode("original decoder".into()),
+            GuestError::Encode("original encoder".into()),
+            GuestError::Handler("decided refusal".into()),
+            GuestError::Pending("unresolved effect".into()),
+        ] {
+            let mut bytes = encode_reply(Err(&error))?;
+            assert_eq!(decode_transition(&bytes), Err(error));
+            let mut forged: TransitionWire = canonical(&bytes, "transition", TRANSITION_DOMAIN)?;
+            forged.checkpoint = Some(checkpoint_wire(&transition()?.checkpoint));
+            assert!(matches!(
+                decode_transition(&encode(&forged, TRANSITION_DOMAIN)),
+                Err(GuestError::Decode(_))
+            ));
+            bytes.extend_from_slice(&[0x78, 0x01]);
+            assert!(matches!(
+                decode_transition(&bytes),
+                Err(GuestError::Decode(_))
+            ));
+        }
+        Ok(())
     }
 
     #[test]

@@ -288,6 +288,134 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
 }
 
 #[tokio::test]
+async fn two_agent_forks_repair_same_line_conflicts_before_merge_completes() -> TestResult {
+    let (_directory, filesystem, store, second_agent) = fixture().await?;
+    let repository = second_agent.id();
+    second_agent.write_text("/note", "base\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&second_agent).into(),
+        repository,
+        &["commit", "-m", "base"],
+    )
+    .await?;
+    let first_agent = execute(
+        &filesystem,
+        &store,
+        (&second_agent).into(),
+        repository,
+        &["checkout", "-b", "first-agent"],
+    )
+    .await?
+    .switched
+    .ok_or("first agent has no fork")?;
+    first_agent
+        .workspace()
+        .write_text("/note", "first\n")
+        .await?;
+    execute(
+        &filesystem,
+        &store,
+        first_agent.view(),
+        repository,
+        &["commit", "-m", "first agent edit"],
+    )
+    .await?;
+    execute(
+        &filesystem,
+        &store,
+        first_agent.view(),
+        repository,
+        &["checkout", "main"],
+    )
+    .await?;
+    second_agent.write_text("/note", "second\n").await?;
+    execute(
+        &filesystem,
+        &store,
+        (&second_agent).into(),
+        repository,
+        &["commit", "-m", "second agent edit"],
+    )
+    .await?;
+    let conflict = execute(
+        &filesystem,
+        &store,
+        (&second_agent).into(),
+        repository,
+        &["merge", "first-agent"],
+    )
+    .await
+    .err()
+    .ok_or("content disagreement was auto-resolved")?;
+    assert!(matches!(&conflict, Error::MergeConflict { paths } if paths == &["/note"]));
+    let result = crate::tools::rejected_input(conflict);
+    assert_eq!(result.value["kind"], "merge conflict");
+    assert_eq!(result.value["paths"], serde_json::json!(["/note"]));
+    let markers = View::Volume(&second_agent).read("/note", 1024).await?;
+    let markers = std::str::from_utf8(markers.as_ref())?;
+    for expected in [
+        "<<<<<<< ours\n",
+        "second\n",
+        "=======\n",
+        "first\n",
+        ">>>>>>> theirs\n",
+    ] {
+        assert!(
+            markers.contains(expected),
+            "missing {expected:?}: {markers}"
+        );
+    }
+    let compatibility = GitCompatRepository::new(repository, store.clone());
+    let pending = compatibility.pending_transition().await?;
+    assert!(
+        pending.is_some(),
+        "conflicted merge completed before repair"
+    );
+    assert!(matches!(
+        execute(
+            &filesystem,
+            &store,
+            (&second_agent).into(),
+            repository,
+            &["merge", "--continue"]
+        )
+        .await,
+        Err(Error::MergeConflict { .. })
+    ));
+    assert_eq!(compatibility.pending_transition().await?, pending);
+    second_agent
+        .write_text("/note", "first and second repaired\n")
+        .await?;
+    execute(
+        &filesystem,
+        &store,
+        (&second_agent).into(),
+        repository,
+        &["merge", "--continue"],
+    )
+    .await?;
+    assert!(compatibility.pending_transition().await?.is_none());
+    assert_eq!(
+        View::Volume(&second_agent)
+            .read("/note", 1024)
+            .await?
+            .as_ref(),
+        b"first and second repaired\n"
+    );
+    execute(
+        &filesystem,
+        &store,
+        (&second_agent).into(),
+        repository,
+        &["status"],
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn manual_binary_resolution_can_continue_without_committing_markers() -> TestResult {
     let (_directory, filesystem, store, main) = fixture().await?;
     let repository = main.id();
@@ -393,7 +521,7 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
         },
     )
     .await;
-    assert!(matches!(merge, Err(Error::Conflict(_))));
+    assert!(matches!(merge, Err(Error::MergeConflict { .. })));
     assert_eq!(
         View::Volume(&main).read("/clean", 64).await?.as_ref(),
         b"source change\n"
@@ -430,9 +558,7 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
         &["merge", "--continue"],
     )
     .await;
-    assert!(
-        matches!(continuation, Err(Error::Conflict(ref message)) if message.contains("unresolved conflict markers"))
-    );
+    assert!(matches!(continuation, Err(Error::MergeConflict { ref paths }) if paths == &["/note"]));
     assert_eq!(
         compatibility.pending_transition().await?,
         Some(before.clone())
@@ -599,7 +725,7 @@ async fn delete_modify_conflicts_accept_manual_content_and_deletion() -> TestRes
             )
             .await;
             assert!(
-                matches!(merge, Err(Error::Conflict(_))),
+                matches!(merge, Err(Error::MergeConflict { .. })),
                 "merge: {:?}",
                 merge.err()
             );

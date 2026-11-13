@@ -293,17 +293,8 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         let state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        state.require_ready_fork()?;
-        if state.schema_version != LAZY_STATE_SCHEMA
-            || state.workspace_id != self.workspace.id()
-            || state.source != self.source.reference()
-        {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
+            .current_binding(|| LazyWorkspaceError::NotFound, ctx)
+            .await?;
         if let Some(pending) = &state.pending_remove {
             return if matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
                 && state.overlay == pending.prepared_overlay

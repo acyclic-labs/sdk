@@ -388,6 +388,85 @@ async fn git_adapter_resumes_original_checkout_and_preserves_acknowledged_edits(
         .await
 }
 
+#[tokio::test]
+async fn retained_publication_resumes_its_original_transition_after_head_advances() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let operation = OperationId::new();
+    let publication = fixture.publication(operation)?;
+    let options = MaterializeOptions::native(publication.directory().join("target"));
+    let original = publication
+        .prepare(
+            &fixture.from,
+            &fixture.to,
+            &fixture.state,
+            &options,
+            &fixture.work,
+        )
+        .await?;
+    let workspace = fixture.to.workspace();
+    workspace.write_text("/note", "later logical head").await?;
+    let advanced = workspace
+        .head(&fixture.work, fixture.work.cancellation())
+        .await?;
+    assert_ne!(advanced.id(), fixture.to.id());
+    // Reconstructing the original operation from the later head is a real
+    // transition mismatch, even when both supplied cuts are equal.
+    assert!(
+        publication
+            .publish(
+                &advanced,
+                &advanced,
+                &fixture.state,
+                &options,
+                &fixture.work,
+                || std::future::ready(Ok(())),
+            )
+            .await
+            .is_err()
+    );
+    let resumed = publication
+        .resume(
+            &advanced,
+            &workspace,
+            &fixture.state,
+            &options,
+            &fixture.work,
+            || std::future::ready(Ok(())),
+        )
+        .await?
+        .ok_or("original publication disappeared")?;
+    assert_eq!(resumed.plan, original.plan);
+    assert_eq!(resumed.phase, acyclic_fs::MaterializationPhase::Applied);
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("note"))?,
+        "candidate"
+    );
+    assert_eq!(
+        workspace
+            .head(&fixture.work, fixture.work.cancellation())
+            .await?
+            .id(),
+        advanced.id()
+    );
+    std::fs::write(fixture.root.join("note"), "edit after native completion")?;
+    publication
+        .resume(
+            &advanced,
+            &workspace,
+            &fixture.state,
+            &options,
+            &fixture.work,
+            || std::future::ready(Ok(())),
+        )
+        .await?
+        .ok_or("completed publication disappeared")?;
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.join("note"))?,
+        "edit after native completion"
+    );
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn publication_needs_no_write_authority_in_the_checkout_parent() -> TestResult {

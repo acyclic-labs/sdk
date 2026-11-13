@@ -105,6 +105,9 @@ pub struct LazyMountSource<A: 'static, O: 'static, D, S> {
     root: String,
     runtime: Arc<CallbackRuntime>,
     source_view: Arc<ViewGate>,
+    /// This mount's last adopted source epoch. Only advance_to_head_async
+    /// writes it, under source_view's exclusive guard; mounts never share it.
+    adopted_source_epoch: std::sync::atomic::AtomicU64,
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,

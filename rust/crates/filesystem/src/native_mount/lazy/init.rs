@@ -35,6 +35,7 @@ where
             });
         }
         let runtime = CallbackRuntime::existing()?;
+        let adopted_source_epoch = lazy.source_reference().epoch;
         let cancellation = carrier.cancellation();
         let mut retained = 0_u64;
         let result = (|| {
@@ -87,6 +88,7 @@ where
                 root: inputs.root,
                 runtime,
                 source_view,
+                adopted_source_epoch: std::sync::atomic::AtomicU64::new(adopted_source_epoch),
                 removals: Mutex::new(MountedRemovals::default()),
                 detached,
                 open_sources,
@@ -316,19 +318,17 @@ where
             WorkBudget::UNBOUNDED,
             self.authored.cancellation(),
         );
+        let state = self.lazy.state(&mut accounting).await.map_err(lazy_error)?;
         if self
-            .lazy
-            .publication_cut(None, &mut accounting)
-            .await
-            .is_ok_and(|state| state.source == self.lazy.source_reference())
+            .adopted_source_epoch
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == state.source.epoch
         {
-            let result = self.authored.advance_to_head_async().await;
-            return result;
+            return self.authored.advance_to_head_async().await;
         }
         self.source_view.begin_transition();
         let result = async {
             self.authored.advance_to_head_async().await?;
-            self.lazy.state(&mut accounting).await.map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.
             self.authored.record_projection_change(
                 &ViewChange::Everything,
@@ -343,6 +343,8 @@ where
         .await;
 
         if result.is_ok() {
+            self.adopted_source_epoch
+                .store(state.source.epoch, std::sync::atomic::Ordering::Relaxed);
             self.source_view.finish_transition();
         }
         result

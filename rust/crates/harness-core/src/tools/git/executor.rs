@@ -99,9 +99,9 @@ where
         let Some(resolved) =
             acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
         else {
-            return Err(Self::error(
-                "Git merge still contains unresolved conflict markers",
-            ));
+            return Err(Error::MergeConflict {
+                paths: paths.keys().cloned().collect(),
+            });
         };
         // A continued join tracks the paths the join itself published, as an
         // unconflicted join does: never a file the

@@ -207,6 +207,24 @@ impl<
         }
     }
 
+    pub(super) async fn inspect_related(
+        self,
+        workspace: ManagedWorkspace<P, O>,
+    ) -> crate::Result<OwnedView<P, O>> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Checkout(view) => view
+                .inspect_related(
+                    workspace,
+                    &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
+                )
+                .await
+                .map(OwnedView::Checkout)
+                .map_err(super::errors::inspection_error),
+            Self::Volume(_) => Ok(OwnedView::Volume(workspace)),
+        }
+    }
+
     pub(crate) async fn optional(
         self,
         path: &str,

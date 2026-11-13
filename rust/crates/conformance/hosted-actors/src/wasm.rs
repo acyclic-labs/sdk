@@ -197,21 +197,18 @@ impl ActorsPackage {
         signal: JsValue,
         interrupt: JsValue,
     ) -> Result<Vec<u8>, JsValue> {
-        let (delivery, checkpoint) = wire::decode_delivery(bytes).map_err(failed)?;
         let cancellation = CancellationToken::new();
         let token = cancellation.clone();
         let _interrupt = Listening::new(interrupt, move || token.cancel())?;
-        let (turn, handle) = futures::future::abortable(self.0.on_record(
-            delivery,
-            checkpoint.as_ref(),
-            cancellation,
-        ));
+        let (turn, handle) = futures::future::abortable(wire::invoke(&self.0, bytes, cancellation));
         let _abort = Listening::new(signal, move || handle.abort())?;
-        let transition = turn
-            .await
-            .map_err(|_| failed("guest delivery aborted"))?
-            .map_err(failed)?;
-        wire::encode_transition(&transition).map_err(failed)
+        match turn.await {
+            Ok(reply) => reply.map_err(failed),
+            Err(_) => wire::encode_reply(Err(&acyclic_actors::guest::GuestError::Pending(
+                "guest delivery aborted".into(),
+            )))
+            .map_err(failed),
+        }
     }
 }
 

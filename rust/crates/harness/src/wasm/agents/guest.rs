@@ -87,23 +87,24 @@ impl AgentGuest {
         #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] interrupt: JsValue,
     ) -> Result<Vec<u8>, JsValue> {
         let (delivery, ()) = acyclic_stream::javascript_bytes::snapshot(&delivery, |_| Ok(()))?;
-        let (delivery, checkpoint) = wire::decode_delivery(&delivery).map_err(guest_error)?;
         let cancellation = CancellationToken::new();
         let token = cancellation.clone();
         let _interrupt = Listening::abort(&interrupt, move || token.cancel())?;
-        let transition = Listening::run(
-            &signal,
-            self.handler
-                .on_record(delivery, checkpoint.as_ref(), cancellation),
-        )
-        .await?
-        .map_err(guest_error)?;
-        wire::encode_transition(&transition).map_err(guest_error)
+        let (turn, handle) =
+            futures::future::abortable(wire::invoke(&self.handler, &delivery, cancellation));
+        let _listening = Listening::abort(&signal, move || handle.abort())?;
+        match turn.await {
+            Ok(reply) => reply.map_err(guest_error),
+            Err(_) => wire::encode_reply(Err(&GuestError::Pending("delivery was aborted".into())))
+                .map_err(guest_error),
+        }
     }
 }
 
 fn rejected(error: JsValue) -> GuestError {
-    GuestError::Handler(format!("agent guest failed: {error:?}"))
+    // No typed reply means the host cannot decide whether guest-side work
+    // completed. Never acknowledge the input as a definitive handler failure.
+    GuestError::Pending(format!("agent guest did not return an outcome: {error:?}"))
 }
 
 /// The host's call of a guest's `onRecord`, for [`wire::Remote`]. Dropping
