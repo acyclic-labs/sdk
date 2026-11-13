@@ -120,6 +120,14 @@ path, preserving the original head and unknown byte count. Diagnostic publicatio
 suppresses this context for every poll, including owned terminal appends, so a
 backend's own SDK metadata reads cannot recursively trace diagnostics. Scope exit
 restores the caller's original owner; unrelated futures never inherit that owner.
+Bounded `Stream::read` and keyed `seek` share cursor admission and inherit the
+same active owner through `trace::observe`. `stream.read_open` names the bounded
+ordered-record cursor guarantee; `stream.seek_open` names bounded header-key
+selection. Their successful terminals describe opening the original cursor,
+without consuming records or estimating delivered bytes. Replay-page spans remain
+the separate delivery boundary and parent these admission spans. Diagnostic
+admission races original work, and completion submission adds no wait after a
+cursor becomes available.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

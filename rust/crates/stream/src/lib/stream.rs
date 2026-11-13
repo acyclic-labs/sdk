@@ -148,15 +148,14 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
 
     /// Reads at most `limit` records from `from`.
     pub async fn read(&self, from: u64, limit: u32) -> Result<RecordStream, StreamError> {
-        self.provider
-            .read(ReadRequest {
-                key: None,
-                path: self.path.clone(),
-                from,
-                limit,
-                at_least: Default::default(),
-            })
-            .await
+        self.read_request(ReadRequest {
+            key: None,
+            path: self.path.clone(),
+            from,
+            limit,
+            at_least: Default::default(),
+        })
+        .await
     }
 
     /// Reads matching opaque header keys in a bounded historical interval.
@@ -166,17 +165,43 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         from: u64,
         limit: u32,
     ) -> Result<RecordStream, StreamError> {
-        self.provider
-            .read(ReadRequest {
-                key: Some(key),
-                path: self.path.clone(),
-                from,
-                limit,
-                at_least: Default::default(),
-            })
-            .await
+        self.read_request(ReadRequest {
+            key: Some(key),
+            path: self.path.clone(),
+            from,
+            limit,
+            at_least: Default::default(),
+        })
+        .await
     }
 
+    async fn read_request(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        #[cfg(feature = "serde")]
+        let keyed = request.key.is_some();
+        let work = self.provider.read(request);
+        #[cfg(feature = "serde")]
+        return crate::trace::observe(
+            crate::trace::Request {
+                name: if keyed {
+                    "stream.seek_open"
+                } else {
+                    "stream.read_open"
+                },
+                mechanism: crate::trace::Mechanism::Io,
+                parent: None,
+                guarantee: Some(if keyed {
+                    "bounded_header_key_selection"
+                } else {
+                    "bounded_ordered_record_cursor"
+                }),
+            },
+            work,
+            |_| None,
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        work.await
+    }
     /// The latest record carrying `key`, by one indexed lookup.
     pub async fn latest(&self, key: impl Into<Bytes>) -> Result<Option<Record>, StreamError> {
         self.provider

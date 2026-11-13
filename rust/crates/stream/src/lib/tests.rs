@@ -169,6 +169,7 @@ mod replay_tests {
         missing: u64,
         extra_records: u32,
         inspect_on_write: bool,
+        pause_at: usize,
         pause_write: Option<Arc<std::sync::atomic::AtomicUsize>>,
         resume_write: Option<std::sync::Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
     }
@@ -197,11 +198,9 @@ mod replay_tests {
             '_,
             std::result::Result<crate::WriteOutcome, crate::StreamError>,
         > {
-            if self
-                .pause_write
-                .as_ref()
-                .is_some_and(|writes| writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1)
-            {
+            if self.pause_write.as_ref().is_some_and(|writes| {
+                writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == self.pause_at
+            }) {
                 if let Some(resume) = &self.resume_write {
                     let receiver = resume.lock().unwrap().take().unwrap();
                     return Box::pin(async move {
@@ -272,6 +271,7 @@ mod replay_tests {
             missing: u64::MAX,
             extra_records: 0,
             inspect_on_write: false,
+            pause_at: 1,
             pause_write: None,
             resume_write: None,
         };
@@ -457,7 +457,7 @@ mod replay_tests {
 
     #[cfg(feature = "serde")]
     #[tokio::test]
-    async fn sdk_head_inherits_owner_without_recursive_diagnostics()
+    async fn sdk_reads_inherit_owner_without_recursive_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
         let provider = Arc::new(Gapped {
@@ -465,12 +465,20 @@ mod replay_tests {
             missing: u64::MAX,
             extra_records: 0,
             inspect_on_write: true,
+            pause_at: 1,
             pause_write: None,
             resume_write: None,
         });
         let data = Stream::new(provider.clone(), "agents/worker/data")?;
-        data.append(b"original".to_vec(), IdempotencyKey::unique())
-            .await?;
+        data.append(
+            AppendRecord::latest(
+                bytes::Bytes::from_static(b"original"),
+                bytes::Bytes::from_static(b"selected"),
+                false,
+            )?,
+            IdempotencyKey::unique(),
+        )
+        .await?;
         let original = data.head().await?;
         let trace = Stream::new(provider, "agents/worker/trace")?;
         assert_eq!(trace.tail().await?, 0);
@@ -486,30 +494,56 @@ mod replay_tests {
         let parent = root.id();
         let root = root.into_owned();
         assert_eq!(root.within(data.head()).await?, original);
+        let mut rows = root.within(data.read(0, 1)).await?;
+        let original_row = rows.next().await.ok_or("original bounded row missing")??;
+        assert_eq!(original_row.value.as_ref(), b"original");
+        assert!(rows.next().await.is_none());
+        let mut selected = root
+            .within(data.seek(
+                ReadKeySeek::latest(bytes::Bytes::from_static(b"selected"), u64::MAX),
+                0,
+                1,
+            ))
+            .await?;
+        assert_eq!(
+            selected
+                .next()
+                .await
+                .ok_or("original selected row missing")??,
+            original_row
+        );
+        assert!(selected.next().await.is_none());
         let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
         let mut query = TraceQuery::new(
             trace.follow(0, Default::default()).await?,
             Default::default(),
         );
         query.next().await?;
-        query.next().await?;
-        assert!(
-            matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
-            if start.name == "stream.head" && start.parent == Some(parent)
-                && start.guarantee.as_deref() == Some("atomic_history_durability_origin"))
-        );
+        for (name, guarantee) in [
+            ("stream.head", "atomic_history_durability_origin"),
+            ("stream.read_open", "bounded_ordered_record_cursor"),
+            ("stream.seek_open", "bounded_header_key_selection"),
+        ] {
+            query.next().await?;
+            assert!(
+                matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
+                if start.name == name && start.parent == Some(parent)
+                    && start.guarantee.as_deref() == Some(guarantee))
+            );
+        }
         assert!(
             matches!(query.next().await?, Some(Observation::Completed { id, .. }) if id == parent)
         );
         assert_eq!(
             trace.tail().await?,
-            4,
+            8,
             "diagnostic publication recursively traced its own head check"
         );
         assert_eq!(data.head().await?, original);
+        drop(data.read(0, 1).await?);
         assert_eq!(
             trace.tail().await?,
-            4,
+            8,
             "completed scope leaked its owner into unrelated work"
         );
         Ok(())
@@ -526,6 +560,7 @@ mod replay_tests {
                 missing: u64::MAX,
                 extra_records: 0,
                 inspect_on_write: false,
+                pause_at: 1,
                 pause_write: Some(writes),
                 resume_write: None,
             }),
@@ -586,6 +621,7 @@ mod replay_tests {
                 missing: u64::MAX,
                 extra_records: 0,
                 inspect_on_write: false,
+                pause_at: 1,
                 pause_write: Some(writes.clone()),
                 resume_write: Some(std::sync::Mutex::new(Some(resume))),
             }),
@@ -660,8 +696,15 @@ mod replay_tests {
         let rows = observed.result?.ok_or("original page missing")?;
         assert_eq!(rows[0].value.as_ref(), b"original payload");
         assert!(matches!(observed.observation?, Settlement::Finished(_)));
-        let mut query = TraceQuery::new(traces.read(0, 2).await?, Default::default());
+        let mut query = TraceQuery::new(traces.read(0, 4).await?, Default::default());
+        let Some(Observation::Started { id: page_id, .. }) = query.next().await? else {
+            return Err("replay parent admission missing".into());
+        };
         query.next().await?;
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, .. })
+            if start.name == "stream.read_open" && start.parent == Some(page_id))
+        );
         assert!(matches!(query.next().await?, Some(Observation::Completed {
             start, bytes: Some(16), ..
         }) if start.parent == Some(parent) && start.mechanism == Mechanism::Io
@@ -669,7 +712,7 @@ mod replay_tests {
         let disabled = replay.next_page_observed(None, None).await;
         assert!(disabled.result?.is_none());
         assert!(matches!(disabled.observation?, Settlement::Disabled));
-        assert_eq!(traces.tail().await?, 2);
+        assert_eq!(traces.tail().await?, 4);
 
         let mut incomplete = data.replay(1).until(2);
         let observed = incomplete
@@ -694,10 +737,12 @@ mod replay_tests {
             return Err("unretained failure fabricated a terminal".into());
         };
         drop(recording);
-        let mut query = TraceQuery::new(traces.read(2, 1).await?, Default::default());
+        let mut query = TraceQuery::new(traces.read(4, 3).await?, Default::default());
         query.next().await?;
         assert_eq!(query.active().len(), 1);
-        assert!(query.totals().is_empty());
+        while query.next().await?.is_some() {}
+        assert_eq!(query.active().len(), 1);
+        assert_eq!(query.totals()[&Mechanism::Io].completed, 1);
 
         // A real producer-capacity refusal must not replace the successful
         // read, consume its payload or turn its cursor into a retry.
@@ -722,7 +767,7 @@ mod replay_tests {
             matches!(observed.observation, Err(error) if error.category() == StreamError::Capacity)
         );
 
-        // Pause the second trace write after the real data page has arrived.
+        // Pause the page terminal after its child cursor admission has settled.
         // Dropping the observed future must not commit an undelivered cursor.
         let inner = MemoryStream::default();
         inner
@@ -739,6 +784,7 @@ mod replay_tests {
             missing: u64::MAX,
             extra_records: 0,
             inspect_on_write: false,
+            pause_at: 3,
             pause_write: Some(writes.clone()),
             resume_write: None,
         });
@@ -748,10 +794,10 @@ mod replay_tests {
         let mut replay = data.replay(0);
         let mut cancelled = Box::pin(replay.next_page_observed(Some(&recorder), None));
         assert!(futures::poll!(&mut cancelled).is_pending());
-        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 4);
         drop(cancelled);
         assert_eq!(replay.cursor(), 0);
-        assert_eq!(traces.tail().await?, 1);
+        assert_eq!(traces.tail().await?, 3);
         let retried = replay.next_page_observed(Some(&recorder), None).await;
         assert_eq!(
             retried.result?.ok_or("cancelled read skipped page")?[0]
@@ -774,6 +820,7 @@ mod replay_tests {
                     missing,
                     extra_records: 0,
                     inspect_on_write: false,
+                    pause_at: 1,
                     pause_write: None,
                     resume_write: None,
                 },
@@ -807,6 +854,7 @@ mod replay_tests {
                 missing: u64::MAX,
                 extra_records: 1,
                 inspect_on_write: false,
+                pause_at: 1,
                 pause_write: None,
                 resume_write: None,
             },
