@@ -739,7 +739,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             forked
                 .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
                 .await
-                .map_err(|failure| agent(failure.error))?
+                .expect("read the retained plan before continuation")
                 .value
                 .as_ref(),
             b"at cut"
@@ -786,7 +786,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             forked
                 .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
                 .await
-                .map_err(|failure| agent(failure.error))?
+                .expect("read the fork's plan after continuation")
                 .value
                 .as_ref(),
             if operation == "treatment" {
@@ -829,7 +829,7 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
         workspace
             .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
             .await
-            .map_err(|failure| agent(failure.error))?
+            .expect("read the unchanged parent's plan after continuation")
             .value
             .as_ref(),
         b"after cut"
