@@ -159,3 +159,21 @@ the native regression must fail at `cancelled native point read admitted absence
 Apply each independently, require that exact assertion, reverse it and require
 the identical regression to pass. These new tests and mutant executions are
 pending; patch applicability is not a runtime kill or native mounted-file proof.
+
+`supervision::streams::tests::signal_files_follow_a_continuing_runs_pause_at_the_captured_cut`
+in `acyclic-harness-core --lib` also reads both original run cuts through
+`native_signal_file`. The returned JSON must equal the portable original-cut
+projection and retain the native output allocation until its bytes retire.
+Zero and missing-signal cuts remain absent; decoder denial, cancellation,
+another agent's source and a payload indexed under the wrong kind are refused.
+`native-signal-original-cut.patch` substitutes the latest source cut and must
+fail at `native signal borrowed a later run or signal cut`.
+`native-signal-output-custody.patch` substitutes an ordinary output buffer and
+must fail at `native signal output lost its original allocation owner`.
+Run each mutation independently with that same regression, require the named
+assertion, reverse it and require the unchanged regression to pass again.
+`supervision::events::tests::supervision_event_decode_custody_covers_native_storage`
+measures real decoder allocations for every lifecycle variant, including long
+owned strings, and requires the original peak reservation and retained custody
+to cover the actual allocations and retire completely. These new executions
+remain pending. This proves neither a mounted adapter nor a live PR producer.

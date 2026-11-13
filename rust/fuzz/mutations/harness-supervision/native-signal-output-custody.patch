@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/supervision/streams/native.rs b/rust/crates/harness-core/src/supervision/streams/native.rs
+--- a/rust/crates/harness-core/src/supervision/streams/native.rs
++++ b/rust/crates/harness-core/src/supervision/streams/native.rs
+@@ -136,6 +136,6 @@
+     io.remaining()?;
+     Ok(Some(NativeSignalFile {
+         sequence: selected.sequence,
+-        bytes,
++        bytes: OwnedBytes::copy_from_slice(&bytes),
+     }))
+ }

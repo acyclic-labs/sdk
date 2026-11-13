@@ -27,7 +27,9 @@ pub const RUN_KEY: &[u8] = b"run";
 mod tests;
 
 /// Stable file name under `status/supervision/`, with `.json` appended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// An identical invocation with byte-identical command arguments failed with the identical error.
@@ -59,7 +61,19 @@ impl Kind {
 }
 
 /// Policy actions, ordered by strength when several queries fire at one cut.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    crate::HeapLayout,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     /// Publish the signal and keep running.
@@ -84,7 +98,7 @@ pub struct Control {
 }
 
 /// User-owned capacity. Missing dimensions are truly unbounded.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Reservation {
     /// Total reported input plus output tokens, without double-counting cached input.
@@ -231,7 +245,7 @@ impl Policy {
 }
 
 /// Incomplete measurements remain incomplete; they never become a zero charge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Total {
     /// Sum of the measurements actually reported by the source.
@@ -380,7 +394,7 @@ pub enum Observation<'a> {
 
 /// Only source fingerprints and counters are public; no command/error/model
 /// content is duplicated into the supervision stream or derived signal files.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Evidence {
     /// Counter cell that proves the repeated signature.
@@ -413,7 +427,7 @@ pub enum Evidence {
 
 /// Version-one `status/supervision/<kind>.json`, also published as the stream's
 /// signal event. Its source sequence makes exact replay distinguishable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct Signal {
     /// Must be one.

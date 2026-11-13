@@ -125,7 +125,7 @@ pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn original_sdk_metadata_output<T>(
+pub(crate) fn original_sdk_metadata_output<T>(
     original: &acyclic_fs::NativeMaterializationWork,
     output: NativeStreamOutput<T>,
 ) -> Result<NativeStreamOutput<T>> {

@@ -143,6 +143,171 @@ async fn signal_files_follow_a_continuing_runs_pause_at_the_captured_cut() -> Te
             serde_json::from_str(&values.first().ok_or("pause reason disappeared")?.text)?;
         assert_eq!(signal.sequence, expected_sequence);
         assert_eq!(values[0].input.stream, events);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let original = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = original.live_allocation_bytes();
+            let projected = native_signal_file(
+                &provider,
+                &agent,
+                SignalFileRead {
+                    source: events.clone(),
+                    before: cut,
+                    at_least: Default::default(),
+                    kind: Kind::RepeatFailure,
+                },
+                &original,
+            )
+            .await?
+            .ok_or("native pause reason disappeared")?;
+            assert_eq!(
+                serde_json::from_slice::<Signal>(&projected.bytes)?,
+                signal,
+                "native signal borrowed a later run or signal cut"
+            );
+            assert_eq!(projected.sequence, values[0].input.sequence);
+            assert!(
+                original.live_allocation_bytes() > baseline,
+                "native signal output lost its original allocation owner"
+            );
+            drop(projected);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
+        // Absence is distinct from successful measured data, decoder denial
+        // and cancellation. None may silently use the portable entrance.
+        for (kind, cut, decode, cancelled, absent) in [
+            (Kind::RepeatFailure, 0, true, false, true),
+            (Kind::Stuck, b_cut, true, false, true),
+            (Kind::RepeatFailure, b_cut, false, false, false),
+            (Kind::RepeatFailure, 0, true, true, false),
+        ] {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let original = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::WorkBudget {
+                    bytes_decoded: if decode { budget.bytes_decoded } else { 0 },
+                    ..budget
+                },
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = original.live_allocation_bytes();
+            if cancelled {
+                cancellation.cancel();
+            }
+            let result = native_signal_file(
+                &provider,
+                &agent,
+                SignalFileRead {
+                    source: events.clone(),
+                    before: cut,
+                    at_least: Default::default(),
+                    kind,
+                },
+                &original,
+            )
+            .await;
+            if absent {
+                assert!(result?.is_none(), "absent signal became a status file");
+            } else {
+                assert!(
+                    result.is_err(),
+                    "native signal query bypassed its original denial"
+                );
+                drop(result);
+            }
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = original.live_allocation_bytes();
+        let foreign = AgentPath::root(&AgentId::from_bytes([90; 16]));
+        assert!(
+            native_signal_file(
+                &provider,
+                &foreign,
+                SignalFileRead {
+                    source: events.clone(),
+                    before: b_cut,
+                    at_least: Default::default(),
+                    kind: Kind::RepeatFailure,
+                },
+                &original,
+            )
+            .await
+            .is_err(),
+            "native signal query accepted another agent's source"
+        );
+        // An authentic indexed record with a mismatched signal payload is
+        // rejected by the same validator on portable and native entrances.
+        let invalid = Event {
+            version: 1,
+            agent: agent.clone(),
+            run: Some(a),
+            source: Position {
+                stream: agent.inbox()?,
+                sequence: 2,
+            },
+            event: Lifecycle::Signal {
+                signal: Signal {
+                    version: 1,
+                    sequence: 2,
+                    kind: Kind::ValidationLoop,
+                    count: 1,
+                    evidence: super::super::Evidence::Signature { key: [0; 32] },
+                },
+                action: super::super::Action::Alert,
+            },
+        };
+        provider
+            .append(acyclic_stream::AppendRequest {
+                path: events.clone(),
+                records: vec![AppendRecord {
+                    value: serde_json::to_vec(&invalid)?.into(),
+                    headers: acyclic_stream::RecordHeaders::new(
+                        vec![
+                            Bytes::from_static(CURRENT_RUN_KEY).into(),
+                            signal_key(a, Kind::RepeatFailure).into(),
+                        ],
+                        Vec::new(),
+                    )?,
+                }],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        assert!(
+            Queries::new(&provider, &agent, a)
+                .read_signal(Kind::RepeatFailure)
+                .await
+                .is_err()
+        );
+        assert!(
+            native_signal_file(
+                &provider,
+                &agent,
+                SignalFileRead {
+                    source: events,
+                    before: u64::MAX,
+                    at_least: Default::default(),
+                    kind: Kind::RepeatFailure,
+                },
+                &original,
+            )
+            .await
+            .is_err(),
+            "native signal accepted an indexed payload for another kind"
+        );
+        assert_eq!(original.live_allocation_bytes(), baseline);
     }
     Ok(())
 }
