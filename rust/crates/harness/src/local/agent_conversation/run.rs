@@ -830,7 +830,7 @@ mod tests {
                 .is_none(),
             "a writable lookalike declaration bypassed the original publication"
         );
-        conversation
+        let interleaved = conversation
             .send("interleaved-user", "Independent user input")
             .await?;
         release.send(()).unwrap();
@@ -886,6 +886,13 @@ mod tests {
             .await?;
         finish.send(()).unwrap();
         assert!(matches!(run.await?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
+        let mut interleaved_events = conversation.observe(None).await?;
+        assert!(matches!(
+            conversation
+                .settle("interleaved-user", interleaved, &mut interleaved_events)
+                .await?,
+            Settlement::Reply(Reply::Answered { .. }),
+        ));
         let accepted = provider.request_count();
         let first = provider.request(0).unwrap();
         let second = provider.request(2).unwrap();
