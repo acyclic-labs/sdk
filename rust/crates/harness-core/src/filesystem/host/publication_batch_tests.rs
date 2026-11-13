@@ -941,7 +941,13 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         let mut changes = vec![add("nested/first"), add("second")];
         changes.extend(paths.iter().map(|path| add(path.as_str())));
         let key = IdempotencyKey::new("conditional-create")?;
-        eprintln!("conditional adapter {adapter}: preparing publication");
+        let parent_checks = std::sync::atomic::AtomicUsize::new(0);
+        let check_parent = |action, path: &str| {
+            if action == Action::Create && path == "batch" {
+                parent_checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(())
+        };
         let original = host
             .put_changes(
                 &volume,
@@ -950,10 +956,14 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                 &key,
                 Some(64),
                 create_access,
-                None,
+                Some(&check_parent),
             )?
             .await?;
-        eprintln!("conditional adapter {adapter}: publication prepared");
+        assert_eq!(
+            parent_checks.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a shared missing parent is authorized once at its original creation"
+        );
         let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
         let opened = host.open(&workspace, None).await?;
         let proof_io = PreparationIo::for_unmeasured(&cancellation)?;
@@ -1021,7 +1031,6 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
                     ))
                 )
         ));
-        eprintln!("conditional adapter {adapter}: recovering bounded receipt");
         let observed = host
             .observe_changes(&volume, &write, &key, Some(receipt_bytes), create_access)?
             .await?
@@ -1040,7 +1049,6 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             host.read_content(first, &read, 64, None).await?.as_ref(),
             b"first"
         );
-        eprintln!("conditional adapter {adapter}: replaying publication");
         let replay = host
             .put_changes(
                 &volume,
@@ -1183,7 +1191,6 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
         let volume_delete =
             crate::Capabilities::new([volume.capability(VolumeOperation::Delete, &mut None)?]);
         for (index, delete) in [structured_delete, volume_delete].iter().enumerate() {
-            eprintln!("conditional adapter {adapter}: removal {index}");
             let first = original.files().nth(index).unwrap();
             let before = host.resolve(&workspace, None).await?;
             let delete_access = ContentAccess {

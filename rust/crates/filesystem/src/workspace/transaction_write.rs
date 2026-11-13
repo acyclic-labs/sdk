@@ -368,16 +368,46 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         work.finish(result, &accounting)
     }
 
+    /// Creates missing directory prefixes, checking each new prefix before
+    /// staging it. Existing directories need no creation authority. All checks
+    /// use the transaction's own observations, including earlier staged work.
+    pub async fn create_dir_all_checked<W: crate::facade::FsWork, E: From<WorkspaceError>>(
+        &mut self,
+        path: &str,
+        work: W,
+        cancellation: &CancellationToken,
+        mut check: impl FnMut(&str) -> Result<(), E>,
+    ) -> W::Output<(), E> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .create_dirs_checked(path, &mut accounting, cancellation, &mut check)
+            .await;
+        work.finish(result, &accounting)
+    }
+
     pub(crate) async fn create_dirs(
         &mut self,
         path: &str,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        accounting.check()?;
+        self.create_dirs_checked(path, accounting, cancellation, &mut |_| Ok(()))
+            .await
+    }
+
+    async fn create_dirs_checked<E: From<WorkspaceError>>(
+        &mut self,
+        path: &str,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+        check: &mut impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        accounting.check().map_err(WorkspaceError::from)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            self.checkout.validate_native_work(original)?;
+            self.checkout
+                .validate_native_work(original)
+                .map_err(WorkspaceError::from)?;
         }
         if PortablePath::validate(path, self.checkout.volume_config().limits)
             .map_err(|error| WorkspaceError::from(crate::kernel::NamespacePathError::Path(error)))?
@@ -391,24 +421,34 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             .map(|(index, _)| index)
             .chain(std::iter::once(path.len()))
         {
-            let prefix = path.get(..end).ok_or(crate::FsError::InvalidDiff)?;
+            let prefix = path
+                .get(..end)
+                .ok_or_else(|| WorkspaceError::from(crate::FsError::InvalidDiff))?;
             let path = self.mutation_path(prefix, accounting, cancellation)?;
             // Existing prefixes require the exact name binding and kind, not
             // the directory's child-entry payload. Sibling additions are safe.
             match self
                 .checkout
                 .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, false)
-                .await?
+                .await
+                .map_err(WorkspaceError::from)?
                 .0
                 .record
             {
-                Some(record) if record.kind == FileKind::Directory => path.retire(accounting)?,
+                Some(record) if record.kind == FileKind::Directory => {
+                    path.retire(accounting).map_err(WorkspaceError::from)?;
+                }
                 Some(_) => {
-                    path.retire(accounting)?;
-                    return Err(WorkspaceError::NotDirectory);
+                    path.retire(accounting).map_err(WorkspaceError::from)?;
+                    return Err(WorkspaceError::NotDirectory.into());
                 }
                 None => {
-                    let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
+                    if let Err(error) = check(prefix) {
+                        path.retire(accounting).map_err(WorkspaceError::from)?;
+                        return Err(error);
+                    }
+                    let mut operations = crate::kernel::Owned::allocate(1, accounting)
+                        .map_err(WorkspaceError::from)?;
                     Self::push_mutation(
                         &mut operations,
                         crate::kernel::Owned::new(
