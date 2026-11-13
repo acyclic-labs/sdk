@@ -46,7 +46,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
     /// own placement command, and admits only through [`Self::place`].
     #[must_use]
     pub fn with_external_placement(mut self) -> Self {
-        self.runtime = self.runtime.with_external_placement();
+        self.runtime = self.runtime.externally_placed();
         self
     }
 
