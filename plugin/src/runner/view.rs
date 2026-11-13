@@ -1294,7 +1294,11 @@ async fn run_current(
         tokio::select! {
             recalled = futures::future::poll_fn(|cx| prompt_history.poll(cx)) => {
                 match recalled {
-                    Ok(reply) => { if input.resolve_history(reply.request, &reply.expected, reply.text.as_deref(), reply.previous, now) { input.refresh_completions(); } },
+                    Ok(reply) => {
+                        let accepted = input.resolve_history(reply.request, &reply.expected, reply.text.as_deref(), reply.previous, now);
+                        prompt_history.resolve(&reply, accepted);
+                        if accepted { input.refresh_completions(); }
+                    },
                     Err(error) => { view.notice = Some(error); },
                 }
             }
