@@ -571,7 +571,7 @@ fn an_open_drops_the_size_of_any_version_it_does_not_read() -> Result<(), Box<dy
     };
     assert!(
         core.state_to_finish().invalidation.deferred.iter().any(|item| {
-            matches!(item, KernelCacheItem::Attributes { inode: queued, .. } if *queued == inode)
+            matches!(item, super::super::invalidation::KernelCacheItem::Attributes { inode: queued, .. } if *queued == inode)
         }),
         "an open of a newer version lost its attribute invalidation"
     );
