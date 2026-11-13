@@ -134,7 +134,9 @@ fn configuration_pin() {
         Adapter::Anthropic,
         Adapter::Gemini,
     ] {
-        let (provider, _) = crate::tests::provider(family, 200);
+        let (mut provider, _) = crate::tests::provider(family, 200);
+        // This probe deliberately reopens one conversation in each feature build.
+        provider.conversation = acyclic_harness_core::OperationId::from_bytes([1; 16]);
         let (request, _) = crate::tests::request(&provider).unwrap();
         let mut request = request.request().clone();
         request.sampling = ModelSampling {

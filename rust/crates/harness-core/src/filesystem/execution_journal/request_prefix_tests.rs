@@ -122,7 +122,10 @@ async fn first_step_reuses_preceding_turn_and_writes_only_appended_content() -> 
                 .collect(),
         );
         let preceding = OperationId::new();
-        journal = journal.with_bound_selection(selected.clone());
+        journal = journal
+            .with_preceding_turn(None)
+            .await?
+            .with_bound_selection(selected.clone());
         let output = executor
             .execute(input(preceding, &selected), &journal)
             .await?;

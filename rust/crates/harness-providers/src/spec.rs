@@ -107,6 +107,8 @@ pub struct ProviderSpec {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum PromptCache {
+    /// The endpoint manages caching implicitly and accepts no request cache fields.
+    Implicit,
     /// The protocol's own form: Anthropic breakpoints, the Responses
     /// and Chat `prompt_cache_key`, and implicit caching on Gemini. Chat's key
     /// requests stable placement; cache admission and retention remain automatic.

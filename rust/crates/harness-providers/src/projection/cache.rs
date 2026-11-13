@@ -93,6 +93,9 @@ fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
 ///   model's own one.
 /// - Gemini: implicit caching over the stable order.
 pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
+    if provider.config.prompt_cache == crate::PromptCache::Implicit {
+        return;
+    }
     match provider.config.adapter {
         Family::Anthropic => fields.insert(Field::CacheControl, control(provider)),
         Family::Responses | Family::Chat => {
@@ -227,9 +230,10 @@ pub(crate) fn encode(
         });
     }
     let binding = provider.profile_binding();
-    let explicit = provider.config.adapter == Family::Anthropic
-        || (provider.config.adapter == Family::Chat
-            && provider.config.prompt_cache == crate::PromptCache::Routed);
+    let explicit = provider.config.prompt_cache != crate::PromptCache::Implicit
+        && (provider.config.adapter == Family::Anthropic
+            || (provider.config.adapter == Family::Chat
+                && provider.config.prompt_cache == crate::PromptCache::Routed));
     let mut hash = blake3::Hasher::new();
     hash.update(DOMAIN);
     for value in identity(provider) {
@@ -287,14 +291,51 @@ mod tests {
             model::{ModelEvent, ModelProvider},
         };
         use futures::TryStreamExt as _;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
 
-        let (provider, transport) = crate::tests::provider(Family::Chat, 200);
+        let generation = Arc::new(AtomicUsize::new(0));
+        let source = generation.clone();
+        let (changes, _) = tokio::sync::watch::channel(0_u64);
+        let watched = changes.clone();
+        let mut credentials = crate::Credentials::default().with_watch(move || {
+            let mut changed = watched.subscribe();
+            changed.borrow_and_update();
+            acyclic_auth::credential::CredentialWatch::from_custodian(
+                acyclic_auth::credential::CredentialValidity {
+                    now_unix_seconds: 0,
+                    revision: None,
+                },
+                async move {
+                    changed
+                        .changed()
+                        .await
+                        .map_err(|_| acyclic_auth::credential::CredentialCacheError::Unavailable)
+                },
+            )
+        });
+        credentials.source = Some(Arc::new(move |provider, origin| {
+            Ok(
+                (provider == "fixture" && origin == crate::credentials::Source::Environment)
+                    .then(|| format!("fixture-{}", source.load(Ordering::SeqCst))),
+            )
+        }));
+        let (mut provider, transport) = crate::tests::provider(Family::Chat, 200);
+        provider.inputs = Some(Arc::new(crate::credentials::CredentialInputs::new(
+            credentials,
+        )));
         let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
+        let provider = acyclic_harness_core::model::conformance::counted(provider);
+        let ledger = provider.ledger();
         let conversation = OperationId::new();
         let first = provider.bind_conversation(conversation).unwrap();
         let reopened = provider.bind_conversation(conversation).unwrap();
         let other = provider.bind_conversation(OperationId::new()).unwrap();
-        for selected in [first, reopened, other] {
+        for (revision, selected) in [first, reopened, other].into_iter().enumerate() {
+            generation.store(revision, Ordering::SeqCst);
+            changes.send_replace(revision as u64);
             let events: Vec<ModelEvent> = selected
                 .generate(
                     &prepared,
@@ -318,6 +359,13 @@ mod tests {
             .map(|request| serde_json::from_slice(&request.body).unwrap())
             .collect();
         assert_eq!(bodies.len(), 3);
+        for (revision, request) in sent.iter().enumerate() {
+            assert_eq!(
+                request.headers["authorization"],
+                format!("Bearer fixture-{revision}")
+            );
+        }
+        assert_eq!(ledger.requests().data(), 3);
         assert_eq!(bodies[0]["prompt_cache_key"], bodies[1]["prompt_cache_key"]);
         assert_ne!(bodies[0]["prompt_cache_key"], bodies[2]["prompt_cache_key"]);
         assert_eq!(bodies[0]["messages"], bodies[2]["messages"]);
@@ -325,6 +373,47 @@ mod tests {
             "affinity_keys={}",
             json!([bodies[0]["prompt_cache_key"], bodies[2]["prompt_cache_key"]])
         );
+    }
+
+    #[tokio::test]
+    async fn compatible_chat_endpoints_add_cache_fields_only_when_selected() {
+        use acyclic_harness_core::model::ModelProvider as _;
+        use futures::TryStreamExt as _;
+
+        let (mut provider, transport) = crate::tests::provider(Family::Chat, 200);
+        provider.config =
+            std::sync::Arc::new(crate::endpoints::local("http://127.0.0.1:1234/v1").unwrap());
+        let (prepared, dispatch) = crate::tests::request(&provider).unwrap();
+        for selection in [
+            None,
+            Some(crate::PromptCache::Native),
+            Some(crate::PromptCache::Routed),
+        ] {
+            if let Some(selection) = selection {
+                std::sync::Arc::make_mut(&mut provider.config).prompt_cache = selection;
+            }
+            provider
+                .generate(&prepared, dispatch)
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+        }
+        let sent = transport.sent.lock().unwrap();
+        let bodies: Vec<serde_json::Value> = sent
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 3);
+        assert!(bodies[0].get("prompt_cache_key").is_none());
+        assert!(bodies[0].get("cache_control").is_none());
+        assert!(
+            bodies[1]["prompt_cache_key"]
+                .as_str()
+                .is_some_and(|key| !key.is_empty())
+        );
+        assert!(bodies[1].get("cache_control").is_none());
+        assert_eq!(bodies[1]["prompt_cache_key"], bodies[2]["prompt_cache_key"]);
+        assert!(bodies[2].get("cache_control").is_some());
     }
 
     #[tokio::test]

@@ -18,7 +18,7 @@ fn chat(base_url: String, authentication: Authentication) -> Result<ProviderSpec
         max_event_bytes: None,
         retry: RetrySpec::DEFAULT,
         timeouts: TimeoutSpec::DEFAULT,
-        prompt_cache: crate::PromptCache::Native,
+        prompt_cache: crate::PromptCache::Implicit,
     })
 }
 
@@ -60,6 +60,7 @@ pub fn vertex(project: &str, location: &str) -> Result<ProviderSpec> {
 
 /// Ollama, llama.cpp, vLLM or another server exposing OpenAI Chat Completions.
 /// HTTP is accepted only on loopback, using the same URL validation as every provider.
+/// Cache fields require selecting a supported form in `ProviderSpec::prompt_cache`.
 pub fn local(base_url: &str) -> Result<ProviderSpec> {
     chat(base_url.to_owned(), Authentication::Optional)
 }
