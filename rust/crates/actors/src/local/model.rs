@@ -18,6 +18,7 @@ use futures::TryStreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod composition;
+mod durability;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Fault {

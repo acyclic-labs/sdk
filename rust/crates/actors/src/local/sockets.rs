@@ -34,8 +34,8 @@ use acyclic_stream::session::{
 };
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, BoxProviderStream, CommitCondition, CommitEffect,
-    CommitMutation, CommitOutcome, IdempotencyKey, ReadRequest, RevisionCut, StreamError,
-    StreamPath, StreamProvider,
+    CommitMutation, IdempotencyKey, ReadRequest, RevisionCut, StreamError, StreamPath,
+    StreamProvider,
 };
 use bytes::Bytes;
 use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
@@ -300,12 +300,23 @@ async fn commit<P: StreamProvider + ?Sized>(
     for effect in effects {
         publication.join(effect)?;
     }
-    let request = publication.into_request()?;
     let mut undecided = Undecided::new();
     loop {
-        match store.provider().commit(request.clone()).await {
-            Ok(outcome) => return Ok(matches!(outcome, CommitOutcome::Committed(_))),
-            Err(error) => undecided.retry(executor, error.into()).await?,
+        match store.submit(publication).await {
+            Ok(()) => return Ok(true),
+            Err(Error::Conflict) => return Ok(false),
+            Err(Error::Unknown {
+                publication: retained,
+                source,
+            }) if matches!(
+                source.category(),
+                StreamError::Unavailable | StreamError::InvalidResponse
+            ) =>
+            {
+                publication = *retained;
+                undecided.retry(executor, source.into()).await?;
+            }
+            Err(error) => return Err(error),
         }
     }
 }

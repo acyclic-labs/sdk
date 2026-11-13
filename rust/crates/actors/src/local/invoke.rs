@@ -205,15 +205,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 for effect in joined(&input)? {
                     publication.join(effect)?;
                 }
-                let mut request = publication.into_request()?;
-                let binding = acyclic_stream::request::commit_binding_with(&mut request, |_| {
-                    Ok::<(), StreamError>(())
-                })??;
-                let acyclic_stream::AcceptedCommitOutcome::Committed { receipt, envelope } =
-                    self.provider.commit_accepted(request).await?
+                let binding = acyclic_stream::request::commit_binding_with(
+                    &mut publication.request,
+                    |_| Ok::<(), StreamError>(()),
+                )??;
+                let acyclic_stream::AcceptedCommitOutcome::Committed { receipt, envelope } = self
+                    .provider
+                    .commit_accepted(publication.request.clone())
+                    .await?
                 else {
                     return Err(Error::Conflict);
                 };
+                self.confirm_durable(publication).await?;
                 // Both views come from the original acceptance or exact-key replay.
                 // Join that fact to the request, never reconstructing caller bodies.
                 if envelope.commit_id != receipt.commit_id

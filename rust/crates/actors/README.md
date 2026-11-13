@@ -1,5 +1,47 @@
 # acyclic-actors
 
+## Core guarantees
+
+The runtime and Store share these guarantees over the provider's atomic,
+conditionally committed history:
+
+* **Single live activation.** Only the activation admitted by the current
+  placement epoch and original branch can publish. A retired process may still
+  exist; its checkpoint, consumed cursor, alarm and effects cannot commit over
+  the replacement's state. Resident retirement also preserves one slot while
+  a delivery or placement pins it. External effects require resource-side
+  fencing, as described by `guest::Requests`.
+* **Acknowledgement after durability.** A successful Actors publication or
+  invocation admission covers a device-durable cut, including when its caller
+  defers Stream writes or selects ordering-only local publication. A flush
+  failure after acceptance retains `Error::Unknown` and the original request.
+* **Success never reported as refusal, nor refusal as success.** An uncertain
+  publication retains its exact request and participant. A later retry refusal
+  cannot settle an earlier possible success. A conditional refusal consumes
+  no input and returns a conflict; a guest failure is a distinct committed
+  invocation outcome.
+* **Completed result survives ownership change.** A completed call retains its
+  original terminal, response bytes and co-committed state revision. Reading
+  that result never substitutes the actor's latest state or rechecks the
+  completing activation's current ownership.
+
+These properties exercise production `Store` and `Runtime` code, using the
+existing bounded fault driver, event-held handlers and native journal recovery.
+`local::model::composition` covers lost acknowledgements, definite refusals,
+participant settlement and completed replies across successive owners;
+`local::model::durability` checks the real journal's durable watermark at each
+acknowledgement; the runtime placement/restart property holds an old handler
+across transfer and reopens native storage. The existing placement Loom test
+checks pinning against resident retirement.
+
+Run `node scripts/qualify-mcp-loom.mjs --actors-core-mutations` to qualify the
+negative controls. Each control changes production code while keeping its
+property unchanged: remove the actor fence, omit durability confirmation,
+settle an uncertain request as refused, report a conflict as success, or read
+a completed reply against the latest state. Each must fail its semantic
+assertion, then the restored production source must pass. Compilation failure,
+an empty test selection or an incomplete run is not a rejected control.
+
 `local::Store::create` starts a dormant actor at epoch zero, either empty or
 from a template's exact cut. The creation overlay clears inherited alarms,
 metadata and journal history and supplies the initial checkpoint and funding.

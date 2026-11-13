@@ -907,7 +907,10 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
             key("rejected-participant")?,
         )
         .await;
-    assert!(matches!(result, Err(Error::Conflict)));
+    assert!(
+        matches!(result, Err(Error::Conflict)),
+        "a refused publication was reported as success: {result:?}"
+    );
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     assert_eq!(counts.rejected.load(Ordering::SeqCst), 1);

@@ -1392,6 +1392,25 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         self.submit_retained(prepared).await.map(|_| ())
     }
 
+    /// An accepted local frame can still be deferred by its caller or ordered
+    /// without a device flush. Actor acknowledgements require the durable cut.
+    /// A failed flush cannot turn the already accepted publication into refusal.
+    async fn confirm_durable(
+        &self,
+        mut prepared: PreparedPublish,
+    ) -> Result<PreparedPublish, Error> {
+        if self.provider.context().deferred_durability()
+            && let Err(source) = self.provider.durability_barrier().await
+        {
+            prepared.acknowledgement_unknown = true;
+            return Err(Error::Unknown {
+                publication: Box::new(prepared),
+                source,
+            });
+        }
+        Ok(prepared)
+    }
+
     /// Submit once and return the exact authored state confirmed by the original
     /// receipt. Foreign publications return None. No post-write read or decode
     /// is needed. Unknown outcomes retain the entire publication in Error::Unknown.
@@ -1465,6 +1484,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     prepared.sealed = true;
                 }
                 let outcome = self.provider.commit(prepared.request.clone()).await;
+                if matches!(&outcome, Ok(CommitOutcome::Committed(_))) {
+                    prepared = self.confirm_durable(prepared).await?;
+                }
                 // A retry refusal cannot undo an earlier attempt that may have applied.
                 if prepared.acknowledgement_unknown {
                     if let Err(source) = &outcome {
