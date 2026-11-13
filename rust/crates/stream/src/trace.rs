@@ -6,8 +6,13 @@
 
 use crate::RetainedRecord;
 
+#[cfg(feature = "serde")]
+mod query;
+#[cfg(feature = "serde")]
+pub use query::{ActiveSpan, MechanismTotals, Observation, QueryError, QueryViolation, TraceQuery};
+
 /// Identity assigned by one process, also identifying its monotonic clock domain.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpanId {
     /// Unique producer incarnation; never reused after a process restart.
@@ -17,7 +22,7 @@ pub struct SpanId {
 }
 
 /// Mechanism whose request-path cost is being accounted for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum Mechanism {
