@@ -470,3 +470,130 @@ mod write_tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "serde"))]
+mod indexed_trace_tests {
+    use super::*;
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn indexed_lookup_preserves_original_record_cut_and_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = Arc::new(MemoryStream::default());
+        let data = Stream::new(provider.clone(), "agents/worker/data")?;
+        data.append(
+            AppendRecord::latest(
+                bytes::Bytes::from_static(b"original"),
+                bytes::Bytes::from_static(b"selected"),
+                false,
+            )?,
+            IdempotencyKey::unique(),
+        )
+        .await?;
+        let original = provider
+            .latest(
+                data.path().clone(),
+                bytes::Bytes::from_static(b"selected"),
+                Default::default(),
+            )
+            .await?;
+        let trace = Stream::new(provider.clone(), "agents/worker/trace")?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [51; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        let parent = root.id();
+        let (selected, condition) = root
+            .within(provider.latest_fenced(
+                data.path().clone(),
+                Some(bytes::Bytes::from_static(b"selected")),
+                Default::default(),
+            ))
+            .await?;
+        assert_eq!(selected, original);
+        assert_eq!(
+            condition,
+            CommitCondition::Tail {
+                path: data.path().clone(),
+                expected: 1
+            }
+        );
+        assert!(
+            root.within(provider.latest(
+                data.path().clone(),
+                bytes::Bytes::from_static(b"absent"),
+                Default::default()
+            ))
+            .await?
+            .is_none()
+        );
+        assert!(
+            root.within(provider.latest_before(data.path().clone(), None, 0, Default::default()))
+                .await?
+                .is_none()
+        );
+        assert!(
+            root.within(provider.latest(
+                trace.path().clone(),
+                bytes::Bytes::from_static(b"absent"),
+                Default::default()
+            ))
+            .await?
+            .is_none()
+        );
+        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        query.next().await?;
+        query.next().await?;
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
+            if start.name == "stream.latest_fence" && start.mechanism == Mechanism::ProviderCall
+                && start.parent == Some(parent)
+                && start.guarantee.as_deref() == Some("original_head_cut_for_optimistic_publication_fence"))
+        );
+        for expected_bytes in [8, 0] {
+            query.next().await?;
+            assert!(
+                matches!(query.next().await?, Some(Observation::Completed { start, bytes, result: Outcome::Succeeded, .. })
+                if start.name == "stream.latest_before" && start.mechanism == Mechanism::ProviderCall
+                    && start.parent == Some(parent)
+                    && start.guarantee.as_deref() == Some("indexed_record_strictly_before_original_cut")
+                    && bytes == Some(expected_bytes))
+            );
+        }
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { id, .. }) if id == parent)
+        );
+        assert_eq!(
+            trace.tail().await?,
+            8,
+            "zero cuts and diagnostic reads must not emit provider work"
+        );
+        assert_eq!(
+            provider
+                .latest(
+                    data.path().clone(),
+                    bytes::Bytes::from_static(b"selected"),
+                    Default::default()
+                )
+                .await?,
+            original
+        );
+        assert_eq!(
+            trace.tail().await?,
+            8,
+            "the request owner must not leak into unrelated work"
+        );
+        Ok(())
+    }
+}

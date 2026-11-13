@@ -115,27 +115,55 @@ pub trait StreamProviderExt: StreamProvider {
             if before == 0 {
                 return Ok(None);
             }
-            let mut selector = key.map(|key| ReadKeySeek::latest(key, before));
-            let mut from = if selector.is_some() { 0 } else { before - 1 };
-            let mut records = self
-                .read(ReadRequest {
-                    key: selector.clone(),
-                    path,
-                    from,
-                    limit: 1,
-                    at_least,
-                })
-                .await?;
-            let record = records.next().await.transpose()?;
-            if let Some(record) = &record {
-                if record.sequence >= before {
-                    return Err(StreamError::InvalidResponse);
+            #[cfg(feature = "serde")]
+            let diagnostic = crate::trace::is_source(&path);
+            let work = async move {
+                let mut selector = key.map(|key| ReadKeySeek::latest(key, before));
+                let mut from = if selector.is_some() { 0 } else { before - 1 };
+                let mut records = self
+                    .read(ReadRequest {
+                        key: selector.clone(),
+                        path,
+                        from,
+                        limit: 1,
+                        at_least,
+                    })
+                    .await?;
+                let record = records.next().await.transpose()?;
+                if let Some(record) = &record {
+                    if record.sequence >= before {
+                        return Err(StreamError::InvalidResponse);
+                    }
+                    if let Some(selector) = &mut selector {
+                        selector.advance(&mut from, record.sequence, record.headers.keys())?;
+                    }
                 }
-                if let Some(selector) = &mut selector {
-                    selector.advance(&mut from, record.sequence, record.headers.keys())?;
-                }
+                Ok(record)
+            };
+            #[cfg(feature = "serde")]
+            if diagnostic {
+                return work.await;
             }
-            Ok(record)
+            #[cfg(feature = "serde")]
+            return crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.latest_before",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("indexed_record_strictly_before_original_cut"),
+                },
+                work,
+                |record| {
+                    Some(
+                        record
+                            .as_ref()
+                            .map_or(0, |record| record.value.len() as u64),
+                    )
+                },
+            )
+            .await;
+            #[cfg(not(feature = "serde"))]
+            work.await
         }
     }
 
@@ -160,8 +188,29 @@ pub trait StreamProviderExt: StreamProvider {
                 limit: 1,
                 at_least,
             };
-            let heads = self.heads(request.clone()).await?;
-            heads.validate_for(&request)?;
+            let work = async {
+                let heads = self.heads(request.clone()).await?;
+                heads.validate_for(&request)?;
+                Ok::<_, StreamError>(heads)
+            };
+            #[cfg(feature = "serde")]
+            let heads = if crate::trace::is_source(&path) {
+                work.await?
+            } else {
+                crate::trace::observe(
+                    crate::trace::Request {
+                        name: "stream.latest_fence",
+                        mechanism: crate::trace::Mechanism::ProviderCall,
+                        parent: None,
+                        guarantee: Some("original_head_cut_for_optimistic_publication_fence"),
+                    },
+                    work,
+                    |_| None,
+                )
+                .await?
+            };
+            #[cfg(not(feature = "serde"))]
+            let heads = work.await?;
             let (before, condition) = match heads.heads.first().and_then(Option::as_ref) {
                 Some(head) => (
                     head.tail,
