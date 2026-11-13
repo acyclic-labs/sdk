@@ -101,8 +101,10 @@ fn shell_job_child() {
     let Ok(address) = std::fs::read_to_string("shell-job.addr") else {
         return;
     };
-    if let Ok(home) = std::fs::read_to_string("shell-job.timeout") {
+    if std::fs::exists("shell-job.timeout").unwrap() {
         std::fs::write("retained", b"before-stop").unwrap();
+        // The command's own view of the home volume, not the shared destination.
+        let home = std::env::var_os("ACYCLIC_VOLUME_HOME").unwrap();
         std::fs::write(
             std::path::PathBuf::from(home).join("timeout-retained"),
             b"before-stop",
@@ -224,15 +226,7 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
     let physical = harness.workspace.as_ref().unwrap();
     let (_, home) = physical.mounts.named(Some("home"))?;
     let home_volume = home.view.volume.clone();
-    let home_root = physical
-        .mounts
-        .native_root_for(home)
-        .ok_or_else(|| Error::Invalid("home has no native root".into()))?;
-    std::fs::write(
-        directory.path().join("shell-job.timeout"),
-        home_root.to_str().unwrap(),
-    )
-    .map_err(storage)?;
+    std::fs::write(directory.path().join("shell-job.timeout"), b"").map_err(storage)?;
     let invocation = ToolInvocation {
         operation_id: context.operation_id(),
         call_id: "foreground-cancellation".into(),
