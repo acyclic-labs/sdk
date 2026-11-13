@@ -158,9 +158,11 @@ async fn admission(
 
 async fn run(backend: &dyn Backend, case: Case) -> Result {
     let fixture = fixture::Fixture::new(backend).await?;
+    // Continue under the conversation audience that authenticated the seeded
+    // journal; changing it would invalidate its retained checkpoints.
     let audience = Authority {
         kind: AggregateKind::Conversation,
-        id: "workload".into(),
+        id: fixture.path.id().into(),
     };
     let clock = Arc::new(super::fixtures::AuthorityClock::new());
     let root = AuthorityRoot::with_clock("conformance", [7; 32], audience.clone(), clock.clone());
