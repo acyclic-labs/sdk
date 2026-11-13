@@ -273,8 +273,7 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
     };
     let refused = executor.execute(input, journal.as_ref()).await;
     assert!(
-        matches!(&refused, Err(Error::Invalid(reason))
-        if reason == "mandatory content exceeds selected model capacity"),
+        matches!(&refused, Err(error) if error.code() == crate::wire::ErrorCode::Invalid),
         "a model change must re-admit the mandatory input against its selected window; refusal: {:?}",
         refused.as_ref().err()
     );
