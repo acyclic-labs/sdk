@@ -584,6 +584,13 @@ fn owner_arguments(args: &Args) -> Vec<OwnerArgument> {
         ),
         reusable: args.workspace_mounting == args::Mounting::Auto,
     });
+    if args.environment_credentials {
+        arguments.push(OwnerArgument {
+            flag: "--environment-credentials",
+            value: None,
+            reusable: false,
+        });
+    }
     if args.default_config {
         arguments.push(OwnerArgument {
             flag: "--default-config",

@@ -63,7 +63,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &workspace,
             &generation,
             grant.policy_scope(),
-            None,
+            ceiling,
             io,
         )
         .await?;
