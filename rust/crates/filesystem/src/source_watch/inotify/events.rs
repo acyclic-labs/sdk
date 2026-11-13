@@ -64,6 +64,8 @@ impl Shared {
         if *remaining == 0 {
             reading.buffer = Vec::new();
             reading.filled = 0;
+            reading.cursor = 0;
+            reading.alias_cursor = 0;
             return Ok(Some(self.delivery.is_exact()));
         }
         let maximum = usize::try_from(
