@@ -49,6 +49,16 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         )
     }
 
+    /// Transfer one original append to the shared owned-publication mechanism.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    pub fn submit_append(&self, request: AppendRequest) -> crate::AppendPending {
+        crate::AppendPending::submit_append(
+            Arc::clone(&self.provider),
+            request,
+            &crate::runtime::PlatformExecutor,
+        )
+    }
+
     /// One atomic observation of history, durability and inherited origin.
     pub async fn head(&self) -> Result<PathHead, StreamError> {
         self.provider.head(self.path.clone()).await

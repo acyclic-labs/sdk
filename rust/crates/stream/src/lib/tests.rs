@@ -169,6 +169,7 @@ mod replay_tests {
         missing: u64,
         extra_records: u32,
         pause_write: Option<Arc<std::sync::atomic::AtomicUsize>>,
+        resume_write: Option<std::sync::Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
     }
 
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -200,6 +201,15 @@ mod replay_tests {
                 .as_ref()
                 .is_some_and(|writes| writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1)
             {
+                if let Some(resume) = &self.resume_write {
+                    let receiver = resume.lock().unwrap().take().unwrap();
+                    return Box::pin(async move {
+                        receiver
+                            .await
+                            .map_err(|error| StreamError::Unavailable.with_source(error))?;
+                        self.inner.write(request).await
+                    });
+                }
                 return Box::pin(std::future::pending());
             }
             self.inner.write(request)
@@ -253,6 +263,7 @@ mod replay_tests {
             missing: u64::MAX,
             extra_records: 0,
             pause_write: None,
+            resume_write: None,
         };
         let path = StreamPath::new("native-refusal")?;
         let request = AppendRequest {
@@ -438,7 +449,10 @@ mod replay_tests {
     #[tokio::test]
     async fn observed_dispatch_handoff_cannot_wait_after_original_claim()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::trace::{Mechanism, Recorder, Request, Settlement, TraceQuery};
+        use crate::trace::{
+            Mechanism, Observation, Outcome, Recorder, Request, Settlement, TraceQuery,
+        };
+        let (release, resume) = futures::channel::oneshot::channel();
         let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let traces = Stream::new(
             Arc::new(Gapped {
@@ -446,6 +460,7 @@ mod replay_tests {
                 missing: u64::MAX,
                 extra_records: 0,
                 pause_write: Some(writes.clone()),
+                resume_write: Some(std::sync::Mutex::new(Some(resume))),
             }),
             "trace",
         )?;
@@ -468,12 +483,28 @@ mod replay_tests {
         let Settlement::Pending(recording) = observed.observation? else {
             return Err("dispatch handoff fabricated completion".into());
         };
-        drop(recording);
+        let mut terminal = traces.follow(1, Default::default()).await?;
+        let pending = recording.finish_submitted(None, Outcome::Succeeded)?;
+        let retry = pending.request().clone();
+        drop(pending);
+        release
+            .send(())
+            .map_err(|_| "terminal producer was cancelled")?;
+        terminal.next().await.ok_or("terminal follow ended")??;
+        assert!(matches!(
+            traces.provider.append(retry).await?,
+            AppendOutcome::Committed(_)
+        ));
         assert_eq!(claims.tail().await?, 1);
-        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 1);
-        let mut query = TraceQuery::new(traces.read(0, 1).await?, Default::default());
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let mut query = TraceQuery::new(traces.read(0, 2).await?, Default::default());
         query.next().await?;
-        assert_eq!(query.active().len(), 1);
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { start, .. })
+            if start.name == "dispatch.claim")
+        );
+        assert_eq!(query.active().len(), 0);
+        assert_eq!(traces.tail().await?, 2);
         Ok(())
     }
 
@@ -579,6 +610,7 @@ mod replay_tests {
             missing: u64::MAX,
             extra_records: 0,
             pause_write: Some(writes.clone()),
+            resume_write: None,
         });
         let data = Stream::new(provider.clone(), "data")?;
         let traces = Stream::new(provider, "trace")?;
@@ -612,6 +644,7 @@ mod replay_tests {
                     missing,
                     extra_records: 0,
                     pause_write: None,
+                    resume_write: None,
                 },
                 2_100,
             )
@@ -643,6 +676,7 @@ mod replay_tests {
                 missing: u64::MAX,
                 extra_records: 1,
                 pause_write: None,
+                resume_write: None,
             },
             2_500,
         )

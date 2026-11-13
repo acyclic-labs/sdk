@@ -65,11 +65,12 @@ results stay owned by the original journal operation.
 Dispatch-claim publication uses `Recorder::handoff`: it admits the span before
 the original work and performs no diagnostic await after that work returns.
 A trace finish cannot strand an accepted model dispatch claim before delivery
-to its executor. The returned recording gives completion custody to the caller;
-dropping it leaves its original start unfinished. Journal claim observations
-currently retain that unfinished start until completion custody is propagated
-through the executor. This is incomplete coverage, never successful settlement.
-
+to its executor. Successful journal claims transfer their terminal append to
+`Recording::finish_submitted`, using the shared SDK owned-publication completion.
+It retains the original append bytes, path, retry family and idempotency key;
+dropping every observer cannot withdraw publication. There is no diagnostic
+suspension after the accepted claim. Failures without retained cause evidence
+remain unfinished rather than fabricating a terminal result.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

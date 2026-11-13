@@ -1,7 +1,9 @@
 //! Owned custody of one exact keyed commit, independent of its waiters.
 use crate::StreamProviderExt as _;
 use crate::completion::{Completion, Producer};
-use crate::{CommitOutcome, CommitRequest, StreamError, StreamProvider};
+use crate::{
+    AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, StreamError, StreamProvider,
+};
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,31 +18,31 @@ pub use native::NativePending;
 /// Clones observe the same producer; no clone retries. Producer loss is an
 /// explicit unavailable outcome, never a wait for a successor or transport EOF.
 #[must_use = "retain the handle or its request identity to recover an ambiguous outcome"]
-pub struct Pending<R = Result<CommitOutcome, StreamError>, H = ()> {
-    completion: Completion<R, H, CommitRequest>,
+pub struct Pending<R = Result<CommitOutcome, StreamError>, H = (), I = CommitRequest> {
+    completion: Completion<R, H, I>,
 }
-impl<R, H> Clone for Pending<R, H> {
+impl<R, H, I> Clone for Pending<R, H, I> {
     fn clone(&self) -> Self {
         Self {
             completion: self.completion.clone(),
         }
     }
 }
-impl<R, H> Pending<R, H> {
-    fn prepare(request: CommitRequest, storage: H) -> (Self, Producer<R, H, CommitRequest>) {
+impl<R, H, I> Pending<R, H, I> {
+    fn prepare(request: I, storage: H) -> (Self, Producer<R, H, I>) {
         let (completion, producer) = Completion::prepare(request, storage);
         (Self { completion }, producer)
     }
     /// Exact submitted bytes, conditions, deadline and recovery identity.
     #[must_use]
-    pub fn request(&self) -> &CommitRequest {
+    pub fn request(&self) -> &I {
         self.completion.identity()
     }
 
     /// Moves the exact terminal value and its funding to the sole remaining
     /// owner. A live producer or another observer leaves this handle intact.
     /// No native error, receipt or allocation guard is cloned.
-    pub fn try_take(self) -> Result<(CommitRequest, Option<R>, H), Self> {
+    pub fn try_take(self) -> Result<(I, Option<R>, H), Self> {
         match self.completion.try_take() {
             Ok(parts) => Ok(parts),
             Err(completion) => Err(Self { completion }),
@@ -56,6 +58,26 @@ impl<R, H> Pending<R, H> {
             .result()
             .await
             .map_err(|_| StreamError::Unavailable)
+    }
+}
+
+/// Original append-family custody, using the same completion as commits.
+pub type AppendPending = Pending<Result<AppendOutcome, StreamError>, (), AppendRequest>;
+
+impl AppendPending {
+    /// Transfer the original append to its executor; dropping its observers
+    /// cannot withdraw publication or change its retry family and identity.
+    pub fn submit_append<P: StreamProvider + ?Sized>(
+        provider: Arc<P>,
+        request: AppendRequest,
+        executor: &dyn crate::runtime::Executor,
+    ) -> Self {
+        let command = request.clone();
+        let (pending, producer) = Self::prepare(request, ());
+        executor.spawn(Box::pin(async move {
+            producer.publish(provider.append(command).await);
+        }));
+        pending
     }
 }
 impl Pending {

@@ -8,14 +8,25 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// An accepted dispatch claim must reach its executor without another wait.
-    /// Until completion custody crosses that boundary, leave its start unfinished.
+    /// Terminal custody transfers to the original SDK append producer.
     pub(super) async fn observe_claim<T, E>(
         &self,
         request: acyclic_stream::trace::Request,
         work: impl std::future::Future<Output = std::result::Result<T, E>>,
     ) -> std::result::Result<T, E> {
         match &self.traces {
-            Some((traces, owner)) => traces.handoff(owner.as_str(), request, work).await.result,
+            Some((traces, owner)) => {
+                let observed = traces.handoff(owner.as_str(), request, work).await;
+                #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+                if observed.result.is_ok()
+                    && let Ok(acyclic_stream::trace::Settlement::Pending(recording)) =
+                        observed.observation
+                {
+                    let _completion =
+                        recording.finish_submitted(None, acyclic_stream::trace::Outcome::Succeeded);
+                }
+                observed.result
+            }
             None => work.await,
         }
     }

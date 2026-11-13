@@ -159,7 +159,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             .map_err(|_| StreamError::InvalidResponse.with_source(RecorderFailure::ClockOverflow))
     }
 
-    async fn publish(&self, event: SpanEvent) -> Result<RetainedRecord, StreamError> {
+    fn encode(event: SpanEvent) -> Result<(Vec<u8>, IdempotencyKey), StreamError> {
         let (id, phase) = match &event {
             SpanEvent::Started { id, .. } => (id, 0),
             SpanEvent::Finished { id, .. } => (id, 1),
@@ -179,6 +179,11 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         let key = IdempotencyKey::new(key)?;
         let bytes = serde_json::to_vec(&TraceRecord::V1(event))
             .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
+        Ok((bytes, key))
+    }
+
+    async fn publish(&self, event: SpanEvent) -> Result<RetainedRecord, StreamError> {
+        let (bytes, key) = Self::encode(event)?;
         match self.stream.append(bytes, key).await? {
             AppendOutcome::Committed(receipt) => Ok(RetainedRecord {
                 commit_id: receipt.commit_id,
@@ -277,5 +282,28 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
                 result,
             })
             .await
+    }
+
+    /// Submit the terminal without a suspension point after irreversible work.
+    /// The shared append producer retains the exact bytes and retry identity
+    /// independently of this recording or any completion observer.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    pub fn finish_submitted(
+        self,
+        bytes: Option<u64>,
+        result: Outcome,
+    ) -> Result<crate::AppendPending, StreamError> {
+        let (bytes, idempotency_key) = Recorder::<P>::encode(SpanEvent::Finished {
+            id: self.id,
+            at_ns: self.recorder.now()?,
+            bytes,
+            result,
+        })?;
+        Ok(self.recorder.stream.submit_append(crate::AppendRequest {
+            path: self.recorder.stream.path().clone(),
+            records: vec![bytes.into()],
+            if_tail: None,
+            idempotency_key,
+        }))
     }
 }

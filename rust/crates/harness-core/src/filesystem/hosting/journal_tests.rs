@@ -1075,28 +1075,25 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             .append_if_tail(operation, 0, "refused", &event, None)?
             .await?
     );
-    let publication_through = traces.tail().await?;
     let mut publications = acyclic_stream::trace::TraceQuery::new(
-        traces
-            .read(
-                admitted_through,
-                u32::try_from(publication_through - admitted_through)?,
-            )
-            .await?,
+        traces.follow(admitted_through, Default::default()).await?,
         Default::default(),
     );
     let mut seen = std::collections::BTreeSet::new();
-    while publications.next().await?.is_some() {}
-    for (_, start) in publications.active() {
+    while seen.len() < 2 {
+        let Some(acyclic_stream::trace::Observation::Completed { start, .. }) =
+            publications.next().await?
+        else {
+            continue;
+        };
         let guarantee = match start.name.as_str() {
             "harness.journal_append" => "idempotent_journal_publication",
             "harness.journal_append_if_tail" => "atomic_journal_precondition_result",
             _ => continue,
         };
         assert_eq!(start.guarantee.as_deref(), Some(guarantee));
-        seen.insert(start.name.as_str());
+        seen.insert(start.name);
     }
-    assert_eq!(seen.len(), 2);
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     let through = traces.tail().await?;
     let mut failed = acyclic_stream::trace::TraceQuery::new(
@@ -1105,8 +1102,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     );
     while failed.next().await?.is_some() {}
     assert_eq!(
-        failed.active().len(),
-        3,
+        $11,
         "unretained failure fabricated settlement"
     );
     assert!(
