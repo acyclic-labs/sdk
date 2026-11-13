@@ -3,7 +3,22 @@ use acyclic_fs::access::{Action, PreparedPath};
 pub(in crate::filesystem) mod cursor;
 #[cfg(not(target_arch = "wasm32"))]
 mod lazy;
-mod remainder;
+#[cfg(not(target_arch = "wasm32"))]
+mod prefix;
+
+/// In-memory producer positions for this one authorized physical page.
+/// These are consumed before publication, never sent as directory entries.
+#[derive(Debug)]
+pub(in crate::filesystem) enum DirectoryPosition {
+    Source(acyclic_fs::demand::SourceCursor),
+    Authored,
+    Unavailable,
+    Removed,
+}
+
+pub(in crate::filesystem) fn position_bytes(capacity: usize) -> u64 {
+    (capacity * std::mem::size_of::<DirectoryPosition>()) as u64
+}
 
 /// A bounded authorized physical page. Empty entries with `next` are progress.
 #[derive(Debug)]
@@ -14,6 +29,7 @@ pub struct AuthorizedDirectoryPage {
     pub next: Option<String>,
     /// Candidate names consumed before policy filtering; excludes SDK seek work.
     pub examined: u32,
+    pub(in crate::filesystem) positions: Vec<DirectoryPosition>,
 }
 
 impl std::ops::Deref for AuthorizedDirectoryPage {
@@ -65,6 +81,7 @@ fn raw_owned_bytes(page: &DirectoryPage) -> Result<u64> {
 #[cfg(test)]
 fn owned_bytes(page: &AuthorizedDirectoryPage) -> Result<u64> {
     Ok(raw_owned_bytes(&page.page)?
+        + position_bytes(page.positions.capacity())
         + (std::mem::size_of::<AuthorizedDirectoryPage>() - std::mem::size_of::<DirectoryPage>())
             as u64
         + page
@@ -377,9 +394,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None
             };
             #[cfg(not(target_arch = "wasm32"))]
-            let (loaded, lazy_next, physical_examined) = match lazy_page {
-                Some((page, next, custody, examined)) => {
-                    (Some((page, Some(custody))), next, Some(examined))
+            let (loaded, lazy_next, physical_examined, mut positions) = match lazy_page {
+                Some((page, next, custody, examined, positions)) => {
+                    (Some((page, Some(custody))), next, Some(examined), positions)
                 }
                 None => (
                     io.sdk_if_present(
@@ -395,13 +412,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )?,
                     None,
                     None,
+                    Vec::new(),
                 ),
             };
             #[cfg(target_arch = "wasm32")]
-            let (loaded, lazy_next, physical_examined): (
+            let (loaded, lazy_next, physical_examined, mut positions): (
                 _,
                 Option<String>,
                 Option<u32>,
+                Vec<DirectoryPosition>,
             ) = (
                 io.sdk_if_present(
                     generation
@@ -416,11 +435,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )?,
                 None,
                 None,
+                Vec::new(),
             );
             let Some((mut page, custody)) = loaded else {
                 return Ok(None);
             };
-            let page_bytes = raw_owned_bytes(&page)?;
+            let page_bytes = raw_owned_bytes(&page)? + position_bytes(positions.capacity());
             let examined = physical_examined.unwrap_or(
                 u32::try_from(page.entries.len())
                     .map_err(|_| io.invalid("directory page is too large"))?,
@@ -467,7 +487,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             } else {
                 None
             };
-            let removed = filter_page(&mut page, parent, data_parent, now);
+            let mut index = 0;
+            let removed = filter_page(&mut page, parent, data_parent, now, |keep| {
+                if !keep && let Some(position) = positions.get_mut(index) {
+                    *position = DirectoryPosition::Removed;
+                }
+                index += 1;
+            });
+            positions.retain(|position| !matches!(position, DirectoryPosition::Removed));
             page_hold.substitute(
                 page_bytes - removed + next.as_ref().map_or(0, |token| token.capacity() as u64),
             )?;
@@ -492,6 +519,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         page,
                         next,
                         examined,
+                        positions,
                     },
                 ),
                 page_hold,
@@ -516,11 +544,13 @@ fn filter_page(
     parent: PreparedPath<'_>,
     data_parent: Option<PreparedPath<'_>>,
     now: u64,
+    mut visited: impl FnMut(bool),
 ) -> u64 {
     let mut removed = 0;
     page.entries.retain(|entry| {
         let keep = visible(parent, &entry.name, now)
             && data_parent.is_none_or(|parent| visible(parent, &entry.name, now));
+        visited(keep);
         if !keep {
             removed += entry.name.logical_owned_bytes();
         }

@@ -1008,6 +1008,7 @@ impl PrivateDirectoryPage {
         held.adopt((entries.capacity() * std::mem::size_of::<PrivateDirectoryEntry>()) as u64)?;
         let has_more = page.has_more;
         let examined = page.examined;
+        drop(page.positions);
         let next = page.next;
         let page = page.page;
         for entry in page.entries {

@@ -20,6 +20,9 @@ pub struct LazyDirectoryEntry {
     pub source: Option<SourceNode>,
     /// Whether no observation was previously recorded.
     pub unobserved: bool,
+    /// Producer-bound continuation after this physical source entry. `None`
+    /// means no interior position is available; authored entries resume by name.
+    pub continuation: Option<SourceCursor>,
 }
 /// A bounded merged page and its continuation.
 #[derive(Debug)]
@@ -48,6 +51,78 @@ impl std::fmt::Debug for LazyDirectoryCursor {
     }
 }
 impl LazyDirectoryCursor {
+    /// Constructs a continuation from an exact position supplied by the source
+    /// producer. The selected snapshot and directory remain part of its address.
+    pub fn after_source(
+        cut: LazySnapshotRef,
+        directory: &str,
+        continuation: SourceCursor,
+        config: VolumeConfig,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, LazyWorkspaceError> {
+        Self::at_phase(
+            cut,
+            directory,
+            LazyDirectoryPhase::Source(Some(continuation)),
+            config,
+            ctx,
+        )
+    }
+
+    /// Constructs the authored phase's exact exclusive-name continuation.
+    pub fn after_authored(
+        cut: LazySnapshotRef,
+        directory: &str,
+        name: &LogicalName,
+        config: VolumeConfig,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, LazyWorkspaceError> {
+        let (name, guard) = name.clone_with_accounting(ctx, cancellation(ctx))?;
+        let bytes = name.retained_bytes() as u64;
+        let owned = Owned::new(name, guard, bytes);
+        let result = Self::at_phase(
+            cut,
+            directory,
+            LazyDirectoryPhase::Authored(None),
+            config,
+            ctx,
+        );
+        match result {
+            Ok(mut cursor) => {
+                let mut allocation = owned.allocation;
+                cursor.allocation.absorb(&mut allocation)?;
+                cursor.phase = LazyDirectoryPhase::Authored(Some(owned.value));
+                Ok(cursor)
+            }
+            Err(error) => {
+                owned.retire(ctx)?;
+                Err(error)
+            }
+        }
+    }
+
+    fn at_phase(
+        cut: LazySnapshotRef,
+        directory: &str,
+        phase: LazyDirectoryPhase,
+        config: VolumeConfig,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Self, LazyWorkspaceError> {
+        let (directory, allocation) = NamespacePath::parse_in_profile(
+            directory,
+            config.profile,
+            config.limits,
+            ctx,
+            cancellation(ctx),
+        )?;
+        Ok(Self {
+            cut,
+            directory,
+            phase,
+            allocation,
+        })
+    }
+
     /// Original logical cut selected by this continuation. This is an address,
     /// not authority; resuming still validates the snapshot and current reader.
     pub fn snapshot(&self) -> &LazySnapshotRef {
@@ -448,6 +523,7 @@ impl<
                                 authored: true,
                                 source: None,
                                 unobserved: false,
+                                continuation: None,
                             });
                         }
                         entries.bytes += names;
@@ -564,7 +640,9 @@ impl<
                 drop(lookup);
                 crate::kernel::retire_allocation(guard, bytes, ctx)?;
             }
-            for (entry, (hidden, unobserved, _)) in page.entries.iter().zip(&slots.value) {
+            for (index, (entry, (hidden, unobserved, _))) in
+                page.entries.iter().zip(&slots.value).enumerate()
+            {
                 if *hidden {
                     continue;
                 }
@@ -578,6 +656,7 @@ impl<
                     authored: false,
                     source: Some(entry.node),
                     unobserved: *unobserved,
+                    continuation: page.cursor_after(index + 1)?,
                 });
             }
             Ok::<_, LazyWorkspaceError>(())

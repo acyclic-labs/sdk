@@ -190,19 +190,19 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
         .directory_page_select(&root, query(None, None), |page, estimate| {
             assert_eq!(page.entries.len(), 3);
             advertised.store(
-                estimate(&page.entries[0].name).ok_or(Error::Record("missing token bound"))?,
+                estimate(0).ok_or(Error::Record("missing token bound"))?,
                 std::sync::atomic::Ordering::Relaxed,
             );
             Ok(1)
         })
         .await?;
     assert_eq!(first.entries[0].name, "a");
-    let cursor = first.next.as_deref().ok_or("missing retained suffix")?;
+    let cursor = first.next.as_deref().ok_or("missing prefix continuation")?;
     assert!(
         cursor.len() <= advertised.load(std::sync::atomic::Ordering::Relaxed),
         "retained cursor exceeded the continuation bytes reserved by the selector"
     );
-    assert!(cursor.starts_with("page-v1:"));
+    assert!(cursor.starts_with("lazy:"));
     let changed = bound
         .publish_agent_files(
             &root,
@@ -241,7 +241,7 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
             },
             |page, estimate| {
                 advertised.store(
-                    estimate(&page.entries[0].name).ok_or(Error::Record("missing token bound"))?,
+                    estimate(0).ok_or(Error::Record("missing token bound"))?,
                     std::sync::atomic::Ordering::Relaxed,
                 );
                 assert_eq!(
@@ -249,7 +249,7 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
                         .iter()
                         .map(|entry| entry.name.as_str())
                         .collect::<Vec<_>>(),
-                    ["b", "c"]
+                    ["b"]
                 );
                 Ok(page.entries.len())
             },
@@ -258,7 +258,7 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
     assert_eq!(second.generation, first.generation);
     assert_eq!(second.entries[0].name, "b");
     assert!(
-        second.next.as_ref().ok_or("missing second suffix")?.len()
+        second.next.as_ref().ok_or("missing second prefix")?.len()
             <= advertised.load(std::sync::atomic::Ordering::Relaxed)
     );
     let third = bound

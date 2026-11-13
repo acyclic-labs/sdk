@@ -1018,6 +1018,9 @@ where
                             };
                             let mut credit =
                                 PageCredit::from_envelopes(request, &empty(false), &empty(true))?;
+                            if credit.fits_page(&page.entries, page.next.as_deref())? {
+                                return Ok(page.entries.len());
+                            }
                             if page.entries.is_empty() {
                                 if let Some(next) = &page.next {
                                     if !acyclic_harness_client::encoded_agent_reply_size(
@@ -1032,7 +1035,7 @@ where
                             for (index, entry) in page.entries.iter().enumerate() {
                                 let next_bytes = if index + 1 < page.entries.len() {
                                     Some(
-                                        cursor_bytes(&entry.name)
+                                        cursor_bytes(index)
                                             .ok_or(Error::Stream(StreamError::Capacity))?
                                             as u64,
                                     )
@@ -1909,6 +1912,23 @@ struct PageCredit {
 }
 
 impl PageCredit {
+    /// A complete page needs only its producer's existing continuation. This
+    /// also preserves whole-page serving for producers without interior cuts.
+    fn fits_page(
+        &self,
+        items: &[impl serde::Serialize],
+        next: Option<&str>,
+    ) -> Result<bool, Error> {
+        let mut bytes = next.map_or(self.end_envelope, |next| {
+            self.next_envelope + next.len() as u64
+        });
+        for (index, item) in items.iter().enumerate() {
+            bytes += page_json_bytes(item)? + u64::from(index != 0);
+        }
+        Ok(acyclic_harness_client::encoded_agent_reply_size(bytes)
+            .is_ok_and(|encoded| encoded <= self.maximum))
+    }
+
     fn new(
         page: &AgentPageRequest,
         empty: impl Fn(Option<String>) -> AgentReply,

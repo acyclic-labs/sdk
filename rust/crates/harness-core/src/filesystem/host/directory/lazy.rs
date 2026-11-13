@@ -42,6 +42,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Option<String>,
         acyclic_fs::NativeAllocation,
         u32,
+        Vec<DirectoryPosition>,
     )> {
         let view = self
             .private_view
@@ -88,9 +89,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None
         };
         let mut entries = Vec::new();
+        let mut positions = Vec::new();
         let old_bytes = page.entries.capacity() as u64
             * std::mem::size_of::<acyclic_fs::LazyDirectoryEntry>() as u64;
         for entry in page.entries.drain(..) {
+            let position = if entry.authored {
+                DirectoryPosition::Authored
+            } else {
+                entry
+                    .continuation
+                    .map_or(DirectoryPosition::Unavailable, DirectoryPosition::Source)
+            };
+            crate::executor::stock_vec_push(&mut positions, position, Some(&io))?;
             use acyclic_fs::demand::SourceNodeKind as K;
             let kind = match entry.kind {
                 K::Directory => acyclic_fs::kernel::FileKind::Directory,
@@ -122,7 +132,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         let retained = raw_owned_bytes(&page)?
             - std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64
-            + next.as_ref().map_or(0, |token| token.capacity() as u64);
-        Ok((page, next, io.into_native_custody(retained)?, examined))
+            + next.as_ref().map_or(0, |token| token.capacity() as u64)
+            + position_bytes(positions.capacity());
+        Ok((
+            page,
+            next,
+            io.into_native_custody(retained)?,
+            examined,
+            positions,
+        ))
     }
 }

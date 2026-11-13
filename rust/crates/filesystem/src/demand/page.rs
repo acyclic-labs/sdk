@@ -85,7 +85,8 @@ impl SourceDirectoryPage {
     /// producers declare their ordinal start when publishing the page; routed
     /// compositions preserve its original source, cut and directory binding.
     /// The final prefix returns the existing page continuation. A producer
-    /// that supplies only whole-page positions refuses an interior prefix.
+    /// that supplies only whole-page positions returns `None` for an interior
+    /// prefix; that absence must not be treated as an end-of-directory claim.
     pub fn cursor_after(&self, consumed: usize) -> Result<Option<SourceCursor>, DemandError> {
         if consumed == 0 || consumed > self.entries.len() {
             return Err(DemandError::InvalidRequest);
@@ -93,7 +94,9 @@ impl SourceDirectoryPage {
         if consumed == self.entries.len() {
             return Ok(self.next.clone());
         }
-        let mut cursor = self.prefix.clone().ok_or(DemandError::InvalidRequest)?;
+        let Some(mut cursor) = self.prefix.clone() else {
+            return Ok(None);
+        };
         cursor.token = cursor
             .token
             .checked_add(consumed as u64)

@@ -9,6 +9,23 @@ const DOMAIN: &[u8] = b"acyclic-fs-lazy-directory-cursor-v3\0";
 /// On-demand checks of the funded directory continuation codec.
 pub mod codec_fuzz;
 impl LazyDirectoryCursor {
+    /// Exact primitive image length for a producer-supplied source position.
+    pub fn source_encoded_len(
+        cut: &LazySnapshotRef,
+        directory_bytes: usize,
+        source: &SourceCursor,
+    ) -> usize {
+        image_len(cut, directory_bytes, source.source.encoded_len() + 8)
+    }
+
+    /// Exact primitive image length for an authored exclusive-name position.
+    pub fn authored_encoded_len(
+        cut: &LazySnapshotRef,
+        directory_bytes: usize,
+        name_bytes: usize,
+    ) -> usize {
+        image_len(cut, directory_bytes, 5 + name_bytes)
+    }
     /// Encodes a frozen continuation on its original native ledger.
     pub fn encode(
         &self,
@@ -69,22 +86,30 @@ impl LazyDirectoryCursor {
         })
     }
 }
+fn image_len(cut: &LazySnapshotRef, directory_bytes: usize, phase_bytes: usize) -> usize {
+    DOMAIN.len()
+        + 2
+        + 85
+        + cut.source.encoded_len()
+        + cut.authored_generation.object_id().encoded_len()
+        + directory_bytes
+        + phase_bytes
+}
+
 fn encode_fields(
     cursor: &LazyDirectoryCursor,
     directory: &str,
     ctx: &mut KernelAccounting<'_>,
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
-    let size = DOMAIN.len()
-        + 2
-        + 85
-        + cursor.cut.source.encoded_len()
-        + cursor.cut.authored_generation.object_id().encoded_len()
-        + directory.len()
-        + match &cursor.phase {
+    let size = image_len(
+        &cursor.cut,
+        directory.len(),
+        match &cursor.phase {
             LazyDirectoryPhase::Source(Some(source)) => source.source.encoded_len() + 8,
             LazyDirectoryPhase::Authored(Some(name)) => 5 + name.as_bytes().len(),
             _ => 0,
-        };
+        },
+    );
     crate::kernel::codec::encode_owned(ctx, |observe, reserve| {
         let mut encoder = Encoder::with_exact_capacity(
             DOMAIN,

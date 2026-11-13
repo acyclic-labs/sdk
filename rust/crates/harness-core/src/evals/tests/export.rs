@@ -12,6 +12,66 @@ pub(super) async fn selected_case_export(
 ) -> TestResult {
     let fs = acyclic_fs::Fs::memory();
     let cancel = work.cancellation();
+    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
+    let routed = Arc::new(Routed::new(
+        Empty,
+        LogicalName::new(NameEncoding::Utf8, b"evals".to_vec())?,
+        source.clone(),
+        config.limits,
+    ));
+    let (routed, _) = LazyWorkspace::attach(
+        &fs,
+        "routed-case-source",
+        routed,
+        MemoryLazyWorkspaceStore::default(),
+        VolumeInitialization {
+            config,
+            access_policy: None,
+        },
+        acyclic_fs::OperationId::new(),
+        &mut accounting(work),
+    )
+    .await?;
+    let routed_cut = routed.snapshot(&mut accounting(work)).await?;
+    let (page, _, allocation) = routed
+        .list_directory_at_snapshot(&routed_cut, "/evals", None, 2, &mut accounting(work))
+        .await?;
+    let page = (page, allocation);
+    assert_eq!(page.0.entries.len(), 2);
+    let position = page.0.entries[0]
+        .continuation
+        .clone()
+        .ok_or("missing producer prefix")?;
+    let cursor = acyclic_fs::LazyDirectoryCursor::after_source(
+        routed_cut.clone(),
+        "/evals",
+        position,
+        config,
+        &mut accounting(work),
+    )?;
+    let (encoded, encoded_custody) = cursor.encode(work)?;
+    cursor.retire(&mut accounting(work))?;
+    let resumed =
+        acyclic_fs::LazyDirectoryCursor::decode(&encoded, config.profile, config.limits, work)?;
+    drop(encoded);
+    drop(encoded_custody);
+    drop(page);
+    let (page, _, allocation) = routed
+        .list_directory_at_snapshot(
+            &routed_cut,
+            "/evals",
+            Some(resumed),
+            1,
+            &mut accounting(work),
+        )
+        .await?;
+    let page = (page, allocation);
+    assert_eq!(
+        page.0.entries[0].name.as_bytes(),
+        b"00000000000000000001.json"
+    );
+    assert!(page.0.next.is_none());
+    drop(page);
     let (root, _) = LazyWorkspace::attach(
         &fs,
         "case-source",

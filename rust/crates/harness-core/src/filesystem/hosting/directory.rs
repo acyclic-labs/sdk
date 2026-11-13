@@ -132,9 +132,10 @@ where
     }
 
     /// Apply row and byte credit before publishing a confidential continuation.
-    /// The selector's continuation estimate bounds the returned token's bytes.
-    /// A retained suffix remains bounded by its original physical page; the
-    /// returned row count also respects this request's `maximum_entries`.
+    /// The selector's estimate takes a zero-based row index and bounds the
+    /// returned token's bytes. A missing estimate means this producer has no
+    /// interior position; the selector may still accept the complete page.
+    /// Returned rows respect this request's `maximum_entries`.
     pub async fn directory_page_select<F>(
         &self,
         agent: &AgentPath,
@@ -142,7 +143,7 @@ where
         select: F,
     ) -> Result<PrivateDirectoryPage, Error>
     where
-        F: FnOnce(&PrivateDirectoryPage, &dyn Fn(&str) -> Option<usize>) -> Result<usize, Error>
+        F: FnOnce(&PrivateDirectoryPage, &dyn Fn(usize) -> Option<usize>) -> Result<usize, Error>
             + Send,
     {
         if query.after_generation.is_some()
@@ -189,48 +190,12 @@ where
         let ledger =
             crate::filesystem::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())
                 .map_err(turn)?;
-        let (mut page, _custody) = if let Some(token) = query
-            .after_name
-            .and_then(|token| token.strip_prefix("page-v1:"))
-        {
-            let plain = super::super::host::directory::cursor::open_payload(
-                &binding.volume,
-                &binding.path,
-                token,
-                &ledger,
-            )
-            .map_err(turn)?;
-            let (mut page, hold) = ledger
-                .decode_seed(
-                    std::marker::PhantomData::<PrivateDirectoryPage>,
-                    &plain.0,
-                    &crate::executor::json::JsonValueSchema::Root,
-                    0,
-                    crate::wire::ErrorCode::Invalid,
-                )
-                .map_err(turn)?;
-            host.authorize_directory_remainder(
-                super::super::host::DirectoryListing {
-                    volume: &binding.volume,
-                    grant: &binding.grant,
-                    ceiling: Some(binding.scope.capabilities()),
-                    path: &binding.path,
-                    generation: query.generation,
-                    after: None,
-                    maximum_entries: query.maximum_entries,
-                },
-                &mut page,
-                &ledger,
-            )
-            .await
-            .map_err(turn)?;
-            (page, hold)
-        } else {
+        let (mut page, _custody, positions) = {
             let page = host
                 .list_private_directory(&binding.volume, &binding.grant, &binding.path, options)
                 .await
                 .map_err(turn)?;
-            let Some((generation, page)) = page else {
+            let Some((generation, mut page)) = page else {
                 return Ok(PrivateDirectoryPage {
                     generation: generation
                         .ok_or(Error::Record("directory cursor lost its selection"))?,
@@ -240,6 +205,7 @@ where
                     examined: 0,
                 });
             };
+            let positions = std::mem::take(&mut page.positions);
             let source = ledger
                 .reserve_decode(
                     generation.logical_owned_bytes().map_err(turn)?
@@ -252,32 +218,27 @@ where
             let (page, custody) =
                 PrivateDirectoryPage::from_filesystem(generation, page, source, &ledger)
                     .map_err(turn)?;
-            (page, custody)
+            (page, custody, positions)
         };
         let generation = acyclic_fs::GenerationId::from_bytes(page.generation.as_resource().key());
         let generation_bytes = generation.as_ref().map_or(0, |id| id.to_bytes().len());
-        let lazy_remainder_bound = if generation.is_none() {
-            let encoded = ledger
-                .encode(
-                    &page,
-                    ledger.remaining().map_err(turn)?.bytes_encoded,
-                    false,
-                )
-                .map_err(turn)?;
-            let hold = ledger
-                .guard_owned(encoded.capacity() as u64)
-                .map_err(turn)?;
-            let length = super::super::host::directory::cursor::payload_encoded_len(encoded.len())
-                .and_then(|length| length.checked_add(8));
-            drop(encoded);
-            drop(hold);
-            length
+        #[cfg(not(target_arch = "wasm32"))]
+        let prefixes = if generation.is_none() {
+            Some(
+                host.directory_prefixes(&page.generation, positions, &ledger)
+                    .map_err(turn)?,
+            )
         } else {
+            drop(positions);
             None
         };
-        let selected = select(&page, &|name| {
-            if generation.is_none() {
-                return lazy_remainder_bound;
+        #[cfg(target_arch = "wasm32")]
+        drop(positions);
+        let selected = select(&page, &|index| {
+            let name = &page.entries.get(index)?.name;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(prefixes) = &prefixes {
+                return prefixes.encoded_len(index, name, &binding.path);
             }
             super::super::host::directory::cursor::encoded_len(generation_bytes, name.len())
         })?;
@@ -286,8 +247,7 @@ where
                 "directory byte credit cannot admit its first entry",
             ));
         }
-        // A continuation retains at most its original physical page. A smaller
-        // subsequent row credit splits that same suffix without another read.
+        // Row and byte credit select a prefix of the one physical page.
         let kept = selected.min(query.maximum_entries as usize);
         if kept == 0 && !page.entries.is_empty() {
             return Err(Error::Record(
@@ -295,9 +255,18 @@ where
             ));
         }
         if kept < page.entries.len() {
-            if generation.is_none() {
-                let (token, _hold) =
-                    seal_remainder(&binding, &page, kept, &ledger).map_err(turn)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(prefixes) = &prefixes {
+                let (token, _hold) = host
+                    .seal_directory_prefix(
+                        prefixes,
+                        kept - 1,
+                        &page.entries[kept - 1].name,
+                        &binding.volume,
+                        &binding.path,
+                        &ledger,
+                    )
+                    .map_err(turn)?;
                 page.entries.truncate(kept);
                 page.has_more = true;
                 page.next = Some(token);
@@ -324,42 +293,4 @@ where
         }
         Ok(page)
     }
-}
-
-fn seal_remainder<'io>(
-    binding: &DirectoryBinding,
-    page: &PrivateDirectoryPage,
-    kept: usize,
-    io: &'io crate::filesystem::PreparationIo,
-) -> crate::Result<(String, crate::filesystem::DecodeReservation<'io>)> {
-    #[derive(serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Remainder<'a> {
-        generation: &'a GenerationRef,
-        entries: &'a [crate::conversation::PrivateDirectoryEntry],
-        has_more: bool,
-        next: &'a Option<String>,
-        examined: u32,
-    }
-    let remainder = Remainder {
-        generation: &page.generation,
-        entries: &page.entries[kept..],
-        has_more: page.has_more,
-        next: &page.next,
-        examined: (page.entries.len() - kept) as u32,
-    };
-    let encoded = io.encode(&remainder, io.remaining()?.bytes_encoded, false)?;
-    let capacity = encoded.capacity() as u64;
-    let encoded = (encoded, io.guard_owned(capacity)?);
-    let sealed = super::super::host::directory::cursor::seal_payload(
-        &binding.volume,
-        &binding.path,
-        &encoded.0,
-        io,
-    )?;
-    let token = crate::executor::with_history_io(Some(io), |work| {
-        crate::executor::preparation_format(format_args!("page-v1:{}", sealed.0), work)
-    })?;
-    let hold = io.guard_owned(token.capacity() as u64)?;
-    Ok((token, hold))
 }
