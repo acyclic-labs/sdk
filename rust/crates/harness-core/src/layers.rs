@@ -35,6 +35,23 @@ pub const OUTPUT_PATH: &str = "volume:///output/";
 pub const PRIVATE_PATH: &str = "volume:///private/";
 /// Tool path of the seed volume.
 pub const SEED_PATH: &str = "volume:///seed/";
+/// Read-only configuration supplied by the user or organization.
+pub const USER_ORG_PATH: &str = "volume:///user-org/";
+/// Read-only configuration supplied by the scope.
+pub const SCOPE_PATH: &str = "volume:///scope/";
+/// Read-only configuration supplied by the selected template.
+pub const TEMPLATE_PATH: &str = "volume:///template/";
+/// Read-only configuration supplied by the parent.
+pub const PARENT_PATH: &str = "volume:///parent/";
+/// Concrete paths in effective-file precedence order.
+pub(crate) const PRECEDENCE_PATHS: [&str; 6] = [
+    HOME_PATH,
+    PARENT_PATH,
+    TEMPLATE_PATH,
+    SCOPE_PATH,
+    USER_ORG_PATH,
+    SEED_PATH,
+];
 /// Tool path of host-published system files.
 pub const SYSTEM_PATH: &str = "volume:///system/";
 /// Tool path of the effective view over the complete layer stack, read-only.
@@ -103,6 +120,9 @@ pub fn seed_skill(path: &str) -> Option<&'static [u8]> {
 pub fn read_only(path: &str) -> bool {
     path.starts_with(EFFECTIVE_PATH)
         || path.starts_with(SEED_PATH)
+        || [USER_ORG_PATH, SCOPE_PATH, TEMPLATE_PATH, PARENT_PATH]
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
         || path.starts_with(SYSTEM_PATH)
         || path.starts_with(OUTPUT_PATH)
 }
