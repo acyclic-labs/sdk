@@ -190,14 +190,31 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     );
     assert!(matches!(
         second.as_mut().poll(&mut second_context),
-        std::task::Poll::Ready(Err(StreamError::Unavailable))
+        std::task::Poll::Ready(Err(error)) if error.category() == StreamError::Unavailable
     ));
     drop(first);
     drop(second);
     assert!(matches!(
         pending.result().now_or_never(),
-        Some(Err(StreamError::Unavailable))
+        Some(Err(error)) if error.category() == StreamError::Unavailable
     ));
+    let error = pending
+        .result()
+        .await
+        .err()
+        .ok_or("lost producer had a result")?;
+    let mut cause = std::error::Error::source(&error);
+    let mut original = false;
+    while let Some(source) = cause {
+        original |= source
+            .downcast_ref::<crate::completion::ProducerDropped>()
+            .is_some();
+        cause = source.source();
+    }
+    assert!(
+        original,
+        "completion must retain its original producer-loss cause"
+    );
     drop(pending);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
