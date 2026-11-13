@@ -270,6 +270,7 @@ mod tests {
                 message: "original grpc diagnostic",
                 details: &[255, 0],
                 owned: &[],
+                cause_is_embedded: false,
             },
             None,
         );

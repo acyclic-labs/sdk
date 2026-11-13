@@ -697,6 +697,7 @@ impl acyclic_stream::StreamProvider for RefusedAcknowledgment {
                 message: "stream unavailable",
                 details: b"",
                 owned: &[],
+                cause_is_embedded: false,
             };
             let refusal = acyclic_auth::refusal::Refusal::capture(
                 14,

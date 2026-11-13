@@ -689,6 +689,7 @@ pub(super) fn missing_refusal() -> StreamError {
                 message: "not_found",
                 details: &[],
                 owned: &[],
+                cause_is_embedded: false,
             },
             None,
         )

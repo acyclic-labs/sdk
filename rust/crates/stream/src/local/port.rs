@@ -67,7 +67,10 @@ impl CommandJournal for LocalPort {
                 "read-page",
                 PersistenceKey::new(Arc::as_ptr(&journal) as usize, from),
                 move || {
-                    let journal = journal.lock().map_err(|_| StreamError::Unavailable)?;
+                    let journal = journal.lock().map_err(|error| {
+                        drop(error);
+                        stream.inner.poison()
+                    })?;
                     if journal.bytes != head {
                         return Err(StreamError::InvalidResponse);
                     }
