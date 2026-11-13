@@ -271,9 +271,8 @@ async fn tool_output_activity_shares_chunk_publication_and_rejects_partial_updat
         let mut context = ToolContext::new(task, call, "output")?;
         context.output_activity = enabled;
         let mut output = ToolOutputLog::new(context.clone());
-        let first_operation = OperationId::from_bytes([52; 16]);
         let first = output
-            .publish_chunk("stdout/0000000000000000", b"first", first_operation)
+            .publish_chunk("stdout/0000000000000000", b"first")
             .await?;
         assert_eq!(context.read_file(&first, None).await?.as_ref(), b"first");
         let path = tool_output_activity_path(context.turn_id(), call);
@@ -286,9 +285,9 @@ async fn tool_output_activity_shares_chunk_publication_and_rejects_partial_updat
             );
             assert_eq!(
                 context
-                    .observe_staged_file_once(first_operation, None)
+                    .read_output_file_once("stdout/0000000000000000")
                     .await?
-                    .0,
+                    .map(|(file, _)| file),
                 Some(first)
             );
             continue;
@@ -310,17 +309,13 @@ async fn tool_output_activity_shares_chunk_publication_and_rejects_partial_updat
         let mut replay = ToolOutputLog::new(context.clone());
         assert_eq!(
             replay
-                .publish_chunk("stdout/0000000000000000", b"first", first_operation)
+                .publish_chunk("stdout/0000000000000000", b"first")
                 .await?,
             first
         );
         assert!(
             output
-                .publish_chunk(
-                    "stdout/0000000000000000",
-                    b"replacement",
-                    OperationId::from_bytes([53; 16])
-                )
+                .publish_chunk("stdout/0000000000000000", b"replacement")
                 .await
                 .is_err()
         );
@@ -331,11 +326,7 @@ async fn tool_output_activity_shares_chunk_publication_and_rejects_partial_updat
             "refused output advanced its activity cursor"
         );
         let second = output
-            .publish_chunk(
-                "stderr/0000000000000000",
-                b"second",
-                OperationId::from_bytes([54; 16]),
-            )
+            .publish_chunk("stderr/0000000000000000", b"second")
             .await?;
         let (next, bytes) = context.read_private_path(&volume, "", &path, None).await?;
         assert_eq!(next.version(), second.version());
