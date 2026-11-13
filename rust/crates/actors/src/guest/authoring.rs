@@ -75,6 +75,18 @@ pub enum GuestError {
     Revoked,
 }
 
+impl GuestError {
+    /// Adds operation context without changing pending versus definitive failure.
+    /// Structured guest refusals retain their original identity.
+    #[must_use]
+    pub fn with_context(self, context: &str) -> Self {
+        match self {
+            Self::Pending(message) => Self::Pending(format!("{context}: {message}")),
+            Self::Handler(message) => Self::Handler(format!("{context}: {message}")),
+            other => other,
+        }
+    }
+}
 /// Artifact codec hooks for exactly one checkpoint byte format.
 #[derive(TS)]
 #[ts(bound = "State: TS")]

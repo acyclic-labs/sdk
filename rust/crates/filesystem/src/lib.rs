@@ -253,7 +253,7 @@ pub use git_compat::{
     GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
     GitCompatStore, GitDiff, GitDiffCounts, GitDirtyState, GitFilesystemAction,
     GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult,
-    GitIgnorePolicy, GitPatchError, GitPathChange, GitPathStatus, GitPendingMutation,
+    GitIgnorePolicy, GitMergeResolution, GitPatchError, GitPathChange, GitPathStatus, GitPendingMutation,
     GitPendingTransition, GitPublicationRecord, GitRequest, GitRequestUnanswered, GitResetMode,
     GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, MemoryGitCompatStore, apply_git_patch,
     blame_git_generations, canonicalize_git_output_json, canonicalize_git_pending_transition_json,

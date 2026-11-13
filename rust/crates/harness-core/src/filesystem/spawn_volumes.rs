@@ -632,16 +632,13 @@ where
         if let Some((parent, next)) = &self.history {
             super::history::capture(fs, parent, next, self.cuts.as_deref(), &mut commit)
                 .await
-                .map_err(|error| match error {
-                    GuestError::Handler(message) => {
-                        guest(format!("capturing turn volume history: {message}"))
-                    }
-                    other => other,
-                })?;
+                .map_err(|error| error.with_context("capturing turn volume history"))?;
         }
         fs.prepare_fork_many(&forks, &mut commit, WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map_err(|failure| crate::Error::guest(failure.error))?;
+            .map_err(|failure| {
+                crate::Error::guest(failure.error).with_context("preparing spawned volume forks")
+            })?;
         // Sources read one after another are one consistent cut only if none
         // advanced before the commit applies: each source forked at its head
         // must still be at that head, or the whole spawn is refused. A

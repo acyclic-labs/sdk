@@ -96,12 +96,11 @@ where
             ));
         };
         let current = self.generation(tree).await?;
-        let Some(resolved) =
-            acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
-        else {
-            return Err(Error::MergeConflict {
-                paths: paths.keys().cloned().collect(),
-            });
+        let resolved = match acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await? {
+            acyclic_fs::GitMergeResolution::Resolved(paths) => paths,
+            acyclic_fs::GitMergeResolution::Conflicts(paths) => {
+                return Err(Error::MergeConflict { paths });
+            }
         };
         // A continued join tracks the paths the join itself published, as an
         // unconflicted join does: never a file the

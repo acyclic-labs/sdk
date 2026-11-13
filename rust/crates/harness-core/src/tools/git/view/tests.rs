@@ -463,6 +463,15 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
             },
         )
         .await?;
+    let continuation = execute(
+        &filesystem,
+        &store,
+        (&main).into(),
+        repository,
+        &["merge", "--continue"],
+    )
+    .await;
+    assert!(matches!(continuation, Err(Error::MergeConflict { paths }) if paths == ["/renamed"]));
     main.write("/renamed", bytes::Bytes::from_static(b"\xffresolved"))
         .await?;
     main.write_text("/untracked", "not part of the merge")

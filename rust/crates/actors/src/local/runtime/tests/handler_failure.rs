@@ -41,11 +41,12 @@ async fn handler_failure_transition_consumes_only_decided_work() -> TestResult {
         let provider = Arc::new(MemoryStream::default());
         let store = Store::new(Arc::clone(&provider), root()?);
         let address = spawn_with(&store, "handler-failure", &[b"emit"]).await?;
-        let error = if pending {
+        let error = (if pending {
             GuestError::Pending("unknown external acknowledgement".into())
         } else {
             GuestError::Handler("definitive handler failure".into())
-        };
+        })
+        .with_context("handler delivery");
         let handler = Arc::new(RefusedRecord {
             package: Package::new()?,
             error: error.clone(),

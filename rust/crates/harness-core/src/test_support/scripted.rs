@@ -110,6 +110,7 @@ struct State {
     reconciliations: Vec<ModelDispatch>,
 }
 
+type ReconciliationObserver = dyn Fn(ModelDispatch) -> Result<()> + Send + Sync;
 type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
 type ContentReader = (
     Arc<dyn crate::conversation::ContentResidencyVerifier>,
@@ -123,7 +124,7 @@ pub struct ScriptedModelProvider {
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
     dispatch_observer: Option<Arc<dyn DispatchObserver>>,
-    reconciliation_observer: Option<Arc<dyn DispatchObserver>>,
+    reconciliation_observer: Option<Arc<ReconciliationObserver>>,
     reads_content: bool,
     content: Option<ContentReader>,
 }
@@ -199,14 +200,13 @@ impl ScriptedModelProvider {
         self
     }
 
-    /// Observes a reconciliation before consuming its scripted reply. An error
-    /// leaves the reply available for the next attempt of the same dispatch.
+    /// Checks a reconciliation atomically before consuming its scripted reply.
+    /// An error leaves the reply available. Runs under the state lock: the
+    /// synchronous observer must not re-enter this provider.
     #[must_use]
     pub fn with_reconciliation_observer(
         mut self,
-        observer: impl Fn(ModelDispatch) -> BoxProviderFuture<'static, Result<()>>
-        + acyclic_stream::ProviderPlatform
-        + 'static,
+        observer: impl Fn(ModelDispatch) -> Result<()> + Send + Sync + 'static,
     ) -> Self {
         self.reconciliation_observer = Some(Arc::new(observer));
         self
@@ -415,30 +415,27 @@ impl ModelProvider for ScriptedModelProvider {
         observed: &'a [ModelEvent],
     ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
+            let mut state = self.lock();
+            state.reconciliations.push(dispatch);
+            if state.dispatches.iter().any(|original| {
+                original.operation_id == dispatch.operation_id
+                    && original.step == dispatch.step
+                    && original.request_digest != dispatch.request_digest
+            }) {
+                return Err(Error::Conflict(
+                    "scripted reconciliation dispatch mismatch".into(),
+                ));
+            }
+            if !state.dispatches.contains(&dispatch)
+                && !state.recoveries.front().is_some_and(|reply| reply.orphan)
             {
-                let mut state = self.lock();
-                state.reconciliations.push(dispatch);
-                if state.dispatches.iter().any(|original| {
-                    original.operation_id == dispatch.operation_id
-                        && original.step == dispatch.step
-                        && original.request_digest != dispatch.request_digest
-                }) {
-                    return Err(Error::Conflict(
-                        "scripted reconciliation dispatch mismatch".into(),
-                    ));
-                }
-                if !state.dispatches.contains(&dispatch)
-                    && !state.recoveries.front().is_some_and(|reply| reply.orphan)
-                {
-                    return Err(Error::Conflict(
-                        "scripted reconciliation dispatch was not generated".into(),
-                    ));
-                }
+                return Err(Error::Conflict(
+                    "scripted reconciliation dispatch was not generated".into(),
+                ));
             }
             if let Some(observer) = &self.reconciliation_observer {
-                observer(dispatch).await?;
+                observer(dispatch)?;
             }
-            let mut state = self.lock();
             let reply = state
                 .recoveries
                 .pop_front()
