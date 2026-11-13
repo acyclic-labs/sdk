@@ -108,6 +108,7 @@ mod tests {
                 4096,
                 allocator,
                 super::super::interpreter::INTERRUPT_BUDGET,
+                false,
             )
             .await;
             if bytes == 1 {
@@ -205,6 +206,7 @@ mod tests {
             8192,
             allocator,
             super::super::interpreter::INTERRUPT_BUDGET,
+            false,
         )
         .await
         .unwrap();
