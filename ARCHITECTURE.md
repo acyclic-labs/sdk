@@ -24,9 +24,10 @@ The dependency graph is one way:
    and opaque cross-family references. Host adapters consume public provider
    traits; no family crate depends on harness internals.
 7. The `acyclic-plugin` CLI and examples are composition leaves.
-8. The optional `acyclic-harness` HTTP and gRPC modules contain framing and server
-   dependencies only. Both delegate to the same `HarnessWireApi`; neither owns
-   reducer, admission, replay, or scheduling semantics.
+8. `acyclic-harness` exposes one remote entry point, `server::serve`, over the
+   Stream session protocol on gRPC. Managed and self-deployed hosts share the
+   same `hosting::Server` for admission, routing, approvals and spawn; durable
+   reducer, replay and scheduling semantics remain in the harness core.
 9. The optional `acyclic-harness` filesystem and machines modules are genuine
    cross-family adapter boundaries. Provider-specific types remain feature-gated
    out of the pure/WASM harness core.

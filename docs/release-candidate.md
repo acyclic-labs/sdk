@@ -13,11 +13,10 @@
   generation-fenced cursors, an explicit-namespace atomic bounded IndexedDB cursor/outbox store,
   bounded hydration, and
   bidirectional pagination; thin React and Svelte bindings remain separate.
-- One transport-neutral Rust server port with separate HTTP/SSE/WebSocket and
-  gRPC adapter crates; embedded, JSONL/stdio, browser/Bun WebSocket, HTTP/SSE,
-  and gRPC clients negotiate the same descriptor and capabilities first. The
-  same owner- and scope-bound operation status and exact-retry cancellation
-  contract is available on every transport, including atomic recursive cancel.
+- One Rust remote entry point, `acyclic_harness::server::serve`, serving the
+  Stream session protocol over gRPC. Managed and self-deployed hosts use the
+  same hosting implementation; native clients connect through
+  `acyclic_harness::local::Connection::connect`.
 - Explicit Filesystem and Machines integration crates. Filesystem workspaces
   support exact-generation reads and atomic idempotent mutation batches;
   Machines references remain opaque and provider-bound.
