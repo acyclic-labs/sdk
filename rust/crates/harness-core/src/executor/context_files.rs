@@ -88,7 +88,14 @@ impl StockExecution<'_> {
         }
         drop(generation);
         drop(generation_hold);
-        let file = stage_json(journal, input.operation_id, &key, &files, io).await?;
+        let bytes: acyclic_stream::OwnedBytes = match io {
+            Some(io) => io.encode(&files, io.remaining()?.bytes_encoded, true)?,
+            None => crate::contract::canonical_json_bytes(&files)?.into(),
+        };
+        let bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        let file = stage_bytes(journal, input.operation_id, &key, &bytes, false, io).await?;
+        drop(bytes);
+        drop(bytes_hold);
         drop(files);
         drop(key);
         scope.finish(file.logical_owned_bytes()?)?;
