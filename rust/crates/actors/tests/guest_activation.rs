@@ -672,7 +672,6 @@ async fn strict_wire_record_matches_typescript_guest() -> Result<(), Box<dyn std
         return Err("missing guest reply".into());
     };
     let transition = Transition {
-        pause: false,
         response: Some(payload),
         pause: false,
         checkpoint: activation.checkpoint().await?,
