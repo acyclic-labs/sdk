@@ -316,21 +316,28 @@ function qualifyActorsMutation({ name, source, model, mutations, tests }, run) {
   }, run);
 }
 
-export function qualifyActorsCoreMutations(run = runCommand) {
-  return [
-    qualifyActorsMutation({
+export function qualifyActorsCoreMutations(run = runCommand, selected) {
+  const controls = [
+    {
       name: "Actors activation", source: "local.rs", model: "local/runtime/tests.rs",
       mutations: [[
-        "vec![own],",
-        "{ let _ = own; Vec::new() },",
+        "let outcome = self.provider.commit(prepared.request.clone()).await;",
+        `let outcome = self.provider.commit({
+                    let mut request = prepared.request.clone();
+                    for effect in &mut request.effects {
+                        effect.conditions.retain(|condition|
+                            Some(CommitCondition::path(condition)) != prepared.own.as_ref());
+                    }
+                    request
+                }).await;`,
         "a superseded activation published after ownership changed",
       ]],
       tests: {
         "a superseded activation published after ownership changed":
           "local::runtime::tests::placement_and_restart_admit_only_one_publishing_activation",
       },
-    }, run),
-    qualifyActorsMutation({
+    },
+    {
       name: "Actors durability", source: "local.rs", model: "local/model/durability.rs",
       mutations: [[
         "if self.provider.context().deferred_durability()",
@@ -341,8 +348,8 @@ export function qualifyActorsCoreMutations(run = runCommand) {
         "Actors acknowledged a publication before its device durable cut":
           "local::model::durability::every_actor_acknowledgement_is_covered_by_the_device_durable_cut",
       },
-    }, run),
-    qualifyActorsMutation({
+    },
+    {
       name: "Actors outcome", source: "local.rs", model: "local/model/composition.rs",
       mutations: [[
         "if prepared.acknowledgement_unknown {", "if false {",
@@ -358,8 +365,8 @@ export function qualifyActorsCoreMutations(run = runCommand) {
         "a refused publication was reported as success":
           "local::model::composition::rejected_companion_settles_without_consuming_the_actor_input",
       },
-    }, run),
-    qualifyActorsMutation({
+    },
+    {
       name: "Actors completed result", source: "local/invoke.rs", model: "local/model/composition.rs",
       mutations: [[
         "from: wire.revision - 1,",
@@ -370,8 +377,10 @@ export function qualifyActorsCoreMutations(run = runCommand) {
         "invocation reply is not co-committed with consumed input":
           "local::model::composition::invocation_lost_ack_retains_the_original_reply_and_participant_through_a_retry_refusal",
       },
-    }, run),
+    },
   ];
+  return controls.filter(control => !selected || control.name === selected)
+    .map(control => qualifyActorsMutation(control, run));
 }
 
 export function qualifyE2eProgressLoom(features = ["--features", "test-support"], run = runCommand) {
@@ -655,6 +664,10 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
   "--actors-core-mutations": qualifyActorsCoreMutations,
+  "--actors-activation-mutations": run => qualifyActorsCoreMutations(run, "Actors activation"),
+  "--actors-durability-mutations": run => qualifyActorsCoreMutations(run, "Actors durability"),
+  "--actors-outcome-mutations": run => qualifyActorsCoreMutations(run, "Actors outcome"),
+  "--actors-completion-mutations": run => qualifyActorsCoreMutations(run, "Actors completed result"),
   "--native-progress": qualifyNativeProgressLoom,
   "--stream-retry": qualifyStreamRetryLoom,
   "--native-signal": qualifyNativeSignalLoom,
