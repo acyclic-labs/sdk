@@ -50,18 +50,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 records,
                 [genesis.into(), encoded],
             )?;
-            // Sequence one is intrinsically addressable, but every creation
-            // still locates its operation: the operation index then exists
-            // durably beside every volume, so an ephemeral fork's locators
-            // are always fresh paths beneath a present parent.
-            let effect = crate::distributed::composition::hard_effect(request, work)?;
-            self.locate_operation_in(
-                authority,
-                &record,
-                &mut effect.conditions,
-                &mut effect.mutations,
-                work,
-            )?;
             generation
         } else {
             work.append_record(&mut request.effects[0].mutations, records, [genesis])?;
@@ -590,6 +578,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             }
             _ => None,
         };
+        self.prepare_operation_namespace(work).await?;
         let lease = self
             .provider
             .lease_ephemeral(self.placement.stream_path(fork.destination, "")?)
@@ -636,6 +625,45 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         Ok(lease)
     }
 
+    // An adopted locator cannot create a durable ancestor while its authority
+    // is leased. Establish the shared namespace before taking that lease, even
+    // when a reopened store has never published an indexed operation. A soft
+    // absent condition makes concurrent preparation preserve the same parent.
+    async fn prepare_operation_namespace(
+        &self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        let prefix = std::str::from_utf8(self.placement.operations_prefix())
+            .map_err(|_| AuthorityStoreError::RejectedStatic("operation namespace is not UTF-8"))?;
+        let path = work.own_path(prefix.trim_end_matches('/'))?;
+        let mut conditions = work.vec(1)?;
+        conditions.push(CommitCondition::Absent { path: path.clone() });
+        let mut mutations = work.vec(1)?;
+        work.append_record(
+            &mut mutations,
+            path,
+            [acyclic_stream::OwnedBytes::from_static(b"acyclic.fs.operations/v1")],
+        )?;
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            effects: crate::distributed::composition::funded_effect(
+                acyclic_stream::CommitEffect { conditions, mutations, soft: true },
+                work,
+            )?,
+            idempotency_key: work.key(self.placement.key_scope(), b"operation-namespace/v1", &[])?,
+        };
+        let result = self.commit(request, None, work, None::<&mut ()>).await;
+        if !work.is_native() {
+            work.release_request()?;
+        }
+        let outcome = result.map_err(|error| error.into_error(std::convert::identity))?;
+        match outcome.0 {
+            CommitOutcome::Committed(_) => Ok(()),
+            CommitOutcome::Conflict(_) => Err(AuthorityStoreError::RejectedStatic(
+                "operation namespace preparation was refused",
+            )),
+        }
+    }
     fn prepare_fork_records(
         &self,
         fork: &WorkspaceForkCommit,
