@@ -4,6 +4,7 @@ pub type RelativePath = StreamPath;
 
 /// Opaque content-bound identity of one committed envelope.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CommitId([u8; 32]);
 
 impl CommitId {
