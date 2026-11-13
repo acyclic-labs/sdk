@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 #[cfg(test)]
 thread_local! {
     static SOCKET_COMPLETION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    pub(super) static BEFORE_RECEIPT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]

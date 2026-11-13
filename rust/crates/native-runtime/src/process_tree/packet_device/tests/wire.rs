@@ -17,6 +17,12 @@ fn request(opcode: u32, unique: u64, uid: u32, body: &[u8]) -> Vec<u8> {
 }
 
 fn host() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream)> {
+    let (source, custody, kernel, writer) = host_with_writer()?;
+    drop(writer);
+    Ok((source, custody, kernel))
+}
+
+fn host_with_writer() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream, File)> {
     let mut pair = [-1; 2];
     // SAFETY: pair owns writable descriptor slots; success transfers both.
     if unsafe {
@@ -46,7 +52,6 @@ fn host() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream)> {
     runner::send_message(&helper, &[device.as_raw_fd()], &[1])?;
     admitted.wait_mounted()?;
     drop(helper);
-    drop(device);
     let (source, mut custody) = admitted.into_parts();
     let source = UnixStream::from(OwnedFd::from(source));
     source.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -66,7 +71,76 @@ fn host() -> io::Result<(UnixStream, PacketDeviceRetirement, UnixStream)> {
     let mut initialized = [0; 80];
     kernel.read_exact(&mut initialized)?;
     assert_eq!(&initialized[4..8], &0_i32.to_ne_bytes());
-    Ok((source, custody, kernel))
+    Ok((source, custody, kernel, File::from(device)))
+}
+
+#[test]
+fn notification_backpressure_does_not_stop_kernel_request_delivery()
+-> Result<(), Box<dyn std::error::Error>> {
+    if crate::private_file::with_isolated_user_runtime(
+        "process_tree::packet_device::tests::wire::notification_backpressure_does_not_stop_kernel_request_delivery",
+    )? {
+        return Ok(());
+    }
+    let (mut source, custody, mut kernel, mut writer) = host_with_writer()?;
+    struct Disconnect(UnixStream);
+    impl Drop for Disconnect {
+        fn drop(&mut self) {
+            let _ = self.0.shutdown(std::net::Shutdown::Both);
+        }
+    }
+    // Failed controls must wake the actual blocked physical writer before
+    // the original custody's destructor joins device retirement.
+    let _disconnect = Disconnect(kernel.try_clone()?);
+    rustix::fs::fcntl_setfl(
+        &writer,
+        rustix::fs::fcntl_getfl(&writer)? | rustix::fs::OFlags::NONBLOCK,
+    )?;
+    let filler = [0xa5; OUTPUT_HEADER];
+    let mut queued = 0;
+    loop {
+        match writer.write(&filler) {
+            Ok(length) => {
+                assert_eq!(length, filler.len());
+                queued += 1;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    assert!(
+        queued > 0,
+        "the original physical endpoint must exhaust actual kernel credit"
+    );
+    let mut notification = [0; 40];
+    notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
+    notification[4..8].copy_from_slice(&2_i32.to_ne_bytes());
+    notification[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+    source.write_all(&notification)?;
+    // The first progress pass may have read only the frame header. A second
+    // original kernel request must still be delivered after its full body
+    // makes publication wait for the physical endpoint's missing credit.
+    for unique in [2, 3] {
+        let original = request(1, unique, unsafe { libc::geteuid() }, b"child\0");
+        kernel.write_all(&original)?;
+        let mut delivered = vec![0; original.len()];
+        source.read_exact(&mut delivered)?;
+        assert_eq!(delivered, original);
+    }
+    for _ in 0..queued {
+        let mut physical = [0; OUTPUT_HEADER];
+        kernel.read_exact(&mut physical)?;
+        assert_eq!(physical, filler);
+    }
+    let mut physical = [0; 40];
+    kernel.read_exact(&mut physical)?;
+    assert_eq!(physical, notification);
+    assert_eq!(
+        custody.publication(true)?,
+        PacketDevicePublication::Published
+    );
+    Ok(())
 }
 
 #[test]
