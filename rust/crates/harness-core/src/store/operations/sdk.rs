@@ -100,6 +100,23 @@ pub(crate) async fn heads_with_work<P: crate::store::JournalProvider + ?Sized>(
     heads
         .validate_for(&request)
         .map_err(|source| stream_error_with_work(source, work))?;
+    if let Some(observer) = work.as_deref_mut() {
+        for record in heads
+            .heads
+            .iter()
+            .flatten()
+            .filter_map(|head| head.last.as_ref())
+            .chain(
+                heads
+                    .retained
+                    .iter()
+                    .filter_map(|entry| entry.record.as_ref()),
+            )
+        {
+            observer.receive_record(record.value.len() as u64)?;
+            observer.allocation_attempt(record.value.len() as u64)?;
+        }
+    }
     Ok(ObservedHeads {
         page: heads,
         #[cfg(not(target_arch = "wasm32"))]

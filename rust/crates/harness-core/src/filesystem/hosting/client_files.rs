@@ -154,6 +154,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Bou
     ) -> Result<ClientFiles, Error> {
         use crate::client_files::FileSource;
         let (volume, scope, verifier) = self.file_volume(agent, root, false).await?;
+        if matches!(root, FileRoot::ClientSession { .. }) {
+            self.volumes.create_volume(&volume).await.map_err(turn)?;
+        }
         let publisher = FilesystemContentPublisher::new(
             self.volumes.clone(),
             &volume,

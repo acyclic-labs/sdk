@@ -183,7 +183,7 @@ impl Connection {
             .await
             .map_err(exchange)?;
         Ok(Self {
-            session: self.session.clone(),
+            session: controls.observation_session(),
             controls: Arc::new(controls),
             root: agent,
             tools,
