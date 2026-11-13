@@ -340,6 +340,139 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
 }
 
 #[tokio::test]
+async fn reviews_bound_complete_groups_without_stopping_a_fitting_worker() -> Result<()> {
+    for partitioned in [true, false] {
+        let overflowed = Arc::new(AtomicUsize::new(0));
+        let seen = overflowed.clone();
+        let response = || {
+            ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({"usage":{"prompt_tokens":3000,"completion_tokens":1}}),
+            })])
+        };
+        let mut turns = vec![response()];
+        if partitioned {
+            turns.push(ScriptedTurn::Text(
+                json!({
+                    "version":1,"summary":null,"review_at_input_tokens":3500,
+                })
+                .to_string(),
+            ));
+        }
+        turns.push(response());
+        let provider = Arc::new(
+            ScriptedModelProvider::new(turns)
+                .with_context_capacity(crate::context::ModelContextCapacity {
+                    context_tokens: 4096,
+                    output_tokens: Some(128),
+                })
+                .with_token_counter(move |request| {
+                    if request.bytes().len() > 4096 - 128 {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                    }
+                    fixture_token_count(request)
+                }),
+        );
+        let stock = StockExecutor::new(
+            Model::new("fixture".into(), "selected".into(), "1".into())?,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_automatic_compaction()?;
+        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        let journal_owner = storage.journal();
+        let journal = journal_owner.as_ref();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            max_steps: None,
+            input: ModelContent::Text("Continue.".into()),
+            selected_context: None,
+        };
+        let groups = if partitioned { 4 } else { 1 };
+        let mut prior = Vec::new();
+        for index in 0..groups {
+            prior.push(ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!(
+                    "{index}{}",
+                    "a".repeat(if partitioned { 640 } else { 2816 })
+                )),
+            });
+            prior.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text("b".repeat(64)),
+            });
+        }
+        let execution = StockExecution::ordinary(&stock);
+        let worker = async {
+            let events = execution.model_step(journal, &input, 0, &prior).await?;
+            assert_eq!(
+                overflowed.load(Ordering::SeqCst),
+                0,
+                "the original worker fits"
+            );
+            execution
+                .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
+                .await?;
+            execution.review.completed.notified().await;
+            assert!(
+                overflowed.load(Ordering::SeqCst) > 0,
+                "the full review does not fit"
+            );
+            assert_eq!(provider.request_count(), 1 + usize::from(partitioned));
+            if partitioned {
+                let request = provider.request(1).unwrap();
+                assert!(request.summary);
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|m| m.content == prior[0].content)
+                );
+                assert!(
+                    !request
+                        .messages
+                        .iter()
+                        .any(|m| m.content == prior[6].content)
+                );
+            }
+            execution.model_step(journal, &input, 1, &prior).await?;
+            let request = provider.last_request().unwrap();
+            for message in &prior {
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .any(|m| m.content == message.content)
+                );
+            }
+            Ok(ExecutionProgress::Ready(()))
+        };
+        execution
+            .with_context_review(journal, &input, worker)
+            .await?;
+        let paid = provider.request_count();
+        let reopened = StockExecution::ordinary(&stock);
+        let replay = async {
+            let events = reopened.model_step(journal, &input, 0, &prior).await?;
+            reopened
+                .request_context_review(journal, &input, 0, &prior, original_metadata(&events))
+                .await?;
+            assert_eq!(
+                provider.request_count(),
+                paid,
+                "window replay must not dispatch"
+            );
+            Ok(ExecutionProgress::Ready(()))
+        };
+        reopened
+            .with_context_review(journal, &input, replay)
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Result<()> {
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
