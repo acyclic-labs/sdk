@@ -680,6 +680,9 @@ async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_r
         calls: Calls,
     }
     impl TurnExecutors for Executors {
+        fn model_selection(&self) -> Option<String> {
+            self.review.model_selection()
+        }
         fn review<'a>(
             &'a self,
             agent: &'a AgentState,
