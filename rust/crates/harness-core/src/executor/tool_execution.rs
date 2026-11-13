@@ -59,6 +59,25 @@ enum ToolInvocationOutcome<'a> {
     Interrupted,
 }
 
+// Settlement retains the invocation and original result credit independently
+// of whether its caller assembles a model transcript.
+struct SettledToolCall<'a> {
+    invocation: ToolInvocation,
+    content: crate::model::ToolResultContent,
+    receipt: Option<ToolReceipt<'a>>,
+}
+
+fn settled_call<'a>(
+    invocation: ToolInvocation,
+    content: crate::model::ToolResultContent,
+    receipt: Option<ToolReceipt<'a>>,
+) -> ExecutionProgress<Option<SettledToolCall<'a>>> {
+    ExecutionProgress::Ready(Some(SettledToolCall {
+        invocation,
+        content,
+        receipt,
+    }))
+}
 impl<'io> StockExecution<'io> {
     pub(super) async fn settle_tool_call(
         &self,
@@ -71,7 +90,6 @@ impl<'io> StockExecution<'io> {
         _hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<Option<ToolReceipt<'io>>>> {
         self.verify_task_context_binding(operation_id)?;
-        let pinned_call = pinned.is_some();
         if pinned
             .as_ref()
             .is_some_and(|tool| tool.definition.name != invocation.name)
@@ -88,6 +106,39 @@ impl<'io> StockExecution<'io> {
             &invocation.call_id,
             self.io,
         )?;
+        let outcome = self
+            .settle_invocation(
+                journal,
+                operation_id,
+                step,
+                (invocation, pinned),
+                metadata,
+                _hook_context,
+            )
+            .await?;
+        match outcome {
+            ExecutionProgress::Ready(Some(settled)) => self.push_tool_result(
+                &settled.invocation,
+                settled.content,
+                settled.receipt,
+                prior_messages,
+            ),
+            other => Ok(other.map(|_| None)),
+        }
+    }
+
+    // One admission, approval and replay path. The model adapter above supplies
+    // indexed request metadata and assembles its transcript after settlement.
+    async fn settle_invocation(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        (invocation, pinned): (ToolInvocation, Option<Arc<crate::tool::Tool>>),
+        metadata: &Value,
+        _hook_context: &mut Vec<ModelMessage>,
+    ) -> Result<ExecutionProgress<Option<SettledToolCall<'io>>>> {
+        let pinned_call = pinned.is_some();
         let invocation_limits = crate::conversation::Limits {
             file_bytes: self
                 .stock
@@ -136,7 +187,7 @@ impl<'io> StockExecution<'io> {
         if matches!(recorded, RecordedCall::Failed { started: None, .. }) {
             if let RecordedCall::Failed { reason, cause, .. } = recorded {
                 let content = tool_failure_content(reason, cause, self.io)?;
-                return self.push_tool_result(&invocation, content, None, prior_messages);
+                return Ok(settled_call(invocation, content, None));
             }
         }
         let fixed = if pinned.is_some() {
@@ -243,7 +294,7 @@ impl<'io> StockExecution<'io> {
                             _hook_context,
                         )
                         .await?;
-                    return self.push_tool_result(&invocation, content, receipt, prior_messages);
+                    return Ok(settled_call(invocation, content, receipt));
                 }
                 None => return Err(Error::Indeterminate(operation_id)),
             }
@@ -276,7 +327,7 @@ impl<'io> StockExecution<'io> {
                 let content = self
                     .settle_tool_refusal(journal, operation_id, step, &invocation, rejection)
                     .await?;
-                return self.push_tool_result(&invocation, content, None, prior_messages);
+                return Ok(settled_call(invocation, content, None));
             }
         };
         if !pinned_call
@@ -309,7 +360,7 @@ impl<'io> StockExecution<'io> {
                         )),
                     )
                     .await?;
-                return self.push_tool_result(&invocation, content, None, prior_messages);
+                return Ok(settled_call(invocation, content, None));
             }
         }
         let tool = tool.as_ref();
@@ -343,7 +394,7 @@ impl<'io> StockExecution<'io> {
                             ToolCallRejection::Failed(refusal),
                         )
                         .await?;
-                    return self.push_tool_result(&invocation, content, None, prior_messages);
+                    return Ok(settled_call(invocation, content, None));
                 }
                 // A started call whose hook target went away may have run.
                 Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
@@ -370,7 +421,7 @@ impl<'io> StockExecution<'io> {
                             .settle_tool_refusal(journal, operation_id, step, &effective, rejection)
                             .await?;
                         self.append_hook_context(_hook_context, output)?;
-                        return self.push_tool_result(&effective, content, None, prior_messages);
+                        return Ok(settled_call(effective, content, None));
                     }
                 }
                 if let Some(context) = &mut context {
@@ -402,7 +453,7 @@ impl<'io> StockExecution<'io> {
                     )
                     .await?;
                 self.append_hook_context(_hook_context, pre_hook)?;
-                return self.push_tool_result(&invocation, content, None, prior_messages);
+                return Ok(settled_call(invocation, content, None));
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -471,7 +522,7 @@ impl<'io> StockExecution<'io> {
                                 ToolCallRejection::Failed(refusal),
                             )
                             .await?;
-                        return self.push_tool_result(&invocation, content, None, prior_messages);
+                        return Ok(settled_call(invocation, content, None));
                     }
                     // A dispatched command whose target went away may have run.
                     Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
@@ -526,12 +577,7 @@ impl<'io> StockExecution<'io> {
                                     ToolCallRejection::Failed(error),
                                 )
                                 .await?;
-                            return self.push_tool_result(
-                                &invocation,
-                                content,
-                                None,
-                                prior_messages,
-                            );
+                            return Ok(settled_call(invocation, content, None));
                         }
                     }
                 }
@@ -557,7 +603,7 @@ impl<'io> StockExecution<'io> {
                                 ToolCallRejection::Failed(denial),
                             )
                             .await?;
-                        return self.push_tool_result(&invocation, content, None, prior_messages);
+                        return Ok(settled_call(invocation, content, None));
                     }
                     None => {}
                 }
@@ -602,7 +648,7 @@ impl<'io> StockExecution<'io> {
                 }
             }
         };
-        self.push_tool_result(&invocation, content, receipt, prior_messages)
+        Ok(settled_call(invocation, content, receipt))
     }
 
     fn push_tool_result(
