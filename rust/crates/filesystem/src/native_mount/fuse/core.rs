@@ -94,6 +94,8 @@ pub(super) use crate::native_mount::shared::metering::source_original as fuse_na
 pub(super) struct ProjectionCore {
     #[cfg(test)]
     pub(super) write_pause: std::sync::Mutex<tests::write_gate::PauseSlot>,
+    #[cfg(all(test, not(loom)))]
+    pub(super) publication_test: std::sync::Mutex<tests::owner::PublicationTest>,
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) clock: super::super::clock::Clock,
     pub(super) state: RankedMutex<ProjectionState, VIEW>,
@@ -169,6 +171,8 @@ impl ProjectionCore {
         Ok(Arc::new(Self {
             #[cfg(test)]
             write_pause: std::sync::Mutex::new(tests::write_gate::PauseSlot::default()),
+            #[cfg(all(test, not(loom)))]
+            publication_test: std::sync::Mutex::new(tests::owner::PublicationTest::default()),
             source,
             clock: super::super::clock::Clock::capture(),
             state: RankedMutex::new(state),
@@ -189,7 +193,13 @@ impl ProjectionCore {
 
     pub(super) fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
-        let _state = self.state_to_finish();
+        let queued = {
+            let mut state = self.state_to_finish();
+            std::mem::take(&mut state.invalidation.deferred)
+        };
+        // Queued replies own view leases and may finish their exact kernel
+        // obligation. Release them outside state, before retirement drains.
+        drop(queued);
     }
 
     #[track_caller]
@@ -239,7 +249,7 @@ impl ProjectionCore {
     pub(super) fn retain_handler_failure(&self, failure: (NativeMountError, WorkCounters)) {
         // Pair terminal publication with the invalidation wait's mutex so a failure
         // between its predicate check and atomic wait cannot lose its notification.
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut reports = self
             .handler_error
             .lock()
@@ -256,7 +266,9 @@ impl ProjectionCore {
         // and substitute ENODEV before the original refusal is retained.
         self.handler_failed.store(true, Ordering::Release);
         drop(reports);
+        let queued = std::mem::take(&mut state.invalidation.deferred);
         drop(state);
+        drop(queued);
         #[cfg(all(test, loom))]
         if invalidation::model_checking::omit_terminal_notification() {
             return;

@@ -553,7 +553,7 @@ fn an_open_drops_the_size_of_any_version_it_does_not_read() -> Result<(), Box<dy
         .0;
     {
         let _names = core.names().map_err(std::io::Error::from_raw_os_error)?;
-        let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
+        let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
         core.state_to_finish()
             .discard_file_handle(inode, handle)
             .map_err(std::io::Error::from_raw_os_error)?;
@@ -726,7 +726,7 @@ fn native_access_fuse_cached_content_cannot_bypass_new_open_revocation()
     let projection = crate::native_mount::fuse::FuseProjection { core };
     let entry = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("cached"), &work)?;
     let inode = entry.attr.ino.0;
-    let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
+    let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
     assert_eq!(
         projection
             .read_handle(inode, handle, 0, 4, &work)?
@@ -769,7 +769,7 @@ fn native_access_fuse_cached_metadata_requires_current_list_authority()
         .attr
         .ino
         .0;
-    let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
+    let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
     projection.node_attributes(inode, None, &work)?;
     let stamp = source.view_stamp_with_meter(&work)?;
     publish_test_access(
@@ -825,7 +825,7 @@ fn native_access_fuse_detaching_preserves_each_open_handle_policy()
         };
         let entry = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("retained"), &work)?;
         let inode = entry.attr.ino.0;
-        let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
+        let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY, &work)?;
         publish_test_access(
             &source,
             vec![deny("revoked-read", &[Action::Read], "retained")],
@@ -890,7 +890,7 @@ fn full_case_fold_fuse_preserves_native_names_for_long_expanding_keys()
             .0,
         inode
     );
-    let (handle, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
+    let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
     let opened = projection
         .core
         .state()
@@ -918,7 +918,7 @@ fn full_case_fold_fuse_preserves_native_names_for_long_expanding_keys()
         &name("renamed")
     );
     assert!(source.lookup(&name(&long))?.is_none());
-    let (handle, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
+    let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
     let reopened = projection
         .core
         .state()
@@ -945,7 +945,7 @@ fn full_case_fold_fuse_preserves_native_names_for_long_expanding_keys()
             .map_err(NativeMountError::from)?,
         &name(&long)
     );
-    let (handle, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
+    let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY | libc::O_DIRECT, &work)?;
     let restored = projection
         .core
         .state()

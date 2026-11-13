@@ -92,11 +92,8 @@ impl ProjectionState {
         fuse_reserve(&mut self.superseded_attributes, 1, work)?;
         // A guard's drop must only move already-funded work, never allocate
         // or publish a device packet while handling the kernel's request.
-        fuse_reserve(
-            &mut self.invalidation.deferred,
-            self.superseded_attributes.len() + 1,
-            work,
-        )?;
+        self.reserve_invalidations(1, work)?;
+
         let credit = work.reserve_work(crate::WorkCounters {
             backend_write_operations: 1,
             items_examined: 1,

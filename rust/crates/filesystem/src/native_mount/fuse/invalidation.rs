@@ -8,6 +8,7 @@ pub(super) mod model_checking;
 
 #[derive(Debug)]
 pub(super) enum KernelCacheItem {
+    Reply(Box<super::deferred_reply::DeferredReply>),
     Attributes {
         inode: u64,
         credit: crate::materializer::NativeWorkReservation,
@@ -243,7 +244,7 @@ impl ProjectionState {
         }
         for item in items.iter() {
             match item {
-                KernelCacheItem::Attributes { .. } => (),
+                KernelCacheItem::Attributes { .. } | KernelCacheItem::Reply(_) => (),
                 KernelCacheItem::Inode(inode) => {
                     self.by_inode.get_mut(inode).ok_or(libc::EIO)?.kernel = Some(through);
                 }
@@ -316,6 +317,8 @@ pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl Ke
 }
 
 fn invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
+    #[cfg(all(test, not(loom)))]
+    tests::owner::pause_invalidations(core);
     let mut through = None;
     let result = core.request(|work| {
         let mut items = core.state_to_finish().invalidation.take_deferred()?;
@@ -362,7 +365,7 @@ fn drop_kernel_caches(
         while !items.as_slice().is_empty() {
             if !matches!(
                 items.as_slice().first(),
-                Some(KernelCacheItem::Attributes { .. })
+                Some(KernelCacheItem::Attributes { .. } | KernelCacheItem::Reply(_))
             ) {
                 work.charge(WorkCounters {
                     backend_write_operations: 1,
@@ -380,6 +383,10 @@ fn drop_kernel_caches(
                         ..WorkCounters::UNCHARGED
                     });
                     result
+                }
+                KernelCacheItem::Reply(reply) => {
+                    reply.deliver()?;
+                    Ok(())
                 }
                 KernelCacheItem::Inode(inode) => notifier.inval_inode(inode),
                 KernelCacheItem::Entry { parent, name } => notifier.inval_entry(parent, &name),

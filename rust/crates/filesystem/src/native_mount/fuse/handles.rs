@@ -250,7 +250,7 @@ impl FuseProjection {
         inode: u64,
         flags: i32,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(u64, FopenFlags), NativeMountError> {
+    ) -> Result<(u64, FopenFlags, bool), NativeMountError> {
         if flags & libc::O_TRUNC != 0 {
             self.check_source_write(work)?;
         }
@@ -285,7 +285,11 @@ impl FuseProjection {
         // The open pins the version it opened: a size of any other version
         // the kernel holds is dropped before the open is answered, so the
         // kernel asks again before it reads through this handle.
-        if !changes_content(flags) && entry.write_handles == 0 && !entry.kernel_reads(&refreshed) {
+        let attributes_before_reply = state.cache != ProjectionCache::Direct
+            && !changes_content(flags)
+            && entry.write_handles == 0
+            && !entry.kernel_reads(&refreshed);
+        if attributes_before_reply {
             state.invalidate_attributes(inode, work)?;
         }
         let entry = state.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
@@ -294,17 +298,19 @@ impl FuseProjection {
         if let Some(binding) = entry.binding_mut(&path) {
             binding.verified = stamp;
         }
-        state.admit_file_handle(
-            source,
-            inode,
-            &path,
-            &refreshed,
-            stamp,
-            flags,
-            open_file,
-            flags & libc::O_TRUNC != 0,
-            work,
-        )
+        state
+            .admit_file_handle(
+                source,
+                inode,
+                &path,
+                &refreshed,
+                stamp,
+                flags,
+                open_file,
+                flags & libc::O_TRUNC != 0,
+                work,
+            )
+            .map(|(handle, flags)| (handle, flags, attributes_before_reply))
     }
 
     pub(super) fn open_source(

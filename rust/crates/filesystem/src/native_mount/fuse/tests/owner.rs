@@ -756,3 +756,127 @@ impl Drop for OwnerProcess {
         let _ = self.child.wait();
     }
 }
+
+#[cfg(not(loom))]
+#[derive(Default)]
+pub(in crate::native_mount::fuse) struct PublicationTest {
+    pub(in crate::native_mount::fuse) pause: Option<(SyncSender<()>, Receiver<()>)>,
+    pub(in crate::native_mount::fuse) queued: Option<SyncSender<()>>,
+}
+
+#[cfg(not(loom))]
+pub(in crate::native_mount::fuse) fn pause_invalidations(core: &ProjectionCore) {
+    let pause = core
+        .publication_test
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pause
+        .take();
+    if let Some((entered, release)) = pause {
+        let _ = entered.send(());
+        let _ = release.recv();
+    }
+}
+
+#[cfg(not(loom))]
+#[test]
+fn an_open_waits_for_its_cached_size_without_holding_a_callback_worker()
+-> Result<(), Box<dyn std::error::Error>> {
+    if acyclic_native_runtime::private_file::with_isolated_user_runtime(
+        "native_mount::fuse::tests::owner::an_open_waits_for_its_cached_size_without_holding_a_callback_worker",
+    )? {
+        return Ok(());
+    }
+    crate::initialize_native_mount_services()?;
+    for retire in [false, true] {
+        let (source, around) = shared_sources(posix_config())?;
+        let path = name("versioned");
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+            around.create_file(&path, FileMetadata::default(), None, work)
+        })?;
+        let volume = source.volume_id()?;
+        let destination = tempfile::tempdir()?;
+        let mut session = mount(Arc::new(source), volume, destination.path())?;
+        let mounted = destination.path().join("versioned");
+        assert!(std::fs::read(&mounted)?.is_empty());
+        let core = Arc::clone(&session.driver.as_ref().ok_or("driver absent")?.core);
+        let io = transport(&session);
+        let (entered, paused) = sync_channel(1);
+        let (release, released) = sync_channel(1);
+        let (queued, observed) = sync_channel(1);
+        {
+            let mut hooks = core.publication_test.lock().unwrap();
+            hooks.pause = Some((entered, released));
+            hooks.queued = Some(queued);
+        }
+        struct Cleanup {
+            release: Option<SyncSender<()>>,
+            io: Arc<super::super::host_io::HostIo>,
+            armed: bool,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                drop(self.release.take());
+                if self.armed {
+                    if let Some(connection) = self.io.connection.get() {
+                        let _ = connection.abort();
+                    }
+                }
+            }
+        }
+        std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            let mut cleanup = Cleanup {
+                release: Some(release),
+                io,
+                armed: true,
+            };
+            let work = fuse_fixture_work();
+            {
+                let mut state = core.state_to_finish();
+                let root = state.root_inode;
+                state.reserve_invalidations(1, &work)?;
+                state
+                    .invalidation
+                    .deferred
+                    .push(super::super::invalidation::KernelCacheItem::Inode(root));
+            }
+            paused.recv_timeout(Duration::from_secs(5))?;
+            around.write_range(&path, 0, Bytes::from_static(b"changed"))?;
+            let (finished, result) = sync_channel(1);
+            scope.spawn(move || {
+                let _ = finished.send(std::fs::read(mounted));
+            });
+            // A production reply transfer, not a timing guess, proves the OPEN
+            // has reached its prerequisite while retaining the original view.
+            observed.recv_timeout(Duration::from_secs(5))?;
+            assert!(matches!(
+                result.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            assert_eq!(
+                std::fs::metadata(destination.path().join("independent"))
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::NotFound,
+            );
+            if retire {
+                core.stop();
+                assert_eq!(
+                    result
+                        .recv_timeout(Duration::from_secs(5))?
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EIO)
+                );
+            }
+            drop(cleanup.release.take());
+            if !retire {
+                assert_eq!(result.recv_timeout(Duration::from_secs(5))??, b"changed");
+            }
+            cleanup.armed = false;
+            Ok(())
+        })?;
+        assert!(session.stop()?);
+    }
+    Ok(())
+}

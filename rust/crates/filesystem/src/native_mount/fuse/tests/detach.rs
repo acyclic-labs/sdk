@@ -42,7 +42,7 @@ fn operation(
         .attr
         .ino
         .0;
-    let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &setup)?;
+    let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY, &setup)?;
     let work = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
             allocation_operations: allowance.unwrap_or(u64::MAX),
@@ -253,7 +253,7 @@ fn completion_retains_credit_after_source_acceptance(
             .attr
             .ino
             .0;
-        let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &original)?;
+        let (handle, _, _) = projection.open_node(inode, libc::O_RDONLY, &original)?;
         if copy_credit {
             projection.link_name(
                 inode,
