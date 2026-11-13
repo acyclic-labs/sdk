@@ -18,6 +18,7 @@ use crate::{
     filesystem::{
         AgentAuthority, FilesystemContentPublisher, FilesystemContentVerifier,
         FilesystemSpawnVolumes, PRIVATE_VOLUME, TurnAdmission, agent_authority,
+        hosting::{Prepared, RootSubmission},
     },
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
@@ -562,6 +563,9 @@ pub(super) struct NativeAgents {
     host: Arc<AgentHost<LocalStream>>,
     driver: Arc<HostDriver>,
     files: Arc<LocalFilesystem>,
+    /// Only uncertain creations are retained. A later request resubmits the
+    /// original sealed commit, including its unpublished-object custody.
+    roots: std::sync::Mutex<BTreeMap<String, Prepared>>,
     issuer: AuthorityRoot,
     bindings: [WorkspaceEntry; 3],
 }
@@ -604,6 +608,7 @@ impl NativeAgents {
             host,
             driver,
             files: local.files.clone(),
+            roots: Default::default(),
             issuer,
             bindings: local.session_bindings(),
         })
@@ -619,28 +624,52 @@ impl NativeAgents {
         let mut bytes = [0; 16];
         hasher.finalize_xof().fill(&mut bytes);
         let agent = AgentId::from_bytes(bytes);
+        let pending = self.roots.lock().map_err(storage)?.remove(agent.as_str());
+        let prepared = match pending {
+            Some(prepared) => prepared,
+            None => self.prepare_root(&agent).await?,
+        };
+        let root = match prepared
+            .submit(&self.files, &self.host)
+            .await
+            .map_err(storage)?
+        {
+            RootSubmission::Created(root) => root,
+            RootSubmission::Unknown(prepared) => {
+                self.roots
+                    .lock()
+                    .map_err(storage)?
+                    .insert(agent.to_string(), prepared);
+                return Err(Error::Indeterminate(OperationId::from_bytes(bytes)));
+            }
+        };
+        self.drain().await?;
+        Ok(root)
+    }
+
+    async fn prepare_root(&self, agent: &AgentId) -> Result<Prepared> {
         let project = self.bindings[0].volume()?;
         let private = VolumeRef::new(
             project.provider().clone(),
             format!("native-{agent}"),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes(bytes)),
+            VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
             &mut None,
         )?;
-        self.files.create_volume(&private).await?;
-        let mut volumes = vec![WorkspaceEntry::initial_volume(
+        let fresh = [WorkspaceEntry::initial_volume(
             crate::agent::WorkspaceRole::Private,
             PRIVATE_VOLUME.to_owned(),
             private,
         )];
+        let mut volumes = fresh.to_vec();
         volumes.extend(self.bindings.iter().cloned());
-        let root = self
+        let spawn = self
             .host
-            .create(
+            .prepare_root(
                 &IntentId::try_from(format!("native:{agent}")).map_err(storage)?,
                 ForkAdopted {
                     profile: None,
-                    agent,
+                    agent: agent.clone(),
                     parent: None,
                     forked_at: 0,
                     conversation_tail: 0,
@@ -649,11 +678,12 @@ impl NativeAgents {
                     brief: None,
                     policy: None,
                 },
+                false,
             )
-            .await
             .map_err(storage)?;
-        self.drain().await?;
-        Ok(root)
+        Prepared::prepare(&self.files, spawn, &fresh)
+            .await
+            .map_err(storage)
     }
 
     /// The committed state of `agent`.
@@ -911,6 +941,63 @@ impl NativeAgents {
 #[cfg(test)]
 mod adoption_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_root_and_journal_are_one_sealed_publication() -> Result<()> {
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let local = LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(directory.path().join("owner")),
+        )
+        .await?;
+        let native = NativeAgents::new(&local)?;
+        let agent = AgentId::from_bytes([43; 16]);
+        let journal =
+            crate::conversation::journal_volume(local.project.provider().clone(), &agent)?;
+        let journal_ref = crate::filesystem::workspace_ref(
+            journal.provider().clone(),
+            &journal.storage_name(&mut None)?,
+        )?;
+        let first = native.prepare_root(&agent).await?;
+        let again = native.prepare_root(&agent).await?;
+        assert_eq!(first.request(), again.request());
+        let root = first.child().clone();
+        assert!(matches!(native.state(&root).await, Err(Error::NotFound(_))));
+        assert!(local.files.resolve(&journal_ref, None).await.is_err());
+        assert!(matches!(
+            first.submit(&native.files, &native.host).await.map_err(storage)?,
+            RootSubmission::Created(created) if created == root
+        ));
+        let generation = local.files.resolve(&journal_ref, None).await?.generation;
+        let state = native.state(&root).await?;
+        assert!(
+            state
+                .volumes
+                .iter()
+                .all(|entry| entry.as_volume() != Some(&journal))
+        );
+        let scope = native.view_scope(&state).await?;
+        assert!(
+            crate::conversation::ContentGrant::verify(
+                &native.issuer.verifier(&mut None)?,
+                &scope,
+                &journal,
+                VolumeOperation::Read,
+                &mut None,
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            again.submit(&native.files, &native.host).await.map_err(storage)?,
+            RootSubmission::Created(created) if created == root
+        ));
+        assert_eq!(
+            local.files.resolve(&journal_ref, None).await?.generation,
+            generation
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn native_child_reference_is_readable_before_its_first_delivery() -> Result<()> {

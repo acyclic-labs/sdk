@@ -291,6 +291,25 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
         .await?;
     assert_eq!(first.request(), again.request(), "preparation is exact");
+    let other = Bound::local_root(
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "local".into(),
+            },
+        ),
+        placement(&Arc::new(MemoryStream::default()))?,
+        turns()?,
+    )?;
+    let misplaced = bound
+        .prepare_root(&intent("root"), root(id(1), vec![private.clone()]))
+        .await?;
+    assert!(matches!(
+        misplaced.submit(bound.volumes(), other.agents()).await,
+        Err(Error::Record("root activation uses another provider"))
+    ));
     assert!(bound.volumes().resolve(&journal_ref, None).await.is_err());
     let child = first.child().clone();
     let RootSubmission::Created(created) = bound.submit_root(first).await? else {

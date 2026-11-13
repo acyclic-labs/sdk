@@ -94,7 +94,7 @@ pub struct RootRequest {
 /// A prepared root: the one sealed commit creating its fresh volumes, its
 /// inbox with `ForkAdopted`, its actor state and its activation, together
 /// with the holds keeping the fresh volumes' objects until it settles. Only
-/// [`Bound::submit_root`] submits it, consuming it; an uncertain submission
+/// [`Prepared::submit`] submits it, consuming it; an uncertain submission
 /// hands it back to resubmit exactly.
 pub struct Prepared {
     child: AgentPath,
@@ -102,6 +102,87 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// Composes an admitted root adoption with its fresh volumes and its
+    /// implicit journal, outside the workspace table, in one sealed commit.
+    /// The caller authenticates the adoption and fresh bindings before IO.
+    /// Preparation retains publication custody without making the root visible.
+    ///
+    /// # Errors
+    /// Invalid placement, conflicting volume creation or storage failure.
+    pub async fn prepare<P, O>(
+        host: &Host<P, O>,
+        Spawn { child, request }: Spawn,
+        fresh: &[WorkspaceEntry],
+    ) -> Result<Self, Error>
+    where
+        P: AuthorityProvider + ?Sized + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let fs = &host.filesystem;
+        let cancellation = CancellationToken::new();
+        let journal = crate::conversation::journal_volume(host.provider.clone(), &child.id())
+            .map_err(turn)?;
+        let mut creations = Vec::with_capacity(fresh.len() + 1);
+        for volume in fresh
+            .iter()
+            .filter_map(WorkspaceEntry::as_volume)
+            .chain(std::iter::once(&journal))
+        {
+            creations.push(host.volume_create_spec(volume).map_err(turn)?);
+        }
+        let mut commit = FilesystemCommit::new(request);
+        fs.prepare_create_many(
+            &creations,
+            &mut commit,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| turn(super::map_error(failure.error)))?;
+        fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|failure| turn(failure.error.into()))?;
+        Ok(Self { child, commit })
+    }
+
+    /// Submits this sealed root once and hosts only a committed root.
+    /// An uncertain result returns the unchanged commit and all its holds.
+    ///
+    /// # Errors
+    /// The activation host uses another provider, another creation holds the
+    /// root, or submission or activation fails.
+    pub async fn submit<P, O>(
+        self,
+        host: &Host<P, O>,
+        agents: &AgentHost<P>,
+    ) -> Result<RootSubmission, Error>
+    where
+        P: AuthorityProvider + ?Sized + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        if !Arc::ptr_eq(agents.provider(), &host.filesystem.stream_provider()) {
+            return Err(Error::Record("root activation uses another provider"));
+        }
+        let Self { child, commit } = self;
+        let outcome = host
+            .filesystem
+            .submit_commit(commit, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| turn(failure.error.into()))?
+            .value;
+        match outcome {
+            FilesystemCommitOutcome::Committed(_) => {
+                agents.host(&child)?;
+                Ok(RootSubmission::Created(child))
+            }
+            FilesystemCommitOutcome::Rejected(_) => {
+                Err(Error::Record("agent exists with another creation"))
+            }
+            FilesystemCommitOutcome::Unknown { commit, .. } => {
+                Ok(RootSubmission::Unknown(Self { child, commit }))
+            }
+        }
+    }
+
     /// The root agent's path.
     #[must_use]
     pub const fn child(&self) -> &AgentPath {
@@ -1371,31 +1452,7 @@ where
         if indexed {
             self.index_session(&child, &mut request)?;
         }
-        let fs = &self.volumes.filesystem;
-        let cancellation = CancellationToken::new();
-        let journal =
-            crate::conversation::journal_volume(self.volumes.provider.clone(), &child.id())
-                .map_err(turn)?;
-        let mut creations = Vec::with_capacity(fresh.len() + 1);
-        for volume in fresh
-            .iter()
-            .filter_map(WorkspaceEntry::as_volume)
-            .chain(std::iter::once(&journal))
-        {
-            creations.push(self.volumes.volume_create_spec(volume).map_err(turn)?);
-        }
-        let mut commit = FilesystemCommit::new(request);
-        fs.prepare_create_many(
-            &creations,
-            &mut commit,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(|failure| turn(super::map_error(failure.error)))?;
-        fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|failure| turn(failure.error.into()))?;
-        Ok(Prepared { child, commit })
+        Prepared::prepare(&self.volumes, Spawn { child, request }, &fresh).await
     }
 
     /// Submits `prepared` once and settles it: committed, the root is hosted;
@@ -1404,26 +1461,7 @@ where
     /// # Errors
     /// When another creation holds the agent, or on a store failure.
     pub async fn submit_root(&self, prepared: Prepared) -> Result<RootSubmission, Error> {
-        let Prepared { child, commit } = prepared;
-        let outcome = self
-            .volumes
-            .filesystem
-            .submit_commit(commit, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| turn(failure.error.into()))?
-            .value;
-        match outcome {
-            FilesystemCommitOutcome::Committed(_) => {
-                self.agents.host(&child)?;
-                Ok(RootSubmission::Created(child))
-            }
-            FilesystemCommitOutcome::Rejected(_) => {
-                Err(Error::Record("agent exists with another creation"))
-            }
-            FilesystemCommitOutcome::Unknown { commit, .. } => {
-                Ok(RootSubmission::Unknown(Prepared { child, commit }))
-            }
-        }
+        prepared.submit(&self.volumes, &self.agents).await
     }
 
     /// Creates root `request`: exactly [`Self::prepare_root`] then
