@@ -800,6 +800,19 @@ where
             .map_or(&[], |companions| companions.ordered_subscriptions())
     }
 
+    fn publication_conditions(
+        &self,
+        actor: &ActorReference,
+    ) -> Vec<acyclic_stream::CommitCondition> {
+        self.agents
+            .companions
+            .as_ref()
+            .filter(|companions| companions.handles(actor))
+            .map_or_else(Vec::new, |companions| {
+                companions.publication_conditions(actor)
+            })
+    }
+
     fn revalidate_foreign_conflicts(&self, actor: &ActorReference) -> bool {
         self.agents
             .companions
