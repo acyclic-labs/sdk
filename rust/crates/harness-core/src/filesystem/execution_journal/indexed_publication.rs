@@ -123,6 +123,7 @@ where
             anchor: crate::model::hash_bytes(bytes, io)?,
             latest_response: summary.latest_response,
             latest_response_output: summary.latest_response_output,
+            latest_response_completed: summary.latest_response_completed,
             model_dispatched: summary.model_dispatched,
         };
         let checkpoint_hold;

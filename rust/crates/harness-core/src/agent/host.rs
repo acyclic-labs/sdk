@@ -156,7 +156,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
 
     /// Compose root companion creation with the same package used by deliveries.
     #[must_use]
-    pub fn with_companions(mut self, companions: Arc<dyn super::Companions>) -> Self {
+    pub(crate) fn with_companions(mut self, companions: Arc<dyn super::Companions>) -> Self {
         self.agents = self.agents.with_companions(companions);
         self
     }

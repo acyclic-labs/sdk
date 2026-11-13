@@ -402,7 +402,7 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
             .arg(&fixture.settings)
             .arg("--catalog")
             .arg(&model.catalog)
-            .args(["-p", "hello"]);
+            .args(["--operation", "settings-policy", "-p", "hello"]);
         if session_client {
             command.arg("--new-session");
         }
@@ -433,7 +433,43 @@ async fn chat_settings_defaults_yield_to_explicit_model_and_compaction_choices()
                 "{choice} session={session_client}: {output:?}"
             );
             assert_eq!(succeeded(&output), "fixture answer\n");
-            assert_eq!(model.generated(), 1);
+            let selected = acyclic_harness::templates::root()
+                .unwrap()
+                .model
+                .unwrap_or_else(|| "graphcoder-qual/tiny".into());
+            let wire_model = selected.split_once('/').unwrap().1;
+            assert_eq!(
+                model.requests.lock().unwrap()[0]["model"],
+                wire_model,
+                "{choice} session={session_client}: effective model was ignored"
+            );
+            // Query the original owner policy through ordinary execution admission.
+            // Exact replay never generates, but an incorrect automatic/disabled
+            // choice changes whether --no-compaction can attach to this owner.
+            let mut admission = graphcoder_command(&fixture);
+            admission.args([
+                "--operation",
+                "settings-policy",
+                "--model",
+                &selected,
+                "--no-compaction",
+                "-p",
+                "hello",
+            ]);
+            let checked = capture(admission, "").await;
+            assert_eq!(
+                checked.status.success(),
+                choice != "automatic",
+                "{choice} session={session_client}: compaction admission {checked:?}"
+            );
+            if choice == "automatic" {
+                assert!(String::from_utf8_lossy(&checked.stderr).contains("--no-compaction"));
+            }
+            assert_eq!(
+                model.generated(),
+                1,
+                "policy preflight or replay generated again"
+            );
         } else {
             assert!(
                 !output.status.success(),

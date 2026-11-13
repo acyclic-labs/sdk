@@ -676,6 +676,10 @@ pub fn actor_seeds()
         );
         seeds.push((name, bytes, "guest::wire::encode_transition"));
     }
+    transition.pause = true;
+    let bytes = wire::encode_transition(&transition)?;
+    assert_eq!(wire::decode_transition(&bytes)?, transition);
+    seeds.push(("transition-paused", bytes, "guest::wire::encode_transition"));
     seeds.extend(futures::executor::block_on(actor_alarm_seeds())?);
     seeds.extend(actor_socket_seeds()?);
     seeds.extend(actor_socket_input_seeds()?);
