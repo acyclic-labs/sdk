@@ -153,6 +153,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         prepared: &AppendReceipt<'_>,
         conflicts: &[acyclic_stream::CommitConflict],
         actual: Head,
+        anchor: Head,
         recovered: Option<DurableCommit>,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
@@ -184,6 +185,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             FsAppendOutcome::Fenced {
                 actual_epoch: actual.epoch,
             }
+        } else if actual == anchor {
+            // Recovery above owns already-committed operations. With no target
+            // advance left to rebase onto, a failed publication condition is
+            // a definitive refusal, not an optimistic head conflict.
+            return Err(AuthorityStoreError::RejectedStatic(
+                "publication condition failed without advancing the authority",
+            )
+            .into());
         } else {
             FsAppendOutcome::Conflict { actual }
         })
