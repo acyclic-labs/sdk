@@ -154,8 +154,8 @@ impl Authority {
             holder,
         })
     }
-    pub(super) fn snapshot(&self) -> Result<TrustSnapshot, Rejection> {
-        self.state.snapshot().map_err(Into::into)
+    pub(super) fn snapshot(&self) -> Result<TrustSnapshot, VerifyError> {
+        self.state.snapshot()
     }
     /// The one place a session credential is verified: `bytes` as a signed
     /// capability envelope under the current trust, registered in `slot`
@@ -180,11 +180,14 @@ impl Authority {
             slots.credential_bytes = credential_bytes;
             return Ok(());
         }
-        let credential: Credential = self.snapshot().and_then(|snapshot| {
-            verify::verify(bytes, snapshot.trust.as_ref(), snapshot.now_unix_seconds)
-                .map(Arc::new)
-                .map_err(Into::into)
-        });
+        let credential: Credential =
+            self.snapshot()
+                .map_err(Rejection::from)
+                .and_then(|snapshot| {
+                    verify::verify(bytes, snapshot.trust.as_ref(), snapshot.now_unix_seconds)
+                        .map(Arc::new)
+                        .map_err(Into::into)
+                });
         let revision = slots
             .next_revision
             .checked_add(1)
@@ -279,7 +282,7 @@ impl Authority {
         scope: Scope,
         channels: usize,
     ) -> Result<(), Rejection> {
-        let snapshot = self.snapshot()?;
+        let snapshot = self.snapshot().map_err(Rejection::from)?;
         let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
             .map_err(|_| Rejection::Forbidden)?;
         let usage = acyclic_auth::contract::Limits {
@@ -721,7 +724,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let now = self
             .authority
             .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?
+            .map_err(|source| StreamError::AccessDenied.with_source(source))?
             .now_unix_seconds;
         if now >= deadline {
             self.revalidate(None)?;
