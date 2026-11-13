@@ -536,7 +536,7 @@ mod indexed_trace_tests {
         let original = provider
             .latest(
                 data.path().clone(),
-                bytes::Bytes::from_static(b"selected"),
+                OwnedBytes::from_static(b"selected"),
                 Default::default(),
             )
             .await?;
@@ -554,7 +554,7 @@ mod indexed_trace_tests {
                 provider
                     .latest_fenced(
                         selected,
-                        Some(bytes::Bytes::from_static(b"selected")),
+                        Some(OwnedBytes::from_static(b"selected")),
                         Default::default(),
                     )
                     .boxed()
@@ -564,7 +564,7 @@ mod indexed_trace_tests {
                     provider
                         .latest_fenced(
                             selected,
-                            Some(bytes::Bytes::from_static(b"selected")),
+                            Some(OwnedBytes::from_static(b"selected")),
                             Default::default(),
                         )
                         .await
@@ -586,7 +586,7 @@ mod indexed_trace_tests {
         let missing = root.in_scope(|| {
             provider.latest_fenced(
                 data.path().clone(),
-                Some(bytes::Bytes::from_static(b"absent")),
+                Some(OwnedBytes::from_static(b"absent")),
                 Default::default(),
             )
         });
