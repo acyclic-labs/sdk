@@ -152,13 +152,19 @@ pub async fn verify(backend: &dyn Backend) -> Result {
     identified("roots", Box::pin(roots::verify(backend)).await)?;
     identified("approvals", Box::pin(approvals::verify(backend)).await)?;
     identified("guest wire", Box::pin(wire::verify(backend)).await)?;
-    identified("runtime interrupt (G41)", Box::pin(interrupt::verify(backend)).await)?;
+    identified(
+        "runtime interrupt (G41)",
+        Box::pin(interrupt::verify(backend)).await,
+    )?;
     identified(
         "activation checkpoint (G40)",
         Box::pin(dispatcher::verify(backend)).await,
     )?;
     identified("restart", Box::pin(vectors::restart(backend)).await)?;
-    identified("serving protocol", Box::pin(protocol::verify(backend)).await)?;
+    identified(
+        "serving protocol",
+        Box::pin(protocol::verify(backend)).await,
+    )?;
     Ok(())
 }
 

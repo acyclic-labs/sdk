@@ -22,7 +22,9 @@ export async function agentsFixture(id, reply, initialize = init) {
     }, () => null, modelCapacity, modelTokenCount, { kind: "disabled" });
   // The scripted provider serves every role model, then the fixture's own root binding.
   for (const selection of roleModels()) {
-    const [provider, name] = selection.split("/");
+    // The provider ends at the first slash; model names may contain more.
+    const at = selection.indexOf("/");
+    const [provider, name] = [selection.slice(0, at), selection.slice(at + 1)];
     configure({ provider, name, revision: "1" });
   }
   configure({ provider: "browser-test", name: "scripted", revision: "1" });

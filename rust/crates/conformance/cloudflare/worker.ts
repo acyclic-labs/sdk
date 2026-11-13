@@ -105,7 +105,7 @@ export class Agent extends DurableObject {
       (invocation: { arguments: unknown }) => { ++this.executions; return { value: invocation.arguments }; },
       () => null, (_invocation: unknown, result: { value: unknown }) => result.value);
     // The scripted provider serves every role model, then the fixture's own root binding.
-    const models = [...roleModels().map(selection => selection.split("/")), ["conformance", "scripted"]];
+    const models = [...roleModels().map(selection => [selection.slice(0, selection.indexOf("/")), selection.slice(selection.indexOf("/") + 1)]), ["conformance", "scripted"]];
     for (const [provider, name] of models) this.registry.configureModel({ provider, name, revision: "1" },
       async function* (_bytes: Uint8Array, dispatch: { step: number }, signal: AbortSignal) {
         if (hangs) {
