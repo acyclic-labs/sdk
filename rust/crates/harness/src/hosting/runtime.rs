@@ -30,8 +30,8 @@ impl Runtime {
                     tracing::error!(?actor, %error, "actor delivery failed");
                     // The retained cause names the failing actor: a tree's
                     // failure is diagnosable from this one line.
-                    failure.send_replace(Some(format!("{error} (actor {actor:?})")));
-                }) => { failure.send_replace(Some(error.to_string())); }
+                    retain_failure(&failure, error, Some(actor));
+                }) => { retain_failure(&failure, &error, None); }
                 _ = failed.changed() => {}
             }
             // The lifetime closes after cancellation drops the active delivery.
@@ -83,11 +83,45 @@ impl Runtime {
     }
 }
 
+fn retain_failure(
+    failure: &watch::Sender<Option<String>>,
+    error: &dyn std::error::Error,
+    actor: Option<&acyclic_actors::addressing::ActorReference>,
+) {
+    let cause = Error::format_chain(error);
+    let diagnostic = match actor {
+        Some(actor) => format!("{cause} (actor {actor:?})"),
+        None => cause,
+    };
+    failure.send_replace(Some(diagnostic));
+}
+
 fn retained_failure(failure: &watch::Receiver<Option<String>>) -> Error {
     Error::Storage(failure.borrow().as_ref().map_or_else(
         || "Actors runtime completion producer closed".into(),
         Clone::clone,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_runtime_failure_preserves_nested_causes() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("provider operation failed")]
+        struct ProviderFailure(#[source] std::io::Error);
+        let (failure, retained) = watch::channel(None);
+        retain_failure(
+            &failure,
+            &ProviderFailure(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+            None,
+        );
+        let retained = retained_failure(&retained).to_string();
+        assert!(retained.contains("provider operation failed"));
+        assert!(retained.contains("caused by: connection reset"));
+    }
 }
 
 impl Drop for Runtime {

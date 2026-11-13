@@ -42,8 +42,8 @@ fn reply_subscription(watch: &super::ReplyWatch) -> Result<String, Error> {
         .map_err(|_| Error::Record("reply subscription does not encode"))
 }
 
-fn guest(error: impl std::fmt::Display) -> GuestError {
-    GuestError::Handler(error.to_string())
+fn guest(error: impl std::error::Error) -> GuestError {
+    GuestError::Handler(crate::Error::format_chain(&error))
 }
 
 /// One handler package for every agent, over one turn driver.
@@ -736,7 +736,9 @@ where
                         let end = delivery
                             .subscriptions
                             .get(INBOX)
-                            .ok_or_else(|| guest("agent inbox subscription missing"))?
+                            .ok_or_else(|| {
+                                guest(Error::Record("agent inbox subscription missing"))
+                            })?
                             .cursor;
                         super::input::refill(
                             self.agents.store.provider().as_ref(),
@@ -764,7 +766,7 @@ where
                     let inbox = &delivery
                         .subscriptions
                         .get(INBOX)
-                        .ok_or_else(|| guest("agent inbox subscription missing"))?
+                        .ok_or_else(|| guest(Error::Record("agent inbox subscription missing")))?
                         .path;
                     let path = AgentPath::try_from(inbox.as_str().to_owned()).map_err(guest)?;
                     super::cancellation::accepted(
@@ -791,7 +793,13 @@ where
                 .await
                 .map_err(|error| match error {
                     Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
-                    Error::Stream(error) => guest(format!("reading agent inbox replay: {error}")),
+                    error if error.uncertain() => {
+                        GuestError::Unavailable(crate::Error::format_chain(&error))
+                    }
+                    Error::Stream(error) => GuestError::Handler(format!(
+                        "reading agent inbox replay: {}",
+                        crate::Error::format_chain(&error)
+                    )),
                     error => guest(error),
                 })
         })

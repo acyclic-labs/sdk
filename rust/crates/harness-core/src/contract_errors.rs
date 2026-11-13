@@ -555,6 +555,19 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
 }
 
 impl Error {
+    /// Retains every source when a diagnostic crosses a textual host boundary.
+    #[must_use]
+    pub fn format_chain(error: &dyn std::error::Error) -> String {
+        let mut message = error.to_string();
+        let mut source = error.source();
+        while let Some(cause) = source {
+            use std::fmt::Write as _;
+            let _ = write!(message, "; caused by: {cause}");
+            source = cause.source();
+        }
+        message
+    }
+
     pub(crate) fn workspace_error_code(source: &acyclic_fs::WorkspaceError) -> ErrorCode {
         use acyclic_fs::WorkspaceError;
         match source {
