@@ -4709,7 +4709,8 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         .read(policy, policy.descriptor().byte_length(), None, None)?
         .await?;
     assert_eq!(
-        serde_json::from_slice::<crate::approvals::ApprovalPolicy>(&bytes).map_err(agent)?,
+        serde_json::from_slice::<crate::approvals::ApprovalPolicy>(bytes.as_ref())
+            .map_err(agent)?,
         harness.preset.approval_policy
     );
     let source_policy = agents

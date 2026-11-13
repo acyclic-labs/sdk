@@ -112,6 +112,8 @@ impl Prepared {
     /// implicit journal, outside the workspace table, in one sealed commit.
     /// The caller authenticates the adoption and fresh bindings before IO.
     /// Preparation retains publication custody without making the root visible.
+    /// A supplied policy is seeded in the journal and bound to its exact initial
+    /// generation in the adoption before the shared commit is sealed.
     ///
     /// # Errors
     /// Invalid placement, conflicting volume creation or storage failure.

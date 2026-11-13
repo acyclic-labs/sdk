@@ -1540,7 +1540,7 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         .read(policy, policy.descriptor().byte_length(), None, None)?
         .await?;
     assert_eq!(
-        serde_json::from_slice::<acyclic_harness_core::approvals::ApprovalPolicy>(&bytes)?,
+        serde_json::from_slice::<acyclic_harness_core::approvals::ApprovalPolicy>(bytes.as_ref())?,
         configured
     );
     let task_reader = bound.content_reader(&created).await?;
