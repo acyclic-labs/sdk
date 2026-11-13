@@ -333,7 +333,7 @@ mod provenance_tests {
     use crate::agent::{AgentId, AgentRecord};
     use acyclic_stream::{
         CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey, MemoryStream,
-        StreamProvider,
+        StreamProviderExt as _,
     };
 
     #[tokio::test]
