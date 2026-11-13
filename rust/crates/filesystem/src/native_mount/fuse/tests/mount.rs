@@ -428,7 +428,7 @@ impl GatedSource {
                 .released
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let _ = released.recv_timeout(Duration::from_secs(10));
+            let _ = released.recv();
         }
     }
 }

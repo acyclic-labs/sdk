@@ -19,13 +19,6 @@ pub struct PacketDevice {
 }
 
 impl PacketDevice {
-    /// Transfers exclusive custody before any request can enter the device.
-    /// Frames in both directions begin with their total native-endian u32
-    /// byte length. `capacity` is the device's negotiated receive envelope.
-    pub fn host(device: File, capacity: u32) -> io::Result<Self> {
-        Self::admit(device, capacity, 1)
-    }
-
     /// Admit an unopened namespace: only the host can mount this device.
     pub fn prepare(device: File, capacity: u32) -> io::Result<Self> {
         Self::admit(device, capacity, 2)
@@ -34,6 +27,25 @@ impl PacketDevice {
     /// Receive a mount helper's descriptor directly into the host process.
     pub fn receive_device(socket: UnixStream, capacity: u32) -> io::Result<Self> {
         Self::admit(File::from(OwnedFd::from(socket)), capacity, 3)
+    }
+
+    /// Anonymous mapping bytes: two packet envelopes and one metadata page.
+    /// The host checks its fixed metadata against Linux's minimum page size.
+    pub fn storage_bytes(capacity: u32) -> io::Result<u64> {
+        // SAFETY: sysconf has no pointer arguments.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+            .map_err(io::Error::other)?;
+        if page == 0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        let envelope = u64::from(capacity)
+            .div_ceil(page)
+            .checked_mul(page)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        envelope
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(page))
+            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
     }
 
     fn admit(device: File, capacity: u32, mode: u32) -> io::Result<Self> {
@@ -101,6 +113,16 @@ impl PacketDevice {
             return Err(io::Error::from_raw_os_error(-status));
         }
         Ok(())
+    }
+    /// Original mount-free thread identity for real process-death proofs.
+    #[cfg(feature = "test-support")]
+    pub fn owner_thread_for_test() -> io::Result<u32> {
+        let original = owner_exit()?;
+        let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", original.as_raw_fd()))?;
+        info.lines()
+            .find_map(|line| line.strip_prefix("Pid:"))
+            .and_then(|value| value.trim().parse().ok())
+            .ok_or_else(|| io::Error::other("thread pidfd did not expose its original identity"))
     }
     /// Split the endpoint from the original physical-retirement obligation.
     pub fn into_parts(self) -> (File, PacketDeviceRetirement) {

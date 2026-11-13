@@ -75,7 +75,7 @@ impl HostSession {
         let page_size = u32::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
             .map_err(|_| libc::EOVERFLOW)?;
         let page_size = std::num::NonZeroU32::new(page_size).ok_or(libc::EIO)?;
-        let maximum_write = maximum_write(work, workers, page_size)?;
+        let maximum_write = maximum_write(work, workers, page_size)?.min(io.maximum_write);
         let buffers = PacketBufferPool::new(workers, work, || {
             PacketBuffers::new(maximum_write as usize + 4096, work)
         })?;

@@ -2,7 +2,7 @@
 
 use super::notification::PacketSink;
 use super::transport_io::{self, Ready};
-use acyclic_native_runtime::{PacketDevice, PacketDeviceRetirement, ProcessWake};
+use acyclic_native_runtime::{PacketDeviceRetirement, ProcessWake};
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
@@ -71,7 +71,8 @@ pub(super) struct HostIo {
     // The session is the sole descriptor owner. Retained notification sinks
     // retain this control, never a live device after its server has stopped.
     device: RwLock<Option<File>>,
-    custody: Mutex<Option<PacketDeviceRetirement>>,
+    custody: Mutex<Option<(PacketDeviceRetirement, crate::NativeAllocation)>>,
+    pub(super) maximum_write: u32,
     publication: Mutex<()>,
     framed: bool,
     wake: ProcessWake,
@@ -92,11 +93,29 @@ pub(super) enum Received {
 
 impl HostIo {
     pub(super) fn host(
-        device: PacketDevice,
+        device: super::mount::Device,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
+        let (device, allocation, maximum_write) = match device {
+            super::mount::Device::Hosted {
+                device,
+                allocation,
+                maximum_write,
+            } => (device, allocation, maximum_write),
+            #[cfg(test)]
+            super::mount::Device::InProcess(device) => return Self::new(device, work),
+        };
         let (stream, retirement) = device.into_parts();
-        Self::from_stream(stream, Some(retirement), work)
+        Self::from_stream(stream, Some((retirement, allocation)), maximum_write, work)
+    }
+
+    #[cfg(test)]
+    pub(super) fn host_id(&self) -> Option<u32> {
+        self.custody
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|(retirement, _)| retirement.host_id())
     }
 
     #[cfg(test)]
@@ -104,12 +123,13 @@ impl HostIo {
         device: File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
-        Self::from_stream(device, None, work)
+        Self::from_stream(device, None, super::packet_session::MAXIMUM_WRITE, work)
     }
 
     fn from_stream(
         device: File,
-        custody: Option<PacketDeviceRetirement>,
+        custody: Option<(PacketDeviceRetirement, crate::NativeAllocation)>,
+        maximum_write: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
         let allocation = work.claim(
@@ -127,6 +147,7 @@ impl HostIo {
             device: RwLock::new(Some(device)),
             framed: custody.is_some(),
             custody: Mutex::new(custody),
+            maximum_write,
             publication: Mutex::new(()),
             wake,
             receiver: Mutex::new(Some(receiver)),
@@ -150,7 +171,7 @@ impl HostIo {
             .take();
         // The host acknowledges only after the actual /dev/fuse has closed.
         // No kernel caller can remain pinned behind a stopped owner transport.
-        if let Some(mut custody) = self
+        if let Some((mut custody, _allocation)) = self
             .custody
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -338,4 +359,22 @@ impl std::task::Wake for HostIo {
         // while the retirement owner retains /dev/fuse strands kernel calls.
         let _ = self.wake.notify();
     }
+}
+
+/// Fund the external packet owner before handing it a physical device.
+/// One additional buffer pair participates in the same negotiation as the
+/// callback workers; it cannot silently exceed the caller's original budget.
+pub(super) fn fund_device(
+    work: &crate::NativeMaterializationWork,
+) -> Result<(u32, crate::NativeAllocation), super::NativeMountError> {
+    let workers =
+        std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS + 1).ok_or(libc::EINVAL)?;
+    // SAFETY: sysconf takes no pointer arguments.
+    let page =
+        u32::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).map_err(|_| libc::EOVERFLOW)?;
+    let page = std::num::NonZeroU32::new(page).ok_or(libc::EIO)?;
+    let capacity = super::packet_buffers::maximum_write(work, workers, page)? + 4096;
+    let bytes = acyclic_native_runtime::PacketDevice::storage_bytes(capacity)?;
+    let allocation = work.claim(bytes, 3, crate::WorkCounters::UNCHARGED)?;
+    Ok((capacity, allocation))
 }
