@@ -110,6 +110,9 @@ mod tests {
         );
         let projected = crate::tools::shell::project_result(&result, None)?.0;
         let text = projected["parts"][0]["text"].as_str().unwrap();
+        assert_eq!(text.matches("beginning\n").count(), 1);
+        assert_eq!(text.matches("stdout end\n").count(), 1);
+        assert_eq!(text.matches(stderr).count(), 1);
         assert!(text.find("beginning").unwrap() < text.find("bytes omitted").unwrap());
         assert!(text.find("bytes omitted").unwrap() < text.find("stdout end").unwrap());
         assert!(text.contains(spill_path));
@@ -121,6 +124,41 @@ mod tests {
         assert_eq!(complete, format!("{stdout}{stderr}"));
         assert!(text.contains(&complete[..start as usize]));
         assert!(text.ends_with(&complete[end as usize..]));
+        Ok(())
+    }
+
+    #[test]
+    fn split_pipe_scalars_fit_the_real_projection_and_reject_invalid_windows() -> crate::Result<()>
+    {
+        let directory = tempfile::tempdir().map_err(crate::Error::process_io)?;
+        let mut tail = Tail::new(directory.path().join("split-utf8"), 4096);
+        // Valid scalars in capture order are invalid when decoded on separate
+        // pipes. The old combined-string budget undercounts those replacements.
+        let source = "🦀".repeat(1024);
+        for (index, byte) in source.bytes().enumerate() {
+            tail.observe(&[byte], index % 2 != 0)
+                .map_err(crate::Error::process_io)?;
+        }
+        let (result, _) = tail.settle(
+            crate::tool::ToolResult {
+                value: serde_json::json!({"exit_code":0,"spill":"output.log"}),
+            },
+            256,
+        )?;
+        let projected = crate::tools::shell::project_result(&result, None)?.0;
+        assert!(projected.to_string().len() <= 256);
+        assert!(result.value["omitted_bytes"].as_u64().unwrap() > 0);
+        assert!(result.value.get("text").is_none());
+        for field in ["retained_head", "omitted_range"] {
+            let mut invalid = crate::tool::ToolResult {
+                value: result.value.clone(),
+            };
+            invalid.value[field] = serde_json::Value::Null;
+            assert!(
+                crate::tools::shell::project_result(&invalid, None).is_err(),
+                "invalid {field} must not silently hide output"
+            );
+        }
         Ok(())
     }
 
