@@ -469,6 +469,7 @@ impl NativeDemandSource {
             next,
             version: observed,
             publication: Some(Box::new(lease)),
+            prefix: None,
         })
     }
 }

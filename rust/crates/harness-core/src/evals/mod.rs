@@ -250,6 +250,7 @@ impl<C: Inputs> acyclic_fs::demand::View for View<C> {
             page.push_utf8(name, node(None, Some(selected)), ctx)?;
         }
         page.finish(
+            start,
             (end < inputs.tail()).then(|| SourceCursor::position(end)),
             SourceVersion([0; 32]),
             ctx,

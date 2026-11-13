@@ -49,14 +49,19 @@ impl SourceDirectoryPageBuilder {
         Ok(())
     }
 
-    /// Publish the entries with their original allocation owners.
+    /// Publishes a generated ordinal page with its original allocation owners.
+    /// `start` is the producer's position before its first emitted entry.
+    /// Every emitted entry consumes one position, independently of its name.
     pub fn finish(
         self,
+        start: u64,
         next: Option<SourceCursor>,
         version: SourceVersion,
         ctx: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<SourceDirectoryPage, DemandError> {
-        SourceDirectoryPage::stateless(self.entries, next, version, ctx)
+        let mut page = SourceDirectoryPage::stateless(self.entries, next, version, ctx)?;
+        page.prefix = Some(SourceCursor::position(start));
+        Ok(page)
     }
 }
 
@@ -71,8 +76,30 @@ pub struct SourceDirectoryPage {
     pub version: SourceVersion,
     /// Pending producer position.
     pub publication: Option<Box<SourceDirectoryPublication>>,
+    /// The producer-declared start of an ordinal generated page. Consumers
+    /// never infer positions from names, identities or an opaque next token.
+    pub(super) prefix: Option<SourceCursor>,
 }
 impl SourceDirectoryPage {
+    /// Continuation after a nonempty prefix of this physical page. Generated
+    /// producers declare their ordinal start when publishing the page; routed
+    /// compositions preserve its original source, cut and directory binding.
+    /// The final prefix returns the existing page continuation. A producer
+    /// that supplies only whole-page positions refuses an interior prefix.
+    pub fn cursor_after(&self, consumed: usize) -> Result<Option<SourceCursor>, DemandError> {
+        if consumed == 0 || consumed > self.entries.len() {
+            return Err(DemandError::InvalidRequest);
+        }
+        if consumed == self.entries.len() {
+            return Ok(self.next.clone());
+        }
+        let mut cursor = self.prefix.clone().ok_or(DemandError::InvalidRequest)?;
+        cursor.token = cursor
+            .token
+            .checked_add(consumed as u64)
+            .ok_or(DemandError::InvalidRequest)?;
+        Ok(Some(cursor))
+    }
     /// Copies one bounded borrowed page onto the caller's original ledger.
     /// Names and entry backing are funded before their allocations occur.
     pub fn copied<'a>(
@@ -118,6 +145,10 @@ impl SourceDirectoryPage {
             .next
             .map(|cursor| cursor.routed(source, ctx))
             .transpose()?;
+        self.prefix = self
+            .prefix
+            .map(|cursor| cursor.routed(source, ctx))
+            .transpose()?;
         Ok(self)
     }
     /// Constructs a page without a producer transaction.
@@ -146,6 +177,7 @@ impl SourceDirectoryPage {
             next,
             version,
             publication: None,
+            prefix: None,
         })
     }
     /// Retained page storage and continuation bytes.

@@ -187,16 +187,36 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
         encoded.is_empty(),
         "invalid boundaries must fail before writing case bytes"
     );
-    let mut first = source
-        .list_page(reference.clone(), &path("/"), None, 1, &work, &cancel)
+    let first = source
+        .list_page(reference.clone(), &path("/"), None, 2, &work, &cancel)
         .await?;
-    assert_eq!(first.entries.len(), 1);
+    assert_eq!(first.entries.len(), 2);
     assert_eq!(
         first.entries[0].name.as_bytes(),
         b"00000000000000000000.json"
     );
-    let next = first.next.take().ok_or("missing next")?;
+    assert!(first.next.is_none());
+    assert!(first.cursor_after(0).is_err());
+    assert!(first.cursor_after(3).is_err());
+    assert!(first.cursor_after(2)?.is_none());
+    let next = first
+        .cursor_after(1)?
+        .ok_or("missing prefix continuation")?;
     drop(first);
+    assert!(
+        source
+            .list_page(
+                reference.clone(),
+                &path("/other"),
+                Some(next.clone()),
+                1,
+                &work,
+                &cancel,
+            )
+            .await
+            .is_err(),
+        "an interior cursor retains the original directory binding"
+    );
     let last = source
         .list_page(reference.clone(), &path("/"), Some(next), 1, &work, &cancel)
         .await?;
