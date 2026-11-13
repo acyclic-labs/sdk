@@ -45,7 +45,7 @@ impl<P: StreamProvider + ?Sized> FileView<P> for SignalFiles {
                 return Err(crate::Error::Invalid("signal file source differs".into()));
             }
             let Some(run) =
-                streams::active_run_before(provider, agent, through, at_least.clone()).await?
+                streams::current_run_before(provider, agent, through, at_least.clone()).await?
             else {
                 return Ok(Vec::new());
             };

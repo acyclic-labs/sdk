@@ -298,15 +298,18 @@ pub(super) async fn transition<P: AuthorityProvider + ?Sized>(
                     "tool-quiet",
                     &[state.agent.as_str(), intent.as_str()],
                 )?;
+                let prepared = store
+                    .prepare_paused(
+                        &observed,
+                        target_state.epoch(),
+                        state.action == Action::Pause,
+                        key,
+                    )
+                    .map_err(|error| Error::Actor(Box::new(error)))?;
                 effects.extend(
                     store
-                        .prepare_paused(
-                            &observed,
-                            target_state.epoch(),
-                            state.action == Action::Pause,
-                            key,
-                        )
-                        .and_then(acyclic_actors::local::PreparedPublish::into_request)
+                        .export_prepared(prepared)
+                        .await
                         .map_err(|error| Error::Actor(Box::new(error)))?
                         .effects,
                 );

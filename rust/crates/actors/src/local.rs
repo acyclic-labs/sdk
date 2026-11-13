@@ -641,9 +641,8 @@ impl PreparedPublish {
         }
         Ok(())
     }
-    /// Take the request to submit it through another commit owner. Only
-    /// [`Store::submit_retained`] settles a participant or the previous cut's
-    /// committed custody, so a publication carrying either never leaves.
+    /// Take a request with no participant or unsettled prior custody. Use
+    /// [`Store::export_prepared`] to settle prior custody before exporting.
     pub fn into_request(self) -> Result<CommitRequest, Error> {
         if self.composition.is_some() {
             return Err(Error::Invalid(
@@ -1019,6 +1018,23 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             Some((path, record)) => self.settle_custody(&path, record).await,
             None => Ok(()),
         }
+    }
+
+    /// Settle the replaced cut's committed participant before contributing an
+    /// uncomposed publication to another commit owner. A participant belonging
+    /// to this candidate must still be submitted through `submit_retained`.
+    pub async fn export_prepared(
+        &self,
+        mut prepared: PreparedPublish,
+    ) -> Result<CommitRequest, Error> {
+        if prepared.composition.is_some() {
+            return prepared.into_request();
+        }
+        if let Some((path, record)) = &prepared.unsettled {
+            self.settle_custody(path, *record).await?;
+            prepared.unsettled = None;
+        }
+        prepared.into_request()
     }
 
     /// The settled-custody memory, shared by every clone of this store.
