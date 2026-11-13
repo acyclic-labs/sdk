@@ -351,8 +351,22 @@ async fn queued_background_shell_keeps_its_execution_lifetime() -> Result<()> {
         let call = executor.execute(invocation, Some(context));
         tokio::pin!(call);
         assert!(call.as_mut().now_or_never().is_none());
-        // Advance the injected wall clock past the process lifetime while
-        // checkout admission is held. No sleep or readiness retry is involved.
+        // The native capture deadline uses std::time::Instant, independently
+        // of the paused Tokio clock and injected wall clock. Wait on one real
+        // OS timeout while checkout is held, then verify that clock elapsed.
+        let admitted = std::time::Instant::now();
+        let (elapsed, waited) = tokio::sync::oneshot::channel();
+        let timer = std::thread::spawn(move || {
+            let (_sender, receiver) = std::sync::mpsc::channel::<()>();
+            assert!(matches!(
+                receiver.recv_timeout(std::time::Duration::from_secs(6)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            let _ = elapsed.send(());
+        });
+        waited.await.map_err(storage)?;
+        timer.join().expect("monotonic deadline waiter panicked");
+        assert!(admitted.elapsed() > std::time::Duration::from_millis(5000));
         schedule.set_unix_millis(now + 6000);
         drop(held);
         let result = call.await?;
