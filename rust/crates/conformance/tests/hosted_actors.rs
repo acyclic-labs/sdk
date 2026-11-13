@@ -210,8 +210,14 @@ fn composition_at(
         ),
         Execution {
             models: None,
-            // The scripted provider serves any model; it binds the root role's.
-            model: (acyclic_harness::templates::root_role_model("1")?, model),
+            model: (
+                acyclic_harness_core::model::Model::new(
+                    "fixture".into(),
+                    "test".into(),
+                    "1".into(),
+                )?,
+                model,
+            ),
             limits: Limits::default(),
             turns: TurnLimits {
                 maximum_bytes: Some(1 << 20),

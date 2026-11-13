@@ -159,11 +159,13 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let preset = Preset::graphcoder();
         let limits = Limits::default();
         let turns = Turns {
-            // The deterministic answer serves any model, so it binds the root
-            // role's own: a host refuses a fixed binding that role does not select.
             executors: Arc::new(acyclic_harness_core::filesystem::StockExecutors::new(
                 (
-                    acyclic_harness::templates::root_role_model("1")?,
+                    acyclic_harness_core::model::Model::new(
+                        "fixture".into(),
+                        "test".into(),
+                        "1".into(),
+                    )?,
                     Arc::new(Answer),
                 ),
                 ToolRegistry::default(),
