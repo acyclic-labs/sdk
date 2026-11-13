@@ -3,8 +3,8 @@
 //! a record nor an actor reference is an authority credential.
 use crate::addressing::{ActorReference, IdentityError, ResourceId};
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, IdempotencyKey,
-    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ReadRequest,
+    StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -14,6 +14,8 @@ mod node;
 pub use node::{NodeActor, NodeLink, NodePresence, open_link, open_request};
 mod drain;
 pub use drain::{drain, forward};
+mod admission;
+pub use admission::{Delivered, Rejection, Routed};
 
 /// Opaque, nonempty node identity, encoded by the shared resource-ID primitive.
 pub type NodeId = ResourceId;
@@ -209,142 +211,6 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    /// Prepare one append to the owning node's relay after the account host
-    /// verified placement, sender authority, membership and storage credit.
-    /// Preparation conveys none of those authorities and does not write an inbox.
-    ///
-    /// The stage key is bound to the original intent in a separate domain: a
-    /// relay and its recipient inbox may share one provider, whose key namespace
-    /// is account-wide. The embedded delivery key and bytes remain unchanged.
-    pub fn relay_request(
-        &self,
-        paths: &Paths,
-        destination: &NodeId,
-    ) -> Result<CommitRequest, Error> {
-        use sha2::{Digest as _, Sha256};
-        if self.sender.account() != self.to.account() {
-            return Err(Error::InvalidRecord);
-        }
-        let path = paths.relay(destination)?;
-        let mut digest = Sha256::new();
-        digest.update(b"acyclic.actors.route.relay.v1\0");
-        for part in [
-            paths.0.as_str().as_bytes(),
-            self.to.account().as_bytes(),
-            self.to.namespace().as_str().as_bytes(),
-            self.to.id().as_bytes(),
-            self.sender.namespace().as_str().as_bytes(),
-            self.sender.id().as_bytes(),
-            self.request.idempotency_key.as_bytes(),
-        ] {
-            digest.update((part.len() as u64).to_le_bytes());
-            digest.update(part);
-        }
-        Ok(CommitRequest {
-            deadline_unix_millis: None,
-            effects: vec![CommitEffect::hard(
-                Vec::new(),
-                vec![CommitMutation::Append {
-                    path,
-                    records: vec![self.encode().into()],
-                }],
-            )],
-            idempotency_key: IdempotencyKey::new(digest.finalize().to_vec())?,
-        })
-    }
-
-    /// Publish after host admission, joining its membership guards and storage
-    /// debit in the same commit. This grants no authority: the authenticated
-    /// account host must admit the original sender and recipient first.
-    ///
-    /// The returned key and sequence always describe the original relay
-    /// publication. A retry with changed admission guards or routing context
-    /// recovers that receipt through Streams' own retained outcome; changed
-    /// original envelope bytes remain an idempotency mismatch. Exact retries
-    /// and first publication need no inspection or extra journal.
-    pub async fn publish_relay<P: StreamProvider + ?Sized>(
-        &self,
-        provider: &P,
-        paths: &Paths,
-        destination: &NodeId,
-        admission: Vec<CommitEffect>,
-    ) -> Result<(IdempotencyKey, u64), Error> {
-        let prefix = format!("{}/relay/", paths.0);
-        // Admission may debit its own reservation, but may not author or
-        // replace the opaque relay operation whose receipt is returned here.
-        if admission.iter().any(|effect| effect.soft)
-            || admission
-                .iter()
-                .flat_map(|effect| &effect.mutations)
-                .any(|mutation| {
-                    let path = mutation.path().as_str();
-                    path.starts_with(&prefix)
-                        || matches!(mutation, CommitMutation::Fork { .. })
-                            && prefix
-                                .strip_prefix(path)
-                                .is_some_and(|suffix| suffix.starts_with('/'))
-                })
-        {
-            return Err(Error::InvalidRecord);
-        }
-        let mut request = self.relay_request(paths, destination)?;
-        let key = request.idempotency_key.clone();
-        request.effects.extend(admission);
-        match provider.commit(request).await {
-            Ok(acyclic_stream::CommitOutcome::Committed(receipt)) => {
-                let relay = paths.relay(destination)?;
-                let append = receipt
-                    .appends
-                    .iter()
-                    .find(|append| append.path == relay)
-                    .ok_or(Error::InvalidRecord)?;
-                if append.start.checked_add(1) != Some(append.tail) {
-                    return Err(Error::InvalidRecord);
-                }
-                Ok((key, append.start))
-            }
-            Ok(acyclic_stream::CommitOutcome::Conflict(conflicts)) => {
-                Err(crate::local::Error::PreconditionChanged(conflicts).into())
-            }
-            Err(StreamError::IdempotencyMismatch) => {
-                let retained = provider
-                    .inspect_idempotency(key.clone())
-                    .await?
-                    .ok_or(Error::InvalidRecord)?;
-                if retained.idempotency_key != key {
-                    return Err(Error::InvalidRecord);
-                }
-                let acyclic_stream::IdempotencyOutcome::Commit(envelope) = retained.outcome else {
-                    return Err(Error::InvalidRecord);
-                };
-                let mut original = None;
-                for mutation in &envelope.mutations {
-                    let acyclic_stream::CommittedMutation::Append(append) = mutation else {
-                        continue;
-                    };
-                    let Some(node) = append.path.as_str().strip_prefix(&prefix) else {
-                        continue;
-                    };
-                    if node.is_empty() || node.contains('/') {
-                        continue;
-                    }
-                    let [record] = append.records.as_slice() else {
-                        return Err(Error::InvalidRecord);
-                    };
-                    if original.is_some() {
-                        return Err(Error::InvalidRecord);
-                    }
-                    if record.value.as_ref() != self.encode().as_ref() {
-                        return Err(StreamError::IdempotencyMismatch.into());
-                    }
-                    original = Some(append.start);
-                }
-                Ok((key, original.ok_or(Error::InvalidRecord)?))
-            }
-            Err(error) => Err(error.into()),
-        }
-    }
-
     /// Canonical version-one transport record, without any credential material.
     pub fn encode(&self) -> Bytes {
         EnvelopeWire {

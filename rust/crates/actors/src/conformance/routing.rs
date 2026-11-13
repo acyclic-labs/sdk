@@ -2,7 +2,7 @@
 use super::{Error, Failure};
 use crate::{
     addressing::ActorReference,
-    route::{Envelope, NodeId, Paths, Placement},
+    route::{Envelope, NodeId, Paths, Placement, Rejection, Routed},
 };
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
@@ -513,7 +513,7 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         inputs.len() == 2 && inputs[1].value.as_ref() == b"following peer input",
         "reopened drain repeated acknowledged input or changed FIFO",
     )?;
-    let mut changed = envelope;
+    let mut changed = envelope.clone();
     changed.request.effects[0].mutations[0] = CommitMutation::Append {
         path: StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?,
         records: vec!["different peer input".into()],
@@ -541,6 +541,135 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             ))
         ),
         "recovered receipt admitted changed original envelope bytes",
+    )?;
+    let destination_relay = paths.relay(&placement.node).map_err(Error::from)?;
+    let accepted_tail = provider
+        .tail(destination_relay.clone())
+        .await
+        .map_err(Error::from)?;
+    let notices = StreamPath::new(format!("{root}/sender-notices")).map_err(Error::from)?;
+    for (index, (reason, body)) in [
+        (Rejection::Closed, "closed recipient"),
+        (Rejection::NoSuchActor, "unknown recipient"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut rejected = envelope.clone();
+        rejected.request.idempotency_key = key(&root, &format!("rejected-{index}"))?;
+        let notice = Envelope {
+            source: NodeId::new(b"account-node").map_err(violation)?,
+            sender: ActorReference::new(b"routing", b"nodes", b"router").map_err(violation)?,
+            to: rejected.sender.clone(),
+            request: CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: key(&root, &format!("notice-{index}"))?,
+                effects: vec![CommitEffect::hard(
+                    Vec::new(),
+                    vec![CommitMutation::Append {
+                        path: notices.clone(),
+                        records: vec![body.into()],
+                    }],
+                )],
+            },
+        };
+        let refused = rejected
+            .publish_rejection(provider, &paths, reason, &notice, Vec::new())
+            .await
+            .map_err(violation)?;
+        require(
+            refused == Routed::Rejected(reason),
+            "rejection outcome changed",
+        )?;
+        require(
+            envelope
+                .publish_rejection(provider, &paths, reason, &notice, Vec::new())
+                .await
+                .map_err(violation)?
+                == original,
+            "a later refusal replaced an accepted relay outcome",
+        )?;
+        // A later route or refusal reason must recover the original decision,
+        // not deliver a previously refused message or publish another Notice.
+        require(
+            rejected
+                .publish_relay(provider, &paths, &placement.node, Vec::new())
+                .await
+                .map_err(violation)?
+                == refused,
+            "a retry delivered an already rejected message",
+        )?;
+        let different_reason = if reason == Rejection::Closed {
+            Rejection::NoSuchActor
+        } else {
+            Rejection::Closed
+        };
+        let mut later_notice = notice.clone();
+        later_notice.request.effects[0].mutations[0] = CommitMutation::Append {
+            path: notices.clone(),
+            records: vec!["later refusal".into()],
+        };
+        require(
+            rejected
+                .publish_rejection(
+                    provider,
+                    &paths,
+                    different_reason,
+                    &later_notice,
+                    Vec::new(),
+                )
+                .await
+                .map_err(violation)?
+                == refused,
+            "a retry changed the original refusal",
+        )?;
+        let mut altered = rejected.clone();
+        altered.request.effects[0].mutations[0] = CommitMutation::Append {
+            path: StreamPath::new(format!("{root}/recipient-inbox")).map_err(Error::from)?,
+            records: vec!["changed refused input".into()],
+        };
+        require(
+            matches!(
+                altered
+                    .publish_relay(provider, &paths, &placement.node, Vec::new())
+                    .await,
+                Err(crate::route::Error::Stream(
+                    StreamError::IdempotencyMismatch
+                ))
+            ),
+            "rejection recovery accepted changed intent bytes",
+        )?;
+        require(
+            provider
+                .tail(paths.relay(&source).map_err(Error::from)?)
+                .await
+                .map_err(Error::from)?
+                == index as u64 + 1,
+            "rejection retry duplicated its routed Notice",
+        )?;
+        drain_one(
+            provider,
+            &paths,
+            &source,
+            &notice.request.idempotency_key,
+            index as u64,
+        )
+        .await?;
+    }
+    require(
+        provider.tail(notices.clone()).await.map_err(Error::from)? == 2
+            && provider
+                .tail(destination_relay)
+                .await
+                .map_err(Error::from)?
+                == accepted_tail,
+        "rejection drain lost a Notice or delivered rejected content",
+    )?;
+    let received = values(provider, notices).await?;
+    require(
+        received[0].value.as_ref() == b"closed recipient"
+            && received[1].value.as_ref() == b"unknown recipient",
+        "rejection recovery replaced the original Notice bytes",
     )?;
     Ok(())
 }
