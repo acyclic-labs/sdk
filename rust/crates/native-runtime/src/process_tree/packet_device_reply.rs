@@ -24,7 +24,7 @@ pub fn receive_packet_device_reply_for_test(socket: &UnixStream) -> io::Result<O
     message.msg_iov = &raw mut vector;
     message.msg_iovlen = 1;
     message.msg_control = control.0.as_mut_ptr().cast();
-    message.msg_controllen = control.0.len();
+    message.msg_controllen = control.0.len().try_into().map_err(io::Error::other)?;
     let length = loop {
         // SAFETY: every pointer names live writable storage of the given size.
         let length =
@@ -41,8 +41,9 @@ pub fn receive_packet_device_reply_for_test(socket: &UnixStream) -> io::Result<O
         // SAFETY: the decoder surrenders each received descriptor exactly once.
         drop(unsafe { OwnedFd::from_raw_fd(descriptor) });
     };
+    let control_length = usize::try_from(message.msg_controllen).map_err(io::Error::other)?;
     let handles = ancillary::decode::<8>(
-        &control.0[..message.msg_controllen.min(control.0.len())],
+        &control.0[..control_length.min(control.0.len())],
         message.msg_flags,
         close,
     )
