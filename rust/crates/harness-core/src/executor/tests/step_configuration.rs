@@ -158,6 +158,70 @@ async fn a_step_rebinds_the_complete_provider_configuration_without_restarting_t
         assert_eq!((first.requests().len(), second.requests().len()), (1, 2));
         assert_eq!(tool.0.load(Ordering::SeqCst), 2);
     }
+    // Both selections fit the original window. Only the replacement's window
+    // refuses the mandatory question after the first tool has changed settings.
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let first = Arc::new(ScriptedModelProvider::new([tool_turn([echo_call(
+        "change-window",
+        json!({"value": "select smaller model"}),
+    )])]));
+    let second = Arc::new(
+        ScriptedModelProvider::new([done_turn()])
+            .with_context_capacity(crate::context::ModelContextCapacity {
+                context_tokens: 1,
+                output_tokens: None,
+            })
+            .with_token_counter(fixture_token_count),
+    );
+    let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+    let tools = echo_tools(
+        tool.clone(),
+        json!({"type": "object"}),
+        json!({"type": "object"}),
+        crate::tool::json_projection_schema(json!({"type": "object"})),
+    )?;
+    let compose = |name: &str, provider: Arc<dyn ModelProvider>| -> Result<StockExecutor> {
+        StockExecutor::new(
+            Model::new("fixture".into(), name.into(), "1".into())?,
+            provider,
+            ContextPipeline::default(),
+            tools.clone(),
+        )
+        .with_compaction_policy(crate::context::CompactionPolicy::default())
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            allowed()?,
+        )
+    };
+    let original = compose("large-window", first.clone())?;
+    let executor = original
+        .clone()
+        .with_step_configuration(Arc::new(Configurations([
+            original.into_step_binding(None)?,
+            compose("small-window", second.clone())?.into_step_binding(None)?,
+        ])));
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("mandatory question".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let refused = executor.execute_progress(input, journal.as_ref()).await;
+    assert!(
+        matches!(refused, Err(Error::Invalid(ref reason))
+        if reason == "mandatory content exceeds selected model capacity"),
+        "a model change must re-admit the mandatory input against its selected window"
+    );
+    assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+    assert_eq!(first.requests().len(), 1);
+    assert!(
+        second.requests().is_empty(),
+        "oversized input reached the new provider"
+    );
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancel = acyclic_fs::CancellationToken::new();
