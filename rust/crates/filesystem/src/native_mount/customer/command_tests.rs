@@ -550,14 +550,17 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
             }
             boundary = events.recv() => {
                 let boundary = boundary.ok_or("retirement submission producer dropped")?;
-                if boundary.name == "blocking:submitted" && cancelled.is_retiring() {
+                if boundary.name == "blocking:submitted" {
                     break boundary;
                 }
                 boundary.release();
             }
         }
     };
-    assert!(cancelled.is_retiring());
+    // The one accepted operation owns preparation as well as detach. At its
+    // submission boundary neither has run; cancellation must preserve that
+    // owner rather than requiring a second submission after preparation.
+    assert!(!cancelled.is_retiring());
     assert!(schedule.pending_native_work() > 0);
     schedule.cancel();
     drop(retirement);
