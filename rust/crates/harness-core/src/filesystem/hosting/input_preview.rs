@@ -15,7 +15,8 @@ where
 {
     /// Select the last accepted message without collecting a transcript.
     ///
-    /// Each progress step is one filtered source record. A selection carries
+    /// Each progress step is bounded source work, including a filtered record
+    /// or a structured-text source chunk. A selection carries
     /// the bounded prefix, or proves that the cut has no message. Dropping
     /// the stream stops the walk. Opening it performs no IO. The selected
     /// inbox tail and inherited conversation prefix are immutable thereafter.
@@ -247,22 +248,33 @@ fn structured_preview<'a>(
 ) -> acyclic_stream::BoxProviderStream<'a, Result<InputPreviewStep, Error>> {
     Box::pin(async_stream::try_stream! {
         // Decoded size is part of the presentation contract. Count it without
-        // retaining text, yielding credit for every bounded original-source read.
+        // retaining history, yielding credit for every bounded original-source read.
         let mut bytes = 0u64;
+        let mut pending = String::new();
         let mut counting = structured_chunks(reader, file, maximum);
         while let Some(part) = counting.next().await {
-            bytes = bytes.checked_add(part?.len() as u64).ok_or(Error::Record("input text length overflows"))?;
+            let part = part?;
+            bytes = bytes.checked_add(part.len() as u64).ok_or(Error::Record("input text length overflows"))?;
+            if selection == InputSelection::Latest && (pending.len() as u64) < maximum {
+                let mut end = (part.len() as u64).min(maximum - pending.len() as u64) as usize;
+                while !part.is_char_boundary(end) { end += 1; }
+                pending.push_str(&part[..end]);
+            }
             yield InputPreviewStep::Progress;
+        }
+        if selection == InputSelection::Latest {
+            // Keep at most one extra scalar while counting, then trim it.
+            // The requested prefix needs no second source read.
+            while pending.len() as u64 > maximum { pending.pop(); }
+            yield InputPreviewStep::Selected(Some(InputPreview { text: pending, bytes }));
+            return;
         }
         if bytes == 0 || maximum == 0 {
             let preview = InputPreview { text: String::new(), bytes };
-            yield if selection == InputSelection::Latest {
-                InputPreviewStep::Selected(Some(preview))
-            } else { InputPreviewStep::MessageRange { inbox, offset: 0, preview } };
+            yield InputPreviewStep::MessageRange { inbox, offset: 0, preview };
             return;
         }
         let mut ranges = structured_chunks(reader, file, maximum);
-        let mut pending = String::new();
         let mut offset = 0;
         while let Some(part) = ranges.next().await {
             pending.push_str(&part?);
@@ -271,10 +283,6 @@ fn structured_preview<'a>(
                 while !pending.is_char_boundary(end) { end -= 1; }
                 let rest = pending.split_off(end);
                 let preview = InputPreview { text: std::mem::replace(&mut pending, rest), bytes };
-                if selection == InputSelection::Latest {
-                    yield InputPreviewStep::Selected(Some(preview));
-                    return;
-                }
                 let start = offset;
                 offset += preview.text.len() as u64;
                 yield InputPreviewStep::MessageRange { inbox, offset: start, preview };

@@ -217,9 +217,14 @@ mod tests {
     proptest! {
         #[test]
         fn text_projection_matches_typed_content_at_every_chunk_width(parts in prop::collection::vec(".{0,32}", 0..5)) {
-            let content = crate::model::ModelContent::Parts(parts.iter().cloned().map(crate::model::ModelContentPart::text).collect());
-            let encoded = serde_json::to_string(&content).expect("typed user content");
-            for width in 1..=17 {
+            let contents = [
+                crate::model::ModelContent::Parts(parts.iter().cloned().map(crate::model::ModelContentPart::text).collect()),
+                crate::model::ModelContent::Part(crate::model::ModelContentPart::text(parts.concat())),
+                crate::model::ModelContent::Text(parts.concat()),
+            ];
+            for content in contents {
+              let encoded = serde_json::to_string(&content).expect("typed user content");
+              for width in 1..=17 {
                 let mut source = Text::new(width);
                 let mut output = String::new();
                 let mut chunk = String::new();
@@ -233,6 +238,7 @@ mod tests {
                 output.push_str(&source.feed(&chunk).expect("valid tail"));
                 source.finish().expect("complete source");
                 prop_assert_eq!(output, parts.concat());
+              }
             }
         }
     }
