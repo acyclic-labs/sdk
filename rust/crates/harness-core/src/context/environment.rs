@@ -2,7 +2,7 @@
 use super::*;
 use crate::executor::PreparationIo;
 
-/// Facts about the task's workspace and selected model, pinned at admission.
+/// Facts about the task's workspace, pinned at admission.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -22,8 +22,6 @@ pub struct EnvironmentFacts {
     pub current_date: String,
     /// Time zone of the recorded date.
     pub timezone: String,
-    /// Selected provider model name.
-    pub model: String,
 }
 
 impl EnvironmentFacts {
@@ -177,7 +175,6 @@ impl From<crate::native_environment::CheckoutFacts> for EnvironmentFacts {
             tooling: None,
             current_date: facts.current_date,
             timezone: facts.timezone,
-            model: facts.model,
         }
     }
 }
@@ -196,7 +193,6 @@ mod tests {
             tooling: None,
             current_date: "2026-10-22".into(),
             timezone: "UTC".into(),
-            model: "model".into(),
         }
     }
 
