@@ -11,6 +11,15 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
         (52, 53, Some(original.as_slice())),
         (52, 53, Some(large.as_slice())),
     ] {
+        let evidence = evidence.map(|data| OriginalEvidence {
+            root: ObjectId {
+                storage: None,
+                kind: ObjectKind::Blob,
+                digest: Digest::from_bytes([5; 32]),
+            },
+            bytes: data.len() as u64,
+            digest: original_evidence_digest(data),
+        });
         let volume_id = VolumeId::from_bytes([volume; 16]);
         let root = ObjectId {
             storage: None,
@@ -22,19 +31,13 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             generation_root: root,
         };
         let mut bytes = Vec::new();
-        write_publication_payload(
-            &mut bytes,
-            volume_id,
-            root,
-            evidence.map(|data| (data, original_evidence_digest(data))),
-            None,
-        );
+        write_publication_payload(&mut bytes, volume_id, root, evidence, None);
         let length = bytes.len() as u64;
         assert_eq!(
             bytes.len(),
             publication_payload_length_with_evidence(root, evidence, None)?
         );
-        for version in [0_u16, 1, 2, 3, 5, u16::MAX] {
+        for version in [0_u16, 1, 2, 3, 4, u16::MAX] {
             let mut header = bytes[..PAYLOAD_DOMAIN.len() + 2].to_vec();
             header[PAYLOAD_DOMAIN.len()..].copy_from_slice(&version.to_le_bytes());
             let mut steps = Vec::new();
@@ -48,7 +51,7 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
                 },
             );
             assert!(
-                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion { found, expected: 4 }) if found == version)
+                matches!(result, Err(CanonicalDecodeError::UnsupportedVersion { found, expected: 5 }) if found == version)
             );
             assert!(matches!(
                 steps.as_slice(),
@@ -73,7 +76,7 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             decode_publication_evidence::<CanonicalDecodeError>(&bytes, length, None, accept)?;
         assert_eq!(decoded.publication, expected);
         assert_eq!(decoded.original_evidence, evidence);
-        let evidence_length = evidence.map_or(0, |evidence| evidence.len() as u64);
+        let evidence_length = evidence.map_or(0, |evidence| evidence.bytes);
         assert_eq!(
             decode_publication_evidence::<CanonicalDecodeError>(
                 &bytes,
@@ -84,15 +87,15 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             decoded,
         );
         if let Some(evidence) = evidence {
-            let maximum = u32::try_from(evidence.len() - 1)?;
+            let maximum = evidence.bytes - 1;
             // Both a complete record and its bare length header must refuse
-            // before reading the evidence or digest, and before any hashing.
-            for input in [bytes.as_slice(), &bytes[..publication_payload_length() + 4]] {
+            // before reading the blob reference or digest, and before any hashing.
+            for input in [bytes.as_slice(), &bytes[..publication_payload_length() + 8]] {
                 let mut hashing = false;
                 let result = decode_publication_evidence::<CanonicalDecodeError>(
                     input,
                     length,
-                    Some(u64::from(maximum)),
+                    Some(maximum),
                     |step| {
                         hashing |= matches!(
                             step,
@@ -104,8 +107,8 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
                 );
                 assert_eq!(
                     result,
-                    Err(CanonicalDecodeError::FieldTooLarge {
-                        observed: u32::try_from(evidence.len())?,
+                    Err(CanonicalDecodeError::ObjectTooLarge {
+                        observed: evidence.bytes,
                         maximum,
                     }),
                 );
@@ -136,17 +139,17 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
             for offset in [
                 PAYLOAD_DOMAIN.len(),
                 PAYLOAD_DOMAIN.len() + 2 + 16,
-                publication_payload_length() + 4,
-                bytes.len() - 1,
+                publication_payload_length() + 8,
+                publication_payload_length() - 1,
             ] {
                 let mut wrong = bytes.clone();
                 wrong[offset] = u8::MAX;
                 assert!(decode_published_generation(&wrong, u64::MAX, accept).is_err());
             }
-            for length in [0_u32, u32::MAX] {
+            {
                 let mut wrong = bytes.clone();
                 let offset = publication_payload_length();
-                wrong[offset..offset + 4].copy_from_slice(&length.to_le_bytes());
+                wrong[offset..offset + 8].copy_from_slice(&0_u64.to_le_bytes());
                 assert!(decode_published_generation(&wrong, bytes.len() as u64, accept).is_err());
             }
         } else {
@@ -157,11 +160,24 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
                 Err(CanonicalDecodeError::TrailingBytes)
             ));
         }
-        if evidence == Some(large.as_slice()) {
-            assert!(matches!(
-                decode_published_generation(&bytes, 4096, accept),
-                Err(CanonicalDecodeError::ObjectTooLarge { .. })
-            ));
+        if let Some(reference) = evidence {
+            let mut unbounded = Vec::new();
+            let reference = OriginalEvidence {
+                bytes: u64::MAX,
+                ..reference
+            };
+            write_publication_payload(&mut unbounded, volume_id, root, Some(reference), None);
+            assert_eq!(unbounded.len(), bytes.len());
+            assert_eq!(
+                decode_publication_evidence::<CanonicalDecodeError>(
+                    &unbounded,
+                    unbounded.len() as u64,
+                    None,
+                    accept,
+                )?
+                .original_evidence,
+                Some(reference)
+            );
         }
     }
     Ok(())
@@ -187,15 +203,20 @@ fn composed_publication_retains_the_original_retry_request() -> TestResult {
             digest: Digest::from_bytes([74; 32]),
         },
     };
-    for evidence in [None, Some(b"original evidence".as_slice())] {
+    for evidence in [
+        None,
+        Some(OriginalEvidence {
+            root: ObjectId {
+                storage: None,
+                kind: ObjectKind::Blob,
+                digest: Digest::from_bytes([75; 32]),
+            },
+            bytes: 17,
+            digest: original_evidence_digest(b"original evidence"),
+        }),
+    ] {
         let mut bytes = Vec::new();
-        write_publication_payload(
-            &mut bytes,
-            volume,
-            effective,
-            evidence.map(|data| (data, original_evidence_digest(data))),
-            Some(origin),
-        );
+        write_publication_payload(&mut bytes, volume, effective, evidence, Some(origin));
         assert_eq!(
             bytes.len(),
             publication_payload_length_with_evidence(effective, evidence, Some(origin))?

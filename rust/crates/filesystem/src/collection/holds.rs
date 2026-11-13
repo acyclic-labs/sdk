@@ -147,6 +147,7 @@ impl Collection {
             .admit(
                 objects,
                 crate::PublicationScope {
+                    related_objects: &[],
                     objects: &proof.objects,
                     proven_at,
                 },

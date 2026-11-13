@@ -51,11 +51,9 @@ mod compaction;
 mod composition;
 mod content;
 mod dispatch;
-mod live_reply;
-mod tool_changes;
-pub use live_reply::LiveReply;
 pub(crate) use tool_changes::decode_tool_table;
 mod event_page;
+mod tool_changes;
 pub use event_page::{
     EXECUTION_EVENT_PAGE_RECORDS, ExecutionEventPage, ExecutionPayloadField, event_page,
 };
@@ -90,6 +88,7 @@ pub use wait_usage::WaitUsage;
 pub(crate) mod phase;
 #[cfg(test)]
 pub(crate) use model_observation::append as append_model_event;
+pub use model_observation::decode_payload as decode_model_payload;
 mod prefix;
 mod record_index;
 pub(crate) use record_index::call_bucket_key;
@@ -387,7 +386,8 @@ pub enum ExecutionEvent {
         step: u32,
         /// Must match the corresponding admitted request.
         purpose: ModelPurpose,
-        /// Pinned, private JSON file containing one observed model event.
+        /// Pinned private event payload. Text uses its typed version-one UTF-8
+        /// encoding; other event kinds use canonical JSON.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         event: FileRef,
         /// Private per-call JSONL record, committed with its terminal event.

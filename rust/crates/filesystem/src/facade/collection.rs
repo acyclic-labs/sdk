@@ -495,11 +495,36 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     WorkBudget::UNBOUNDED,
                     cancellation,
                 );
-                let generation = generation_from_record(record, volume_id, &mut accounting)?;
+                let (generation, evidence) = if record.sequence == Sequence::new(1) {
+                    (
+                        generation_from_record(record, volume_id, &mut accounting)?,
+                        None,
+                    )
+                } else {
+                    let decoded = crate::kernel::decode_publication_evidence_with_accounting(
+                        &record.payload,
+                        record.payload.len() as u64,
+                        None,
+                        &mut accounting,
+                    )?;
+                    if decoded.publication.volume_id != volume_id {
+                        return Err(FsError::VolumeMismatch);
+                    }
+                    (
+                        decoded.publication.generation_root,
+                        decoded.original_evidence,
+                    )
+                };
                 marker
                     .generation(GenerationId::from_root(generation))
                     .await
                     .map_err(mark_error)?;
+                if let Some(evidence) = evidence {
+                    marker
+                        .closure(vec![evidence.root])
+                        .await
+                        .map_err(mark_error)?;
+                }
             }
         }
         Ok(())

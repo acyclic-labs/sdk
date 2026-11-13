@@ -1,4 +1,4 @@
-//! Bounded line framing shared by native pipes and incremental host output.
+//! Optional byte policies over shared native pipe and incremental line framing.
 //!
 //! Tokio's `LinesCodec` is the sole framer (also used by rmcp's JSON-RPC codec).
 //! Callers decide whether a malformed frame ends a protocol or is discarded.
@@ -18,17 +18,22 @@ fn invalid(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
+fn codec(maximum: Option<usize>) -> LinesCodec {
+    maximum.map_or_else(LinesCodec::new, LinesCodec::new_with_max_length)
+}
+
 /// Cancellation-safe line reads: partial input belongs to the retained reader.
 pub struct AsyncLines<R> {
     framed: FramedRead<R, LinesCodec>,
 }
 
 impl<R: AsyncRead + Unpin> AsyncLines<R> {
-    /// A byte bound before the delimiter, with CRLF and trailing EOF support.
+    /// An optional byte bound before the delimiter; `None` accepts complete lines.
+    /// Both policies preserve CRLF, trailing EOF and cancellation semantics.
     #[must_use]
-    pub fn new(input: R, maximum: usize) -> Self {
+    pub fn new(input: R, maximum: Option<usize>) -> Self {
         Self {
-            framed: FramedRead::new(input, LinesCodec::new_with_max_length(maximum)),
+            framed: FramedRead::new(input, codec(maximum)),
         }
     }
 
@@ -54,11 +59,11 @@ pub struct LineBuffer {
 }
 
 impl LineBuffer {
-    /// Use the same byte bound and delimiter semantics as [`AsyncLines`].
+    /// Use the same optional byte policy and delimiter semantics as [`AsyncLines`].
     #[must_use]
-    pub fn new(maximum: usize) -> Self {
+    pub fn new(maximum: Option<usize>) -> Self {
         Self {
-            codec: LinesCodec::new_with_max_length(maximum),
+            codec: codec(maximum),
             bytes: BytesMut::new(),
         }
     }
@@ -121,13 +126,13 @@ mod tests {
             }
         }
         let mut cx = Context::from_waker(std::task::Waker::noop());
-        let mut bounded = AsyncLines::new(OpenPeer(65), 64);
+        let mut bounded = AsyncLines::new(OpenPeer(65), Some(64));
         assert!(matches!(
             Pin::new(&mut bounded).poll_next(&mut cx),
             Poll::Ready(Some(Err(_)))
         ));
         // Actual unbounded codec asks the still-open peer for more input.
-        let mut unbounded = AsyncLines::new(OpenPeer(65), usize::MAX);
+        let mut unbounded = AsyncLines::new(OpenPeer(65), None);
         assert!(Pin::new(&mut unbounded).poll_next(&mut cx).is_pending());
     }
 
@@ -135,7 +140,7 @@ mod tests {
     async fn cancelled_read_retains_partial_frame_and_buffered_following_frames() -> io::Result<()>
     {
         let (mut writer, reader) = tokio::io::duplex(128);
-        let mut lines = AsyncLines::new(reader, 64);
+        let mut lines = AsyncLines::new(reader, Some(64));
         writer.write_all(b"first").await?;
         let mut pending = Box::pin(lines.next_line());
         assert!(
@@ -168,13 +173,13 @@ mod tests {
             b"\n\r\nlast",
             b"",
         ] {
-            let mut original = AsyncLines::new(bytes, 64);
+            let mut original = AsyncLines::new(bytes, Some(64));
             let mut expected = Vec::new();
             while let Some(line) = original.next_line().await.map_err(invalid)? {
                 expected.push(line);
             }
             for chunk in 1..=bytes.len().max(1) {
-                let mut lines = LineBuffer::new(64);
+                let mut lines = LineBuffer::new(Some(64));
                 let mut actual = Vec::new();
                 for page in bytes.chunks(chunk) {
                     actual.extend(
@@ -197,7 +202,7 @@ mod tests {
 
     #[test]
     fn oversize_and_invalid_frames_cannot_hide_the_next_complete_line() -> io::Result<()> {
-        let mut bounded = LineBuffer::new(64);
+        let mut bounded = LineBuffer::new(Some(64));
         let oversized = [b'x'; 8192];
         let rejected = bounded.push(&oversized);
         assert_eq!(rejected.len(), 1);
@@ -216,7 +221,7 @@ mod tests {
         );
         assert!(bounded.finish().is_none());
         // Removing the bound accepts the same peer's entire oversized frame.
-        let mut unbounded = LineBuffer::new(usize::MAX);
+        let mut unbounded = LineBuffer::new(None);
         assert!(unbounded.push(&oversized).is_empty());
         assert_eq!(
             unbounded

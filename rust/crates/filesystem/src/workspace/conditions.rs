@@ -41,9 +41,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.require(path, condition, accounting, cancellation)
-            .await?;
-        self.write_with_accounting(path, bytes, accounting, cancellation)
+        self.write_with_accounting(path, bytes, Some(condition), accounting, cancellation)
             .await
     }
 
@@ -99,6 +97,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             .await;
         accounting.release_owned(&mut path.allocation, path.bytes)?;
         let record = looked_up?.0.record;
+        self.check_file_condition(record, condition, accounting, cancellation)
+            .await?;
+        Ok(record.map(|record| record.file_id))
+    }
+
+    pub(super) async fn check_file_condition(
+        &mut self,
+        record: Option<crate::kernel::FileRecord>,
+        condition: FileCondition,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
         let holds = match (condition, &record) {
             (FileCondition::Absent, existing) => existing.is_none(),
             (FileCondition::FileId(expected), Some(record)) => record.file_id == expected,
@@ -112,7 +122,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
         if !holds {
             return Err(WorkspaceError::StaleIdentity);
         }
-        Ok(record.map(|record| record.file_id))
+        Ok(())
     }
 
     async fn content_digest(

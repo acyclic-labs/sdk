@@ -54,7 +54,7 @@ export function assertClientWasmExports(value: unknown): void {
   const commands = hasClass(exports, "WasmAgentCommand", "wasmagentcommand", [
     "bytes", "value", "reply", "free",
   ], true) && hasStaticMethods(exports, "WasmAgentCommand", "wasmagentcommand", [
-    "maximumCommandBytes", "maximumInvocationBytes", "maximumReplyBytes",
+    "maximumInvocationBytes",
   ]);
   const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "select", "observe", "free"], true);
   const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);
@@ -151,4 +151,3 @@ export async function ensureContextWasm(): Promise<void> {
     throw new Error("harness WASM does not provide the required context discovery exports");
   }
 }
-

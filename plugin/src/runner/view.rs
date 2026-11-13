@@ -320,6 +320,8 @@ struct View {
     /// Advanced by a clear, so a page read before it is not shown.
     epoch: u64,
     search: Option<(String, usize)>,
+    /// An older match is selected only after the preceding pages arrive.
+    finding: Option<String>,
     /// The one prompt the view itself opened. The next submission answers
     /// it before anything else, a waiting approval included, and it hides
     /// that approval while open: one prompt is visible at a time, and every
@@ -481,6 +483,8 @@ impl View {
                             self.top = seen;
                             self.floor = seen;
                             self.epoch += 1;
+                            self.search = None;
+                            self.finding = None;
                         }
                     }
                     self.outcome = Outcome::Settled;
@@ -739,12 +743,12 @@ impl View {
     /// least one row, so one read fills the shown rows whatever their size.
     fn older_page(&self, page: usize) -> Option<u64> {
         let above = self.transcript.len().saturating_sub(self.back + page);
-        (self.top > self.floor && above < page.saturating_mul(2))
+        (self.top > self.floor && (self.finding.is_some() || above < page.saturating_mul(2)))
             .then(|| self.top.saturating_sub(page as u64).max(self.floor))
     }
 
     /// Keep the saved search hit on the same row of text as older rows arrive.
-    fn prepend(&mut self, older: Older) {
+    fn prepend(&mut self, older: Older, page: usize) {
         if older.epoch != self.epoch {
             return;
         }
@@ -756,22 +760,37 @@ impl View {
         if older.cleared {
             self.floor = older.from;
         }
+        self.continue_find(added, page);
     }
 
     /// Find the preceding hit, wrapping to the newest after the oldest.
     fn find(&mut self, query: &str, page: usize) {
+        if query.is_empty() {
+            self.finding = None;
+            return;
+        }
         let before = self
             .search
             .as_ref()
             .filter(|(previous, _)| previous == query)
             .map_or(self.transcript.len(), |(_, row)| *row);
-        if let Some(row) = self
-            .transcript
-            .find(query, before)
-            .or_else(|| self.transcript.find(query, self.transcript.len()))
-        {
+        self.finding = Some(query.to_owned());
+        self.continue_find(before, page);
+    }
+
+    fn continue_find(&mut self, before: usize, page: usize) {
+        let Some(query) = self.finding.as_ref() else {
+            return;
+        };
+        if let Some(row) = self.transcript.find(query, before).or_else(|| {
+            (self.top == self.floor)
+                .then(|| self.transcript.find(query, self.transcript.len()))
+                .flatten()
+        }) {
             self.back = self.transcript.len().saturating_sub(row + page);
-            self.search = Some((query.to_owned(), row));
+            self.search = self.finding.take().map(|query| (query, row));
+        } else if self.top == self.floor {
+            self.finding = None;
         }
     }
 
@@ -1372,10 +1391,11 @@ async fn run_current(
             } => {
                 older_future.set(None);
                 match read {
-                    Ok(older) => view.prepend(older),
+                    Ok(older) => view.prepend(older, page),
                     Err(error) => {
                         // The rows shown stay; nothing older is read again.
                         view.floor = view.top;
+                        view.finding = None;
                         view.notice = refusal(format_args!("Older turns unavailable: {error}"));
                     }
                 }
@@ -2324,7 +2344,10 @@ mod tests {
 
     #[test]
     fn search_visits_each_older_match_across_prepended_pages() {
-        let mut view = View::default();
+        let mut view = View {
+            top: 3,
+            ..View::default()
+        };
         view.rows(16);
         view.transcript.push(BlockKind::Prompt, "match newest\nend");
         view.find("match", 1);
@@ -2336,13 +2359,16 @@ mod tests {
             ),
             (0, "match earliest\npadding", "match oldest"),
         ] {
-            view.prepend(Older {
-                epoch: view.epoch,
-                from,
-                cleared: false,
-                blocks: vec![(BlockKind::Prompt, text.into())],
-            });
             view.find("match", 1);
+            view.prepend(
+                Older {
+                    epoch: view.epoch,
+                    from,
+                    cleared: false,
+                    blocks: vec![(BlockKind::Prompt, text.into())],
+                },
+                1,
+            );
             let row = view.search.as_ref().unwrap().1;
             assert!(view.transcript.rows(16)[row].to_string().contains(expected));
             assert_eq!(view.back, view.transcript.len() - row - 1);
@@ -2353,6 +2379,42 @@ mod tests {
             assert!(view.transcript.rows(16)[row].to_string().contains(expected));
             assert_eq!(view.back, view.transcript.len() - row - 1);
         }
+        let mut unseen = View {
+            top: 2,
+            ..View::default()
+        };
+        unseen.rows(16);
+        unseen.transcript.push(BlockKind::Prompt, "newest\nend");
+        unseen.find("buried", 1);
+        for (from, text) in [(1, "older without a hit"), (0, "buried oldest")] {
+            assert_eq!(unseen.older_page(1), Some(from));
+            unseen.prepend(
+                Older {
+                    epoch: unseen.epoch,
+                    from,
+                    cleared: false,
+                    blocks: vec![(BlockKind::Prompt, text.into())],
+                },
+                1,
+            );
+            if from == 1 {
+                unseen.find("", 1);
+                assert_eq!(unseen.older_page(1), None);
+                unseen.find("buried", 1);
+            }
+        }
+        let row = unseen
+            .search
+            .as_ref()
+            .expect("retained match was not found")
+            .1;
+        assert!(
+            unseen.transcript.rows(16)[row]
+                .to_string()
+                .contains("buried oldest")
+        );
+        unseen.find("absent", 1);
+        assert!(unseen.finding.is_none());
     }
 
     #[test]

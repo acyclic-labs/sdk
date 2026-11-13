@@ -158,6 +158,7 @@ mod tests {
                 )?
                 .without_user_settings()
                 .state_directory(directory.path().join("unchecked-state"))
+                .feedback_plugin(false)
                 .workspace_mounting(WorkspaceMounting::Physical)
                 .compaction(acyclic_harness::context::CompactionPolicy::Disabled),
             )
@@ -175,12 +176,17 @@ mod tests {
             .settle("unchecked-prompt", inbox, &mut events)
             .await?;
         let acyclic_harness::local::agent_conversation::Settlement::Reply(
-            acyclic_harness::agent::Reply::Answered { entry, .. },
+            acyclic_harness::agent::Reply::Answered {
+                sequence, entry, ..
+            },
         ) = settled
         else {
             return Err("unchecked prompt did not answer".into());
         };
-        assert_eq!(conversation.output_text(&entry).await?, "unchecked answer");
+        assert_eq!(
+            conversation.output_text_at(sequence, &entry).await?,
+            "unchecked answer"
+        );
         assert_eq!(unchecked_provider.request_count(), 1);
         Ok(())
     }

@@ -1,16 +1,16 @@
 The `native_answer` target calls the shared oracle through
 `acyclic_harness::test_support::native_answer`. The oracle lives beside the shipping
 `harness/src/local/host_process/children/answer.rs` reducer and uses its
-original `Outcome` type and answer bound. Input uses the production `LineBuffer`
-and event bound used by `children::output`. The same semantic oracle compares
+original `Outcome` type and complete answer. Input uses the production `LineBuffer`
+and complete-line policy used by `children::output`. The same semantic oracle compares
 fragmented pipe reads with full pages, including malformed and incomplete frames;
 no EOF delimiter is invented for an open pipe. It does not model process execution
-or physical retirement. The old recorded-terminal
-example is subsumed by this same corpus property; its unique lazy truncation
-work assertion remains in the replay control.
+or physical retirement. The old recorded-terminal example is subsumed by this
+same corpus property. The answer prefix selector and its work assertion are
+removed: replies retain every part, and incremental parts append to one buffer.
 
 The oracle checks event redelivery, previews without terminals, original
-failure/cancellation, reset, unknown events, maximal UTF-8 answer prefixes and
+failure/cancellation, reset, unknown events, complete UTF-8 answers and
 loss of a preview or successful terminal. It checks every prefix of each
 JSONL input. Invalid UTF-8 passes through the original framer's error path and
 exercises the reducer loss transition; invalid JSON has no reducer effect.
@@ -89,8 +89,8 @@ positive result.
 
 `opencode-derived-transitions.jsonl` selects its original step/text parts and
 wraps them in the CLI formatter's event shape, then mutates completion timestamps,
-repeats a text part, and adds a multipart UTF-8 boundary: after a truncated emoji,
-a later ASCII part cannot fill the remaining byte and skip the emoji.
+repeats a text part, and adds a multipart UTF-8 boundary: both the emoji and a
+later ASCII part must survive beyond the former answer ceiling.
 These derived inputs exercise the reducer; they do not
 establish that the native CLI delivered those lines. `agy-derived-transitions.jsonl`
 mutates the captured refusal's statuses, response and optional failure fields.
@@ -109,17 +109,15 @@ replaces the old malformed seed, whose intervening turn-start erased the loss
 state before recovery was checked.
 
 `oversize-derived.jsonl` pads the original Codex preview with leading JSON
-whitespace to one byte beyond the production event bound, then sends the unchanged captured
-preview and terminal without a turn-start. It exercises oversized-frame discard
-and subsequent recovery through the same framer and reducer. Padding is a derived
-input, not captured host output. The shared line-framer tests retain their own
-bound-refusal control; this corpus entry adds composition coverage without a
-second bound oracle. The fuzz input limit must exceed this seed's size to reach
-the discard branch; it does not change either production bound.
+whitespace beyond the former event ceiling, then sends the unchanged captured
+preview and terminal without a turn-start. Native event lines are complete by
+default; explicitly finite line policies retain the shared framer's refusal
+controls. Padding is derived input, not captured host output. The corpus replay
+also derives 132,000-byte UTF-8 replies for all five terminal shapes and requires
+every event to be admitted before checking exact complete answer identity.
 
 `opencode-loss-derived.jsonl` retains the original complete OpenCode capture,
-but first pads a copy of its text frame with leading JSON whitespace to one
-byte beyond the production event bound, followed by the unchanged text and
+but first prefixes a copy of its text frame with invalid UTF-8, followed by the unchanged text and
 terminal. Losing one part of an incremental reply must prevent publication of
 the surviving tail as a complete answer. The appended unchanged capture starts
 a new step and recovers. This is a derived loss input, never captured host output.

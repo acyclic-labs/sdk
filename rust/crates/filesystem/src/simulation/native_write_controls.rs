@@ -329,6 +329,7 @@ async fn native_write_hooks_preserve_original_cancellation_before_effects() {
         (store
             .flush_before_publish(
                 crate::async_storage::PublicationScope {
+                    related_objects: &[],
                     objects: &[object.object_id()],
                     proven_at: 0,
                 },

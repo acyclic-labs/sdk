@@ -243,8 +243,8 @@ pub use publication::{
     decode_published_generation, publish_generation,
 };
 pub(crate) use publication::{
-    PreparedPublication, PublicationPreconditions, RetainedPublication,
-    contextual_publication_fingerprint, prepare_publication,
+    OriginalEvidence, PreparedPublication, PublicationPreconditions, RetainedPublication,
+    contextual_publication_fingerprint, prepare_publication, verify_original_publication_evidence,
 };
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,

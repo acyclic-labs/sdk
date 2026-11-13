@@ -92,6 +92,169 @@ async fn binding() -> TestResult<(Binding, AgentPath)> {
 }
 
 #[tokio::test]
+async fn waking_notices_steer_without_granting_their_journal_files() -> TestResult {
+    use crate::filesystem::{
+        FilesystemContentPublisher, FilesystemContentVerifier, agent_internal::AgentInternalFiles,
+        agent_steering::FilesystemBoundary, agent_turns::AdmittedAgent,
+    };
+    use crate::{
+        agent::{Message, ModelBoundary, NoticePayload},
+        conversation::{ContentGrant, ContentResidencyVerifier, VolumeOperation},
+        model::{ModelContent, ModelContentPart, ModelRole},
+    };
+
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let by = Sender::Host {
+        host: "steering".into(),
+    };
+    let id = IntentId::try_from("initial")?;
+    let body = bound
+        .stage_text(&root, "message", &by, &id, ("initial", "prompt"))
+        .await?;
+    let Delivered::Committed { inbox } = bound
+        .agents()
+        .send(
+            &root,
+            &by,
+            &InboxRecord::Message(Message {
+                from: by.clone(),
+                id,
+                re: None,
+                body: Box::new(body),
+                attachments: None,
+            }),
+        )
+        .await?
+    else {
+        return Err("uncertain initial input".into());
+    };
+    let (journal, host) = bound.turns().journal_authority(&state).await?;
+    let (scope, verifier) = bound.volume_scope(&root).await?;
+    let private = state.volumes[0].volume()?;
+    let files = Arc::new(AgentInternalFiles::new(
+        Arc::clone(bound.volumes()),
+        journal.clone(),
+        ContentGrant::verify(
+            &host.verifier,
+            &host.scope,
+            &journal,
+            VolumeOperation::Write,
+            &mut None,
+        )?,
+        private.clone(),
+        ContentGrant::verify(
+            &verifier,
+            &scope,
+            private,
+            VolumeOperation::Write,
+            &mut None,
+        )?,
+    ));
+    let journal_reader = FilesystemContentVerifier::new(
+        Arc::clone(bound.volumes()),
+        &host.verifier,
+        &host.scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let writer = FilesystemContentPublisher::new(
+        Arc::clone(bound.volumes()),
+        private,
+        &verifier,
+        &scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let operation = OperationId::from_bytes([64; 16]);
+    let boundary = FilesystemBoundary::new(
+        Arc::clone(bound.agents().provider()),
+        Arc::clone(bound.volumes()),
+        bound.issuer().clone(),
+        bound.admission().clone(),
+        state.clone(),
+        operation,
+        inbox,
+        files,
+        journal_reader,
+        writer,
+        None,
+    );
+    assert!(boundary.messages(operation, 0, None).await?.is_empty());
+    boundary.admitted(operation, 0).await?;
+
+    let notice = crate::conversation::wire::Notice {
+        source: "records".into(),
+        kind: "record.changed".into(),
+        body: serde_json::json!({"revision": 1}),
+        wake: true,
+        coalesce_key: None,
+    };
+    let record = bound
+        .stage_notice(&root, &by, &IntentId::try_from("changed")?, &notice)
+        .await?;
+    let InboxRecord::Notice {
+        notice: NoticePayload::Waking(file),
+        ..
+    } = &record
+    else {
+        return Err("waking notice was not staged".into());
+    };
+    let file = file.as_ref().clone();
+    let external = [file.clone()];
+    let guest = AdmittedAgent::verify(bound.issuer(), bound.admission(), &root, &state.volumes)?
+        .authority(&external)
+        .await?;
+    let guest_reader = FilesystemContentVerifier::new(
+        Arc::clone(bound.volumes()),
+        &guest.verifier,
+        &guest.scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let denied = async {
+        guest_reader
+            .read(&file, file.descriptor().byte_length(), None, None)?
+            .await
+    }
+    .await
+    .expect_err("an exact input grant exposed the host notice file");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    bound.agents().send(&root, &by, &record).await?;
+    let messages = boundary.messages(operation, 1, None).await?;
+    let [message] = messages.as_slice() else {
+        return Err("missing waking notice".into());
+    };
+    assert_eq!(message.role, ModelRole::User);
+    let ModelContent::Part(ModelContentPart::Notices { notices }) = &message.content else {
+        return Err("waking notice was not decoded".into());
+    };
+    assert_eq!(notices.as_slice(), &[notice]);
+    boundary.admitted(operation, 1).await?;
+
+    bound
+        .agents()
+        .send(
+            &root,
+            &by,
+            &InboxRecord::Message(Message {
+                from: by.clone(),
+                id: IntentId::try_from("ordinary")?,
+                re: None,
+                body: Box::new(file),
+                attachments: None,
+            }),
+        )
+        .await?;
+    let denied = boundary
+        .messages(operation, 2, None)
+        .await
+        .expect_err("an ordinary message acquired the host notice reader");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}
+
+#[tokio::test]
 async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
     use crate::{agent::TurnHost, executor::ExecutionJournal};
     let (bound, root) = binding().await?;

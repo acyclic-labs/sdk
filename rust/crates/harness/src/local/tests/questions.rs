@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::{AgentPath, Phase};
+use crate::agent::{AgentPath, AgentRecord as _, Phase};
 use crate::client::{AgentCommand, AgentReply};
 use crate::model::{ModelEvent, ToolCall};
 use crate::test_support::ScriptedEvent;
@@ -25,6 +25,7 @@ fn question_config(
     provider: Arc<dyn ModelProvider>,
 ) -> Result<LocalHarnessConfig> {
     Ok(volume_config(directory, volume, provider)?
+        .workspace_mounting(crate::local::WorkspaceMounting::Physical)
         .compaction(crate::context::CompactionPolicy::Disabled))
 }
 const ASK: &str = "Choose the color\n```input choose id=color\n- blue\n- green\n```\n";
@@ -141,6 +142,34 @@ async fn interactive_orchestrator_asks_directly_and_receives_a_generation_bound_
 #[tokio::test]
 async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_tool_failure()
 -> Result<()> {
+    async fn requests_for_agent(
+        harness: &Arc<LocalHarness>,
+        provider: &crate::test_support::ScriptedModelProvider,
+        agent: &AgentPath,
+    ) -> Result<Vec<crate::model::ModelRequest>> {
+        let entries = super::agents::settled(harness, agent).await?;
+        let entry = crate::agent::ConversationEntry::decode(
+            entries
+                .last()
+                .ok_or_else(|| Error::Invalid("agent did not settle".into()))?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let (agents, _) = harness.agents().await?;
+        let state = agents
+            .state(agent)
+            .await
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let operation = crate::agent::turn_id(&state, &entry.input)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        Ok(provider
+            .requests()
+            .into_iter()
+            .zip(provider.dispatches())
+            .filter_map(|(request, dispatch)| {
+                (dispatch.operation_id == operation).then_some(request)
+            })
+            .collect())
+    }
     let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
     let provider = scripted([
         call(
@@ -175,13 +204,10 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
     else {
         return Err(Error::Invalid("worker spawn".into()));
     };
-    super::agents::settled(&harness, &worker).await?;
+    let requests = requests_for_agent(&harness, &provider, &worker).await?;
     // Child results wake their parent through the ordinary inbox. Settle that
     // input before spawning again, rather than sharing a racing script cursor.
     super::agents::settled(&harness, &root).await?;
-    let all_requests = provider.requests();
-    // The worker settles before its parent wakes: its two requests come first.
-    let requests: Vec<_> = all_requests.iter().take(2).collect();
     assert_eq!(requests.len(), 2);
     assert!(
         requests
@@ -193,36 +219,33 @@ async fn nested_orchestrator_keeps_question_authority_and_worker_attempt_is_a_to
         transcript.push_str(&request_text(&harness, request).await?);
     }
     assert!(transcript.contains("tool execution failed"), "{transcript}");
-    let child_request = all_requests.len();
     let AgentReply::Spawned { agent: child, .. } = connection
-        .execute(&spawn(root, "orchestrator", "orchestrator")?)
+        .execute(&spawn(root.clone(), "orchestrator", "orchestrator")?)
         .await?
     else {
         return Err(Error::Invalid("orchestrator spawn".into()));
     };
-    super::agents::settled(&harness, &child).await?;
-    let requests = provider.requests();
+    let requests = requests_for_agent(&harness, &provider, &child).await?;
     assert!(
-        requests[child_request]
+        requests[0]
             .tools
             .iter()
             .any(|tool| tool.name == "ask_question")
     );
-    // Each role's own model is admitted with its creation.
+    let (model, _) = harness.agent()?;
+    let expected = format!("{}/{}", model.provider, model.name);
     let (agents, _) = harness.agents().await?;
-    for (agent, model) in [
-        (&worker, "morph/morph-dsv41flash"),
-        (&child, "morph/morph-kimik31"),
-    ] {
+    for agent in [&worker, &child] {
         let state = agents
             .state(agent)
             .await
-            .map_err(|e| Error::Invalid(e.to_string()))?;
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(
             state.profile.and_then(|profile| profile.model).as_deref(),
-            Some(model)
+            Some(expected.as_str())
         );
     }
+
     Ok(())
 }
 #[tokio::test]

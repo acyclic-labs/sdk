@@ -6,13 +6,20 @@ use std::sync::Mutex;
 #[tokio::test]
 async fn original_publication_evidence_survives_later_heads_without_workspace_files()
 -> Result<(), Box<dyn std::error::Error>> {
-    exercise_original_publication(Fs::memory()).await?;
-    exercise_original_publication(Fs::new(
-        crate::MemoryAuthorityStore::default(),
-        crate::MemoryObjectStore::default(),
-        crate::EmbeddedCapabilities::MEMORY,
-    ))
-    .await
+    let large = vec![b'e'; 2 * 1024 * 1024 + 1];
+    for evidence in [b"original context".as_slice(), large.as_slice()] {
+        exercise_original_publication(Fs::memory(), evidence).await?;
+        exercise_original_publication(
+            Fs::new(
+                crate::MemoryAuthorityStore::default(),
+                crate::MemoryObjectStore::default(),
+                crate::EmbeddedCapabilities::MEMORY,
+            ),
+            evidence,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn exercise_original_publication<
@@ -20,7 +27,8 @@ async fn exercise_original_publication<
     O: AsyncObjectStore + 'static,
 >(
     filesystem: Fs<A, O>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    evidence: &[u8],
+) -> Result<IdempotencyKey, Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let budget = crate::performance::BOUNDARY_BUDGET;
     let workspace = filesystem
@@ -38,7 +46,7 @@ async fn exercise_original_publication<
         .commit(
             Some((
                 crate::Digest::from_bytes([7; 32]),
-                acyclic_stream::OwnedBytes::from_static(b"original context"),
+                acyclic_stream::OwnedBytes::copy_from_slice(evidence),
                 crate::PublicationPermit::Unrestricted,
             )),
             crate::PublicationPermit::Unrestricted,
@@ -56,17 +64,12 @@ async fn exercise_original_publication<
     let current = workspace.head(budget, &cancellation).await?.value.id();
     assert_ne!(current, original.id());
     let publication = workspace
-        .operation_publication(
-            key,
-            Some(b"original context".len() as u64),
-            budget,
-            &cancellation,
-        )
+        .operation_publication(key, Some(evidence.len() as u64), budget, &cancellation)
         .await?;
     publication.work.verify(budget)?;
     let publication = publication.value.ok_or("publication disappeared")?;
     assert_eq!(publication.generation().id(), original.id());
-    assert_eq!(publication.evidence(), Some(b"original context".as_slice()));
+    assert_eq!(publication.evidence(), Some(evidence));
     let predecessor = publication
         .predecessor(budget, &cancellation)
         .await?
@@ -134,7 +137,7 @@ async fn exercise_original_publication<
     assert!(matches!(
         failure.error,
         WorkspaceError::Filesystem(crate::FsError::Decode(
-            crate::kernel::CanonicalDecodeError::FieldTooLarge { maximum: 0, .. }
+            crate::kernel::CanonicalDecodeError::ObjectTooLarge { maximum: 0, .. }
         ))
     ));
     #[cfg(not(target_arch = "wasm32"))]
@@ -156,28 +159,31 @@ async fn exercise_original_publication<
             .find_operation(workspace.authority_id(), key.operation_id(), &mut work)
             .await?
             .ok_or("record absent")?;
-        let returned_credit = native.live_allocation_bytes() - baseline;
-        let payload_bytes = record.payload.len() as u64;
         drop(record);
         assert_eq!(native.live_allocation_bytes(), baseline);
         let recovered = workspace
             .operation_publication(key, None, &native, &cancellation)
             .await?
             .ok_or("publication absent")?;
-        assert_eq!(recovered.evidence(), Some(b"original context".as_slice()));
+        assert_eq!(recovered.evidence(), Some(evidence));
         let recovered_credit = native.live_allocation_bytes() - baseline;
-        if authority.retains_operation_payload() {
-            assert!(
-                recovered_credit <= returned_credit,
-                "recovery charged an already funded payload twice"
-            );
-        } else {
-            assert!(
-                recovered_credit >= payload_bytes,
-                "unfunded payload escaped its original ledger"
-            );
-        }
+        assert!(
+            recovered_credit >= evidence.len() as u64,
+            "evidence escaped its original ledger"
+        );
+        let alias = recovered.evidence.clone().ok_or("evidence absent")?;
+        assert_eq!(
+            native.live_allocation_bytes() - baseline,
+            recovered_credit,
+            "alias charged original evidence twice"
+        );
         drop(recovered);
+        assert_eq!(
+            native.live_allocation_bytes() - baseline,
+            recovered_credit,
+            "alias lost its original funding"
+        );
+        drop(alias);
         assert_eq!(
             native.live_allocation_bytes(),
             baseline,
@@ -211,6 +217,52 @@ async fn exercise_original_publication<
         .err()
         .ok_or("cancelled predecessor lookup admitted")?;
     assert_eq!(*failure.work, crate::WorkCounters::default());
+    Ok(key)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn original_publication_evidence_survives_collection_and_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let evidence = vec![b'e'; 2 * 1024 * 1024 + 1];
+    let filesystem = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+    let key = exercise_original_publication(filesystem.clone(), &evidence).await?;
+    filesystem
+        .collect_local_garbage(None, &cancellation)
+        .await?;
+    let released = filesystem
+        .local_root_release_barrier()
+        .ok_or("release barrier absent")?;
+    drop(filesystem);
+    released.released().await;
+    let filesystem = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+    let workspace = filesystem
+        .open_workspace(
+            "evidence",
+            crate::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let recovered = workspace
+        .operation_publication(
+            key,
+            None,
+            crate::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .await?
+        .value
+        .ok_or("publication absent after collection")?;
+    assert_eq!(recovered.evidence(), Some(evidence.as_slice()));
+    drop((recovered, workspace));
+    let released = filesystem
+        .local_root_release_barrier()
+        .ok_or("release barrier absent")?;
+    drop(filesystem);
+    released.released().await;
     Ok(())
 }
 

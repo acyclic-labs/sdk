@@ -64,7 +64,15 @@ async fn cancelling_current_input_preserves_a_newer_queued_prompt() -> Result<()
     );
     let next = observed.settled(queued).await?;
     assert_eq!(next.outcome, crate::agent::TurnOutcome::Completed);
-    assert_eq!(client.output_text(&next).await?, "queued prompt survived");
+    let sequence = observed
+        .observer
+        .seen()
+        .checked_sub(1)
+        .expect("settled entry advanced the conversation cursor");
+    assert_eq!(
+        client.output_text_at(sequence, &next).await?,
+        "queued prompt survived"
+    );
     Ok(())
 }
 
@@ -1050,7 +1058,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert!(client.turn(0, &output_only).await.is_err());
     assert_eq!(client.output_text(&output_only).await?, "done");
     output_only.output = absent(&entry.output)?;
-    assert!(client.output_text(&output_only).await.is_err());
+    assert!(client.output_text_at(0, &output_only).await.is_err());
     // The same live query started before this input. Its exact completion
     // replaces the original admission, rather than counting another call.
     while inspection.snapshot().usage.completed == 0 {
@@ -1064,7 +1072,6 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         inspection.snapshot().waits.elapsed_ns(),
         Some(2_007_000_000)
     );
-    // The fixture catalog serves the root role's model with its own binding.
     assert_eq!(inspection.snapshot().model, Some(("scripted", "test")));
     assert_eq!(inspection.snapshot().open_children, Some(0));
     assert_eq!(
@@ -1136,12 +1143,21 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         }
         assert!(encode_agent_reply(&reply, &command).is_err());
     }
-    // A client reads the settled output from the root's private volume.
-    let output = harness
-        .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
-        .await?;
-    assert!(!output.is_empty());
+    // Journal output requires its committed conversation proof.
+    let denied = async {
+        harness
+            .client_reader()?
+            .read(
+                &entry.output,
+                entry.output.descriptor().byte_length(),
+                None,
+                None,
+            )?
+            .await
+    }
+    .await
+    .expect_err("a raw reader admitted journal output");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
     // The same authenticated connection queries an original status cut; a
     // caller cannot choose a foreign owner or invent a missing status record.
     let (samples, next) = client
@@ -1174,9 +1190,16 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     ))
     .await
     .map_err(agent)?;
+    let state = agents.state(&root).await.map_err(agent)?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+        .ok_or_else(|| Error::NotFound("private workspace".into()))?
+        .volume()?;
     let private = filesystem
         .open_workspace(
-            entry.output.volume().storage_name(&mut None)?,
+            private.storage_name(&mut None)?,
             acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -1296,22 +1319,15 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         )
         .is_err()
     );
-    // A path cannot bypass the original private grant or its internal boundary.
-    assert!(
-        client
-            .directory_page(".system", None, page(None)?)
-            .await
-            .is_err()
-    );
+    // A path name stays within the selected authored workspace and cannot
+    // select a different storage volume or generation.
+    let selected = client
+        .directory_page(".system", Some(&first.generation), page(None)?)
+        .await?;
+    assert_eq!(selected.generation, first.generation);
     assert!(
         client
             .directory_page("", None, page(Some(last.clone()))?)
-            .await
-            .is_err()
-    );
-    assert!(
-        client
-            .read_private_range(".system/record", &first.generation, 0)
             .await
             .is_err()
     );
@@ -1546,28 +1562,20 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
         ])
     };
     let prices = Arc::new(ModelPrices::from_jsonl(
-        // The fixture catalog serves both roles with its one binding.
-        &["test"]
-            .into_iter()
-            .map(|name| {
-                serde_json::to_string(&ModelPriceRecord {
-                    version: 1,
-                    revision: "chosen-price-1".into(),
-                    provider: "scripted".into(),
-                    model: name.into(),
-                    effective_at: 1,
-                    currency: "USD".into(),
-                    input_nano_units_per_million: Some(1_000_000),
-                    output_nano_units_per_million: Some(2_000_000),
-                    cached: TokenPrice::Included,
-                    cache_write: TokenPrice::Included,
-                    reasoning: TokenPrice::Included,
-                })
-                .map_err(agent)
-            })
-            .collect::<Result<Vec<_>>>()?
-            .join("\n")
-            .into_bytes(),
+        &serde_json::to_vec(&ModelPriceRecord {
+            version: 1,
+            revision: "chosen-price-1".into(),
+            provider: "scripted".into(),
+            model: "test".into(),
+            effective_at: 1,
+            currency: "USD".into(),
+            input_nano_units_per_million: Some(1_000_000),
+            output_nano_units_per_million: Some(2_000_000),
+            cached: TokenPrice::Included,
+            cache_write: TokenPrice::Included,
+            reasoning: TokenPrice::Included,
+        })
+        .map_err(agent)?,
     )?);
     let provider = super::scripted([
         completed(100, 20),

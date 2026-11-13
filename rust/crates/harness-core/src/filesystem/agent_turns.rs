@@ -2401,6 +2401,7 @@ where
                     agent.clone(),
                     (turn, inbox, initial_through),
                     Arc::clone(&bindings.journal.files),
+                    Arc::clone(&bindings.journal.reader),
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),

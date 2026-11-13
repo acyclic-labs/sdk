@@ -215,8 +215,7 @@ pub fn local_harness_config(
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
     // Store opening supplies temporary state only when no explicit root was selected.
     let policy = crate::approvals::ApprovalPolicy::accept_all("graphcoder-default");
-    let models = std::sync::Arc::new(role_models(model)?);
-    let config = crate::LocalHarnessConfig::resolving(workspace, models, None)
+    let config = crate::LocalHarnessConfig::new(workspace, model)
         .hermetic()
         .approval_policy(policy);
     #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -263,9 +262,9 @@ pub async fn prompt_settled(
     let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(id, prompt).await?;
     let mut phase = None;
-    let entry = loop {
+    let (sequence, entry) = loop {
         let dropped = match conversation.reply(id, inbox).await? {
-            Reply::Answered { entry, .. } => break entry,
+            Reply::Answered { sequence, entry, .. } => break (sequence, entry),
             Reply::Dropped => true,
             Reply::Pending | Reply::Continuing { .. } => false,
         };
@@ -311,9 +310,7 @@ pub async fn prompt_settled(
     if let TurnOutcome::Failed { message } = &entry.outcome {
         return Ok(PromptOutcome::Failed(message.clone()));
     }
-    let output = conversation.text(&entry.output).await?;
-    let output =
-        serde_json::from_str(&output).map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    let output = conversation.output_at(sequence, &entry).await?;
     Ok(PromptOutcome::Settled(entry, output))
 }
 

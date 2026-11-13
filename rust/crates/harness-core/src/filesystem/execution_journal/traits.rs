@@ -86,26 +86,6 @@ where
         }))
     }
 
-    fn live_reply(&self, operation: OperationId) -> Result<Option<crate::executor::LiveReply>> {
-        self.require_operation(operation, None)?;
-        let publisher = crate::filesystem::FilesystemContentPublisher::new(
-            Arc::clone(&self.host),
-            &self.volume,
-            &self.verifier,
-            &self.scope,
-            super::MAXIMUM_PAYLOAD_BYTES,
-            None,
-        )?;
-        Ok(Some(crate::executor::LiveReply::new(
-            publisher,
-            format!(
-                "{}/{}",
-                crate::filesystem::TOOL_OUTPUT,
-                self.turn_operation(operation)
-            ),
-        )))
-    }
-
     fn supervision(
         &self,
     ) -> acyclic_stream::BoxProviderFuture<'_, Result<Option<crate::supervision::Control>>> {

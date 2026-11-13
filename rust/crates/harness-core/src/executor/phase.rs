@@ -186,18 +186,6 @@ impl Publication {
     }
 }
 
-pub(crate) async fn run<T, F>(
-    journal: &dyn ExecutionJournal,
-    io: Option<&PreparationIo>,
-    build: impl FnOnce() -> F,
-) -> Result<T>
-where
-    F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask,
-{
-    let future = crate::conversation::BoundedContentFuture::new(io, build)?;
-    PreparedPhase::new(journal, io)?.run(future).await
-}
-
 /// Completion custody acquired before dispatch or a cancellable phase begins.
 pub(crate) struct PreparedPhase<'a> {
     barrier: Option<crate::conversation::BoundedContentFuture<'a, ()>>,

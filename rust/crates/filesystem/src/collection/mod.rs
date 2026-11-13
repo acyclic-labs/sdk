@@ -177,17 +177,13 @@ impl Collection {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Unswept, crate::FsError> {
         accounting.check()?;
-        let crate::PublicationScope {
-            objects: closure,
-            proven_at,
-        } = scope;
-        let stale = proven_at < self.state().sweeps;
+        let stale = scope.proven_at < self.state().sweeps;
         if stale {
             // Revalidate authoritative immutable bytes under the same barrier
             // used by the drain and root-pin handoff. No collection history or
             // age cutoff is needed; only one object is resident at a time.
             let cancellation = accounting.cancellation();
-            for object in closure {
+            for object in scope.object_ids() {
                 accounting.charge(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
@@ -209,7 +205,7 @@ impl Collection {
         }
         accounting.check()?;
         if let Some(admitted) = &mut self.state().admitted {
-            admitted.extend(closure.iter().map(|object| object.digest));
+            admitted.extend(scope.object_ids().map(|object| object.digest));
         }
         Ok(hold)
     }

@@ -4,18 +4,12 @@ pub(super) fn prepare_publication_commit(
     request: PublishGenerationRequest,
     effective: Option<ObjectId>,
     operation_context: Option<Digest>,
-    original_evidence: Option<acyclic_stream::OwnedBytes>,
+    (original_evidence, custody): (Option<OriginalEvidence>, Option<bytes::Bytes>),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ProposedCommit, crate::FsError> {
-    let (mut payload, fingerprint) = construct_publication_commit(
-        request,
-        operation_context,
-        original_evidence
-            .as_ref()
-            .map(|evidence| evidence.as_slice()),
-        accounting,
-    )?;
+    let (mut payload, fingerprint) =
+        construct_publication_commit(request, operation_context, original_evidence, accounting)?;
     if let Some(root) = effective.filter(|root| *root != request.generation_root) {
         payload.retire(accounting)?;
         payload = construct_payload(
@@ -23,7 +17,7 @@ pub(super) fn prepare_publication_commit(
                 volume_id: request.volume_id,
                 generation_root: root,
             },
-            original_evidence.as_ref().map(|data| data.as_slice()),
+            original_evidence,
             Some(PublicationOrigin {
                 expected: request.expected,
                 generation_root: request.generation_root,
@@ -34,7 +28,7 @@ pub(super) fn prepare_publication_commit(
     let bytes = Retained::from_owned(payload, accounting)?;
     cancellation.check()?;
     accounting.check()?;
-    let payload = bytes.into_bytes(original_evidence, accounting)?;
+    let payload = bytes.into_bytes(custody, accounting)?;
     Ok(ProposedCommit {
         publication: None,
         operation_id: request.operation_id,
@@ -46,15 +40,13 @@ pub(super) fn prepare_publication_commit(
 pub(super) fn construct_publication_commit(
     request: PublishGenerationRequest,
     operation_context: Option<Digest>,
-    original_evidence: Option<&[u8]>,
+    original_evidence: Option<OriginalEvidence>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(Owned<Vec<u8>>, Digest), crate::FsError> {
     accounting.check()?;
-    let payload_length =
-        publication_payload_length_with_evidence(request.generation_root, original_evidence, None)?;
     let input_length = fingerprint_input_length(operation_context)
-        .checked_sub(publication_payload_length())
-        .and_then(|length| length.checked_add(payload_length))
+        .checked_add(request.generation_root.encoded_len() - 33)
+        .and_then(|length| length.checked_add(if original_evidence.is_some() { 40 } else { 0 }))
         .ok_or(WorkError::Overflow)?;
     let payload = construct_payload(
         PublishedGeneration {
@@ -76,7 +68,7 @@ pub(super) fn construct_publication_commit(
         &mut input.value,
         &request,
         operation_context,
-        &payload.value,
+        original_evidence,
     );
     accounting.record_completed(encoding)?;
     let hashed = usize_to_u64(fingerprint_domain(operation_context).len())
@@ -98,7 +90,7 @@ pub(super) fn construct_publication_commit(
 
 fn construct_payload(
     publication: PublishedGeneration,
-    original_evidence: Option<&[u8]>,
+    original_evidence: Option<OriginalEvidence>,
     origin: Option<PublicationOrigin>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Owned<Vec<u8>>, crate::FsError> {
@@ -107,20 +99,6 @@ fn construct_payload(
         original_evidence,
         origin,
     )?;
-    let evidence = if let Some(bytes) = original_evidence {
-        let hashing = WorkCounters {
-            bytes_hashed: usize_to_u64(EVIDENCE_DOMAIN.len())
-                .checked_add(usize_to_u64(bytes.len()))
-                .ok_or(WorkError::Overflow)?,
-            ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(hashing)?;
-        let digest = original_evidence_digest(bytes);
-        accounting.record_completed(hashing)?;
-        Some((bytes, digest))
-    } else {
-        None
-    };
     let mut payload = Owned::<Vec<u8>>::allocate(payload_length, accounting)?;
     let encoded = usize_to_u64(payload_length);
     let encoding = WorkCounters {
@@ -133,7 +111,7 @@ fn construct_payload(
         &mut payload.value,
         publication.volume_id,
         publication.generation_root,
-        evidence,
+        original_evidence,
         origin,
     );
     accounting.record_completed(encoding)?;

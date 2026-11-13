@@ -1,6 +1,40 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 
+#[test]
+fn namespace_selection_resolves_only_its_own_revisions() -> Result<()> {
+    let mut registry = ToolRegistry::default();
+    let mut tool = crate::tool::files::read()?;
+    tool.definition.name = "selected.read".into();
+    let expected = tool.definition.clone();
+    registry.register((tool.clone(), None), &mut None, None)?;
+    for revision in ["first", "second"] {
+        tool.definition.name = "unrelated.read".into();
+        tool.definition.revision = revision.into();
+        registry.register((tool.clone(), None), &mut None, None)?;
+    }
+    assert!(matches!(
+        registry.definitions(None),
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        registry.definitions_in_namespace("selected.", None)?,
+        vec![expected]
+    );
+    assert!(
+        registry
+            .definitions_in_namespace("absent.", None)?
+            .is_empty()
+    );
+    tool.definition.name = "selected.read".into();
+    registry.register((tool, None), &mut None, None)?;
+    assert!(matches!(
+        registry.definitions_in_namespace("selected.", None),
+        Err(Error::Conflict(_))
+    ));
+    Ok(())
+}
+
 proptest! {
     // Property: every nonempty authorized selection allocates exactly what
     // one funded reservation plus its admitted payload copies require. Hidden,

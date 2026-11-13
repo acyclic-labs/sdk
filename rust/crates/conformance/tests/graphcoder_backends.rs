@@ -567,7 +567,9 @@ async fn external_client_delivers_attributed_peer_input_to_live_session() {
     assert_eq!(receipt["kind"], "delivered");
     assert_eq!(receipt["from"], sender.root().as_str());
     let inbox = receipt["inbox"].as_u64().unwrap();
-    let Settlement::Reply(acyclic_harness::agent::Reply::Answered { entry, .. }) = conversation
+    let Settlement::Reply(acyclic_harness::agent::Reply::Answered {
+        sequence, entry, ..
+    }) = conversation
         .settle("external-message", inbox, &mut observer)
         .await
         .unwrap()
@@ -584,7 +586,7 @@ async fn external_client_delivers_attributed_peer_input_to_live_session() {
         }
     );
     assert_eq!(
-        conversation.output_text(&entry).await.unwrap(),
+        conversation.output_text_at(sequence, &entry).await.unwrap(),
         CHILD_REPLY,
         "receiver outcome: {:?}; model request: {:?}",
         entry.outcome,

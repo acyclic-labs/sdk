@@ -252,14 +252,7 @@ impl Endpoint for Embedded {
         Box::pin(async move {
             let call = acyclic_harness_client::AgentCall::decode(&invocation)?;
             let AgentCommand::Spawn { parent, .. } = call.command() else {
-                return Ok(self
-                    .client
-                    .actor_call(
-                        &invocation,
-                        0,
-                        acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
-                    )
-                    .await?);
+                return Ok(self.client.actor_call(&invocation, 0, None).await?);
             };
             let path = parent.inbox()?;
             let provider = self.provider();
@@ -273,11 +266,7 @@ impl Endpoint for Embedded {
                 self.deliver(parent).await?;
                 futures::future::pending::<Result<Bytes>>().await
             };
-            let result = self.client.actor_call(
-                &invocation,
-                0,
-                acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
-            );
+            let result = self.client.actor_call(&invocation, 0, None);
             let driving = core::pin::pin!(driving);
             let result = core::pin::pin!(result);
             match futures::future::select(result, driving).await {

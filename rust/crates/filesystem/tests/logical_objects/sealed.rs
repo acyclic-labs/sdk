@@ -168,6 +168,7 @@ async fn sealing_preserves_the_epoch_roots_retention() -> Result<(), Box<dyn std
     let _second = second
         .flush_before_publish(
             acyclic_fs::PublicationScope {
+                related_objects: &[],
                 objects: &[id],
                 proven_at: 0,
             },
@@ -356,6 +357,7 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     let recovered = historical.object_id();
     let ids = [recovered];
     let scope = acyclic_fs::PublicationScope {
+        related_objects: &[],
         objects: &ids,
         proven_at: 0,
     };

@@ -4,70 +4,95 @@ use acyclic_harness_core::conversation::ContentGrant;
 #[tokio::test]
 async fn interrupted_streams_keep_live_reply_on_the_journal() -> Result {
     use acyclic_harness_core::{model::ModelEvent, test_support::ScriptedEvent};
-    let path = AgentPath::root(&id(214));
-    let stream = Arc::new(MemoryStream::default());
-    let (files, private) = private_in(&stream, &path).await?;
-    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
-        ScriptedEvent::Event(ModelEvent::Content {
-            delta: "saved prefix".into(),
-        }),
-        ScriptedEvent::Interrupted {
+    for expected in ["saved prefix", ""] {
+        let path = AgentPath::root(&id(214));
+        let stream = Arc::new(MemoryStream::default());
+        let (files, private) = private_in(&stream, &path).await?;
+        let mut events = vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: "abandoned prefix".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::Restarted),
+            ScriptedEvent::Event(ModelEvent::Reasoning {
+                delta: "original reasoning".into(),
+            }),
+        ];
+        if !expected.is_empty() {
+            events.push(ScriptedEvent::Event(ModelEvent::Content {
+                delta: expected.into(),
+            }));
+        }
+        events.push(ScriptedEvent::Interrupted {
             error: "provider stopped".into(),
-        },
-    ])]));
-    let host = FilesystemTurnHost::new(
-        stream,
-        within(),
-        files.clone(),
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
-        TurnAdmission::LocalRoot,
-        executors(model.clone())?,
-        LIMITS,
-        Default::default(),
-    );
-    let mut adoption = adopted(path.id());
-    adoption.volumes = vec![private.clone()];
-    let state = AgentState::adopted(path, &adoption)?;
-    let operation = OperationId::from_bytes([215; 16]);
-    let input = ModelContent::Text("continue".into());
-    let open = host
-        .open(
-            &state,
-            acyclic_harness_core::agent::TurnIdentity::new(operation, 0, 0),
-            &input,
-            acyclic_actors::guest::CancellationToken::new(),
-        )
-        .await?;
-    let result = open
-        .executor
-        .execute_progress(
-            acyclic_harness_core::executor::TurnInput {
-                operation_id: operation,
-                input: open.input.clone().unwrap_or(input),
-                selected_context: open.selected.clone(),
-                max_steps: None,
-            },
-            open.journal.as_ref(),
-        )
-        .await;
-    assert!(result.is_err());
-    assert_eq!(open.outputs.partial(operation).await?, "saved prefix");
-    let workspace = acyclic_harness_core::filesystem::workspace_ref(
-        private.volume()?.provider().clone(),
-        &private.volume()?.storage_name(&mut None)?,
-    )?;
-    assert!(
-        matches!(files.stat(&workspace, None, "/tools").await, Err(error)
-        if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound)
-    );
-    assert_eq!(model.requests().len(), 1);
+        });
+        let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(events)]));
+        let host = FilesystemTurnHost::new(
+            stream,
+            within(),
+            files.clone(),
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors(model.clone())?,
+            LIMITS,
+            Default::default(),
+        );
+        let mut adoption = adopted(path.id());
+        adoption.volumes = vec![private.clone()];
+        let state = AgentState::adopted(path, &adoption)?;
+        let operation = OperationId::from_bytes([215; 16]);
+        let input = ModelContent::Text("continue".into());
+        let open = host
+            .open(
+                &state,
+                acyclic_harness_core::agent::TurnIdentity::new(operation, 0, 0),
+                &input,
+                acyclic_actors::guest::CancellationToken::new(),
+            )
+            .await?;
+        let result = open
+            .executor
+            .execute_progress(
+                acyclic_harness_core::executor::TurnInput {
+                    operation_id: operation,
+                    input: open.input.clone().unwrap_or(input),
+                    selected_context: open.selected.clone(),
+                    max_steps: None,
+                },
+                open.journal.as_ref(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(open.outputs.partial(operation).await?, expected);
+        let records = open.journal.replay(operation, 0, 64, None)?.await?;
+        let originals: Vec<_> = records
+            .iter()
+            .filter_map(|record| match &record.event {
+                acyclic_harness_core::executor::ExecutionEvent::Model { event, .. } => Some(event),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(originals.len(), if expected.is_empty() { 3 } else { 4 });
+        for file in originals {
+            assert!(file.path().starts_with("tools/.model/"));
+            assert_eq!(file.volume(), &journal_of(private.volume()?)?);
+        }
+        let workspace = acyclic_harness_core::filesystem::workspace_ref(
+            private.volume()?.provider().clone(),
+            &private.volume()?.storage_name(&mut None)?,
+        )?;
+        assert!(
+            matches!(files.stat(&workspace, None, "/tools").await, Err(error)
+            if error.code() == acyclic_harness_core::wire::ErrorCode::NotFound)
+        );
+        assert_eq!(model.requests().len(), 1);
+    }
     Ok(())
 }
 
@@ -104,7 +129,9 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
     let open = host
         .open(
             &state,
-            acyclic_harness_core::agent::TurnIdentity::new(operation, 0, 0),
+            operation,
+            0,
+            0,
             &input,
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -145,7 +172,9 @@ async fn journal_payloads_and_effects_replay_outside_model_writable_storage() ->
     let reopened = host
         .open(
             &state,
-            acyclic_harness_core::agent::TurnIdentity::new(operation, 0, 0),
+            operation,
+            0,
+            0,
             &input,
             acyclic_actors::guest::CancellationToken::new(),
         )
