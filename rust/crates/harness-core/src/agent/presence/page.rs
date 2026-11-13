@@ -205,7 +205,7 @@ fn collect_rows(
             return Err(Error::Record("session row belongs to another account"));
         }
         crate::agent::AgentId::try_from(actor.id().to_owned())?;
-        if row.profile.is_some() {
+        if row.profile.is_some() && &actor != requester {
             // Acquire result custody only when a visible row exists.
             if page.peers.is_empty() {
                 page.peers.reserve(capacity);

@@ -257,6 +257,61 @@ async fn account_pages_bound_work_and_batch_repeated_node_presence_at_scale() ->
 }
 
 #[tokio::test]
+async fn account_pages_exclude_only_the_fully_qualified_requester() -> TestResult {
+    let directory = Directory::new(0, false).await?;
+    publish(
+        directory.provider.as_ref(),
+        vec![CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: directory.routes.presence(&directory.nodes[0])?,
+                records: vec![vec![0xff].into()],
+            }],
+        )],
+    )
+    .await?;
+    let key = CursorKey::new()?;
+    let counted = acyclic_stream::testing::Counted::new(directory.provider.as_ref().clone());
+    let page = directory.page(&counted, &key, None).await?;
+    assert!(page.peers().is_empty());
+    assert!(page.presence_at.is_none());
+    assert!(page.finish(0, &key)?.1.is_none());
+    assert_eq!(counted.named_head_selections(), 1);
+    assert_eq!(counted.requests().control(), 1);
+
+    // Equal root IDs in different namespaces are different sessions.
+    let other = ActorReference::new(
+        directory.requester.account().as_bytes(),
+        b"other-agents",
+        directory.requester.id().as_bytes(),
+    )?;
+    publish(
+        directory.provider.as_ref(),
+        vec![
+            SessionRow::new(directory.nodes[1].clone(), profile())
+                .effect(SessionPublication::row_path(&other)?)?,
+        ],
+    )
+    .await?;
+    let page = directory.page(&counted, &key, None).await?;
+    assert_eq!(page.peers().len(), 1);
+    assert_eq!(page.peers()[0].actor, other);
+    assert!(!page.peers()[0].online);
+
+    // A different visible root on the requester's node must read its presence.
+    publish(
+        directory.provider.as_ref(),
+        vec![
+            SessionRow::new(directory.nodes[0].clone(), profile())
+                .effect(SessionPublication::row_path(&actor(1)?)?)?,
+        ],
+    )
+    .await?;
+    assert!(directory.page(&counted, &key, None).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn filtered_account_pages_keep_confidential_progress_without_presence_reads() -> TestResult {
     let directory = Directory::new(64, true).await?;
     for node in &directory.nodes {
