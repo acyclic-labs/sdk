@@ -129,7 +129,7 @@ async fn stock_driver_refuses_to_summarize_its_only_protected_exchange() -> Resu
         .execute_progress(&input, &journal)
         .await;
     assert!(
-        matches!(result, Err(Error::Invalid(ref reason)) if reason == "mandatory content leaves no compaction source")
+        matches!(result, Err(Error::Invalid(ref reason)) if reason == "no complete older compaction source")
     );
     assert_eq!(
         provider.requests().len(),
