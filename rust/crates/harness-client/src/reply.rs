@@ -1869,6 +1869,55 @@ mod tests {
         );
         Ok(())
     }
+    #[test]
+    fn retained_client_file_captures_remain_positive_decoder_inputs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (name, bytes, query) in [
+            (
+                "committed-snapshot",
+                include_bytes!("../../../fuzz/corpus/client_files/committed-snapshot").as_slice(),
+                false,
+            ),
+            (
+                "conditional-publication",
+                include_bytes!("../../../fuzz/corpus/client_files/conditional-publication")
+                    .as_slice(),
+                false,
+            ),
+            (
+                "stream-query-snapshot",
+                include_bytes!("../../../fuzz/corpus/client_files/stream-query-snapshot")
+                    .as_slice(),
+                true,
+            ),
+        ] {
+            let split = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or("capture has no reply separator")?;
+            let command = crate::PreparedCommand::decode_whole(&bytes[..split])?;
+            let reply = decode_agent_reply(&bytes[split + 1..], &command)??;
+            match (command, reply) {
+                (AgentCommand::ClientFiles { .. }, AgentReply::ClientFiles { snapshot }) => {
+                    if query {
+                        assert!(
+                            snapshot.files.values().flatten().any(|file| matches!(
+                                file.source,
+                                acyclic_harness_core::client_files::FileSource::Query { .. }
+                            )),
+                            "{name} lost its positive stream query"
+                        );
+                    }
+                }
+                (
+                    AgentCommand::PublishClientFiles { .. },
+                    AgentReply::ClientFilesPublished { .. },
+                ) => {}
+                _ => panic!("{name} decoded as another operation"),
+            }
+        }
+        Ok(())
+    }
 }
 
 fn validate_files(
