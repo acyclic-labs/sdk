@@ -12,8 +12,8 @@ mod fixture {
     ));
 }
 
-async fn append(
-    provider: &MemoryStream,
+async fn append<P: StreamProvider + ?Sized>(
+    provider: &P,
     path: &str,
     values: Vec<crate::AppendRecord>,
 ) -> Result<(), StreamError> {
@@ -27,6 +27,116 @@ async fn append(
             })
             .await?;
         assert!(matches!(result, AppendOutcome::Committed(_)));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_search_keeps_original_cuts_custody_and_observer_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, atomic::Ordering};
+    for durable in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let provider: Arc<dyn crate::NativeStreamProvider> = if durable {
+            Arc::new(
+                crate::LocalStream::open(directory.path(), crate::LocalStreamLimits::default())
+                    .await?,
+            )
+        } else {
+            Arc::new(MemoryStream::default())
+        };
+        append(
+            provider.as_ref(),
+            "scope/history",
+            vec!["needle original".into(), "unrelated".into()],
+        )
+        .await?;
+        append(
+            provider.as_ref(),
+            "scope/worker/decisions",
+            vec!["needle child".into()],
+        )
+        .await?;
+        let cursor = Cursor::new(StreamPath::new("scope")?, b"needle".to_vec());
+        let budget = NonZeroU32::new(2).ok_or(StreamError::InvalidArgument)?;
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        let mut page = cursor
+            .native_page(provider.as_ref(), budget, meter.original())
+            .await??;
+        append(
+            provider.as_ref(),
+            "scope/history",
+            vec!["needle later".into()],
+        )
+        .await?;
+        let mut found = Vec::new();
+        loop {
+            assert!(page.value().work <= budget.get());
+            found.extend(page.value().matches.iter().map(|found| {
+                (
+                    found.path.as_str().to_owned(),
+                    found.record.sequence,
+                    found.record.value.to_vec(),
+                )
+            }));
+            let Some(next) = page.value().next.as_ref() else {
+                break;
+            };
+            let selected = next
+                .native_page(provider.as_ref(), budget, meter.original())
+                .await??;
+            page = selected;
+        }
+        assert_eq!(
+            found,
+            vec![
+                ("scope/history".into(), 0, b"needle original".to_vec()),
+                ("scope/worker/decisions".into(), 0, b"needle child".to_vec()),
+            ]
+        );
+        assert!(meter.allocations.load(Ordering::SeqCst) > 0);
+        drop(page);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+
+        let denied = Arc::new(crate::test_meter::Meter::default());
+        denied.deny_allocation.store(true, Ordering::SeqCst);
+        let error = cursor
+            .native_page(provider.as_ref(), budget, denied.original())
+            .await
+            .err()
+            .ok_or("allocation denial disappeared")?;
+        assert!(
+            error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<crate::test_meter::NativeDenial>())
+                .is_some()
+        );
+        assert_eq!(denied.read_operations.load(Ordering::SeqCst), 0);
+        assert_eq!(denied.held.load(Ordering::SeqCst), 0);
+
+        let cancelled = Arc::new(crate::test_meter::Meter {
+            cancel_after_read: 1,
+            ..Default::default()
+        });
+        let cursor = Cursor::new(StreamPath::new("scope/history")?, b"needle".to_vec());
+        let result = cursor
+            .native_page(provider.as_ref(), budget, cancelled.original())
+            .await;
+        let error = result.err().ok_or("native read cancellation disappeared")?;
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(
+            error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<crate::test_meter::NativeDenial>())
+                .is_some()
+        );
+        assert_eq!(cancelled.held.load(Ordering::SeqCst), 0);
+        let replay = cursor
+            .native_page(provider.as_ref(), budget, meter.original())
+            .await??;
+        assert_eq!(replay.value().matches[0].record.sequence, 0);
+        drop(replay);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     }
     Ok(())
 }

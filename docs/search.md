@@ -40,6 +40,14 @@ authenticated provider, which checks current grants on every observation; a
 serialized continuation confers no authority. A provider that cannot retain the
 selected cut refuses rather than silently switching to current state.
 
+Native callers use `Cursor::native_page` or `native_page_with` on their original
+`NativeReadMeter`. These run the same frontier and cut selection, fund cursor,
+request and result buffers before allocation, and return a `NativeStreamOutput`
+that must retain custody while its page and continuation are live. Native
+observer failures remain distinct from semantic provider failures. A linked
+matcher implements `Matcher::native_step` with original output custody; the
+default refuses instead of invoking ordinary matching.
+
 Mounted files use the same literal query and work budget:
 
 ```text

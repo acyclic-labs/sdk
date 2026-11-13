@@ -6,8 +6,9 @@ use crate::{
     ChildrenPageRequest, HeadProjection, Heads, HeadsRequest, ReadRequest, Record, Revision,
     RevisionCut, StreamError, StreamPath, StreamProvider,
 };
-use futures::TryStreamExt as _;
 use std::num::NonZeroU32;
+mod access;
+use access::{Access, Held, Owner};
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -85,6 +86,21 @@ pub trait Matcher: crate::ProviderPlatform {
     ) -> impl std::future::Future<Output = Result<Step<Self::Source>, Self::Error>>
     + crate::ProviderTask
     + 'a;
+
+    /// The same bounded inspection on the original native allocation owner.
+    /// Returned custody covers all newly owned progress and source storage.
+    /// Implementations without this capability refuse before inspecting data.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_step<'a>(
+        &'a self,
+        record: &'a Record,
+        pattern: &'a [u8],
+        after: Option<&'a [u8]>,
+        meter: &'a std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'a, Step<Self::Source>, Self::Error> {
+        let _ = (record, pattern, after, meter);
+        crate::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported.into())))
+    }
 }
 
 /// The same literal byte predicate used by record and linked-content adapters.
@@ -122,6 +138,29 @@ impl Matcher for Raw {
             source: None,
             next: None,
         }))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_step<'a>(
+        &'a self,
+        record: &'a Record,
+        pattern: &'a [u8],
+        _: Option<&'a [u8]>,
+        meter: &'a std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'a, Step<()>> {
+        crate::NativeProviderFuture::ready((|| {
+            meter.admit_examination(record.value.len() as u64, 0)?;
+            let matched = contains(record.value.as_slice(), pattern);
+            meter.record_examination(record.value.len() as u64, 0)?;
+            Ok(Ok(crate::NativeStreamOutput::new(
+                Step {
+                    matched,
+                    source: None,
+                    next: None,
+                },
+                acyclic_native_runtime::ReadAllocation::empty(meter),
+            )))
+        })())
     }
 }
 
@@ -173,13 +212,59 @@ impl Cursor {
         budget: NonZeroU32,
         matcher: &M,
     ) -> Result<Page<M::Source>, M::Error> {
+        self.page_using(
+            &Access::portable(provider),
+            budget,
+            matcher,
+            &mut Owner::default(),
+        )
+        .await
+    }
+
+    /// The same immutable search on the original native work owner. Provider
+    /// failures and native observer failures retain their distinct causes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_page<'a, P: crate::NativeStreamProvider + ?Sized>(
+        &'a self,
+        provider: &'a P,
+        budget: NonZeroU32,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'a, Page> {
+        self.native_page_with(provider, budget, &Raw, meter)
+    }
+
+    /// Native linked-content search requires the matcher's explicit native
+    /// capability. No ordinary provider or matcher fallback is permitted.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_page_with<'a, P: crate::NativeStreamProvider + ?Sized, M: Matcher>(
+        &'a self,
+        provider: &'a P,
+        budget: NonZeroU32,
+        matcher: &'a M,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'a, Page<M::Source>, M::Error> {
+        crate::NativeProviderFuture::new(&std::sync::Arc::clone(&meter), async move {
+            let access = Access::native(provider, meter);
+            let mut owner = Owner::default();
+            let result = self.page_using(&access, budget, matcher, &mut owner).await;
+            access.finish(result, owner)
+        })
+    }
+
+    async fn page_using<P: StreamProvider + ?Sized, M: Matcher>(
+        &self,
+        access: &Access<'_, P>,
+        budget: NonZeroU32,
+        matcher: &M,
+        owner: &mut Owner,
+    ) -> Result<Page<M::Source>, M::Error> {
         if self
             .matcher
             .is_some_and(|identity| identity != matcher.identity())
         {
             return Err(StreamError::InvalidArgument.into());
         }
-        let mut cursor = self.clone();
+        let mut cursor = access.cursor(self, owner)?;
         cursor.matcher = Some(matcher.identity());
         let mut matches = Vec::new();
         let mut work = 0;
@@ -189,7 +274,9 @@ impl Cursor {
             };
             if frame.tail.is_none() {
                 let observed =
-                    observe(provider, cursor.at.clone(), Some(frame.path.clone()), None).await?;
+                    observe(access, cursor.at.clone(), Some(frame.path.clone()), None).await?;
+                owner.absorb(observed.owner)?;
+                let observed = observed.value;
                 cursor.at = Some(observed.snapshot);
                 frame.tail = Some(
                     observed
@@ -205,13 +292,21 @@ impl Cursor {
             if frame.sequence < tail {
                 let count = (budget.get() - work).min(crate::MAX_ITEMS as u32);
                 let at = cursor.at.clone().ok_or(StreamError::InvalidResponse)?;
-                let batch = scan(provider, frame, at, &cursor.pattern, count, matcher).await?;
-                matches.extend(batch.matches);
-                work += batch.work;
+                work += scan(
+                    access,
+                    frame,
+                    at,
+                    &cursor.pattern,
+                    count,
+                    matcher,
+                    &mut matches,
+                    owner,
+                )
+                .await?;
                 continue;
             }
             let observed = observe(
-                provider,
+                access,
                 cursor.at.clone(),
                 None,
                 Some(ChildrenPageRequest {
@@ -224,17 +319,23 @@ impl Cursor {
                 }),
             )
             .await?;
+            owner.absorb(observed.owner)?;
+            let observed = observed.value;
             let children = observed.children.ok_or(StreamError::InvalidResponse)?;
             work += 1;
             if let Some(child) = children.children.into_iter().next() {
                 frame.after = Some(child.path.clone());
-                cursor.frontier.push(Frame {
-                    path: child.path,
-                    sequence: 0,
-                    tail: None,
-                    after: None,
-                    content: None,
-                });
+                access.push(
+                    &mut cursor.frontier,
+                    Frame {
+                        path: child.path,
+                        sequence: 0,
+                        tail: None,
+                        after: None,
+                        content: None,
+                    },
+                    owner,
+                )?;
             } else if let Some(after) = children.next_after {
                 // Authorization can hide every child in a provider page.
                 frame.after = Some(after);
@@ -242,29 +343,44 @@ impl Cursor {
                 cursor.frontier.pop();
             }
         }
+        let next = if cursor.frontier.is_empty() {
+            let retired = cursor
+                .pattern
+                .capacity()
+                .checked_add(
+                    cursor
+                        .frontier
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<Frame>())
+                        .ok_or(StreamError::InvalidResponse)?,
+                )
+                .ok_or(StreamError::InvalidResponse)?;
+            drop(cursor);
+            owner.release(retired)?;
+            None
+        } else {
+            Some(cursor)
+        };
         Ok(Page {
             matches,
             work,
-            next: (!cursor.frontier.is_empty()).then_some(cursor),
+            next,
         })
     }
 }
 
-struct Scan<T> {
-    matches: Vec<Match<T>>,
-    work: u32,
-}
-
 async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
-    provider: &P,
+    access: &Access<'_, P>,
     frame: &mut Frame,
     at: Revision,
     pattern: &[u8],
     count: u32,
     matcher: &M,
-) -> Result<Scan<M::Source>, M::Error> {
+    matches: &mut Vec<Match<M::Source>>,
+    owner: &mut Owner,
+) -> Result<u32, M::Error> {
     let tail = frame.tail.ok_or(StreamError::InvalidResponse)?;
-    let mut records = provider
+    let mut records = access
         .read(ReadRequest {
             key: None,
             path: frame.path.clone(),
@@ -273,62 +389,97 @@ async fn scan<P: StreamProvider + ?Sized, M: Matcher>(
             at_least: RevisionCut::of(at),
         })
         .await?;
-    let mut matches = Vec::new();
     let mut work = 0;
     while work < count && frame.sequence < tail {
-        let record = records.try_next().await?.ok_or(StreamError::Unavailable)?;
+        let record = access
+            .next(&mut records)
+            .await?
+            .ok_or(StreamError::Unavailable)?;
+        let record_owner = record.owner;
+        let record = record.value;
         if record.sequence != frame.sequence {
             return Err(StreamError::InvalidResponse.into());
         }
         loop {
-            let step = matcher
-                .step(&record, pattern, frame.content.as_deref())
+            let step = access
+                .step(matcher, &record, pattern, frame.content.as_deref())
                 .await?;
+            owner.absorb(step.owner)?;
+            let step = step.value;
             work += 1;
             if step.matched {
-                matches.push(Match {
-                    path: frame.path.clone(),
-                    record,
-                    source: step.source,
-                });
+                owner.absorb(record_owner)?;
+                access.push(
+                    matches,
+                    Match {
+                        path: frame.path.clone(),
+                        record,
+                        source: step.source,
+                    },
+                    owner,
+                )?;
                 frame.sequence += 1;
+                let retired = frame.content.as_ref().map_or(0, Vec::capacity);
                 frame.content = None;
+                owner.release(retired)?;
                 break;
             }
             if step.next.is_some() && step.next == frame.content {
                 return Err(StreamError::InvalidResponse.into());
             }
+            let retired = frame.content.as_ref().map_or(0, Vec::capacity);
             frame.content = step.next;
+            owner.release(retired)?;
             if frame.content.is_none() {
                 frame.sequence += 1;
                 break;
             }
             if work == count {
-                return Ok(Scan { matches, work });
+                return Ok(work);
             }
         }
     }
-    Ok(Scan { matches, work })
+    Ok(work)
 }
 
 async fn observe<P: StreamProvider + ?Sized>(
-    provider: &P,
+    access: &Access<'_, P>,
     at: Option<Revision>,
     path: Option<StreamPath>,
     children: Option<ChildrenPageRequest>,
-) -> Result<Heads, StreamError> {
+) -> Result<Held<Heads>, StreamError> {
+    let mut control = Owner::default();
+    let mut paths = access.vector(usize::from(path.is_some()), &mut control)?;
+    if let Some(path) = path {
+        access.push(&mut paths, path, &mut control)?;
+    }
     let request = HeadsRequest {
         at,
         retained: Default::default(),
         durable_through: None,
         projection: HeadProjection::Tail,
-        paths: path.into_iter().collect(),
+        paths,
         children,
         limit: 1,
         at_least: Default::default(),
     };
-    let observed = provider.heads(request.clone()).await?;
-    observed.validate_for(&request)?;
+    let mut paths = access.vector(request.paths.len(), &mut control)?;
+    for path in &request.paths {
+        access.push(&mut paths, path.clone(), &mut control)?;
+    }
+    let observed = access
+        .heads(HeadsRequest {
+            at: request.at.clone(),
+            retained: Default::default(),
+            durable_through: None,
+            projection: request.projection,
+            paths,
+            children: request.children.clone(),
+            limit: request.limit,
+            at_least: Default::default(),
+        })
+        .await?;
+    observed.value.validate_for(&request)?;
     Ok(observed)
 }
 
