@@ -917,6 +917,24 @@ mod resolver_tests {
         assert_eq!(selected(defaults.resolve(None, true)?)?, expected("first"));
         let selections = std::collections::BTreeSet::from([expected("first"), expected("second")]);
         assert_eq!(constructed.load(Ordering::Relaxed), selections.len());
+        let provider: Arc<dyn ModelProvider> =
+            Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+        let fixtures = crate::test_support::fixture_models((
+            Model::new("fixture".into(), "original".into(), "revision".into())?,
+            Arc::clone(&provider),
+        ));
+        for selection in ["example/alternate", "other/nested/model"] {
+            let (model, resolved) = fixtures.resolve(selection)?;
+            assert_eq!(format!("{}/{}", model.provider, model.name), selection);
+            assert_eq!(model.revision, "revision");
+            assert!(Arc::ptr_eq(&resolved, &provider));
+        }
+        for selection in ["missing-provider", "/missing", "missing/", " example/model"] {
+            assert!(matches!(
+                fixtures.resolve(selection),
+                Err(Error::Invalid(_))
+            ));
+        }
         Ok(())
     }
 }
