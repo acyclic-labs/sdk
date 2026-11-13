@@ -115,37 +115,45 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     )?;
     for resource in ["fs:/volume/visible-neighbor", "fs:/volume/hidden/file"] {
         assert_eq!(
-            dependency.authorize(resource, &[], &attributes, PolicyDecision::Allow),
+            dependency
+                .authorize(resource, &[], &attributes, PolicyDecision::Allow)
+                .map_err(|error| error.category()),
             Err(StreamError::AccessDenied),
             "dependent scope escaped its original declared boundary"
         );
     }
     assert_eq!(
-        original.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
+        original
+            .authorize(
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     );
     assert_eq!(
-        dependency.authorize_in_account(
-            b"other account",
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
+        dependency
+            .authorize_in_account(
+                b"other account",
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     );
     assert_eq!(
-        dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Deny,
-        ),
+        dependency
+            .authorize(
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Deny,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied),
         "dependent disclosure ignored the owner's current policy"
     );
@@ -216,12 +224,14 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         "fs/list",
     )?;
     assert_eq!(
-        listed.authorize(
-            "fs:/volume/visible",
-            &[],
-            &attributes,
-            PolicyDecision::Allow
-        ),
+        listed
+            .authorize(
+                "fs:/volume/visible",
+                &[],
+                &attributes,
+                PolicyDecision::Allow
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied),
         "dependent action was replaced by the host's broader authority"
     );
@@ -273,12 +283,14 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     let (_authorization, _producer) = calls.recv().await.ok_or("third call did not dispatch")?;
     state.publish(acyclic_auth::testing::Snapshot::default(), u64::MAX);
     assert_eq!(
-        dependency.authorize(
-            "fs:/volume/visible/file",
-            &[],
-            &attributes,
-            PolicyDecision::Allow,
-        ),
+        dependency
+            .authorize(
+                "fs:/volume/visible/file",
+                &[],
+                &attributes,
+                PolicyDecision::Allow,
+            )
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied),
         "dependent disclosure used a stale trust snapshot"
     );
@@ -539,7 +551,10 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     // Authorization is the original call admission, before body or handler
     // disclosure. No separate socket authority or buffered fallback is used.
     assert!(matches!(
-        client.actor_call_input(&invocation, 1, 128).await,
+        client
+            .actor_call_input(&invocation, 1, 128)
+            .await
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     ));
     assert!(dispatches.try_recv().is_err());
@@ -674,7 +689,8 @@ async fn follow_authority_cannot_dispatch_calls_or_stop_healthy_follows() -> Tes
                 0,
                 crate::MAX_RECORD_BYTES + 7
             )
-            .await,
+            .await
+            .map_err(|error| error.category()),
         Err(StreamError::AccessDenied)
     );
     assert_eq!(

@@ -380,11 +380,15 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
             Err(Rejection::Forbidden)
         ));
         assert_eq!(
-            original.authorize(&foreign, &[], &attributes, PolicyDecision::Allow),
+            original
+                .authorize(&foreign, &[], &attributes, PolicyDecision::Allow)
+                .map_err(|error| error.category()),
             Err(StreamError::AccessDenied)
         );
         assert_eq!(
-            original.authorize(resource, &[], &attributes, PolicyDecision::Deny),
+            original
+                .authorize(resource, &[], &attributes, PolicyDecision::Deny)
+                .map_err(|error| error.category()),
             Err(StreamError::AccessDenied)
         );
         // A slot replacement cannot substitute another action for the admitted
@@ -414,7 +418,9 @@ fn product_call_targets_retain_exact_action_resource_and_live_credential() {
         ));
         state.publish(signed::Snapshot::default(), u64::MAX);
         assert_eq!(
-            original.authorize(resource, &[], &attributes, PolicyDecision::Allow),
+            original
+                .authorize(resource, &[], &attributes, PolicyDecision::Allow)
+                .map_err(|error| error.category()),
             Err(StreamError::AccessDenied)
         );
     }
@@ -1105,6 +1111,21 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
         let result =
             root.within_sync(|| resource.authorize("fs:/volume/public", &[], &attributes, policy));
         assert_eq!(result.is_ok(), allowed);
+        if !allowed {
+            use std::error::Error as _;
+            let error = result.expect_err("owner denial cannot authorize disclosure");
+            assert_eq!(error.category(), StreamError::AccessDenied);
+            assert!(
+                std::iter::successors(error.source(), |source| source.source()).any(
+                    |source| matches!(
+                        source.downcast_ref::<verify::VerifyError>(),
+                        Some(verify::VerifyError::Denied(
+                            acyclic_auth::DenialCause::OwnerPolicy
+                        ))
+                    )
+                )
+            );
+        }
     }
     for (target, allowed) in [("fs:/volume", true), ("fs:/other", false)] {
         let before = resource.current()?;

@@ -186,7 +186,7 @@ impl ResourceAuthorization {
             let work = || {
                 capability
                     .authorize(snapshot.trust.as_ref(), request, policy, scope)
-                    .map_err(|_| StreamError::AccessDenied)
+                    .map_err(|source| StreamError::AccessDenied.with_source(source))
             };
             #[cfg(feature = "serde")]
             {
