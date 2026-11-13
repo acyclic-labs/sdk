@@ -1,6 +1,72 @@
 use super::*;
 
 #[tokio::test]
+async fn replay_keys_reject_unpublished_stale_targets_and_preserve_later_edits()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let parent = unbounded!(fs, create_workspace("parent"))?;
+    let original = unbounded!(parent, head())?;
+    let child = fork_workspace(
+        &parent,
+        "child",
+        ForkOptions::from_generation(original.clone(), IdempotencyKey::new()),
+    )
+    .await?;
+    child.write_text("/child", "child").await?;
+    let source = unbounded!(child, head())?;
+    parent.write_text("/newer", "newer").await?;
+    let stale = child
+        .join_into(&parent)
+        .plan_for_replay_at(
+            &source,
+            &original,
+            IdempotencyKey::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await;
+    assert!(stale.is_err_and(|failure| matches!(failure.error, WorkspaceError::StaleTarget)));
+    assert_eq!(unbounded!(parent, read("/newer", 64))?.as_ref(), b"newer");
+    let target = unbounded!(parent, head())?;
+    let key = IdempotencyKey::new();
+    let plan = unbounded!(
+        child.join_into(&parent),
+        plan_for_replay_at(&source, &target, key)
+    )?;
+    let options = ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: key,
+    };
+    assert!(matches!(
+        plan.apply(
+            options,
+            BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted
+        )
+        .await?,
+        JoinOutcome::Applied(_)
+    ));
+    parent.write_text("/later", "later").await?;
+    let replay = unbounded!(
+        child.join_into(&parent),
+        plan_for_replay_at(&source, &target, key)
+    )?;
+    assert!(matches!(
+        replay
+            .apply(
+                options,
+                BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted
+            )
+            .await?,
+        JoinOutcome::AlreadyApplied(_)
+    ));
+    assert_eq!(unbounded!(parent, read("/later", 64))?.as_ref(), b"later");
+    assert_eq!(unbounded!(parent, read("/newer", 64))?.as_ref(), b"newer");
+    Ok(())
+}
+
+#[tokio::test]
 async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let parent = unbounded!(fs, create_workspace("incremental-parent"))?;

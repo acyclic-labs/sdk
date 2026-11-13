@@ -92,6 +92,13 @@ async fn execute_request(
 
 #[tokio::test]
 async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
+    for freeze_explicitly in [false, true] {
+        recover_source_cut(freeze_explicitly).await?;
+    }
+    Ok(())
+}
+
+async fn recover_source_cut(freeze_explicitly: bool) -> TestResult {
     let (_directory, filesystem, store, main) = fixture().await?;
     main.write_text("/base", "base\n").await?;
     execute(
@@ -132,7 +139,7 @@ async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
     let request = acyclic_fs::GitRequest {
         operation: OperationId::new(),
         unanswered: Arc::new(|_| true),
-        merge_source: Some(acyclic_fs::GitGenerationRef {
+        merge_source: freeze_explicitly.then_some(acyclic_fs::GitGenerationRef {
             workspace_id: child.workspace().id(),
             generation: cut.id(),
         }),
@@ -154,9 +161,64 @@ async fn completed_source_cut_survives_pending_join_recovery() -> TestResult {
     // A later turn changes the same workspace after the request's immutable
     // action was persisted. Recover through the real executor, without the
     // original caller's in-memory source selection.
+    if freeze_explicitly {
+        child
+            .workspace()
+            .write_text("/completed", "unfinished replacement\n")
+            .await?;
+        child
+            .workspace()
+            .write_text("/unfinished", "unfinished\n")
+            .await?;
+    }
+    let interrupted = super::super::run_with_guard(
+        Workspace {
+            access: &crate::filesystem::local_owner_workspace_access("test")?,
+            filesystem: &filesystem,
+            store: &store,
+            view: (&main).into(),
+            root: Path::new("."),
+            repository: main.id(),
+            lease: None,
+            checkout: None,
+            author: "test",
+            authored_at_seconds: 1,
+            request: Some(acyclic_fs::GitRequest {
+                merge_source: None,
+                ..request.clone()
+            }),
+        },
+        &["merge".into(), "child".into()],
+        || async {
+            if let Some(pending) = GitCompatRepository::new(main.id(), store.clone())
+                .pending_transition()
+                .await
+                .map_err(super::super::errors::compat_error::<acyclic_fs::LocalCoreStateStore>)?
+            {
+                if main
+                    .operation_generation(
+                        IdempotencyKey::from_bytes(pending.id.operation_id().into_bytes()),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(|failure| Error::from(failure.error))?
+                    .value
+                    .is_some()
+                {
+                    return Err(Error::Storage(
+                        "publication acknowledgement interrupted".into(),
+                    ));
+                }
+            }
+            Ok(())
+        },
+    )
+    .await;
+    assert!(matches!(interrupted, Err(Error::Storage(_))));
     child
         .workspace()
-        .write_text("/completed", "unfinished replacement\n")
+        .write_text("/completed", "newer source\n")
         .await?;
     child
         .workspace()
