@@ -1062,6 +1062,21 @@ async fn conditional_changes_publish_once_with_action_and_parent_authority() -> 
             .expect_err("an existing destination must refuse the entire publication");
         assert_eq!(collision.code(), crate::wire::ErrorCode::Conflict);
         assert_eq!(host.resolve(&workspace, None).await?, before);
+        let directory = host
+            .put_changes(
+                &volume,
+                &write,
+                &[add("unpublished"), add("nested")],
+                &IdempotencyKey::new("directory-destination")?,
+                Some(64),
+                create_access,
+                None,
+            )?
+            .await
+            .expect_err("a directory cannot be a file destination");
+        assert_eq!(directory.code(), crate::wire::ErrorCode::Invalid);
+        assert!(directory.to_string().contains("path is a directory"));
+        assert_eq!(host.resolve(&workspace, None).await?, before);
         let deny_parent = |action, path: &str| {
             if action == Action::Create && path == "forbidden" {
                 Err(Error::Unauthorized("directory creation denied".into()))
