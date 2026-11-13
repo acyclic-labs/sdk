@@ -83,7 +83,7 @@ impl NativeResolvedFile {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(receipt.value.to_vec()),
+            bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
         })
     }

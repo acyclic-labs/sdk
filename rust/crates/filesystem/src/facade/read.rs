@@ -17,11 +17,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResolvedFi
     }
 
     /// Reads opaque symbolic-link target bytes without another namespace lookup.
+    /// Retains the producer's logical backing capacity with the selected bytes.
     pub async fn read_symbolic_link<W: FsWork>(
         &self,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<acyclic_stream::OwnedBytes, FsError> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, FsError> {
         self.reader
             .read_symbolic_link_record(self.record, budget, cancellation)
             .await
@@ -83,7 +84,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         record: FileRecord,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<acyclic_stream::OwnedBytes, FsError> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             #[cfg(not(target_arch = "wasm32"))]
@@ -97,7 +98,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                 cancellation,
             )
             .await
-            .map(|read| read.bytes)
         }
         .await;
         budget.finish(result, &accounting)
@@ -124,12 +124,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
     }
 
     /// Reads exact opaque symbolic-link target bytes without following it.
+    /// Retains the producer's logical backing capacity with the selected bytes.
     pub async fn read_symbolic_link<W: FsWork>(
         &self,
         path: &NamespacePath,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<acyclic_stream::OwnedBytes, FsError> {
+    ) -> W::Output<crate::kernel::OwnedSourceChunk, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let record = self
@@ -142,7 +143,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                 cancellation,
             )
             .await
-            .map(|read| read.bytes)
         }
         .await;
         budget.finish(result, &accounting)
