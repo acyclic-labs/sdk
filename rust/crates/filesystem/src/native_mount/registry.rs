@@ -73,7 +73,7 @@ fn fence_destination(record: &[u8]) -> Option<PathBuf> {
             return None;
         };
         let units: Vec<u16> = units.iter().map(|unit| u16::from_le_bytes(*unit)).collect();
-        Some(std::os::windows::ffi::OsStringExt::from_wide(&units).into())
+        Some(<std::ffi::OsString as std::os::windows::ffi::OsStringExt>::from_wide(&units).into())
     }
 }
 
