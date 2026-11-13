@@ -1357,3 +1357,68 @@ async fn oversized_history_uses_bounded_manager_parts_without_worker_steps_or_re
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn manager_shrinks_source_before_encoding_under_a_finite_file_bound() -> Result<()> {
+    let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let (provider, _) = counted_model(
+        65_536,
+        None,
+        [ScriptedTurn::Text(
+            r#"{"version":1,"drop_through":1,"summary":"retained fact"}"#.into(),
+        )],
+        [],
+    );
+    let executor = StockExecutor::new(
+        Model::new("fixture".into(), "byte-bounded-manager".into(), "1".into())?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_limits(Limits {
+        file_bytes: Some(12_000),
+        ..Limits::default()
+    });
+    let source = crate::context::Context {
+        messages: (0..5)
+            .map(|index| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(format!("FACT_{index} {}", "x".repeat(8_000))),
+            })
+            .collect(),
+        current_input_index: Some(4),
+        ..Default::default()
+    };
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("continue".into()),
+        selected_context: None,
+        max_steps: None,
+    };
+    let digest = crate::context::prefix_digest(&source, 4, None)?;
+    for _ in 0..2 {
+        let execution = StockExecution::ordinary(&executor);
+        let (summary, _, more) = execution
+            .managed_summary(
+                journal.as_ref(),
+                (&input, 0),
+                &source,
+                &crate::context::CapacityCompaction::default(),
+                (4, None),
+                (0, None, digest),
+            )
+            .await?;
+        assert_eq!(summary.source_messages, 1);
+        assert!(more);
+    }
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "replay reuses the original admitted byte-bounded window"
+    );
+    assert!(provider.requests()[0].messages.iter().all(
+        |message| !matches!(&message.content, ModelContent::Text(text) if text.contains("FACT_1"))
+    ));
+    Ok(())
+}

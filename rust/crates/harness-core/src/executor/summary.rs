@@ -50,6 +50,14 @@ impl StockExecution<'_> {
         instruction: ModelContent,
         purpose: ModelPurpose,
     ) -> Result<()> {
+        if let Some(maximum) = self.stock.limits.file_bytes {
+            let bytes = with_history_io(self.io, |work| {
+                crate::executor::json::json_byte_length(&source, None, work)
+            })?;
+            if bytes > maximum {
+                return Err(Error::ModelContextOverflow);
+            }
+        }
         let (_, digest, _) = self.summary_source_identity(&source)?;
         let revision = with_history_io(self.io, |work| {
             preparation_format(
