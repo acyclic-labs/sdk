@@ -15,6 +15,70 @@ impl crate::runtime::Executor for Executor {
     }
 }
 
+#[tokio::test]
+async fn append_custody_survives_cancelled_observers_and_reports_producer_loss()
+-> Result<(), StreamError> {
+    let provider = Arc::new(MemoryStream::default());
+    let request = AppendRequest {
+        path: crate::StreamPath::new("pending/append")?,
+        records: vec!["original append".into()],
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let executor = Executor::default();
+    let pending = AppendPending::submit_append(provider.clone(), request.clone(), &executor);
+    let retained = pending.clone();
+    assert_eq!(retained.request(), &request);
+    assert!(pending.result().now_or_never().is_none());
+    drop(pending);
+    let producer = executor.0.lock().unwrap().pop().unwrap();
+    producer.await;
+    let outcome = retained.result().await?;
+    assert!(matches!(outcome, Ok(AppendOutcome::Committed(_))));
+    let observer = retained.clone();
+    assert!(std::ptr::eq(outcome, observer.result().await?));
+    assert_eq!(
+        provider.append(request.clone()).await.as_ref(),
+        outcome.as_ref()
+    );
+    let mut changed = request.clone();
+    changed.records = vec!["different bytes".into()];
+    assert_eq!(
+        provider.append(changed).await,
+        Err(StreamError::IdempotencyMismatch)
+    );
+
+    let conflict = AppendRequest {
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+        ..request.clone()
+    };
+    let pending = AppendPending::submit_append(provider.clone(), conflict, &executor);
+    let producer = executor.0.lock().unwrap().pop().unwrap();
+    producer.await;
+    assert!(matches!(
+        pending.result().await?,
+        Ok(AppendOutcome::TailConflict { actual_tail: 1 })
+    ));
+
+    let lost = AppendRequest {
+        idempotency_key: IdempotencyKey::unique(),
+        ..request
+    };
+    let pending = AppendPending::submit_append(provider.clone(), lost.clone(), &executor);
+    assert!(pending.result().now_or_never().is_none());
+    drop(executor.0.lock().unwrap().pop().unwrap());
+    assert_eq!(pending.request(), &lost);
+    assert_eq!(pending.result().await, Err(StreamError::Unavailable));
+    assert!(
+        provider
+            .inspect_idempotency(lost.idempotency_key)
+            .await?
+            .is_none()
+    );
+    Ok(())
+}
+
 async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), StreamError> {
     let provider = Arc::new(MemoryStream::default());
     let stream = Stream::new(Arc::clone(&provider), "pending")?;

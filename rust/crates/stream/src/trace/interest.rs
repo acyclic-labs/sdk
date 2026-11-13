@@ -86,7 +86,7 @@ impl<P: StreamProvider + ?Sized> Registry<P> {
         if self.0.leases.load(Ordering::Acquire) == 0 {
             return Ok(None);
         }
-        self.0.entries.get(owner)
+        self.0.entries.get(&StreamPath::new(owner)?)
     }
 
     /// Select demand at the original request boundary. A failed diagnostic
