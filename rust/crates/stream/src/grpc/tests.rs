@@ -304,6 +304,16 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
             Some(Err(ConnectError::InsecureEndpoint))
         ));
     }
+    for malformed in ["http://[::1", "http://%"] {
+        let Some(Err(error)) = Client::connect_loopback(malformed, "fixture").now_or_never() else {
+            panic!("malformed endpoint must settle before network I/O");
+        };
+        assert!(matches!(
+            error,
+            ConnectError::Endpoint(_) | ConnectError::EndpointUrl(_)
+        ));
+        assert!(std::error::Error::source(&error).is_some());
+    }
     assert!(listener.accept().now_or_never().is_none());
     // The same listener can observe a real connection immediately after the
     // rejected configuration futures have settled.
