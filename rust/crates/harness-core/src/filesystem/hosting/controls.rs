@@ -66,6 +66,7 @@ pub(super) struct Controls<P: AuthorityProvider + ?Sized + 'static, O: 'static> 
     admission: TurnAdmission,
     volumes: Arc<Host<P, O>>,
     store: Store<P>,
+    composer: std::sync::OnceLock<std::sync::Weak<dyn acyclic_actors::guest::Composer>>,
     maximum_bytes: Option<u64>,
     manifest: Manifest,
     external: Vec<String>,
@@ -100,6 +101,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         Ok(Self {
             ordered: vec![PAUSE.into(), STOP.into(), STEER.into()],
             store: crate::agent::actor_store(&volumes.filesystem.stream_provider())?,
+            composer: std::sync::OnceLock::new(),
             issuer,
             admission,
             volumes,
@@ -117,6 +119,15 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             },
             external,
         })
+    }
+
+    pub(super) fn bind_composer(
+        &self,
+        composer: std::sync::Weak<dyn acyclic_actors::guest::Composer>,
+    ) {
+        self.composer
+            .set(composer)
+            .expect("control composer bound once");
     }
 
     fn actor(&self, within: &ActorReference, agent: &AgentPath) -> Result<ActorReference, Error> {
@@ -144,8 +155,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         delivery: Delivery,
         checkpoint: Option<&Checkpoint>,
     ) -> Result<Transition, Error> {
+        // The volume composer also owns these companions. Borrow its custody
+        // only for this transition so the host does not retain an Arc cycle.
+        let composer = self
+            .composer
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or(Error::Record("control composer is unavailable"))?;
+        let store = self.store.clone().with_composer(composer);
         if delivery.actor.id().starts_with(super::quiet::PREFIX) {
-            return super::quiet::transition(&self.store, delivery, checkpoint).await;
+            return super::quiet::transition(&store, delivery, checkpoint).await;
         }
         let checkpoint = checkpoint
             .filter(|checkpoint| checkpoint.codec == codec())
@@ -320,10 +339,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         "file-controls",
                         &[state.agent.as_str(), intent.as_str()],
                     )?;
-                    let request = self
-                        .store
+                    let prepared = store
                         .prepare_paused(&observed, target_state.epoch(), !stopping && paused, key)
-                        .and_then(acyclic_actors::local::PreparedPublish::into_request)
+                        .map_err(|error| Error::Actor(Box::new(error)))?;
+                    let request = store
+                        .export_prepared(prepared)
+                        .await
                         .map_err(|error| Error::Actor(Box::new(error)))?;
                     effects.extend(request.effects);
                     if stopping {
