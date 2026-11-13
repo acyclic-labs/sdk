@@ -5300,6 +5300,24 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
                 .await
                 .to_string();
             let original = format!("{cause:?}");
+            let status_failure = match selected
+                .session
+                .follow_records(acyclic_stream::FollowRequest::new(
+                    child.status().map_err(agent)?,
+                    status_tail,
+                ))
+                .await
+            {
+                Err(error) => error,
+                Ok(mut statuses) => statuses
+                    .try_next()
+                    .await
+                    .expect_err("failed actor kept its status-only follow"),
+            };
+            assert!(
+                status_failure.to_string().contains(&original),
+                "{status_failure}"
+            );
             let lost = lost
                 .await
                 .err()
