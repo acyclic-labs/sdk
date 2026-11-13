@@ -15,9 +15,10 @@ struct Decision {
 
 impl PreparationRecord for Decision {}
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 struct Observation {
     tokens: ModelTokenUsage,
+    input_tokens: u64,
     latency_ns: Option<u64>,
 }
 
@@ -102,7 +103,11 @@ impl<'a> StockExecution<'a> {
             return Ok(());
         }
         let usage = ModelTokenUsage::reported(metadata);
-        let Some(input_tokens) = usage.input else {
+        let Some(input_tokens) = self
+            .stock
+            .provider
+            .reported_input_tokens(&self.stock.model, metadata)?
+        else {
             return Ok(());
         };
         let mut state = self.review.state.lock().await;
@@ -147,6 +152,7 @@ impl<'a> StockExecution<'a> {
         }
         let mut observation = Observation {
             tokens: usage,
+            input_tokens,
             latency_ns: None,
         };
         if let Some(reference) = response
@@ -317,8 +323,12 @@ impl<'a> StockExecution<'a> {
         let instruction = with_history_io(self.io, |work| {
             preparation_format(
                 format_args!(
-                    "{INSTRUCTION}\nSelected model: {}\nCapacity: {}\nOriginal worker observation: {observation:?}\nPrices not supplied are unknown; do not invent prices.",
-                    self.stock.model.name, capacity.context_tokens
+                    "{INSTRUCTION}\nSelected model: {}\nCapacity: {}\nComplete reported input tokens: {}\nOriginal billing counters: {:?}\nOriginal call latency_ns: {:?}\nPrices not supplied are unknown; do not invent prices.",
+                    self.stock.model.name,
+                    capacity.context_tokens,
+                    observation.input_tokens,
+                    observation.tokens,
+                    observation.latency_ns
                 ),
                 work,
             )
@@ -362,7 +372,7 @@ impl<'a> StockExecution<'a> {
             && decision.review_at_input_tokens < u64::from(capacity.context_tokens)
             && match &decision.summary {
                 Some(text) => !text.trim().is_empty(),
-                None => decision.review_at_input_tokens > observation.tokens.input.unwrap_or(0),
+                None => decision.review_at_input_tokens > observation.input_tokens,
             };
         let (rewrite, next) = (decision.summary.is_some(), decision.review_at_input_tokens);
         drop(decision);
