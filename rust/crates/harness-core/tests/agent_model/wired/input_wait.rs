@@ -28,14 +28,19 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         let (filesystem, binding) = private_in(&stream, &path).await?;
         let mut turns = vec![
             ScriptedTurn::Text("reply body".into()),
+            ScriptedTurn::Text("none".into()),
             wait("first-input", (reserved == 0).then_some(10)),
             wait("second-input", Some(20)),
             ScriptedTurn::Text("both waits finished".into()),
+            ScriptedTurn::Text("none".into()),
         ];
         if reserved > 0 {
-            turns.extend(
-                (0..reserved + 1).map(|_| ScriptedTurn::Text("reserved turn finished".into())),
-            );
+            turns.extend((0..reserved + 1).flat_map(|_| {
+                [
+                    ScriptedTurn::Text("reserved turn finished".into()),
+                    ScriptedTurn::Text("none".into()),
+                ]
+            }));
         }
         let model = Arc::new(ScriptedModelProvider::new(turns));
         let executors = StockExecutors::new(
@@ -105,7 +110,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         )
         .await?;
         let first = deliver(&host, &path, requested("start-input-waits", &path)).await?;
-        assert_eq!(model.requests().len(), 2);
+        assert_eq!(model.requests().len(), 3);
         assert_eq!(
             first.phase,
             Phase::Waiting {
@@ -168,7 +173,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
             host.drain(&path).await?;
             assert_eq!(
                 model.requests().len(),
-                2,
+                3,
                 "reserved inputs woke the parked model"
             );
         }
@@ -189,7 +194,7 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         );
         assert_eq!(
             model.requests().len(),
-            3,
+            4,
             "the old reply released the second wait"
         );
         assert_eq!(second.steered_through, inbox + 1);
@@ -215,13 +220,13 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         host.drain(&path).await?;
         assert_eq!(
             model.requests().len(),
-            3,
+            4,
             "draining without new input released an input wait"
         );
         control.advance_to(119)?;
         host.drain(&path).await?;
         assert_eq!(host.state(&path).await?.phase, second.phase);
-        assert_eq!(model.requests().len(), 3);
+        assert_eq!(model.requests().len(), 4);
         let second_inbox = if answer {
             let Delivered::Committed { inbox } = host
                 .send(&path, &super::super::user(), &message("second-reply"))
@@ -259,10 +264,10 @@ async fn successive_input_waits_require_a_new_reply_or_their_original_alarm() ->
         );
         assert_eq!(
             model.requests().len(),
-            if reserved > 0 { 5 + reserved } else { 4 }
+            if reserved > 0 { 8 + 2 * reserved } else { 6 }
         );
         let requests = model.requests();
-        for (request, call) in [(2, "first-input"), (3, "second-input")] {
+        for (request, call) in [(3, "first-input"), (4, "second-input")] {
             let value = requests[request]
                 .messages
                 .iter()
