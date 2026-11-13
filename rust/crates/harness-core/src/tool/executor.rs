@@ -1,5 +1,18 @@
 use super::*;
 
+/// An immutable declaration's canonical executable and argument mapping.
+/// Reusing a declaration requires the same original owners and complete mapping;
+/// equal names or public revisions alone do not identify executable behavior.
+pub struct CanonicalBinding<'a> {
+    /// The original grant and policy owner.
+    pub capability: &'a Arc<Tool>,
+    /// The implementation that receives the adapted call.
+    pub implementation: &'a Arc<Tool>,
+    /// The checked argument template.
+    pub arguments: &'a Value,
+    /// Arguments the declaration refuses before adapting.
+    pub refused: &'a [String],
+}
 /// The authority needed to resolve one public namespace selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReadPathKind {
@@ -134,6 +147,12 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// retain this exact capability without copying its contract or composing
     /// the declaration's argument adapter again.
     fn capability(&self) -> Option<&Arc<Tool>> {
+        self.canonical_binding().map(|binding| binding.capability)
+    }
+    /// The immutable executable declaration, when this tool adapts a capability.
+    /// A retained declaration can be selected again only when this full binding
+    /// and its public contract match, without re-registering its revision.
+    fn canonical_binding(&self) -> Option<CanonicalBinding<'_>> {
         None
     }
     /// That capability's call for `invocation`, when this is a native declaration.
