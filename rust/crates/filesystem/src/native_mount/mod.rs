@@ -292,7 +292,10 @@ mod recovery_order;
 mod registry;
 pub use recovery::*;
 pub(crate) use shared::{IssuedDestination, shared_view_destination};
-pub use shared::{shared_view_namespace_contains, shared_view_root, shared_view_root_in};
+pub use shared::{
+    SharedViewInstance, hold_shared_view_instance, shared_view_namespace_contains,
+    shared_view_root, shared_view_root_in,
+};
 mod startup;
 pub use startup::*;
 mod session;

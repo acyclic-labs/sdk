@@ -110,6 +110,18 @@ pub(in crate::native_mount) struct SharedFuseView {
     pub(super) instance: Arc<SharedFuseInstance>,
 }
 
+/// Starts or joins `root`'s instance without a view of its own.
+pub(super) fn hold(
+    root: &std::path::Path,
+) -> Result<Arc<dyn std::any::Any + Send + Sync>, NativeMountError> {
+    let operation = std::cell::Cell::new("acquire physical shared FUSE root");
+    let instance: Arc<dyn std::any::Any + Send + Sync> = INSTANCES
+        .acquire(root, |registration| {
+            SharedFuseInstance::start(registration, &operation)
+        })?;
+    Ok(instance)
+}
+
 impl SharedFuseInstance {
     fn start(
         registration: Registration<Self>,

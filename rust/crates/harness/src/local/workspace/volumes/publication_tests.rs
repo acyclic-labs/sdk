@@ -277,6 +277,51 @@ async fn concurrent_commands_never_serialize_at_admission() -> Result<()> {
     Ok(())
 }
 
+// A command's view is a namespace entry of the one live shared instance: the
+// instance stays mounted between commands, so no command mounts or unmounts.
+// Negative control: once its holders are gone, the same check sees it unmounted.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn commands_join_one_live_instance_and_never_mount_it() -> Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mounted = |path: &Path| -> Result<bool> {
+        let parent = path.parent().ok_or_else(|| Error::Invalid("root".into()))?;
+        Ok(std::fs::metadata(path).map_err(storage)?.dev()
+            != std::fs::metadata(parent).map_err(storage)?.dev())
+    };
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let workspace = harness.workspace().unwrap();
+    // A root of this test's own, never the process's ambient shared root.
+    let admitted = Arc::new(workspace.held_task_mount_root()?);
+    workspace.task_view_admission.get_or_init(|| admitted);
+    let view = || {
+        native_scope(&workspace.mounts, async |claims| {
+            Ok((home(&claims)?, claims))
+        })
+    };
+    let first = view().await?;
+    let instance = first
+        .parent()
+        .ok_or_else(|| Error::Invalid("view has no instance root".into()))?
+        .to_path_buf();
+    assert!(
+        mounted(&instance)?,
+        "the instance was unmounted after the first command"
+    );
+    let second = view().await?;
+    assert_ne!(first, second, "a view name was reused");
+    assert_eq!(second.parent(), Some(instance.as_path()));
+    assert!(
+        mounted(&instance)?,
+        "the instance was unmounted between commands"
+    );
+    harness.disconnect().await?;
+    assert!(!mounted(&instance)?, "the negative control never unmounted");
+    Ok(())
+}
+
 // (ii): a trivial command, preflight included, completes while another
 // command's caller is lost and its worker has not yet cleaned up.
 #[tokio::test]
@@ -423,6 +468,7 @@ async fn retirement_continues_past_a_volume_a_session_still_uses() -> Result<()>
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
         authority: None,
+        shared_views: tokio::sync::OnceCell::new(),
         _binding: None,
     });
     let table = super::super::mounts::owner(
@@ -482,6 +528,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(projection::Users::default()),
         authority: None,
+        shared_views: tokio::sync::OnceCell::new(),
         _binding: None,
     });
     let table = |primary: &Arc<MountedVolume>, named: &Arc<MountedVolume>| {

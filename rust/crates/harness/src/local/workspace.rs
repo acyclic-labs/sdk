@@ -44,6 +44,9 @@ pub(super) struct MountedVolume {
     pub(super) users: StateArc<projection::Users>,
     /// Signs each native command's own view of this volume.
     pub(super) authority: Option<crate::filesystem::NativeMountAuthority>,
+    /// Keeps the shared native instance serving command views running, so a
+    /// command's view is a namespace entry, never an OS mount and unmount.
+    pub(super) shared_views: tokio::sync::OnceCell<acyclic_fs::SharedViewInstance>,
     // Retires the exact index entry after this physical source's fields.
     _binding: Option<acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>>,
 }
