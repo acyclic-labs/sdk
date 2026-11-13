@@ -635,7 +635,7 @@ mod tests {
                     .await
                     .map_err(storage)?
                     .ok_or_else(|| Error::Storage("missing transition".into()))?;
-            let changes_file = journal.plan.edits.iter().any(|edit| match edit {
+            let changes_file = journal.plan().edits.iter().any(|edit| match edit {
                 acyclic_fs::MaterializationEdit::Install { path, .. }
                 | acyclic_fs::MaterializationEdit::Remove { path }
                 | acyclic_fs::MaterializationEdit::SetMetadata { path, .. } => path == "file-0",
@@ -643,7 +643,7 @@ mod tests {
             });
             if changes_file {
                 assert_eq!(
-                    journal.plan.edits.len(),
+                    journal.plan().edits.len(),
                     1,
                     "handback must contain only the child's changed path"
                 );
