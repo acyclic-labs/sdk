@@ -36,6 +36,7 @@ pub(crate) fn child_reference(reference: &str) -> Result<()> {
 /// A native-host agent's workspace, with no execution authority of its own.
 pub struct HostWorkspace {
     workspace: Arc<LocalWorkspace>,
+    cwd: PathBuf,
     agent: AgentPath,
     owner: Arc<dyn ViewOwner>,
     mount_root: Arc<HeldRoot>,
@@ -83,6 +84,7 @@ impl HostWorkspace {
             )));
         }
         let mut result = Self {
+            cwd: native_cwd(&workspace)?,
             workspace,
             owner: Arc::new(AgentOwner),
             agent,
@@ -104,7 +106,7 @@ impl HostWorkspace {
     /// The view's canonical path: the identity cwd discovery matches against.
     #[must_use]
     pub fn path(&self) -> &Path {
-        &self.workspace.path
+        &self.cwd
     }
 
     /// Cwd to give the native host before it starts executing this agent: the
@@ -112,7 +114,7 @@ impl HostWorkspace {
     /// prefix. Hosts resolve it back to [`Self::path`] when they report a cwd.
     #[must_use]
     pub fn host_cwd(&self) -> std::borrow::Cow<'_, Path> {
-        acyclic_host_platform::paths::strip_verbatim(&self.workspace.path)
+        acyclic_host_platform::paths::strip_verbatim(self.path())
     }
 
     /// Native discovery for this admitted view, shared with the shell.
@@ -305,6 +307,7 @@ impl HostWorkspace {
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {
+            cwd: native_cwd(&workspace)?,
             workspace,
             agent: child.clone(),
             owner: child_owner,
@@ -397,6 +400,15 @@ impl HostWorkspace {
         }
         Ok(())
     }
+}
+
+fn native_cwd(workspace: &LocalWorkspace) -> Result<PathBuf> {
+    let primary = workspace.mounts.named(None)?.1;
+    workspace
+        .mounts
+        .native_root_for(primary)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| Error::Unauthorized("host primary has no native projection".into()))
 }
 
 fn verify_root(root: &HeldRoot) -> Result<()> {

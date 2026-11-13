@@ -257,6 +257,28 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         remounted.native_read_roots.is_empty(),
         "a scoped view must not add opaque read roots outside its subtree"
     );
+    {
+        let host = crate::local::host_workspace::HostWorkspace::attach(
+            Arc::clone(&second),
+            crate::agent::AgentPath::root(&selected_agent),
+            &signed,
+            &harness.verifier,
+            second.held_task_mount_root()?,
+        )
+        .await?;
+        assert_eq!(host.path(), second.path.join("selected"));
+        assert_ne!(host.path(), second.path);
+        crate::local::host_workspace::tests::native_write(
+            &host.host_cwd().join("host-note"),
+            b"selected host write",
+        )?;
+        host.capture(OperationId::new()).await?;
+        assert_eq!(
+            std::fs::read(second.path.join("selected/host-note")).map_err(storage)?,
+            b"selected host write"
+        );
+        assert!(!second.path.join("host-note").exists());
+    }
     let mut read_only_primary = session_bindings.clone();
     read_only_primary[0].mode = crate::agent::WorkspaceMode::ReadOnly;
     let read_only = workspace.context_task_view(
