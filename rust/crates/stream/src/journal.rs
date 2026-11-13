@@ -89,7 +89,7 @@ impl WriteRequest {
     /// A sink failure stops encoding immediately and is returned unchanged.
     pub(crate) fn encode_with<E>(
         &self,
-        output: &mut impl FnMut(&[u8]) -> Result<(), E>,
+        output: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     ) -> Result<(), E> {
         use wire_codec::requests::*;
         output(MAGIC)?;

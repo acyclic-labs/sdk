@@ -272,7 +272,7 @@ pub(crate) fn vector_output(
 }
 
 fn field<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     tag: u32,
     kind: prost::encoding::WireType,
     value: u64,
@@ -287,7 +287,7 @@ fn field<E>(
 }
 
 pub(crate) fn header<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     tag: u32,
     length: usize,
 ) -> Result<(), E> {
@@ -298,12 +298,16 @@ pub(crate) fn header<E>(
         length as u64,
     )
 }
-fn bytes<E>(out: &mut impl FnMut(&[u8]) -> Result<(), E>, tag: u32, value: &[u8]) -> Result<(), E> {
+fn bytes<E>(
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
+    tag: u32,
+    value: &[u8],
+) -> Result<(), E> {
     header(out, tag, value.len())?;
     out(value)
 }
 fn uint<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     tag: u32,
     value: Option<u64>,
 ) -> Result<(), E> {
@@ -313,7 +317,7 @@ fn uint<E>(
     Ok(())
 }
 fn records<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     tag: u32,
     records: &[AppendRecord],
 ) -> Result<(), E> {
@@ -337,7 +341,7 @@ fn records<E>(
 }
 
 pub(crate) fn append<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     request: &AppendRequest,
 ) -> Result<(), E> {
     bytes(out, 1, request.path.as_str().as_bytes())?;
@@ -347,7 +351,7 @@ pub(crate) fn append<E>(
     Ok(())
 }
 pub(crate) fn fork<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     request: &ForkRequest,
 ) -> Result<(), E> {
     for path in &request.exclude {
@@ -360,7 +364,7 @@ pub(crate) fn fork<E>(
     Ok(())
 }
 pub(crate) fn commit<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     request: &CommitRequest,
 ) -> Result<(), E> {
     // Generated protobuf writes fields in tag order: `effects` (6) follows
@@ -375,7 +379,7 @@ pub(crate) fn commit<E>(
 }
 
 fn commit_effect<E>(
-    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    out: &mut (impl FnMut(&[u8]) -> Result<(), E> + ?Sized),
     effect: &CommitEffect,
 ) -> Result<(), E> {
     for condition in &effect.conditions {
