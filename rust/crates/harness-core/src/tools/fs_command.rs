@@ -1,4 +1,5 @@
-use super::command::parse_command;
+use super::command::parse_command_with_io;
+use crate::executor::{PreparationIo, stock_boundary, stock_retire_text};
 use crate::{Error, Result};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -137,9 +138,16 @@ fn show_offset(args: &[String]) -> Option<u64> {
 
 #[doc(hidden)]
 pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
-    let mut arguments = parse_command(command)?;
+    parse_fs_command_with_io(command, None)
+}
+
+pub(crate) fn parse_fs_command_with_io(
+    command: &str,
+    io: Option<&PreparationIo>,
+) -> Result<FsCommand> {
+    let mut arguments = parse_command_with_io(command, io)?;
     if arguments.first().is_some_and(|argument| argument == "git") {
-        arguments.remove(0);
+        stock_retire_text(arguments.remove(0), io)?;
     }
     let mut volume = None;
     let mut index = 0;
@@ -170,16 +178,24 @@ pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
                 .get(index + 1)
                 .is_none_or(|name| name.is_empty() || name.starts_with('-'))
         {
-            return Err(Error::Invalid(
-                "fs requires one nonempty --volume qualifier".into(),
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "fs requires one nonempty --volume qualifier",
             ));
         }
         let mut qualifier = arguments.drain(index..index + 2);
-        qualifier.next();
+        if let Some(option) = qualifier.next() {
+            stock_retire_text(option, io)?;
+        }
         volume = qualifier.next();
     }
     if arguments.is_empty() {
-        return Err(Error::Invalid("fs command is empty".into()));
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "fs command is empty",
+        ));
     }
     Ok(FsCommand { arguments, volume })
 }
@@ -189,6 +205,46 @@ pub fn parse_fs_command(command: &str) -> Result<FsCommand> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn command_decoding_keeps_original_allocation_and_cancellation() -> Result<()> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .map_err(|(error, _)| Error::from(error))?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let baseline = work.live_allocation_bytes();
+        let command = parse_fs_command_with_io(
+            "git grep --volume private --scope '.' 'λ specimen'",
+            Some(&io),
+        )?;
+        assert_eq!(command.arguments, ["grep", "--scope", ".", "λ specimen"]);
+        assert_eq!(command.volume.as_deref(), Some("private"));
+        let bytes = command.arguments.capacity() * std::mem::size_of::<String>()
+            + command
+                .arguments
+                .iter()
+                .map(String::capacity)
+                .sum::<usize>()
+            + command.volume.as_ref().map_or(0, String::capacity);
+        assert_eq!(work.live_allocation_bytes() - baseline, bytes as u64);
+        let custody = io.guard_owned(bytes as u64)?;
+        drop(command);
+        drop(custody);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        assert!(matches!(
+            parse_fs_command_with_io("\0", Some(&io)),
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                ..
+            })
+        ));
+        cancellation.cancel();
+        assert!(parse_fs_command_with_io("grep specimen", Some(&io)).is_err());
+        Ok(())
+    }
 
     #[test]
     fn literal_search_preserves_option_operands_and_explicit_path_kinds() {

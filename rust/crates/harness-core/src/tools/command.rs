@@ -1,12 +1,30 @@
-use crate::{Error, Result};
+use crate::Result;
+use crate::executor::{PreparationIo, stock_boundary, stock_string_push, stock_vec_push};
 
 /// Splits a facade command into arguments without executing shell expansion.
 pub fn parse_command(command: &str) -> Result<Vec<String>> {
+    parse_command_with_io(command, None)
+}
+
+/// Decode through the shared lexer with the original execution allocation owner.
+pub(crate) fn parse_command_with_io(
+    command: &str,
+    io: Option<&PreparationIo>,
+) -> Result<Vec<String>> {
     let mut arguments = Vec::new();
     let mut word = String::new();
-    visit(command, |character| match character {
-        Some(character) => word.push(character),
-        None => arguments.push(std::mem::take(&mut word)),
+    visit(command, io, |character| match character {
+        Some(character) => {
+            let mut encoded = [0; 4];
+            stock_string_push(
+                &mut word,
+                character.encode_utf8(&mut encoded),
+                None,
+                "command argument size overflows",
+                io,
+            )
+        }
+        None => stock_vec_push(&mut arguments, std::mem::take(&mut word), io),
     })?;
     Ok(arguments)
 }
@@ -16,7 +34,7 @@ pub(super) fn has_prefix<const N: usize>(command: &str, prefixes: [&[&str]; N]) 
     let mut matched = [true; N];
     let mut word = 0;
     let mut offset = 0;
-    visit(command, |character| {
+    visit(command, None, |character| {
         for (prefix, matched) in prefixes.iter().zip(&mut matched) {
             if let Some(expected) = prefix.get(word) {
                 *matched &= match character {
@@ -31,6 +49,7 @@ pub(super) fn has_prefix<const N: usize>(command: &str, prefixes: [&[&str]; N]) 
             word += 1;
             offset = 0;
         }
+        Ok(())
     })?;
     Ok(prefixes
         .iter()
@@ -57,7 +76,7 @@ pub(crate) fn scoped_search(command: &str) -> Result<bool> {
     let mut operand = false;
     let mut literal = false;
     let mut found = false;
-    visit(command, |character| {
+    visit(command, None, |character| {
         for (expected, matched) in OPTIONS.iter().zip(&mut matched) {
             *matched &= match character {
                 Some(character) => expected.chars().nth(offset) == Some(character),
@@ -66,7 +85,7 @@ pub(crate) fn scoped_search(command: &str) -> Result<bool> {
         }
         if character.is_some() {
             offset += 1;
-            return;
+            return Ok(());
         }
         if !literal {
             if operand {
@@ -82,20 +101,29 @@ pub(crate) fn scoped_search(command: &str) -> Result<bool> {
         }
         matched.fill(true);
         offset = 0;
+        Ok(())
     })?;
     Ok(found)
 }
-fn visit(command: &str, mut emit: impl FnMut(Option<char>)) -> Result<()> {
+fn visit(
+    command: &str,
+    io: Option<&PreparationIo>,
+    mut emit: impl FnMut(Option<char>) -> Result<()>,
+) -> Result<()> {
     let mut quote = None;
     let mut escaped = false;
     let mut started = false;
     let mut words = 0;
     for character in command.chars() {
         if character == '\0' {
-            return Err(Error::Invalid("fs command contains NUL".into()));
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "fs command contains NUL",
+            ));
         }
         if escaped {
-            emit(Some(character));
+            emit(Some(character))?;
             escaped = false;
         } else if character == '\\' && quote != Some('\'') {
             escaped = true;
@@ -104,33 +132,45 @@ fn visit(command: &str, mut emit: impl FnMut(Option<char>)) -> Result<()> {
             if character == delimiter {
                 quote = None;
             } else {
-                emit(Some(character));
+                emit(Some(character))?;
             }
         } else if matches!(character, '\'' | '"') {
             quote = Some(character);
             started = true;
         } else if character.is_whitespace() {
             if started {
-                emit(None);
+                emit(None)?;
                 words += 1;
                 started = false;
             }
         } else if matches!(character, ';' | '|' | '&' | '<' | '>' | '`') {
-            return Err(Error::Invalid("fs accepts one facade command".into()));
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "fs accepts one facade command",
+            ));
         } else {
-            emit(Some(character));
+            emit(Some(character))?;
             started = true;
         }
     }
     if escaped || quote.is_some() {
-        return Err(Error::Invalid("unterminated fs command argument".into()));
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "unterminated fs command argument",
+        ));
     }
     if started {
-        emit(None);
+        emit(None)?;
         words += 1;
     }
     if words == 0 {
-        return Err(Error::Invalid("fs command is empty".into()));
+        return Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "fs command is empty",
+        ));
     }
     Ok(())
 }
