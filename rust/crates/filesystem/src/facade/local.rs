@@ -14,8 +14,10 @@ pub struct LocalOptions {
     /// when the two live on different devices.
     /// Its minimum native flush guarantee determines durable-workspace support.
     pub stream: acyclic_stream::LocalStreamLimits,
-    /// Optional caller-selected immutable-object admission limit.
-    pub maximum_object_bytes: Option<u64>,
+    /// Optional caller-selected immutable-object admission limit; `None` admits
+    /// any size. This backend policy is independent of a volume's protective
+    /// [`crate::VolumeLimits::maximum_object_bytes`] decoder bound.
+    pub maximum_admitted_object_bytes: Option<u64>,
     /// Bounded disposable immutable-object accelerator shared by every handle.
     pub object_cache: crate::cache::ObjectCacheOptions,
 }
@@ -28,7 +30,7 @@ impl LocalOptions {
         Self {
             root: root.into(),
             stream: acyclic_stream::LocalStreamLimits::default(),
-            maximum_object_bytes: None,
+            maximum_admitted_object_bytes: None,
             object_cache: crate::cache::ObjectCacheOptions::default(),
         }
     }
@@ -286,7 +288,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         let LocalOptions {
             root,
             stream,
-            maximum_object_bytes,
+            maximum_admitted_object_bytes,
             object_cache,
         } = options;
         let durable = cfg!(any(unix, windows)) && stream.durability.guarantees_device_flush();
@@ -321,7 +323,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                         crate::logical_objects::Epoch::open(root.join("objects-epoch"))
                             .map_err(FsError::LocalRoot)?,
                     )
-                    .with_object_limit(maximum_object_bytes)?,
+                    .with_object_admission_limit(maximum_admitted_object_bytes)?,
                 object_cache,
             )?;
             Ok::<_, FsError>(crate::staged_objects::StagedObjects::open(

@@ -127,7 +127,7 @@ impl Providers {
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
         let objects = LogicalObjectStore::new(objects)
-            .with_object_limit(Some(options.maximum_object_bytes))
+            .with_object_admission_limit(Some(options.maximum_object_bytes))
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(
             Arc::clone(&stream),
