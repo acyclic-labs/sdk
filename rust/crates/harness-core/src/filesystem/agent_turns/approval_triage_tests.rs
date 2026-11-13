@@ -53,7 +53,13 @@ async fn family(
             reviewer.clone(),
         ),
         ToolRegistry::default(),
-        (Limits::default(), None::<crate::context::CompactionPolicy>),
+        (
+            Limits {
+                file_bytes: Some(65_536),
+                ..Limits::default()
+            },
+            None::<crate::context::CompactionPolicy>,
+        ),
         Arc::new(NoWorkerContext),
     );
     // The original root template may select a role model over the host fallback.
@@ -178,7 +184,14 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
                 .await?;
             let owner = AgentApprovals::new(files, Arc::new(policy));
             let request = Interaction::Approval {
-                prompt: format!("action-{round}-{index}"),
+                prompt: format!(
+                    "action-{round}-{index}{}",
+                    if round == 1 {
+                        "x".repeat(40_000)
+                    } else {
+                        String::new()
+                    },
+                ),
                 operation_id: OperationId::from_bytes([u8::try_from(round * 2 + index + 1)?; 16]),
                 action_digest: [u8::try_from(round * 2 + index + 1)?; 32],
                 subject: ApprovalSubject::Tool {
@@ -359,6 +372,75 @@ async fn original_parent_page_replays_decisions_and_merges_only_escalations() ->
         .read(&summary, summary.descriptor().byte_length(), None, None)?
         .await?;
     let text = std::str::from_utf8(&bytes)?;
+    let path = text
+        .trim_end()
+        .strip_prefix("Child approvals require a decision. Read volume:///private/")
+        .ok_or("summary did not name the readable private document")?;
+    let volume = parent_state.volumes[0].volume()?;
+    let maximum = turns.limits.maximum_bytes.ok_or("missing file credit")?;
+    assert!(summary.descriptor().byte_length() < maximum);
+    // The input remains small even when two individually admissible actions
+    // exceed its credit together. Read the original details with agent custody,
+    // without a host role or a grant to another agent's protected journal.
+    let (selected, _, _) = reader
+        .read_private_range(
+            volume,
+            "",
+            path,
+            None,
+            acyclic_fs::ByteRange {
+                offset: 0,
+                length: 0,
+            },
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    assert!(selected.byte_length > maximum);
+    let full = reader.read_private_path(
+        volume,
+        "",
+        path,
+        Some(&selected.generation),
+        Some(maximum),
+        crate::conversation::ContentAccess::default(),
+    );
+    assert!(match full {
+        Ok(read) => read.await.is_err(),
+        Err(_) => true,
+    });
+    let mut details = Vec::new();
+    while (details.len() as u64) < selected.byte_length {
+        let offset = details.len() as u64;
+        let (_, bytes, _) = reader
+            .read_private_range(
+                volume,
+                "",
+                path,
+                Some(&selected.generation),
+                acyclic_fs::ByteRange {
+                    offset,
+                    length: maximum.min(selected.byte_length - offset),
+                },
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        assert!(
+            !bytes.is_empty(),
+            "bounded read stopped before the source end"
+        );
+        details.extend_from_slice(&bytes);
+    }
+    let text = std::str::from_utf8(&details)?;
+    for original in &expected_actions[2..] {
+        let ModelContent::Text(action) = original else {
+            return Err("original action was not retained".into());
+        };
+        assert!(action.len() as u64 <= maximum);
+        assert!(
+            text.contains(action),
+            "escalation lost original action bytes"
+        );
+    }
     for action in ["action-1-0", "action-1-1"] {
         assert!(text.contains(action));
     }

@@ -156,6 +156,28 @@ where
             let mut bytes = [0; 16];
             hasher.finalize_xof().fill(&mut bytes);
             let operation = OperationId::from_bytes(bytes);
+            // Details are an ordinary private document, read on demand through
+            // the same bounded file ranges as every other private file. They
+            // are not another copy of every action in the worker's input.
+            let path = format!("attention/approval-{operation}.txt");
+            bindings
+                .content
+                .writer
+                .as_ref()
+                .ok_or_else(|| Error::Unsupported("private content writer is not bound".into()))?
+                .stage_once(
+                    operation,
+                    &path,
+                    &summary,
+                    "text/plain",
+                    "approval-details",
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await?;
+            let summary = format!(
+                "Child approvals require a decision. Read {}{path}\n",
+                crate::layers::PRIVATE_PATH,
+            );
             let publisher = FilesystemContentPublisher::new(
                 Arc::clone(&self.host),
                 &bindings.journal.volume,
@@ -169,7 +191,7 @@ where
                     .stage_once(
                         operation,
                         &format!("inputs/approval-summary-{operation}.txt"),
-                        &summary,
+                        summary.as_bytes(),
                         "text/plain",
                         "approval-summary",
                         crate::conversation::ContentAccess::default(),
