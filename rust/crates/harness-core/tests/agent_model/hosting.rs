@@ -1375,6 +1375,50 @@ async fn create_root_preparation_and_intent_replay_are_exact() -> Result {
         )
         .await?;
     assert_eq!(prompt.volume(), &journal);
+    bound
+        .publish_files(
+            &created,
+            acyclic_harness_core::client_files::FileRoot::Private {},
+            OperationId::from_bytes([174; 16]),
+            &[acyclic_harness_core::client_files::ClientFileChange {
+                path: "attachment.txt".into(),
+                expected: None,
+                text: Some("visible input".into()),
+            }],
+        )
+        .await?;
+    let files = bound
+        .files(
+            &created,
+            acyclic_harness_core::client_files::FileRoot::Private {},
+            &[
+                "attachment.txt".into(),
+                "status/session-directory.json".into(),
+            ],
+            None,
+        )
+        .await?;
+    assert!(
+        files.files["status/session-directory.json"].is_none(),
+        "ordinary binding advertised an uninitialized directory"
+    );
+    assert!(files.cut.queries.is_empty());
+    let attached = files.files["attachment.txt"]
+        .as_ref()
+        .and_then(|file| file.original())
+        .ok_or("bound attachment missing")?;
+    let envelope = bound
+        .stage_prompt(
+            &created,
+            &alice,
+            &intent("attached"),
+            &ModelContent::Part(acyclic_harness_core::model::ModelContentPart::File {
+                file: attached.clone(),
+                policy: acyclic_harness_core::model::FileProjectionPolicy::BoundedFull,
+            }),
+        )
+        .await?;
+    assert_eq!(envelope.volume(), &journal);
     // Staging an envelope does not authorize a reference to hidden journal
     // content: embedded files still need the ordinary content grant.
     assert!(

@@ -263,6 +263,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     controls: Arc<dyn crate::agent::Companions>,
     composer: Arc<crate::agent::AgentComposer<P>>,
     file_views: Vec<Arc<dyn crate::client_files::FileView<P>>>,
+    directory_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -281,6 +282,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             controls: self.controls.clone(),
             composer: self.composer.clone(),
             file_views: self.file_views.clone(),
+            directory_enabled: self.directory_enabled.clone(),
         }
     }
 }
@@ -507,7 +509,11 @@ where
             Some(templates) => agents.with_templates(templates),
             None => agents,
         });
-        let directory_file = sessions::DirectoryFile(sessions::directory_path(&within)?);
+        let directory_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let directory_file = sessions::DirectoryFile {
+            path: sessions::directory_path(&within)?,
+            enabled: directory_enabled.clone(),
+        };
         Ok(Self {
             issuer,
             admission,
@@ -521,6 +527,7 @@ where
             handler,
             controls,
             composer,
+            directory_enabled,
             file_views: vec![
                 Arc::new(crate::supervision::files::SignalFiles),
                 Arc::new(directory_file),
@@ -1320,9 +1327,21 @@ where
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
+        let input_authority = if matches!(&input, StagedInput::Content(content)
+            if content.file_refs().next().is_some())
+        {
+            Some(
+                agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
+                    .await
+                    .map_err(turn)?,
+            )
+        } else {
+            None
+        };
         InputStager {
             volumes: &self.volumes,
             authority: &authority,
+            input_authority: input_authority.as_ref(),
             volume: &journal,
             maximum_bytes: self.maximum_bytes,
         }
@@ -1529,6 +1548,7 @@ fn turn(error: crate::Error) -> Error {
 struct InputStager<'a, P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     volumes: &'a Arc<Host<P, O>>,
     authority: &'a super::AgentAuthority<'a>,
+    input_authority: Option<&'a super::AgentAuthority<'a>>,
     volume: &'a VolumeRef,
     maximum_bytes: Option<u64>,
 }
@@ -1561,10 +1581,11 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Inp
             ),
             StagedInput::Content(content) => {
                 encoded = crate::agent::encode_user_input(content).map_err(turn)?;
+                let reference_authority = self.input_authority.unwrap_or(authority);
                 for file in content.file_refs() {
                     crate::conversation::ContentGrant::verify_read(
-                        &authority.verifier,
-                        &authority.scope,
+                        &reference_authority.verifier,
+                        &reference_authority.scope,
                         file,
                     )
                     .map_err(turn)?;

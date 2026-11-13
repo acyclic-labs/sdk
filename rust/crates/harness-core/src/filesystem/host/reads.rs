@@ -512,7 +512,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         selected.recheck(grant, io).await?;
         drop(requested_hold);
         let selected_id = generation.id();
-        Ok((chunk.bytes, selected_id, length))
+        Ok((io.retain_read_bytes(chunk.bytes)?, selected_id, length))
     }
 
     /// Read only newly appended bytes after an immutable admitted generation.
@@ -593,7 +593,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?;
         selected.recheck(grant, io).await?;
-        Ok(Some(chunk.bytes))
+        io.retain_read_bytes(chunk.bytes).map(Some)
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.

@@ -293,6 +293,15 @@ async fn lifecycle_actions_keep_the_signal_cut_across_a_concurrent_append() -> T
     assert!(queries.checkpoint().await?.is_none());
     assert!(queries.read_signal(Kind::Stuck).await?.is_none());
     let mut current = queries.project(&source, &observation, &policy).await?;
+    assert!(
+        current
+            .append_event(&Event {
+                run: Some(OperationId::new()),
+                ..event.clone()
+            })
+            .is_err(),
+        "foreign run joined the captured projection"
+    );
     current.append_event(&event)?;
     let request = publish(current.effect);
     let receipt = provider.commit(request.clone()).await?;
@@ -789,6 +798,22 @@ async fn signal_file_and_stream_share_one_atomic_source_record_through_crash_rep
         .read_signal(Kind::RepeatFailure)
         .await?
         .ok_or("signal absent")?;
+    // Sparse and independent original streams do not share the fold ordinal.
+    let original = Position {
+        stream: StreamPath::new("other/original")?,
+        sequence: 91,
+    };
+    let sparse = queries
+        .prepare(&state, state.through, &original, &observation, &policy)
+        .await?;
+    assert!(!sparse.transition.signals.is_empty());
+    assert!(
+        sparse
+            .transition
+            .signals
+            .iter()
+            .all(|signal| signal.sequence == 91)
+    );
     assert_eq!((file.sequence, file.count), (2, 3));
     assert_eq!(policy.action(&file), super::super::Action::Pause);
     let mut events = provider
