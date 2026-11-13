@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import { CredentialCache, CredentialSnapshot } from "@acyclic-labs/auth/credential";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
@@ -14,9 +15,11 @@ test("WebSocket lease custody covers queued bytes, writes and producer loss", as
       : ["unchanged", "account", "unavailable", "expiry", "invalidate", "cancel"] as const;
     for (const change of changes) {
       let revision: string | undefined = "account/audience/1", now = 1, refreshes = 0;
+      const token = operation === "message" && change === "unchanged"
+        ? `opaque-${"\u{1f642}\u00e9x".repeat(65536)}` : "synthetic-websocket";
       const cache = new CredentialCache(async () => {
         refreshes++;
-        return new CredentialSnapshot("synthetic-websocket", revision!, 100);
+        return new CredentialSnapshot(token, revision!, 100);
       }, () => ({ nowUnixSeconds: now, revision }));
       let peer: Bun.ServerWebSocket<undefined> | undefined;
       let delivered!: (event: "message" | "close") => void;
@@ -34,7 +37,13 @@ test("WebSocket lease custody covers queued bytes, writes and producer loss", as
       });
       const controller = new AbortController();
       const connect = webSocketSession("https://example.test", cache.provider, (_url, protocols) => {
-        const socket = new WebSocket(server.url.href.replace("http:", "ws:"), protocols);
+        expect(protocols[0]).toBe("acyclic.session.v1");
+        expect(protocols[1]?.startsWith("acyclic.bearer.")).toBeTrue();
+        const encoded = protocols[1]!.slice("acyclic.bearer.".length);
+        expect(Buffer.from(encoded, "base64url").equals(Buffer.from(token, "utf8"))).toBeTrue();
+        // Inspect the original credential before routing to the unauthenticated
+        // loopback fixture, which negotiates only the session framing protocol.
+        const socket = new WebSocket(server.url.href.replace("http:", "ws:"), [protocols[0]!]);
         socket.addEventListener("message", event => { receivedBytes = event.data; delivered("message"); }, { once: true });
         socket.addEventListener("close", () => delivered("close"), { once: true });
         const send = socket.send.bind(socket);

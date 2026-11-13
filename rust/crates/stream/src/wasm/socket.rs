@@ -72,7 +72,6 @@ impl Transport for Endpoint {
         source: Requests,
     ) -> crate::BoxProviderFuture<'_, Result<Responses<Failure>, Failure>> {
         Box::pin(async move {
-            use base64::Engine as _;
             let mut changed = self
                 .credential
                 .watch()
@@ -91,13 +90,9 @@ impl Transport for Endpoint {
                 Ok::<_, StreamError>(credential)
             })
             .await??;
-            let token =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential.as_str());
+            let token = acyclic_auth::credential::websocket_protocol(credential.as_str());
             let url = format!("{}/v1/stream/session", self.url).replacen("http", "ws", 1);
-            let protocols = Array::of2(
-                &"acyclic.session.v1".into(),
-                &format!("acyclic.bearer.{token}").into(),
-            );
+            let protocols = Array::of2(&"acyclic.session.v1".into(), &token.as_str().into());
             let socket = web_sys::WebSocket::new_with_str_sequence(&url, &protocols)
                 .map_err(|_| StreamError::InvalidArgument)?;
             socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
