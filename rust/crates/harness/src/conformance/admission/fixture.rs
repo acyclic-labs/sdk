@@ -81,6 +81,7 @@ impl Fixture {
                 )?,
             },
             Turns {
+                routing: None,
                 executors: Arc::new(executors),
                 limits: TurnLimits {
                     maximum_bytes: Some(64 * 1024),

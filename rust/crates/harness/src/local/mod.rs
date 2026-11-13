@@ -87,6 +87,7 @@ pub type LocalFilesystem<A = LocalAuthorityBackend, O = LocalObjectBackend> = Fi
 
 /// A checkout or volume, durable authority, and the agents hosted on it.
 pub struct LocalHarness {
+    routing: Option<crate::agent::Routing>,
     topology: Option<crate::topology::Topology>,
     files: Arc<LocalFilesystem>,
     #[cfg(all(target_os = "linux", not(target_arch = "wasm32")))]

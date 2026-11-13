@@ -174,6 +174,7 @@ fn placed<P: 'static>(stream: &Arc<P>) -> Result<(Placement<P, Objects>, Bucket)
 
 fn turns() -> Result<Turns> {
     Ok(Turns {
+        routing: None,
         executors: Arc::new(Never),
         limits: TurnLimits {
             maximum_bytes: Some(64 * 1024),

@@ -159,6 +159,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let preset = Preset::graphcoder();
         let limits = Limits::default();
         let turns = Turns {
+            routing: None,
             executors: Arc::new(acyclic_harness_core::filesystem::StockExecutors::new(
                 (
                     acyclic_harness_core::model::Model::new(

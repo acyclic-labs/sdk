@@ -341,6 +341,14 @@ fn binding_with(
     executors: Arc<dyn TurnExecutors>,
     approval_policy: crate::approvals::ApprovalPolicy,
 ) -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
+    binding_routed(executors, approval_policy, None)
+}
+
+fn binding_routed(
+    executors: Arc<dyn TurnExecutors>,
+    approval_policy: crate::approvals::ApprovalPolicy,
+    routing: Option<crate::agent::Routing>,
+) -> Result<Bound<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let stream = Arc::new(Counted::new(MemoryStream::default()));
     let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Bound::local_root(
@@ -362,6 +370,7 @@ fn binding_with(
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
+            routing,
             executors,
             limits: TurnLimits {
                 maximum_bytes: Some(64 * 1024),
@@ -1343,6 +1352,7 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
+            routing: None,
             executors: Arc::new(Never),
             limits: TurnLimits {
                 maximum_bytes: Some(64 * 1024),

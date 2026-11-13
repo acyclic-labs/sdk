@@ -47,7 +47,6 @@ pub struct AgentHandler<P: crate::store::JournalProvider + ?Sized, D> {
     manifest: Manifest,
     volumes: Option<std::sync::Arc<dyn super::SpawnVolumes>>,
     closes: bool,
-    routing: Option<super::Routing>,
     diagnostics: Arc<Mutex<BTreeMap<AgentPath, RetainedDiagnostic>>>,
 }
 
@@ -126,6 +125,7 @@ pub trait Companions: Handler {
 pub(crate) struct Agents<P: crate::store::JournalProvider + ?Sized> {
     store: Store<P>,
     pub(super) companions: Option<std::sync::Arc<dyn Companions>>,
+    pub(super) routing: Option<super::Routing>,
 }
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
@@ -173,7 +173,6 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             },
             volumes: None,
             closes: false,
-            routing: None,
             diagnostics: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
@@ -216,7 +215,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
     /// file, shell and other effects never contact the account router.
     #[must_use]
     pub fn with_routing(mut self, routing: super::Routing) -> Self {
-        self.routing = Some(routing);
+        self.agents.routing = Some(routing);
         self
     }
 
@@ -255,6 +254,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         Self {
             store,
             companions: None,
+            routing: None,
         }
     }
 
@@ -372,6 +372,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             publish
                 .join(effect)
                 .map_err(|_| Error::Record("agent creation does not compose"))?;
+        }
+        if let Some(routing) = &self.routing {
+            publish
+                .join(
+                    acyclic_actors::route::Placement {
+                        actor,
+                        node: routing.node.clone(),
+                    }
+                    .effect(&routing.paths)
+                    .map_err(super::routing::error)?,
+                )
+                .map_err(|_| Error::Record("root placement does not compose"))?;
         }
         Ok(Spawn {
             child: created.child,
@@ -813,7 +825,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         };
         let step = prepared.step();
         let mut remote = BTreeSet::new();
-        if self.routing.is_some() {
+        if self.agents.routing.is_some() {
             let targets: BTreeSet<_> = step
                 .outs
                 .iter()
@@ -836,7 +848,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
         }
         let key = delivery_key(&step.state, &trigger)?;
-        let mut request = match &self.routing {
+        let mut request = match &self.agents.routing {
             Some(routing) => routing.lower(&delivery.actor, &remote, step, cursor, key)?,
             None => lower(step, cursor, key)?,
         };

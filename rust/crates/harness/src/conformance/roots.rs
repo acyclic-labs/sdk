@@ -189,6 +189,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         within: ActorReference::new(b"conformance", b"agents", b"host")?,
     };
     let turns = Turns {
+        routing: None,
         executors: Arc::new(Never),
         limits: TurnLimits {
             maximum_bytes: Some(64 * 1024),

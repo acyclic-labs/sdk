@@ -57,6 +57,7 @@ pub(in crate::filesystem) async fn binding_with(
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },
         Turns {
+            routing: None,
             executors,
             limits: TurnLimits {
                 maximum_bytes: Some(65_536),

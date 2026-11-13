@@ -527,6 +527,7 @@ async fn run(
             )?,
         },
         Turns {
+            routing: None,
             executors: changing.clone(),
             limits: TurnLimits {
                 maximum_bytes: Some(1 << 20),

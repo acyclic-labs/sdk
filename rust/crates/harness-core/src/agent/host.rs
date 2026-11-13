@@ -218,7 +218,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         host.templates.clone_from(&self.templates);
         host.model.clone_from(&self.model);
         host.agents.companions.clone_from(&self.agents.companions);
+        host.agents.routing.clone_from(&self.agents.routing);
         Ok(host)
+    }
+
+    /// Bind root creation to the same routing identity as its turn handler.
+    /// The admitted filesystem composition supplies both from one config.
+    pub(crate) fn with_root_placement(mut self, routing: Option<super::Routing>) -> Self {
+        self.agents.routing = routing;
+        self
     }
 
     /// Pins the root model even when the host enables no child templates.

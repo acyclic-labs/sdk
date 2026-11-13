@@ -161,6 +161,7 @@ pub async fn open<B: Backend + ?Sized>(
             within: ActorReference::new(b"account", b"agents", b"host")?,
         },
         Turns {
+            routing: None,
             executors: Arc::new(executors),
             limits: TurnLimits {
                 maximum_bytes: Some(1 << 20),

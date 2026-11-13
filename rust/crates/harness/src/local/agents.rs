@@ -911,6 +911,7 @@ impl LocalHarness {
                 within: ActorReference::new(b"local", b"native", b"guests").map_err(storage)?,
             },
             Turns {
+                routing: None,
                 executors: self.executors(),
                 limits: TurnLimits {
                     maximum_bytes: self.limits.file_bytes,
@@ -982,6 +983,7 @@ impl LocalHarness {
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
         let turns = Turns {
+            routing: self.routing.clone(),
             executors: self.executors(),
             limits: TurnLimits {
                 maximum_bytes: self.limits.file_bytes,

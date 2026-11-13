@@ -147,6 +147,7 @@ async fn run_roles(adapter: Adapter, misroute: bool, budgets: Budgets) -> TestRe
                 )?,
             },
             Turns {
+                routing: None,
                 executors,
                 limits: TurnLimits {
                     maximum_bytes: Some(1 << 20),

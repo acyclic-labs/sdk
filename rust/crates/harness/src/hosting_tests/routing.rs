@@ -60,7 +60,16 @@ impl AdmissionPolicy for PeerMessages {
 
 #[tokio::test]
 async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -> Result {
-    let bound = binding()?;
+    let paths = Paths::new(StreamPath::new("account/routing")?);
+    let source = NodeId::new(b"source")?;
+    let bound = binding_routed(
+        Arc::new(Never),
+        Default::default(),
+        Some(crate::agent::Routing {
+            paths: paths.clone(),
+            node: source.clone(),
+        }),
+    )?;
     let stream = bound.agents().provider().clone();
     let identity = AgentId::from_bytes([1; 16]);
     let Serving::Served(server) = serve(
@@ -90,8 +99,32 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
     else {
         return Err("root publication uncertain".into());
     };
-    let paths = Paths::new(StreamPath::new("account/routing")?);
-    let source = NodeId::new(b"source")?;
+    let root_actor = server.bound().agents().actor(server.root())?;
+    let placement = RoutePlacement {
+        actor: root_actor.clone(),
+        node: source.clone(),
+    };
+    assert_eq!(
+        RoutePlacement::read(stream.as_ref(), &paths, &root_actor).await?,
+        Some(placement)
+    );
+    assert_eq!(stream.tail(paths.placement(&root_actor)?).await?, 1);
+    assert!(matches!(
+        stream
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                idempotency_key: IdempotencyKey::new(b"move-existing-root".to_vec())?,
+                effects: vec![
+                    RoutePlacement {
+                        actor: root_actor.clone(),
+                        node: NodeId::new(b"other-node")?
+                    }
+                    .effect(&paths)?
+                ],
+            })
+            .await?,
+        CommitOutcome::Conflict(_)
+    ));
     let destination = NodeId::new(b"destination")?;
     let sender = ActorReference::new(b"account", b"remote", b"sender")?;
     let recipient = ActorReference::new(b"account", b"remote", b"recipient")?;

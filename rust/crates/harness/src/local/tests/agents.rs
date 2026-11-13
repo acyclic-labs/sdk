@@ -4726,9 +4726,16 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     let provider = super::scripted(
         ["at cut", "later", "branch answer"].map(|text| super::ScriptedTurn::Text(text.into())),
     );
+    let routing = crate::agent::Routing {
+        paths: acyclic_actors::route::Paths::new(
+            StreamPath::new("account/routing").map_err(agent)?,
+        ),
+        node: acyclic_actors::route::NodeId::new(b"owning-node").map_err(agent)?,
+    };
     let harness = Arc::new(
         super::open_scripted(
             volume_config(directory.path(), project.clone(), provider.clone())?
+                .routing(routing.clone())
                 .without_default_tools()
                 .compaction(crate::context::CompactionPolicy::Disabled),
         )
@@ -4779,6 +4786,23 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
     };
     assert!(branch.parent().is_none());
     assert_ne!(&branch, root);
+    for path in [root, &branch] {
+        let reference = agents.actor(path).map_err(agent)?;
+        let expected = acyclic_actors::route::Placement {
+            actor: reference.clone(),
+            node: routing.node.clone(),
+        };
+        assert_eq!(
+            acyclic_actors::route::Placement::read(
+                agents.provider().as_ref(),
+                &routing.paths,
+                &reference
+            )
+            .await
+            .map_err(agent)?,
+            Some(expected)
+        );
+    }
     let state = agents.state(&branch).await.map_err(agent)?;
     let policy = state
         .policy

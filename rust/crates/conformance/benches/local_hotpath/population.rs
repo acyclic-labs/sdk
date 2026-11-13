@@ -154,6 +154,7 @@ impl Fixture {
                 within: ActorReference::new(b"benchmark", b"agents", b"owner")?,
             },
             Turns {
+                routing: None,
                 executors: Arc::new(CreationOnly(model_calls.clone())),
                 limits: TurnLimits {
                     maximum_bytes: Some(1 << 20),

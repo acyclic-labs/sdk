@@ -265,6 +265,10 @@ pub struct Placement<P: ?Sized + 'static, O: 'static> {
 
 /// How hosted agents run their turns.
 pub struct Turns {
+    /// This host's node and source outbox, selected by deployment admission.
+    /// Roots commit their immutable placement with adoption; children remain
+    /// in their existing tree and receive no independent peer placement.
+    pub routing: Option<crate::agent::Routing>,
     /// Each turn's executor.
     pub executors: Arc<dyn TurnExecutors>,
     /// Bounds of every turn.
@@ -517,13 +521,15 @@ where
             Some(cuts) => spawns.with_volume_resources(cuts),
             None => spawns,
         });
-        let handler = Arc::new(
-            AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
-                .map_err(|_| Error::Record("agent handler manifest"))?
-                .with_spawn_volumes(spawns.clone())
-                .with_companions(controls.clone())
-                .with_close(),
-        );
+        let handler = AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
+            .map_err(|_| Error::Record("agent handler manifest"))?
+            .with_spawn_volumes(spawns.clone())
+            .with_companions(controls.clone())
+            .with_close();
+        let handler = Arc::new(match &turns.routing {
+            Some(routing) => handler.with_routing(routing.clone()),
+            None => handler,
+        });
         let composer = Arc::new(crate::agent::AgentComposer::new(
             stream.clone(),
             Some(spawns.clone()),
@@ -540,7 +546,8 @@ where
             Some(composer.clone()),
         )?
         .with_companions(controls.clone())
-        .with_model(model);
+        .with_model(model)
+        .with_root_placement(turns.routing);
         // The host pins roots to the same creation reader these turns use.
         let agents = Arc::new(match templates {
             Some(templates) => agents.with_templates(templates),

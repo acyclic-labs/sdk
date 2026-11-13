@@ -194,6 +194,7 @@ where
                 volumes,
                 within,
                 Turns {
+                    routing: None,
                     executors: Arc::new(executors),
                     limits: execution.turns,
                     actors: execution.actors,

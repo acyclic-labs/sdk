@@ -757,6 +757,7 @@ impl Opening {
             #[cfg(not(target_arch = "wasm32"))]
             mcp_diagnostics: self.diagnostics,
             goal_continuations: self.config.goal_continuations,
+            routing: self.config.routing,
             #[cfg(any(test, not(target_arch = "wasm32")))]
             workspace,
             told: std::sync::Mutex::default(),

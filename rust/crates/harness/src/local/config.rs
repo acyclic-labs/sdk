@@ -65,6 +65,7 @@ impl WorkspaceMounting {
 
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
+    pub(super) routing: Option<crate::agent::Routing>,
     pub(super) topology: Option<crate::topology::Topology>,
     pub(super) home_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
     pub(super) system_files: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
@@ -270,6 +271,7 @@ impl LocalHarnessConfig {
 
     fn configuration(workspace: PathBuf, model: Option<(Model, Arc<dyn ModelProvider>)>) -> Self {
         Self {
+            routing: None,
             topology: None,
             home_files: Default::default(),
             system_files: Default::default(),
@@ -550,6 +552,15 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn without_default_tools(mut self) -> Self {
         self.default_tools.clear();
+        self
+    }
+
+    /// Bind the admitted node identity used by root placement and peer outbox
+    /// publication. The connection owner separately drives its accepted link;
+    /// this configuration contains no credential or network location.
+    #[must_use]
+    pub fn routing(mut self, routing: crate::agent::Routing) -> Self {
+        self.routing = Some(routing);
         self
     }
     /// Adds one custom tool to the enabled default set.

@@ -115,6 +115,7 @@ impl WasmAgentServer {
                 within,
             },
             Turns {
+                routing: None,
                 executors: Arc::new(Providers::executors(&options, registry)?),
                 limits: TurnLimits {
                     maximum_bytes: limits.file_bytes,
