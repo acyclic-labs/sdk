@@ -206,12 +206,13 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
         // The destination keeps its original unrestricted policy. Only the
         // source policy below requires the role, so a destination-only ceiling
         // check cannot satisfy these inherited metadata controls.
-        let fork = storage
+        let source_generation = storage.host.file_generation(&file, None)?;
+        storage
             .host
             .fork_volume(
                 &storage.volume,
                 &owner_read,
-                &storage.host.file_generation(&file, None)?,
+                &source_generation,
                 &inherited,
                 &inherited_write,
                 None,
@@ -238,7 +239,7 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
                         &inherited,
                         &inherited_owner,
                         path,
-                        Some(&fork.generation),
+                        Some(&source_generation),
                         crate::conversation::ContentAccess {
                             ceiling: Some(owner.capabilities()),
                             io,
@@ -273,7 +274,7 @@ async fn filesystem_roles_require_signed_scope_and_caller_ceiling() -> Result<()
                             &inherited,
                             grant,
                             path,
-                            Some(&fork.generation),
+                            Some(&source_generation),
                             access,
                         )
                         .await
