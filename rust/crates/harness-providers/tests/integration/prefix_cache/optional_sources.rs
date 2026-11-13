@@ -56,7 +56,6 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                     os: "test".into(),
                     current_date: "2026-01-01".into(),
                     timezone: "UTC".into(),
-                    model: "PRIVATE_MODEL_METADATA".into(),
                     ..Default::default()
                 });
                 if let Some(body) = body {
@@ -135,12 +134,7 @@ async fn optional_source_versions_preserve_provider_requests() -> TestResult {
                     .body
                     .clone();
                 assert!(holds(&wire, b"/project"), "environment was not projected");
-                for forbidden in [
-                    b"OPTIONAL_SOURCE_".as_slice(),
-                    b"PRIVATE_MODEL_METADATA",
-                    b"<model>",
-                    b"<git_status>",
-                ] {
+                for forbidden in [b"OPTIONAL_SOURCE_".as_slice(), b"<model>", b"<git_status>"] {
                     assert!(
                         !holds(&wire, forbidden),
                         "{adapter:?}: optional {source} entered provider context"

@@ -9,11 +9,10 @@ use std::path::Path;
 pub(super) fn gather(
     cwd: Option<&Path>,
     now_unix_millis: u64,
-    model: &str,
     platform: &crate::native_environment::PlatformPolicy,
 ) -> crate::Result<crate::context::EnvironmentFacts> {
     let mut facts: crate::context::EnvironmentFacts =
-        crate::native_environment::checkout(cwd, now_unix_millis, model, platform).into();
+        crate::native_environment::checkout(cwd, now_unix_millis, platform).into();
     if let (Some(cwd), crate::native_environment::PlatformPolicy::Native) = (cwd, platform) {
         let environment =
             crate::native_environment::tool_environment(acyclic_native_runtime::platform_shell)

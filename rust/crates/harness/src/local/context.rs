@@ -385,11 +385,9 @@ impl LocalHarness {
                         .as_ref()
                         .map(|mounted| mounted.path.as_path())
                 };
-                let (model, _) = self.agent()?;
                 manifest.environment = Some(environment::gather(
                     cwd,
                     self.clock.now_unix_millis(),
-                    &model.name,
                     &self.environment_platform,
                 )?);
             }

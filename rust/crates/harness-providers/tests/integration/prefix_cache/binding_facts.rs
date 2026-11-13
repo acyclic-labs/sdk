@@ -65,7 +65,6 @@ async fn binding_facts_follow_shared_bytes_across_turns_and_forks() -> TestResul
                 os: "linux".into(),
                 current_date: "2026-11-11".into(),
                 timezone: "UTC".into(),
-                model: "model".into(),
                 ..Default::default()
             });
             let reference = manifest
