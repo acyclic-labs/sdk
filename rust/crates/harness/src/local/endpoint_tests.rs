@@ -617,6 +617,11 @@ async fn terminal(observer: &mut Observer) -> Error {
     }
 }
 
+/// Fixture plumbing failures, outside the typed exchange under test.
+fn exchange(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}
+
 /// The full cause chain of a typed exchange failure, which stays storage.
 fn message(error: Error) -> String {
     assert_eq!(error.code(), crate::wire::ErrorCode::Storage, "{error:?}");

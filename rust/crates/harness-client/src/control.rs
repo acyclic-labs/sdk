@@ -122,6 +122,12 @@ impl AgentCall {
 pub struct AgentBinding(wire::InvokeActorRequest);
 
 impl AgentBinding {
+    /// Canonical host-published routing, the bytes [`Self::new`] accepts.
+    #[must_use]
+    pub fn binding_bytes(&self) -> Vec<u8> {
+        self.0.encode_to_vec()
+    }
+
     /// The routing every endpoint answers [`AgentCommand::Bind`] on: no
     /// account, namespace or tree, only the session's credential.
     #[must_use]
@@ -306,7 +312,7 @@ impl AgentControls {
 
     /// Canonical host-published routing, without a command body or ordering.
     pub fn binding_bytes(&self) -> Vec<u8> {
-        self.binding.0.encode_to_vec()
+        self.binding.binding_bytes()
     }
 
     /// Compose the host's existing session and published binding. Endpoint
