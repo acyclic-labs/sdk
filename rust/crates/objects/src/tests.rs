@@ -511,6 +511,53 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
+async fn abandoned_envelope_publications_release_only_their_own_flush_tracking()
+-> Result<(), Box<dyn std::error::Error>> {
+    for outcome in ["unknown", "cancelled", "adopted", "payload-cancelled"] {
+        let medium = Shared::over(Counting::default(), false);
+        let store = Store::new(Counting::new(medium.clone()));
+        let account = store.account(b"account")?;
+        account.flush(None).await?;
+        store.medium().take();
+        let body = OwnedBytes::from_static(b"abandoned publication");
+        if outcome == "unknown" {
+            *medium.ambiguous.lock().unwrap() = Some("/e/");
+            assert_eq!(account.put(body.clone(), Vec::new()).await?, Put::Unknown);
+            *medium.ambiguous.lock().unwrap() = None;
+        } else {
+            // Hold the real write after it applies but before its caller
+            // observes completion, at either the envelope or payload.
+            let fragment = if outcome == "payload-cancelled" {
+                "/p/"
+            } else {
+                "/e/"
+            };
+            let (mut reached, release) = medium.park("create", fragment);
+            let mut publishing = Box::pin(account.put(body.clone(), Vec::new()));
+            drive_to_park(publishing.as_mut(), &mut reached).await;
+            if matches!(outcome, "adopted" | "payload-cancelled") {
+                assert!(matches!(
+                    account.put(body.clone(), Vec::new()).await?,
+                    Put::AlreadyExists { .. }
+                ));
+            }
+            drop(publishing);
+            drop(release);
+        }
+        account.flush(None).await?;
+        assert_eq!(
+            store.medium().take().get("flush").copied(),
+            matches!(outcome, "adopted" | "payload-cancelled").then_some(1),
+            "{outcome}"
+        );
+        // The adopter's payload is durable; abandoned envelope-only work
+        // must not keep adding phantom keys to later flushes.
+        account.flush(None).await?;
+        assert_eq!(store.medium().take().get("flush"), None, "{outcome}");
+    }
+    Ok(())
+}
+#[tokio::test]
 async fn ambiguous_revival_stops_at_its_original_conditional_write()
 -> Result<(), Box<dyn std::error::Error>> {
     for applied in [false, true] {
