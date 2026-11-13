@@ -26,6 +26,7 @@ pub(crate) mod fs_command;
 pub mod native;
 mod workspace_executor;
 pub use command::parse_command;
+pub(crate) use command::scoped_search;
 #[doc(hidden)]
 pub use fs_command::{FsCommand, parse_fs_command};
 pub mod git;

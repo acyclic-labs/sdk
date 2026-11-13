@@ -38,6 +38,53 @@ pub(super) fn has_prefix<const N: usize>(command: &str, prefixes: [&[&str]; N]) 
         .any(|(prefix, matched)| matched && word >= prefix.len()))
 }
 
+/// Select the explicit agent-scope query without allocating parsed arguments.
+pub(crate) fn scoped_search(command: &str) -> Result<bool> {
+    if !has_prefix(command, [&["grep"], &["git", "grep"]])? {
+        return Ok(false);
+    }
+    const OPTIONS: [&str; 7] = [
+        "--scope",
+        "--",
+        "--page-size",
+        "--cursor",
+        "--file",
+        "--directory",
+        "--volume",
+    ];
+    let mut matched = [true; OPTIONS.len()];
+    let mut offset = 0;
+    let mut operand = false;
+    let mut literal = false;
+    let mut found = false;
+    visit(command, |character| {
+        for (expected, matched) in OPTIONS.iter().zip(&mut matched) {
+            *matched &= match character {
+                Some(character) => expected.chars().nth(offset) == Some(character),
+                None => expected.chars().count() == offset,
+            };
+        }
+        if character.is_some() {
+            offset += 1;
+            return;
+        }
+        if !literal {
+            if operand {
+                operand = false;
+            } else {
+                found |= matched[0];
+                literal = matched[1];
+                operand = matched
+                    .iter()
+                    .enumerate()
+                    .any(|(index, yes)| index != 1 && *yes);
+            }
+        }
+        matched.fill(true);
+        offset = 0;
+    })?;
+    Ok(found)
+}
 fn visit(command: &str, mut emit: impl FnMut(Option<char>)) -> Result<()> {
     let mut quote = None;
     let mut escaped = false;
@@ -92,6 +139,20 @@ fn visit(command: &str, mut emit: impl FnMut(Option<char>)) -> Result<()> {
 #[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    #[test]
+    fn scope_routing_respects_option_operands_and_literal_terminators() -> Result<()> {
+        for (command, expected) in [
+            ("grep --scope . needle", true),
+            ("'git' 'grep' --page-size 1 --scope . needle", true),
+            ("grep --directory . needle", false),
+            ("grep -- needle --scope .", false),
+            ("grep --cursor --scope needle", false),
+            ("status --scope .", false),
+        ] {
+            assert_eq!(scoped_search(command)?, expected, "{command}");
+        }
+        Ok(())
+    }
     use proptest::prelude::*;
 
     proptest! {

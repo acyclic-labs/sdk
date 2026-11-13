@@ -724,6 +724,16 @@ impl<'io> StockExecution<'io> {
         if invocation.name != "fs" {
             return None;
         }
+        let task = self.context.map(|(task, _)| task)?;
+        if task.harness.targets().is_some()
+            && !invocation
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|command| crate::tools::scoped_search(command).unwrap_or(false))
+        {
+            return None;
+        }
         self.context
             .and_then(|(task, _)| task.harness.filesystem.as_ref())
             .map(|filesystem| filesystem.binding_identity())

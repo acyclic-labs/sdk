@@ -46,7 +46,7 @@ fn target(
                 ..Default::default()
             })?;
         }
-        if super::command::has_prefix(command, [&["grep"], &["git", "grep"]])? {
+        if super::command::scoped_search(command)? {
             let filesystem = context.task().harness.filesystem.as_ref().ok_or_else(|| {
                 boundary(
                     work,
