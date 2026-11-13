@@ -44,6 +44,18 @@ identity, so crash/replay can duplicate a wake but cannot lose it. Placement and
 actor epoch checks remain in #3555's one actor core. No second actor scheduler.
 Do not checkpoint a batch while any member lacks durable handoff.
 
+Source partitions and actor scheduling shards are different identities. The
+assigned source-partition consumer must durably hand off each member to its
+registered actor-hashed ready destination, using the existing ready dispatcher
+and conditional commit. Handoff appends the wake and advances that member's
+batch cursor in the SAME commit. Its idempotency key binds batch and member
+generation; an ambiguous response is resolved by that terminal receipt, not by
+advancing the cursor optimistically. Placement changes which owner serves the
+durable destination, not where the obligation lives. Do not broadcast source
+partitions to every host or make all actors follow them. Partition reassignment
+must use an existing fenced owner mechanism and restart at the stored cursor.
+This is bounded routing in the dispatcher, not a parallel actor lifecycle.
+
 This representation is essential for the work bound: individually materializing
 k activation records requires at least k writes. A single set-reference batch
 costs O(1) additional append work and space per distinct written source,
@@ -64,6 +76,17 @@ Membership within that commit uses its final accepted membership, independent
 of mutation ordering; same-commit start-at-tail uses the final tail, while an
 explicit cursor includes its remaining range. Conflicting duplicate registration
 operations are rejected rather than interpreted by list ordering.
+
+The no-stranding argument follows the authority's linear order. Registration
+before append puts the registration in that append's membership. Append before
+registration is covered by registration's catch-up through its accepted tail
+(or start-at-tail intentionally excludes it). Concurrent operations have one of
+those cuts; no separate read-then-register window exists. The terminal receipt
+retains selected membership, so retry cannot pick a new set. Delivery cannot
+advance its cursor before a durable wake because they share one decision.
+Recovery sees neither handoff effect or both; replay uses the same member
+identity. These arguments are obligations on production transitions, not a
+substitute for the required exhaustive/DST case and negative control.
 
 The shared Stream core supplies these semantics on every backend. Adapters only
 persist the shared authority state and bounded ready-feed records. An unavailable
