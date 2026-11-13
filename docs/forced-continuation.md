@@ -78,5 +78,7 @@ The non-replay manifest names `wall_clocks`, `web_network`,
 `external_machine_state`, and `model_sampling`: these are not restored exactly.
 The live-children flag is captured at the source boundary, rather than inferred
 from the parent's current children. Persisted agent records are version 14 and
-generation-linked history descriptors are version 2; other versions are refused
-without migration.
+generation-linked history descriptors are version 3; other versions are refused
+without migration. History sequence zero is the original adoption boundary;
+sequence N retains the context and project generations after N settled turns.
+A fork at conversation tail N includes history through boundary N.
