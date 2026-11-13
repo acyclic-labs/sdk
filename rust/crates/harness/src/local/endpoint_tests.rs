@@ -110,6 +110,10 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     )
     .with_account_routing(routing)
     .with_completion(hosted.runtime.completion());
+    let enrollment = composition
+        .account_routing()
+        .cloned()
+        .ok_or_else(|| Error::Invalid("missing account routing".into()))?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(storage)?;
@@ -127,6 +131,13 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
     ));
     let checked = async {
         let (endpoint, credential) = endpoint.await.map_err(storage)?;
+        enrollment
+            .enroll(
+                &acyclic_actors::route::NodeId::new(b"source").map_err(storage)?,
+                IdempotencyKey::new(b"live-enrollment".to_vec()).map_err(storage)?,
+            )
+            .await
+            .map_err(storage)?;
         let remote = acyclic_stream::grpc::Client::connect_loopback(&endpoint, &credential)
             .await
             .map_err(storage)?;

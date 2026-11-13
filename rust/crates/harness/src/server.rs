@@ -151,6 +151,14 @@ where
         self
     }
 
+    /// Retain the shared enrollment owner before moving this host into
+    /// [`serve`]. Sign-in can enroll new nodes while the same dispatcher runs;
+    /// retaining this handle starts no additional runtime or endpoint.
+    #[must_use]
+    pub fn account_routing(&self) -> Option<&Arc<acyclic_actors::route::AccountNode<P>>> {
+        self.routing.as_ref()
+    }
+
     /// End the endpoint when its runtime stops. Dropping the producer must
     /// complete this future with an error; clients then see session closure.
     #[must_use]

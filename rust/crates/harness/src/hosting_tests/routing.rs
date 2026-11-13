@@ -106,8 +106,6 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
     )
     .await?
     .with_products(server.clone(), server.clone());
-    node.enroll(&source, IdempotencyKey::new(b"enroll-source".to_vec())?)
-        .await?;
     node.enroll(
         &destination,
         IdempotencyKey::new(b"enroll-destination".to_vec())?,
@@ -196,6 +194,8 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             .await?,
     );
     let exercise = async {
+        node.enroll(&source, IdempotencyKey::new(b"enroll-source".to_vec())?)
+            .await?;
         assert!(
             matches!(call(&client, "agents", &AgentCommand::Root {}).await??, AgentReply::Root { agent } if agent == *server.root())
         );
