@@ -127,6 +127,23 @@ struct RecoveredSourceOperation {
     head: Head,
 }
 
+enum SourceAdmission {
+    Replayed(SourceFact),
+    Pending(PendingSourceOperation),
+}
+
+enum SourceBegin {
+    Existing,
+    Absent,
+}
+
+/// Recovery evidence retained until Begin under the same source-session lock.
+struct PendingSourceOperation {
+    key: IdempotencyKey,
+    operation: SourceOperation,
+    begin: SourceBegin,
+}
+
 struct SourceSession<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     checkout: Checkout<A, O>,
@@ -139,6 +156,8 @@ struct SourceSession<A: 'static, O: 'static> {
 }
 
 /// Cloneable handle to one exact attached native directory.
+/// Operations without a supplied retry key start a fresh durable operation;
+/// keyed operations recover that identity before admitting new capture work.
 pub struct Source<A: 'static, O: 'static> {
     inner: Arc<Mutex<SourceSession<A, O>>>,
     changes: crate::watch::NativeWatchSubscription,
@@ -192,7 +211,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
     /// Captures one contiguous watcher interval and publishes it. An omitted
     /// path limit captures the complete interval queued at admission.
     pub async fn reconcile(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
-        self.reconcile_with_key(IdempotencyKey::new()).await
+        self.reconcile_operation(None).await
     }
 
     /// Captures and publishes one watcher interval under a stable retry key.
@@ -200,19 +219,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         key: IdempotencyKey,
     ) -> Result<ReconcileOutcome<A, O>, SourceError> {
+        self.reconcile_operation(Some(key)).await
+    }
+
+    async fn reconcile_operation(
+        &self,
+        key: Option<IdempotencyKey>,
+    ) -> Result<ReconcileOutcome<A, O>, SourceError> {
         let mut session = self.inner.lock().await;
-        if let Some(outcome) =
-            replay_reconcile_operation(&mut session, key, SourceOperation::Reconcile).await?
+        let pending = match admit_source_operation(&mut session, key, SourceOperation::Reconcile)
+            .await?
         {
-            return Ok(outcome);
-        }
+            SourceAdmission::Replayed(fact) => return replayed_reconcile_outcome(&session, fact),
+            SourceAdmission::Pending(pending) => pending,
+        };
         if session.state == SourceState::Conflict {
             return Ok(ReconcileOutcome::Conflict);
         }
         if session.mode == SourceMode::Pinned {
             return Err(SourceError::Pinned);
         }
-        begin_source_operation(&mut session, key, SourceOperation::Reconcile).await?;
+        let key = pending.begin(&mut session).await?;
         let maximum_paths = session.capture.maximum_paths;
         let batch = session
             .watcher
@@ -272,7 +299,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
 
     /// Rebuilds one complete authenticated baseline while preserving events that arrive concurrently with the scan.
     pub async fn rescan(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
-        self.rescan_with_key(IdempotencyKey::new()).await
+        self.rescan_operation(None).await
     }
 
     /// Rebuilds a complete baseline under a stable retry key.
@@ -280,16 +307,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         key: IdempotencyKey,
     ) -> Result<ReconcileOutcome<A, O>, SourceError> {
+        self.rescan_operation(Some(key)).await
+    }
+
+    async fn rescan_operation(
+        &self,
+        key: Option<IdempotencyKey>,
+    ) -> Result<ReconcileOutcome<A, O>, SourceError> {
         let mut session = self.inner.lock().await;
-        if let Some(outcome) =
-            replay_reconcile_operation(&mut session, key, SourceOperation::Rescan).await?
+        let pending = match admit_source_operation(&mut session, key, SourceOperation::Rescan)
+            .await?
         {
-            return Ok(outcome);
-        }
+            SourceAdmission::Replayed(fact) => return replayed_reconcile_outcome(&session, fact),
+            SourceAdmission::Pending(pending) => pending,
+        };
         if session.state == SourceState::Conflict {
             return Ok(ReconcileOutcome::Conflict);
         }
-        begin_source_operation(&mut session, key, SourceOperation::Rescan).await?;
+        let key = pending.begin(&mut session).await?;
         rescan_session(
             &mut session,
             key,
@@ -301,7 +336,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
 
     /// Produces an immutable generation whose bytes no longer depend on the attached directory.
     pub async fn seal(&self) -> Result<Generation<A, O>, SourceError> {
-        self.seal_with_key(IdempotencyKey::new()).await
+        self.seal_operation(None).await
     }
 
     /// Seals the source under a stable retry key.
@@ -309,14 +344,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         key: IdempotencyKey,
     ) -> Result<Generation<A, O>, SourceError> {
+        self.seal_operation(Some(key)).await
+    }
+
+    async fn seal_operation(
+        &self,
+        key: Option<IdempotencyKey>,
+    ) -> Result<Generation<A, O>, SourceError> {
         let mut session = self.inner.lock().await;
-        if let Some(generation) = replay_seal_operation(&mut session, key).await? {
-            return Ok(generation);
-        }
+        let pending = match admit_source_operation(&mut session, key, SourceOperation::Seal).await?
+        {
+            SourceAdmission::Replayed(fact) => return replayed_seal_outcome(&session, fact),
+            SourceAdmission::Pending(pending) => pending,
+        };
         if session.state == SourceState::Conflict {
             return Err(SourceError::Conflict);
         }
-        begin_source_operation(&mut session, key, SourceOperation::Seal).await?;
+        let key = pending.begin(&mut session).await?;
         let generation = match rescan_session(
             &mut session,
             key,
@@ -914,30 +958,42 @@ async fn recover_published_operation<A: AsyncAuthorityStore, O: AsyncObjectStore
     .await
 }
 
-async fn replay_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn admit_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
-    key: IdempotencyKey,
+    key: Option<IdempotencyKey>,
     operation: SourceOperation,
-) -> Result<Option<SourceFact>, SourceError> {
+) -> Result<SourceAdmission, SourceError> {
+    let Some(key) = key else {
+        return Ok(SourceAdmission::Pending(PendingSourceOperation {
+            key: IdempotencyKey::new(),
+            operation,
+            begin: SourceBegin::Absent,
+        }));
+    };
     if let Some(recovered) =
         find_source_operation(session, key, operation, SourceOperationStage::Terminal).await?
     {
         refresh_source_authority(session).await?;
-        return Ok(Some(recovered.fact));
+        return Ok(SourceAdmission::Replayed(recovered.fact));
     }
-    let Some(begin) =
-        find_source_operation(session, key, operation, SourceOperationStage::Begin).await?
-    else {
-        if published_generation_for_key(session, key, operation)
-            .await?
-            .is_some()
-        {
+    let begin = find_source_operation(session, key, operation, SourceOperationStage::Begin).await?;
+    let published = published_generation_for_key(session, key, operation).await?;
+    let Some(begin) = begin else {
+        if published.is_some() {
             return Err(SourceError::IdempotencyConflict);
         }
-        return Ok(None);
+        return Ok(SourceAdmission::Pending(PendingSourceOperation {
+            key,
+            operation,
+            begin: SourceBegin::Absent,
+        }));
     };
-    let Some(generation_id) = published_generation_for_key(session, key, operation).await? else {
-        return Ok(None);
+    let Some(generation_id) = published else {
+        return Ok(SourceAdmission::Pending(PendingSourceOperation {
+            key,
+            operation,
+            begin: SourceBegin::Existing,
+        }));
     };
     let state = match operation {
         SourceOperation::Reconcile | SourceOperation::Rescan => SourceState::Clean,
@@ -945,17 +1001,13 @@ async fn replay_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     };
     recover_published_operation(session, state, generation_id, begin.head, key, operation)
         .await
-        .map(Some)
+        .map(SourceAdmission::Replayed)
 }
 
-async fn replay_reconcile_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    session: &mut SourceSession<A, O>,
-    key: IdempotencyKey,
-    operation: SourceOperation,
-) -> Result<Option<ReconcileOutcome<A, O>>, SourceError> {
-    let Some(fact) = replay_source_operation(session, key, operation).await? else {
-        return Ok(None);
-    };
+fn replayed_reconcile_outcome<A: 'static, O: 'static>(
+    session: &SourceSession<A, O>,
+    fact: SourceFact,
+) -> Result<ReconcileOutcome<A, O>, SourceError> {
     let outcome = match fact.state {
         DurableSourceState::Clean => ReconcileOutcome::Clean(Generation {
             workspace: session.workspace.clone(),
@@ -972,22 +1024,19 @@ async fn replay_reconcile_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>
             ));
         }
     };
-    Ok(Some(outcome))
+    Ok(outcome)
 }
 
-async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    session: &mut SourceSession<A, O>,
-    key: IdempotencyKey,
-) -> Result<Option<Generation<A, O>>, SourceError> {
-    let Some(fact) = replay_source_operation(session, key, SourceOperation::Seal).await? else {
-        return Ok(None);
-    };
+fn replayed_seal_outcome<A: 'static, O: 'static>(
+    session: &SourceSession<A, O>,
+    fact: SourceFact,
+) -> Result<Generation<A, O>, SourceError> {
     match fact.state {
-        DurableSourceState::Sealed => Ok(Some(Generation {
+        DurableSourceState::Sealed => Ok(Generation {
             workspace: session.workspace.clone(),
             id: fact.generation_id,
             publication_closure: None,
-        })),
+        }),
         DurableSourceState::Conflict => Err(SourceError::Conflict),
         DurableSourceState::NeedsRescan(_) => Err(SourceError::Engine(
             "source could not reach a clean sealed state".to_owned(),
@@ -1147,22 +1196,40 @@ async fn begin_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     {
         return Err(SourceError::IdempotencyConflict);
     }
-    let fact = source_fact(
-        session,
-        SourceState::PendingCapture,
-        session.checkout.generation_id(),
-    );
-    let fingerprint = source_operation_fingerprint(operation, &fact)?;
-    session.authority_head = append_source_fact_with_identity(
-        &session.workspace,
-        session.authority_head,
-        fact,
-        source_stage_operation_id(key, SourceOperationStage::Begin),
-        fingerprint,
-    )
-    .await?;
-    session.state = SourceState::PendingCapture;
-    Ok(())
+    PendingSourceOperation {
+        key,
+        operation,
+        begin: SourceBegin::Absent,
+    }
+    .begin(session)
+    .await
+    .map(|_| ())
+}
+
+impl PendingSourceOperation {
+    async fn begin<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        self,
+        session: &mut SourceSession<A, O>,
+    ) -> Result<IdempotencyKey, SourceError> {
+        if matches!(self.begin, SourceBegin::Absent) {
+            let fact = source_fact(
+                session,
+                SourceState::PendingCapture,
+                session.checkout.generation_id(),
+            );
+            let fingerprint = source_operation_fingerprint(self.operation, &fact)?;
+            session.authority_head = append_source_fact_with_identity(
+                &session.workspace,
+                session.authority_head,
+                fact,
+                source_stage_operation_id(self.key, SourceOperationStage::Begin),
+                fingerprint,
+            )
+            .await?;
+            session.state = SourceState::PendingCapture;
+        }
+        Ok(self.key)
+    }
 }
 
 async fn persist_session_state<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1440,7 +1507,7 @@ fn engine(error: impl std::fmt::Display) -> SourceError {
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
@@ -1553,6 +1620,7 @@ mod tests {
     struct AppendGate {
         target: std::sync::Mutex<Option<OperationId>>,
         phase: AtomicU8,
+        probes: AtomicUsize,
         arrived: tokio::sync::watch::Sender<usize>,
         open: tokio::sync::watch::Sender<bool>,
     }
@@ -1564,6 +1632,7 @@ mod tests {
             Self {
                 target: std::sync::Mutex::new(None),
                 phase: AtomicU8::new(0),
+                probes: AtomicUsize::new(0),
                 arrived,
                 open,
             }
@@ -1771,8 +1840,109 @@ mod tests {
                 return Err(crate::AuthorityStoreError::NativeOriginalUnsupported);
             }
 
+            self.gate.probes.fetch_add(1, Ordering::Relaxed);
             self.inner.find_operation(authority, operation, work).await
         }
+    }
+
+    #[tokio::test]
+    async fn source_admission_reuses_recovery_evidence_and_fences_external_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let gate = Arc::new(AppendGate::new());
+        let fs = Fs::new(
+            GatedAuthorityStore {
+                inner: Arc::new(crate::memory::MemoryAuthorityStore::default()),
+                gate: gate.clone(),
+            },
+            Arc::new(crate::memory::MemoryObjectStore::default()),
+            crate::EmbeddedCapabilities::MEMORY,
+        );
+        let workspace = Box::pin(fs.attach_directory(
+            "source-admission",
+            root.path(),
+            SourceOptions::default(),
+        ))
+        .await?;
+        let source = workspace.source().ok_or("source missing")?;
+        let mut session = source.inner.lock().await;
+        let pending = |admission| match admission {
+            SourceAdmission::Pending(pending) => Ok(pending),
+            SourceAdmission::Replayed(_) => Err("unexpected terminal replay"),
+        };
+        gate.probes.store(0, Ordering::Relaxed);
+        let admitted =
+            pending(admit_source_operation(&mut session, None, SourceOperation::Rescan).await?)?;
+        let key = admitted.key;
+        let before = session.authority_head;
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 0);
+        assert_eq!(admitted.begin(&mut session).await?, key);
+        assert_ne!(session.authority_head, before);
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 0);
+
+        // Existing Begin and absent publication: exactly one lookup per stage,
+        // then no second reads or append when consuming the admission receipt.
+        let before = session.authority_head;
+        let admitted = pending(
+            admit_source_operation(&mut session, Some(key), SourceOperation::Rescan).await?,
+        )?;
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 3);
+        assert_eq!(admitted.begin(&mut session).await?, key);
+        assert_eq!(session.authority_head, before);
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 3);
+
+        // An explicitly supplied unused identity is checked once, then admitted
+        // through the same conditional Begin as the freshly generated identity.
+        let key = IdempotencyKey::new();
+        gate.probes.store(0, Ordering::Relaxed);
+        let admitted = pending(
+            admit_source_operation(&mut session, Some(key), SourceOperation::Rescan).await?,
+        )?;
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 3);
+        admitted.begin(&mut session).await?;
+        assert_ne!(session.authority_head, before);
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 3);
+        let fact = persist_source_operation(
+            &mut session,
+            SourceState::Clean,
+            key,
+            SourceOperation::Rescan,
+        )
+        .await?;
+        gate.probes.store(0, Ordering::Relaxed);
+        match admit_source_operation(&mut session, Some(key), SourceOperation::Rescan).await? {
+            SourceAdmission::Replayed(recovered) => {
+                assert_eq!(recovered.generation_id, fact.generation_id)
+            }
+            SourceAdmission::Pending(_) => {
+                return Err("terminal operation was admitted again".into());
+            }
+        }
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            admit_source_operation(&mut session, Some(key), SourceOperation::Seal).await,
+            Err(SourceError::IdempotencyConflict)
+        ));
+
+        // The receipt removes reads, not the conditional authority write. An
+        // independent owner advancing after admission must still win the fence.
+        gate.probes.store(0, Ordering::Relaxed);
+        let admitted =
+            pending(admit_source_operation(&mut session, None, SourceOperation::Rescan).await?)?;
+        let before = session.authority_head;
+        let fact = source_fact(
+            &session,
+            SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
+            session.checkout.generation_id(),
+        );
+        append_source_fact(&session.workspace, before, fact).await?;
+        assert!(matches!(
+            admitted.begin(&mut session).await,
+            Err(SourceError::Concurrent)
+        ));
+        assert_eq!(session.authority_head, before);
+        assert_eq!(gate.probes.load(Ordering::Relaxed), 0);
+        Ok(())
     }
 
     fn next_authority_append<A, O>(
