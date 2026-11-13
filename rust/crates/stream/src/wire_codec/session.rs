@@ -25,7 +25,18 @@ pub fn closed_error(closed: &wire::SessionClosed) -> StreamError {
     if closed.message.is_empty() || closed.message == canonical.message() {
         return category;
     }
-    super::status(&tonic::Status::new(canonical.code(), &closed.message))
+    acyclic_auth::refusal::Refusal::capture(
+        canonical.code() as i32,
+        &closed.message,
+        b"",
+        &http::HeaderMap::new(),
+        super::status::canonical(&category),
+        None,
+    )
+    .map_or_else(
+        || category.clone(),
+        |refusal| category.clone().with_refusal(refusal),
+    )
 }
 
 /// One input frame on its original call generation. No total length or EOF

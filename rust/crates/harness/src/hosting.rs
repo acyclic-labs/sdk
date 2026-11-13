@@ -2015,7 +2015,7 @@ where
     ) -> Option<BoxProviderFuture<'static, StreamError>> {
         use acyclic_stream::wire::session_subscription::Kind;
         let agent = match subscription.kind.as_ref()? {
-            Kind::Follow(follow) => {
+            Kind::Follow(follow) if follow.until.is_none() => {
                 let path =
                     acyclic_stream::wire_codec::session::stream_path(&follow.resource).ok()?;
                 AgentPath::containing(&path)?
@@ -2100,21 +2100,7 @@ where
                 );
                 eprintln!("server dispatch caller: {bytes} bytes");
             }
-            let result = if matches!(
-                call.command(),
-                AgentCommand::Settlement { wait: true, .. }
-                    | AgentCommand::Usage { wait: true, .. }
-                    | AgentCommand::Events { wait: true, .. }
-            ) {
-                let agent = call.command().agent().ok_or(StreamError::InvalidArgument)?;
-                let failed = server.actor_failure(agent.clone());
-                match futures::future::select(Box::pin(dispatch), failed).await {
-                    futures::future::Either::Left((result, _)) => result,
-                    futures::future::Either::Right((cause, _)) => Err(Error::Stream(cause)),
-                }
-            } else {
-                dispatch.await
-            };
+            let result = dispatch.await;
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}
