@@ -238,6 +238,11 @@ impl AgentState {
             .min(self.turn.as_ref().map_or(consumed, |turn| turn.inbox))
             .min(self.queued.front().map_or(consumed, |queued| queued.inbox))
             .min(self.overflow.unwrap_or(consumed))
+            .min(
+                self.approval_control
+                    .as_ref()
+                    .map_or(consumed, |control| control.range.start),
+            )
     }
 
     /// State at adoption, before the first step.
@@ -1171,6 +1176,9 @@ fn finalize_step(
                 .retain(|input| input.inbox >= *through || !input.steering);
         }
     }
+    if matches!(state.phase, Phase::Done { .. }) {
+        state.approval_control = None;
+    }
     let queued =
         wake_input(&state).is_some() || (!control(&state).input && state.overflow.is_some());
     let approval_ready = approval_position(&state).is_some();
@@ -1205,6 +1213,7 @@ fn finalize_step(
     // An awaited child answers its parent once it settles, in the commit
     // that publishes it so: the parent's wait wakes on exactly that record.
     if state.awaited
+        && state.settled_before(cursor) >= cursor
         && matches!(
             phase,
             Phase::Idle | Phase::WaitingUser { .. } | Phase::Done { .. }
