@@ -5,13 +5,14 @@ use super::*;
 #[cfg(all(any(test, not(target_arch = "wasm32")), not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOptions {
-    /// Durable root containing canonical Stream and Objects provider state.
+    /// Root containing canonical Stream and Objects provider state.
     pub root: PathBuf,
     /// Durable hierarchical Stream provider limits. Its durability is the
     /// root's: a publication is acknowledged once its Stream frame is flushed
     /// this way. The Objects provider beside it only orders the objects a
     /// publication references ahead of that frame, and flushes fully only
     /// when the two live on different devices.
+    /// Its minimum native flush guarantee determines durable-workspace support.
     pub stream: acyclic_stream::LocalStreamLimits,
     /// Optional caller-selected immutable-object admission limit.
     pub maximum_object_bytes: Option<u64>,
@@ -288,6 +289,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             maximum_object_bytes,
             object_cache,
         } = options;
+        let durable = cfg!(any(unix, windows)) && stream.durability.guarantees_device_flush();
         let objects = acyclic_objects::local::LocalObjectsLimits {
             durability: publication_object_durability(&root, lifecycle.clone()).await?,
         };
@@ -333,9 +335,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             inner: Arc::new(FsInner {
                 authority: crate::distributed::StreamAuthorityStore::new(stream),
                 objects,
-                capabilities: EmbeddedCapabilities {
-                    durable: cfg!(any(unix, windows)),
-                },
+                capabilities: EmbeddedCapabilities { durable },
                 workspace_namespace: [0; 16],
                 policy_cache: super::policy_cache::PolicyCache::default(),
                 publication_proof: Default::default(),

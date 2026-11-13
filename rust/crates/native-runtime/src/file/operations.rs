@@ -15,6 +15,20 @@ pub enum Durability {
     Barrier,
 }
 
+impl Durability {
+    /// Minimum guarantee of a successful flush with this request on this host.
+    /// Platforms without a weaker ordering primitive perform a full flush.
+    /// A completed operation can report stronger evidence than this minimum.
+    #[must_use]
+    pub const fn minimum_guarantee(self) -> Self {
+        if cfg!(target_vendor = "apple") {
+            self
+        } else {
+            Self::Full
+        }
+    }
+}
+
 /// Flushes file contents and metadata according to `durability`.
 ///
 /// On Apple platforms, Full requires `F_FULLFSYNC`; an unsupported full flush
@@ -103,14 +117,14 @@ fn sync_file_impl(
         })
         .and_then(|completed| meter.check().map(|()| completed));
         #[cfg(any(windows, target_os = "linux"))]
-        return sync_full(file, durability, Some(meter)).map(|()| Durability::Full);
+        return sync_full(file, durability, Some(meter)).map(|()| durability.minimum_guarantee());
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         {
             meter.check()?;
             meter.admit_durability()?;
             return crate::persistence_syscall(|| sync_file_unsequenced(file, durability))
                 .and_then(|()| meter.check())
-                .map(|()| Durability::Full);
+                .map(|()| durability.minimum_guarantee());
         }
     }
     with_file_admission(file, || {
@@ -118,7 +132,7 @@ fn sync_file_impl(
             #[cfg(target_vendor = "apple")]
             return apple::sync_once(file, durability, held, || Ok(()));
             #[cfg(not(target_vendor = "apple"))]
-            sync_file_unsequenced(file, durability).map(|()| Durability::Full)
+            sync_file_unsequenced(file, durability).map(|()| durability.minimum_guarantee())
         })
     })
 }
@@ -205,17 +219,18 @@ fn sync_data_impl(target: SyncTarget<'_>, durability: Durability) -> io::Result<
             #[cfg(target_vendor = "apple")]
             return apple::sync_once(file, durability, target.device(), || Ok(()));
             #[cfg(windows)]
-            return sync_file_unsequenced(file, durability).map(|()| Durability::Full);
+            return sync_file_unsequenced(file, durability)
+                .map(|()| durability.minimum_guarantee());
             #[cfg(target_os = "linux")]
             {
                 use std::os::fd::AsFd as _;
                 crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability)
-                    .map(|()| Durability::Full)
+                    .map(|()| durability.minimum_guarantee())
             }
             #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
             {
                 let _ = durability;
-                file.sync_data().map(|()| Durability::Full)
+                file.sync_data().map(|()| durability.minimum_guarantee())
             }
         })
     })
