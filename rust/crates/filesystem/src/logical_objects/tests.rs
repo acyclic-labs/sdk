@@ -318,6 +318,26 @@ async fn native_local_presence_admits_each_physical_read() -> Result<(), Box<dyn
     }
     let original =
         crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
+    // An ordinary transport cannot substitute for an original native producer.
+    let transport = acyclic_objects::HttpObjects::with_credential_provider(
+        "http://127.0.0.1:1/",
+        acyclic_objects::http::CredentialProvider::new(|| async {
+            panic!("native capability refusal must not dispatch ordinary HTTP");
+        }),
+        Some(4096),
+        None,
+    )?;
+    let unavailable = LogicalObjectStore::new(Arc::new(transport));
+    assert!(matches!(
+        unavailable
+            .contains(
+                object.object_id(),
+                &mut AuthorityWork::native(&original, &cancel),
+            )
+            .await,
+        Err(ObjectStoreError::NativeUnavailable)
+    ));
+    assert_eq!(original.receipt().backend_read_operations, 0);
     cancel.cancel();
     assert!(
         store

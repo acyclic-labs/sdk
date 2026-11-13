@@ -36,6 +36,7 @@ mod medium;
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_error;
+mod native_provider;
 mod observation;
 #[cfg(not(target_arch = "wasm32"))]
 mod operation;
@@ -55,6 +56,7 @@ pub use error::Error;
 pub use medium::{Medium, MediumError, MemoryMedium};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_error::{NativeObjectsCause, NativeObjectsError};
+pub use native_provider::NativeBlobs;
 pub use observation::{Observation, ObservationSource, Observed, ObservedVersion};
 pub use ownership::Guarded;
 #[cfg(not(target_arch = "wasm32"))]

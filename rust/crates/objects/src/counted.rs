@@ -108,58 +108,86 @@ impl<P: Blobs> ExplicitBlobs for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().get_batch(requests).await
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    fn native(&self) -> Option<&dyn crate::NativeBlobs> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.inner()
+                .native()
+                .map(|_| self as &dyn crate::NativeBlobs)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: Blobs> crate::NativeBlobs for Counted<P> {
     fn contains_native(
         &self,
         request: ObjectsNativeRequest<Digest>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
         self.record(RequestClass::Head);
-        self.inner().contains_native(request, meter)
+        self.inner()
+            .native()
+            .ok_or_else(|| NativeObjectsError::from(crate::NativeObjectsCause::Unsupported))?
+            .contains_native(request, meter)
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
         &self,
         request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
         self.record(RequestClass::Data);
-        self.inner().get_native(request, meter)
+        self.inner()
+            .native()
+            .ok_or_else(|| NativeObjectsError::from(crate::NativeObjectsCause::Unsupported))?
+            .get_native(request, meter)
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn get_batch_native(
         &self,
         requests: ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
         self.record(RequestClass::Data);
-        self.inner().get_batch_native(requests, meter)
+        self.inner()
+            .native()
+            .ok_or_else(|| NativeObjectsError::from(crate::NativeObjectsCause::Unsupported))?
+            .get_batch_native(requests, meter)
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn put_native(
         &self,
         request: ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
         self.record(RequestClass::Data);
-        self.inner().put_native(request, meter)
+        self.inner()
+            .native()
+            .ok_or_else(|| NativeObjectsError::from(crate::NativeObjectsCause::Unsupported))?
+            .put_native(request, meter)
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn put_batch_native(
         &self,
         requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         self.record(RequestClass::Data);
-        self.inner().put_batch_native(requests, meter)
+        self.inner()
+            .native()
+            .ok_or_else(|| NativeObjectsError::from(crate::NativeObjectsCause::Unsupported))?
+            .put_batch_native(requests, meter)
     }
-    #[cfg(not(target_arch = "wasm32"))]
     fn retain_native(
         &self,
         request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
         self.record(RequestClass::Data);
-        self.inner().retain_native(request, meter)
+        self.inner()
+            .native()
+            .ok_or_else(|| NativeObjectsError::from(crate::NativeObjectsCause::Unsupported))?
+            .retain_native(request, meter)
     }
 }

@@ -88,7 +88,7 @@ impl<P: Blobs + ?Sized> Provider for P {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let original = *original;
-                let future = self
+                let future = native(self)?
                     .get_native(packet(request, original)?, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?;
                 work.charge(WorkCounters {
@@ -122,7 +122,7 @@ impl<P: Blobs + ?Sized> Provider for P {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let original = *original;
-                let receipt = self
+                let receipt = native(self)?
                     .put_native(packet(request, original)?, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?
                     .await
@@ -153,7 +153,7 @@ impl<P: Blobs + ?Sized> Provider for P {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let original = *original;
-                let future = self
+                let future = native(self)?
                     .get_batch_native(packet(request, original)?, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?;
                 work.charge(WorkCounters {
@@ -202,7 +202,7 @@ impl<P: Blobs + ?Sized> Provider for P {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
                 let original = *original;
-                let results = self
+                let results = native(self)?
                     .put_batch_native(packet(request, original)?, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?
                     .await
@@ -255,7 +255,8 @@ impl<P: Blobs + ?Sized> Provider for P {
                     &original.runtime_meter(),
                 )
                 .map_err(|error| native_error(error, original))?;
-                self.retain_native(request, original.runtime_meter())
+                native(self)?
+                    .retain_native(request, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?
                     .await
                     .map_err(|error| native_error(error, original))?;
@@ -284,7 +285,7 @@ impl<P: Blobs + ?Sized> Provider for P {
         if let KernelAccounting::NativeOriginal { work: original, .. } = work {
             let original = *original;
             let request = crate::kernel::Owned::new(digest, guard(work)?, 0);
-            let future = self
+            let future = native(self)?
                 .contains_native(packet(request, original)?, original.runtime_meter())
                 .map_err(|error| native_error(error, original))?;
             work.charge(WorkCounters {
@@ -306,4 +307,12 @@ impl<P: Blobs + ?Sized> Provider for P {
             Err(error) => Err(ObjectStoreError::LogicalObjects(error).into()),
         }
     }
+}
+
+/// Select original producer custody before admitting any native request.
+#[cfg(not(target_arch = "wasm32"))]
+fn native<P: Blobs + ?Sized>(
+    provider: &P,
+) -> Result<&dyn acyclic_objects::NativeBlobs, ObjectStoreError> {
+    provider.native().ok_or(ObjectStoreError::NativeUnavailable)
 }
