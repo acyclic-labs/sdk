@@ -5,6 +5,7 @@ impl LocalStream {
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
+        reads: Option<Vec<StreamPath>>,
         accepted: bool,
         convert: C,
     ) -> crate::NativeProviderFuture<'_, T, E>
@@ -46,7 +47,19 @@ impl LocalStream {
                 publication_scope(async move {
                     let _input = input;
                     let result = {
-                        let revision = *stream.inner.revision.borrow();
+                        // An unguarded Commit observes nothing before its
+                        // locked plan, which rechecks its key.
+                        let cut = match &reads {
+                            Some(reads) => match provider.guard_cut(&request, reads).await {
+                                Ok(cut) => Some(cut),
+                                Err(error) => {
+                                    return work
+                                        .finish(Err(error))
+                                        .map(|result| result.map_err(E::from));
+                                }
+                            },
+                            None => None,
+                        };
                         let replay = match provider.has_replay(&request.idempotency_key).await {
                             Ok(replay) => replay,
                             Err(error) => {
@@ -59,10 +72,17 @@ impl LocalStream {
                             return Ok(Err(error));
                         }
                         let visibility = stream.inner.visibility.write().await;
-                        if revision != *stream.inner.revision.borrow() {
-                            return work
-                                .finish(Err(StreamError::PrefixNotRetained))
-                                .map(|result| result.map_err(E::from));
+                        if let (Some(cut), Some(reads)) = (cut, &reads) {
+                            let drift = match provider.guard_cut(&request, reads).await {
+                                Ok(now) if now == cut => None,
+                                Ok(_) => Some(StreamError::PrefixNotRetained),
+                                Err(error) => Some(error),
+                            };
+                            if let Some(error) = drift {
+                                return work
+                                    .finish(Err(error))
+                                    .map(|result| result.map_err(E::from));
+                            }
                         }
                         let publication = stream.inner.publication.write().await;
                         let mut result = async {

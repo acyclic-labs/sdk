@@ -440,6 +440,7 @@ impl crate::NativeStreamProvider for LocalStream {
                     None,
                     meter,
                     || futures::future::ready(Ok(())),
+                    None,
                     accepted,
                     Ok,
                 )
@@ -463,7 +464,8 @@ impl crate::NativeStreamProvider for LocalStream {
             request,
             deadline,
             meter,
-            before,
+            before.check,
+            Some(before.reads),
             false,
             crate::WriteOutcome::into_commit,
         )

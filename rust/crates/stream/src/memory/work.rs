@@ -101,6 +101,47 @@ impl MemoryStream {
             .map(|entry| entry.is_some())
     }
 
+    /// The cut a guarded Commit's guard can observe: whether its key has a
+    /// replay, and the tails of the request's own paths (conditions, mutation
+    /// paths and fork sources) and of the paths the guard declares it reads.
+    /// Paths are permanent and tails only grow, so the sum of `tail + 1` over
+    /// present paths moves exactly when one of them changes. Commits anywhere
+    /// else in the store never move it. Both native providers compare this one
+    /// cut before and after the guard.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn guard_cut_locked(
+        &self,
+        state: &State,
+        request: &CommitRequest,
+        reads: &[StreamPath],
+    ) -> Result<GuardCut, StreamError> {
+        let replayed = self
+            .replay(state, request.idempotency_key.as_bytes())?
+            .is_some();
+        let sources = request.mutations().filter_map(|mutation| match mutation {
+            CommitMutation::Fork { source, .. } => Some(source),
+            CommitMutation::Append { .. } => None,
+        });
+        let tails = request
+            .conditions()
+            .map(CommitCondition::path)
+            .chain(request.mutations().map(CommitMutation::path))
+            .chain(sources)
+            .chain(reads)
+            .map(|path| state.tail(path).map_or(0, |tail| u128::from(tail) + 1))
+            .sum();
+        Ok(GuardCut { replayed, tails })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn guard_cut(
+        &self,
+        request: &CommitRequest,
+        reads: &[StreamPath],
+    ) -> Result<GuardCut, StreamError> {
+        self.guard_cut_locked(&*self.state.read().await, request, reads)
+    }
+
     fn publish<T>(
         &self,
         bytes: usize,
@@ -243,4 +284,12 @@ fn inspect<T>(meter: &Arc<dyn NativeReadMeter>, lookup: impl FnOnce() -> T) -> s
     recorded?;
     examined?;
     Ok(value)
+}
+
+/// See [`MemoryStream::guard_cut`].
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GuardCut {
+    replayed: bool,
+    tails: u128,
 }

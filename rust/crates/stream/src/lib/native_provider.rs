@@ -113,8 +113,11 @@ pub trait NativeStreamProvider: StreamProvider {
     }
     /// Executes one canonical native Commit with its owned original guard.
     /// A cached success skips the guard. Otherwise the guard runs once, outside
-    /// publication locks; a changed canonical cut returns `PrefixNotRetained`
-    /// without running the guard again. A fresh invocation may try a new cut.
+    /// publication locks. If a commit lands on one of this request's own paths,
+    /// on a path the guard declares it reads, or under this request's key
+    /// while the guard runs, the invocation returns `PrefixNotRetained`
+    /// without running the guard again; a fresh invocation may try a new cut.
+    /// Commits anywhere else in the store never refuse it.
     /// Callers with a typed guard use [`NativeStreamProviderExt::native_commit_with_guard`].
     fn native_commit_guarded(
         &self,
@@ -152,8 +155,12 @@ pub trait NativeStreamProvider: StreamProvider {
 /// type never reaches a provider's type, and providers compose as
 /// `dyn NativeStreamProvider`. The guard is boxed once per Commit.
 #[cfg(not(target_arch = "wasm32"))]
-pub type NativeCommitGuard =
-    Box<dyn FnMut() -> BoxProviderFuture<'static, Result<(), NativeCommitError>> + Send>;
+pub struct NativeCommitGuard {
+    /// Stream paths the guard reads, beyond the request's own.
+    pub(crate) reads: Vec<StreamPath>,
+    pub(crate) check:
+        Box<dyn FnMut() -> BoxProviderFuture<'static, Result<(), NativeCommitError>> + Send>,
+}
 
 /// A guard's refusal, carried unchanged from the guard back to the caller
 /// that built it. Only [`NativeStreamProviderExt::native_commit_with_guard`] creates one.
@@ -195,6 +202,30 @@ pub trait NativeStreamProviderExt: NativeStreamProvider {
         request: CommitRequest,
         deadline_unix_millis: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        before: F,
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome, E>> + Send + '_
+    where
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        self.native_commit_reading_with_guard(
+            request,
+            Vec::new(),
+            deadline_unix_millis,
+            meter,
+            before,
+        )
+    }
+
+    /// [`Self::native_commit_with_guard`] for a guard that reads `reads`: a
+    /// commit to any of them while the guard runs refuses this invocation too.
+    fn native_commit_reading_with_guard<E, F, Fut>(
+        &self,
+        request: CommitRequest,
+        reads: Vec<StreamPath>,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
     ) -> impl Future<Output = NativeStreamResult<CommitOutcome, E>> + Send + '_
     where
@@ -202,14 +233,17 @@ pub trait NativeStreamProviderExt: NativeStreamProvider {
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let guard: NativeCommitGuard = Box::new(move || {
-            let refusal = before();
-            Box::pin(async move {
-                refusal
-                    .await
-                    .map_err(|error| NativeCommitError::Guard(NativeGuardRefusal(Box::new(error))))
-            })
-        });
+        let guard = NativeCommitGuard {
+            reads,
+            check: Box::new(move || {
+                let refusal = before();
+                Box::pin(async move {
+                    refusal.await.map_err(|error| {
+                        NativeCommitError::Guard(NativeGuardRefusal(Box::new(error)))
+                    })
+                })
+            }),
+        };
         let commit = self.native_commit_guarded(request, deadline_unix_millis, meter, guard);
         async move {
             commit.await.map(|result| {
