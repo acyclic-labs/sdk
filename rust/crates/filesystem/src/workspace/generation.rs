@@ -36,7 +36,7 @@ impl<A, O> Generation<A, O> {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
     /// Keeps the exact observed proof and original collection registration.
-    pub(super) fn observed(
+    pub(crate) fn observed(
         workspace: &Workspace<A, O>,
         checkout: Checkout<A, O>,
         accounting: &mut KernelAccounting<'_>,

@@ -601,6 +601,18 @@ impl MergeDriver for DefaultTextMergeDriver {
     }
 
     fn resolve(&self, conflict: &ConflictView) -> Result<MergeResolution, DriverError> {
+        self.resolve_marked(conflict)
+            .map(|(resolution, _)| resolution)
+    }
+}
+
+impl DefaultTextMergeDriver {
+    /// Resolves like [`MergeDriver::resolve`], and reports whether the
+    /// resolution carries diff3 conflict markers for the author to repair.
+    pub fn resolve_marked(
+        &self,
+        conflict: &ConflictView,
+    ) -> Result<(MergeResolution, bool), DriverError> {
         let (ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
             (&conflict.ours, &conflict.theirs)
         else {
@@ -623,14 +635,13 @@ impl MergeDriver for DefaultTextMergeDriver {
         .map_err(|_| DriverError::Unsupported)?
         {
             ByteMerge::Merged(bytes) if bytes == ours.as_bytes() => {
-                Ok(MergeResolution::Select(ConflictSide::Ours))
+                Ok((MergeResolution::Select(ConflictSide::Ours), false))
             }
             ByteMerge::Merged(bytes) if bytes == theirs.as_bytes() => {
-                Ok(MergeResolution::Select(ConflictSide::Theirs))
+                Ok((MergeResolution::Select(ConflictSide::Theirs), false))
             }
-            ByteMerge::Merged(bytes) | ByteMerge::Conflicted { bytes, .. } => {
-                Ok(MergeResolution::Text(bytes.into()))
-            }
+            ByteMerge::Merged(bytes) => Ok((MergeResolution::Text(bytes.into()), false)),
+            ByteMerge::Conflicted { bytes, .. } => Ok((MergeResolution::Text(bytes.into()), true)),
         }
     }
 }

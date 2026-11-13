@@ -85,9 +85,10 @@ impl MemoryStream {
         }
         let depth = path.as_str().split('/').count();
         let (frames, mut allocation) = self.vector(depth)?;
-        let (mut nodes, claim) = self.vector(depth)?;
+        // Accepted publication may update both the live and canonical views.
+        let (mut nodes, claim) = self.vector(depth.saturating_mul(2))?;
         self.absorb(&mut allocation, claim)?;
-        let (mut branches, claim) = self.vector(depth.saturating_mul(height))?;
+        let (mut branches, claim) = self.vector(depth.saturating_mul(height).saturating_mul(2))?;
         self.absorb(&mut allocation, claim)?;
         let claim = |bytes| self.allocate(bytes);
         let mut builder = NamespaceBuilder::new(&claim);
@@ -101,10 +102,10 @@ impl MemoryStream {
         };
         let dummy = builder.node(blank(), None, None)?;
         let name = SegmentText::new("", &mut builder)?;
-        for _ in 0..depth {
+        for _ in 0..depth.saturating_mul(2) {
             nodes.push(builder.node(blank(), None, None)?);
         }
-        for _ in 0..depth.saturating_mul(height) {
+        for _ in 0..depth.saturating_mul(height).saturating_mul(2) {
             branches.push(branch(
                 name.clone(),
                 dummy.clone(),
@@ -296,6 +297,10 @@ struct NamespaceFrame {
 #[derive(Clone, Default)]
 struct Namespace {
     roots: Index,
+    // Same index mechanism, containing only canonical publications. Private
+    // writes never enter it, so snapshots cannot pin their names or payloads.
+    // None means the live roots are already canonical, without another Arc owner.
+    canonical: Option<Index>,
 }
 struct NamespaceCut {
     paths: Namespace,
@@ -304,7 +309,7 @@ struct NamespaceCut {
 impl NamespaceCut {
     fn capture(state: &State) -> Self {
         Self {
-            paths: state.paths.clone(),
+            paths: state.paths.canonical(),
             hierarchy_version: state.hierarchy_version,
         }
     }
@@ -527,7 +532,56 @@ impl Namespace {
         &mut self,
         path: &StreamPath,
         node: Arc<NamespaceNode>,
-        changed_at: u64,
+        changed_at: Option<u64>,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<(), StreamError> {
+        let canonical = changed_at.map(|_| node.clone());
+        self.put_views(path, node, canonical, changed_at, build)
+    }
+    fn canonical(&self) -> Self {
+        Self {
+            roots: self.canonical.as_ref().unwrap_or(&self.roots).clone(),
+            canonical: None,
+        }
+    }
+    fn shared_views(&self) -> bool {
+        self.canonical.is_none()
+    }
+    fn put_views(
+        &mut self,
+        path: &StreamPath,
+        node: Arc<NamespaceNode>,
+        canonical: Option<Arc<NamespaceNode>>,
+        changed_at: Option<u64>,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<(), StreamError> {
+        let shared = self.shared_views();
+        if canonical.is_none() && shared {
+            self.canonical = Some(self.roots.clone());
+        }
+        self.replace(path, Some(node), changed_at, build)?;
+        if let Some(node) = canonical {
+            if !shared {
+                let mut published = self.canonical();
+                published.replace(path, Some(node), changed_at, build)?;
+                self.canonical = Some(published.roots);
+            }
+        }
+        Ok(())
+    }
+    /// Removes a present `path` with its whole subtree; its ancestors remain.
+    fn remove(
+        &mut self,
+        path: &StreamPath,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<(), StreamError> {
+        self.replace(path, None, None, build)
+    }
+    fn replace(
+        &mut self,
+        path: &StreamPath,
+        node: Option<Arc<NamespaceNode>>,
+        changed_at: Option<u64>,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
         build.with_frames(path.as_str().split('/').count(), |build, frames| {
@@ -554,15 +608,17 @@ impl Namespace {
             let mut next = node;
             let mut root = None;
             while let Some(frame) = frames.pop() {
-                root = index_put(&frame.index, frame.name, Some(next), build)?;
+                root = index_put(&frame.index, frame.name, next.take(), build)?;
                 if let Some(frame) = frames.last() {
                     let parent = frame.parent.as_ref().ok_or(StreamError::Unavailable)?;
                     let children = root.take();
                     let mut data = parent.data.clone();
-                    if width(&children) != width(&parent.children) {
+                    if let Some(changed_at) = changed_at
+                        && width(&children) != width(&parent.children)
+                    {
                         data.changed_at = changed_at;
                     }
-                    next = build.node(data, children, parent.origin.clone())?;
+                    next = Some(build.node(data, children, parent.origin.clone())?);
                 } else {
                     break;
                 }
@@ -579,6 +635,7 @@ impl Namespace {
             data,
             None,
             changed_at,
+            true,
             &mut NamespaceBuilder::new(&|_| Ok(None)),
         )
         .expect("validated snapshot namespace");
@@ -589,14 +646,23 @@ impl Namespace {
         mut data: PathState,
         origin: Option<ForkMarker>,
         changed_at: u64,
+        durable: bool,
         build: &mut NamespaceBuilder<'_>,
     ) -> Result<(), StreamError> {
         let existing = self.node(path);
         let children = existing.and_then(|n| n.children.clone());
         let origin = origin.or_else(|| existing.and_then(|n| n.origin.clone()));
         data.changed_at = changed_at;
+        let canonical = if durable && !self.shared_views() {
+            let published = self.canonical();
+            let children = published.node(path).and_then(|node| node.children.clone());
+            Some(build.node(data.clone(), children, origin.clone())?)
+        } else {
+            None
+        };
         let node = build.node(data, children, origin)?;
-        self.put(path, node, changed_at, build)
+        let canonical = canonical.or_else(|| durable.then(|| node.clone()));
+        self.put_views(path, node, canonical, durable.then_some(changed_at), build)
     }
     fn excluded(
         node: &Arc<NamespaceNode>,

@@ -549,6 +549,30 @@ pub struct HashedObject {
 }
 
 impl HashedObject {
+    pub(crate) fn from_proofs(
+        id: ObjectId,
+        plaintext: acyclic_stream::SealedBytes,
+        stored: Option<acyclic_stream::SealedBytes>,
+    ) -> Option<Self> {
+        if Digest::from_bytes(*plaintext.digest()) != id.digest {
+            return None;
+        }
+        let storage = match (id.storage, stored) {
+            (None, None) => None,
+            (Some(association), Some(stored))
+                if association.locator == Digest::from_bytes(*stored.digest()) =>
+            {
+                Some((association, stored))
+            }
+            _ => return None,
+        };
+        Some(Self {
+            kind: id.kind,
+            sealed: plaintext,
+            storage,
+        })
+    }
+
     /// Hashes `bytes` as one object of `kind`.
     #[must_use]
     pub fn new(kind: ObjectKind, bytes: acyclic_stream::OwnedBytes) -> Self {

@@ -1,5 +1,105 @@
 use super::*;
 
+async fn construction_custody_survives_its_frames(
+    drop_early: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::async_storage::AuthorityFrame;
+    use crate::kernel::allocation::KernelAccounting;
+
+    let directory = tempfile::tempdir()?;
+    let (store, _provider) = open_staged(directory.path()).await?;
+    let token = CancellationToken::new();
+    let native = NativeMaterializationWork::new(native_write_budget(), &token)
+        .map_err(|(error, _)| error)?;
+    let baseline = native.live_allocation_bytes();
+    let object = HashedObject::new(
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"unfinished child"),
+    );
+    let mut original = KernelAccounting::native(&native, &token);
+    {
+        let mut frame = AuthorityFrame::borrow(&mut original)?;
+        {
+            let mut scope = frame.scope()?;
+            store.put_hashed(object.clone(), &mut scope).await?;
+            if drop_early {
+                drop(std::mem::take(&mut scope.construction));
+            }
+        }
+    }
+    native.receipt();
+    assert!(
+        native.live_allocation_bytes() > baseline,
+        "construction roots retired before their outer operation"
+    );
+
+    let mut continuation =
+        crate::kernel::allocation::retained::OwnedAccounting::take_branch(&mut original, &token)?;
+    drop(original);
+    native.receipt();
+    assert!(
+        native.live_allocation_bytes() > baseline,
+        "dropping the caller retired accepted construction roots"
+    );
+    {
+        let mut accounting = continuation.borrow();
+        let mut frame = AuthorityFrame::borrow(&mut accounting)?;
+        store
+            .put_hashed(
+                HashedObject::new(
+                    ObjectKind::BlobChunk,
+                    OwnedBytes::from_static(b"continuation child"),
+                ),
+                &mut frame,
+            )
+            .await?;
+    }
+    let mut original = KernelAccounting::native(&native, &token);
+    continuation.restore(&mut original)?;
+
+    // A suspended nested borrow restores the same physical root owner even
+    // when cancellation prevents any subsequent admission or completion call.
+    let (_producer, receiver) = tokio::sync::oneshot::channel::<()>();
+    let mut pending = Box::pin(async {
+        let mut frame = AuthorityFrame::borrow(&mut original)?;
+        let mut accounting = frame.accounting();
+        let mut nested = AuthorityFrame::borrow(&mut accounting)?;
+        store.put_hashed(object, &mut nested).await?;
+        let _ = receiver.await;
+        Ok::<_, crate::FsError>(())
+    });
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    token.cancel();
+    drop(pending);
+    native.receipt();
+    assert!(
+        native.live_allocation_bytes() > baseline,
+        "withdrawal lost the original construction roots"
+    );
+    drop(original);
+    native.receipt();
+    assert_eq!(
+        native.live_allocation_bytes(),
+        baseline,
+        "construction roots retained backing after their operation ended"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_construction_roots_survive_nested_frames_and_cancelled_withdrawal()
+-> Result<(), Box<dyn std::error::Error>> {
+    construction_custody_survives_its_frames(false).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "construction roots retired before their outer operation")]
+async fn construction_negative_control_erases_the_root_before_frame_restore() {
+    construction_custody_survives_its_frames(true)
+        .await
+        .expect("real local staging fixture");
+}
+
 fn native_write_budget() -> WorkBudget {
     WorkBudget {
         backend_read_operations: 128,
@@ -60,7 +160,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
     assert_eq!(original.live_allocation_bytes(), live);
     assert!(store.index().objects.contains_key(&id));
     let collecting = store.collection.begin().await;
-    let (sweep, _) = collecting.sweepable(Vec::new()).await;
+    let (sweep, _) = collecting.sweepable(Vec::<crate::Digest>::new()).await;
     for (publication, exit, hold_spill) in [
         (false, 0, true),
         (false, 1, true),
@@ -177,7 +277,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
-        assert!(matches!(store.lookup(id), Lookup::Resident(_)));
+        assert!(matches!(store.lookup(id), Lookup::Resident { .. }));
     }
     drop(sweep);
     drop(collecting);
@@ -234,7 +334,7 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
         before.allocation_operations
     );
     let alias = match store.lookup(object_id) {
-        Lookup::Resident(bytes) => bytes,
+        Lookup::Resident { bytes, .. } => bytes,
         _ => return Err("native admission did not remain resident".into()),
     };
     assert_eq!(alias.as_ptr(), bytes.as_ptr());
@@ -311,7 +411,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     // Admission crosses the original resident window and writes its real
     // spill. Publication must authenticate those physical bytes once while
     // carrying the remaining resident seal without another hash.
-    assert_eq!(store.index().spilled_objects, 2);
+    assert_eq!(store.index().spilled.len(), 2);
     assert!(store.spill_io.read().await.is_some());
     let spilled_bytes = store.index().spill_end;
     for truncated in [false, true] {
@@ -363,7 +463,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
             NativeMaterializationWork::accounting_state_bytes()
         );
         assert_eq!(store.index().objects.len(), closure.len());
-        assert_eq!(store.index().spilled_objects, 2);
+        assert_eq!(store.index().spilled.len(), 2);
         assert_eq!(store.index().spill_end, spilled_bytes);
         for &id in &closure {
             assert!(
@@ -398,7 +498,7 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
         )
         .await?;
     assert!(store.index().objects.is_empty());
-    assert_eq!(store.index().spilled_objects, 0);
+    assert_eq!(store.index().spilled.len(), 0);
     assert_eq!(store.index().spill_end, 0);
     assert!(store.spill_io.read().await.is_none());
     assert_eq!(work.receipt().object_bytes_read, spilled_bytes);
@@ -452,7 +552,7 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
         assert_eq!(unfunded.spent().backend_write_operations, 0);
         assert_eq!(unfunded.spent().object_bytes_written, 0);
         assert_eq!(store.index().order.len(), ids.len());
-        assert_eq!(store.index().spilled_objects, 0);
+        assert_eq!(store.index().spilled.len(), 0);
         assert!(spill_file.is_none());
     }
     let mut budget = native_write_budget();
@@ -467,12 +567,12 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
     assert_eq!(denied.receipt().backend_write_operations, 0);
     assert_eq!(denied.receipt().object_bytes_written, 0);
     assert_eq!(store.index().spill_end, 0);
-    assert_eq!(store.index().spilled_objects, 0);
+    assert_eq!(store.index().spilled.len(), 0);
     assert_eq!(store.index().order.len(), ids.len());
     // A refused spill leaves no spill file, so it holds no descriptor.
     assert!(spill_file.is_none());
     for id in &ids {
-        assert!(matches!(store.lookup(*id), Lookup::Resident(_)));
+        assert!(matches!(store.lookup(*id), Lookup::Resident { .. }));
     }
     let work = NativeMaterializationWork::new(native_write_budget(), &token)
         .map_err(|(error, _)| error)?;
@@ -481,7 +581,7 @@ async fn spill_denial_precedes_physical_write_and_restores_victims()
         .await?;
     assert!(work.receipt().backend_write_operations > 0);
     assert_eq!(work.receipt().object_bytes_written, store.index().spill_end);
-    assert!(store.index().spilled_objects > 0);
+    assert!(!store.index().spilled.is_empty());
     Ok(())
 }
 
@@ -513,7 +613,7 @@ async fn native_flush_spilled_read_denial_keeps_private_remainder()
     assert_eq!(work.receipt().backend_write_operations, 0);
     assert_eq!(work.receipt().object_bytes_read, 0);
     assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
-    assert_eq!(store.index().spilled_objects, 1);
+    assert_eq!(store.index().spilled.len(), 1);
     Ok(())
 }
 
@@ -528,6 +628,7 @@ impl AsyncObjectStore for CancelAfterNativePut {
         requires_child_first_publication,
         maximum_reference_bytes,
         prepare_hashed,
+        restore_hashed,
         put,
         read,
         read_many,

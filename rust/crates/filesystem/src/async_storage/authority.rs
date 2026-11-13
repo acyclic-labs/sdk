@@ -173,6 +173,29 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         }
     }
 
+    /// Creates a fork's authority as an ephemeral subtree held by the
+    /// returned lease, taken before its creation commit: never journalled or
+    /// listed, it leaves no durable trace and ends when the lease is dropped
+    /// or the process dies. Backends that cannot hold one refuse.
+    fn fork_ephemeral(
+        &self,
+        _fork: EphemeralForkCommit,
+        _work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<acyclic_stream::EphemeralLease, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
+            "authority backend cannot hold an ephemeral fork",
+        )))
+    }
+
+    /// Whether `authority` is ephemeral, so nothing it publishes is durable
+    /// and its publications need no durable object closure.
+    fn is_ephemeral(
+        &self,
+        _authority: AuthorityId,
+    ) -> impl Future<Output = Result<bool, crate::AuthorityStoreError>> + ProviderTask {
+        std::future::ready(Ok(false))
+    }
+
     /// Retires authority metadata after workspace deletion is durable.
     fn retire_authority(
         &self,

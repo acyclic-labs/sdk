@@ -94,15 +94,24 @@ pub(in crate::native_mount) struct DarwinMountSession {
     pub(super) unmount: Arc<DriverSessionResources>,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
     pub(super) native_root_identity: Option<crate::NativeRootIdentity>,
+    pub(super) shared: Option<super::shared_instance::SharedDarwinView>,
 }
 
 impl DarwinMountSession {
     pub(in crate::native_mount) fn has_retirement_owner(&self) -> bool {
-        self.thread.is_some()
+        self.shared.is_none() && self.thread.is_some()
+    }
+
+    fn context(&self) -> Result<Arc<DarwinMountContext>, NativeMountError> {
+        match &self.shared {
+            Some(view) if view.is_listed() => Ok(Arc::clone(&view.context)),
+            Some(_) => Err(NativeMountError::Lifecycle("view is stopped")),
+            None => self.unmount.context(),
+        }
     }
 
     pub(in crate::native_mount) fn invalidate(&self, _path: &[u8]) -> Result<(), NativeMountError> {
-        let context = self.unmount.context()?;
+        let context = self.context()?;
         context
             .run(false, |work| {
                 work.charge(WRITE_WORK)?;
@@ -129,7 +138,7 @@ impl DarwinMountSession {
         work: &Work,
     ) -> Result<NativeMountWorkScope, NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
-        let context = self.unmount.context()?;
+        let context = self.context()?;
         if self.unmount.pointer() == 0 {
             return Err(NativeMountError::Lifecycle("session is stopped"));
         }
@@ -138,7 +147,7 @@ impl DarwinMountSession {
 
     pub(in crate::native_mount) fn revalidate(&self, work: &Work) -> Result<(), NativeMountError> {
         let _active = self.begin_original_work(work)?;
-        let context = self.unmount.context()?;
+        let context = self.context()?;
         context.source.fence_changes_with_meter(work)?;
         context.revalidate(work).map(|_| ())
     }
@@ -170,7 +179,10 @@ impl DarwinMountSession {
     }
 
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {
-        self.unmount.state().control.detached
+        self.shared.as_ref().map_or_else(
+            || self.unmount.state().control.detached,
+            |view| !view.is_listed(),
+        )
     }
 
     pub(in crate::native_mount) fn prepare_destination_cleanup(
@@ -178,6 +190,9 @@ impl DarwinMountSession {
         destination: &Path,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
+        if self.shared.is_some() {
+            return Ok(());
+        }
         // Lock order: customer session -> driver state -> original work ledger.
         self.unmount
             .state()
@@ -189,6 +204,9 @@ impl DarwinMountSession {
     }
 
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {
+        if let Some(view) = &self.shared {
+            return view.retirement_ownership();
+        }
         self.unmount
             .state()
             .retirement
@@ -206,6 +224,9 @@ impl DarwinMountSession {
         work: &crate::native_mount::NativeSessionStopWork<'_>,
     ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
         work.check_wait()?;
+        if let Some(view) = &mut self.shared {
+            return view.stop(work.wait());
+        }
         let wait = work.wait();
         let events = Arc::clone(&self.unmount);
         let work = ProbeWork::Cleanup(&events.credit, wait);
@@ -351,6 +372,9 @@ impl Drop for DarwinMountSession {
         reason = "Interrupt without a wait token consumes birth-paid credit and has no fallible path."
     )]
     fn drop(&mut self) {
+        if self.shared.is_some() {
+            return;
+        }
         self.unmount.retirement_wake.notify();
         self.unmount.changed.notify_all();
         if !self.unmount.provider_exited.load(Ordering::Acquire) {

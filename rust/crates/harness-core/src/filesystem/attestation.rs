@@ -148,6 +148,15 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.inner.durability_barrier().await
     }
+    async fn lease_ephemeral(
+        &self,
+        root: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::EphemeralLease, StreamError> {
+        self.inner.lease_ephemeral(root).await
+    }
+    async fn is_ephemeral(&self, path: &acyclic_stream::StreamPath) -> Result<bool, StreamError> {
+        self.inner.is_ephemeral(path).await
+    }
 
     async fn inspect_idempotency(
         &self,

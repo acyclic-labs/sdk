@@ -427,10 +427,7 @@ impl LocalWorkspace {
             .view()
             .open_related(
                 self.view().workspace().clone(),
-                &mut KernelAccounting::NativeOriginal {
-                    work: &work,
-                    cancellation: &cancellation,
-                },
+                &mut KernelAccounting::native(&work, &cancellation),
             )
             .await
             .map_err(storage)?;

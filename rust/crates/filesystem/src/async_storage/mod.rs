@@ -24,7 +24,10 @@ pub use cache::{
     DecodedCacheAdmission, DecodedCacheKey, DecodedCacheLookup, DecodedCacheMiss, DecodedCacheValue,
 };
 mod fork;
-pub use fork::{GenerationFork, GenerationForkSource, WorkspaceForkCommit, WorkspaceForkOutcome};
+pub use fork::{
+    EphemeralForkCommit, GenerationFork, GenerationForkSource, WorkspaceForkCommit,
+    WorkspaceForkOutcome,
+};
 pub(crate) use fork::{first_record, seal, workspace_fork};
 mod work;
 pub(crate) use work::AuthorityFrame;
@@ -44,6 +47,7 @@ mod policy;
 pub(crate) use policy::{CutEvidence, ScopedCuts};
 pub use policy::{PolicyCut, PolicyGroup, PolicyOwner};
 mod objects;
+pub(crate) use objects::restore_plain;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod erased_objects;
 pub use erased_objects::{DynObjectStore, SharedObjectStore, shared_objects};

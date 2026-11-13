@@ -108,6 +108,7 @@ impl<'a> KernelAccounting<'a> {
         cancellation: &'a crate::CancellationToken,
     ) -> Self {
         Self::Standalone {
+            construction: Default::default(),
             allocations: AllocationLedger::default(),
             work: WorkCounters::UNCHARGED,
             budget,
@@ -124,6 +125,7 @@ impl<'a> KernelAccounting<'a> {
         cancellation: &'a crate::CancellationToken,
     ) -> Self {
         Self::BorrowedStandalone {
+            construction: Default::default(),
             allocations,
             work,
             budget,
@@ -132,11 +134,39 @@ impl<'a> KernelAccounting<'a> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native(
+    /// Borrows the original native invocation without allocating construction roots.
+    pub fn native(
         work: &'a crate::NativeMaterializationWork,
         cancellation: &'a crate::CancellationToken,
     ) -> Self {
-        Self::NativeOriginal { work, cancellation }
+        Self::NativeOriginal {
+            work,
+            cancellation,
+            construction: Default::default(),
+        }
+    }
+
+    pub(crate) fn with_construction(
+        mut self,
+        roots: &'a mut crate::collection::ConstructionRoots,
+    ) -> Self {
+        let construction = match &mut self {
+            Self::Standalone { construction, .. }
+            | Self::BorrowedStandalone { construction, .. } => construction,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { construction, .. } => construction,
+        };
+        *construction = crate::collection::ConstructionScope::Borrowed(roots);
+        self
+    }
+
+    pub(crate) fn construction_roots(&mut self) -> &mut crate::collection::ConstructionRoots {
+        match self {
+            Self::Standalone { construction, .. }
+            | Self::BorrowedStandalone { construction, .. } => construction.roots(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { construction, .. } => construction.roots(),
+        }
     }
 
     #[inline]
@@ -148,7 +178,9 @@ impl<'a> KernelAccounting<'a> {
                 cancellation.check().map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, cancellation } => {
+            Self::NativeOriginal {
+                work, cancellation, ..
+            } => {
                 work.admit(WorkCounters::UNCHARGED)?;
                 cancellation.check()?;
                 Ok(())
@@ -180,12 +212,14 @@ impl<'a> KernelAccounting<'a> {
                 work,
                 budget,
                 cancellation,
+                ..
             } => Some((allocations, work, *budget, cancellation)),
             Self::BorrowedStandalone {
                 allocations,
                 work,
                 budget,
                 cancellation,
+                ..
             } => Some((allocations, work, *budget, cancellation)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { .. } => None,
@@ -245,6 +279,7 @@ impl<'a> KernelAccounting<'a> {
                 work,
                 budget,
                 cancellation,
+                ..
             } => {
                 allocations
                     .record_owned_bytes(bytes, work)
@@ -262,6 +297,7 @@ impl<'a> KernelAccounting<'a> {
                 work,
                 budget,
                 cancellation,
+                ..
             } => {
                 allocations
                     .record_owned_bytes(bytes, work)
@@ -275,7 +311,9 @@ impl<'a> KernelAccounting<'a> {
                 ))
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, cancellation } => {
+            Self::NativeOriginal {
+                work, cancellation, ..
+            } => {
                 let (allocation, result) = work.record_completed_allocation(bytes);
                 Ok((
                     KernelOwnedAllocation::NativeOriginal(allocation),
@@ -300,6 +338,7 @@ impl<'a> KernelAccounting<'a> {
                     work,
                     budget,
                     cancellation,
+                    ..
                 },
                 KernelOwnedAllocation::Standalone,
             ) => {
@@ -323,6 +362,7 @@ impl<'a> KernelAccounting<'a> {
                     work,
                     budget,
                     cancellation,
+                    ..
                 },
                 KernelOwnedAllocation::Standalone,
             ) => {
@@ -342,7 +382,9 @@ impl<'a> KernelAccounting<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             (
-                Self::NativeOriginal { work, cancellation },
+                Self::NativeOriginal {
+                    work, cancellation, ..
+                },
                 KernelOwnedAllocation::NativeOriginal(allocation),
             ) => {
                 if !allocation.work().shares_ledger(work) {
@@ -415,7 +457,9 @@ impl<'a> KernelAccounting<'a> {
                 cancellation.check().map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, cancellation } => {
+            Self::NativeOriginal {
+                work, cancellation, ..
+            } => {
                 work.record_admitted(delta)?;
                 work.admit(WorkCounters::UNCHARGED)?;
                 cancellation.check().map_err(Into::into)
@@ -447,7 +491,9 @@ impl<'a> KernelAccounting<'a> {
                 work.charge(&delta, budget).map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, cancellation } => {
+            Self::NativeOriginal {
+                work, cancellation, ..
+            } => {
                 #[cfg(all(test, loom))]
                 if charge_model::split_charge() {
                     work.admit(WorkCounters::UNCHARGED)?;
@@ -481,7 +527,10 @@ impl<'a> KernelAccounting<'a> {
             return Ok(output);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Self::NativeOriginal { work, cancellation } = self {
+        if let Self::NativeOriginal {
+            work, cancellation, ..
+        } = self
+        {
             return super::effects::perform(work, cancellation, delta, effect);
         }
         self.admit(delta)?;
@@ -545,7 +594,9 @@ impl<'a> KernelAccounting<'a> {
                 work.admit(&delta, budget).map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, cancellation } => work.state(|state| {
+            Self::NativeOriginal {
+                work, cancellation, ..
+            } => work.state(|state| {
                 // Keep existing ledger failures before caller cancellation,
                 // and caller cancellation before the proposed work's limit.
                 let native = crate::NativeTreeMaterializationError::from;
@@ -565,6 +616,7 @@ impl<'a> KernelAccounting<'a> {
                 allocations,
                 budget,
                 cancellation,
+                ..
             } => {
                 cancellation.check()?;
                 let mut remaining = work.remaining(*budget)?;
@@ -579,6 +631,7 @@ impl<'a> KernelAccounting<'a> {
                 allocations,
                 budget,
                 cancellation,
+                ..
             } => {
                 cancellation.check()?;
                 let mut remaining = work.remaining(*budget)?;
@@ -589,7 +642,9 @@ impl<'a> KernelAccounting<'a> {
                 Ok(remaining)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, cancellation } => work.state(|state| {
+            Self::NativeOriginal {
+                work, cancellation, ..
+            } => work.state(|state| {
                 let native = crate::NativeTreeMaterializationError::from;
                 state.admit(WorkCounters::UNCHARGED).map_err(native)?;
                 cancellation.check()?;
