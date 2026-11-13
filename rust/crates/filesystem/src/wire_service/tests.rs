@@ -223,59 +223,92 @@ async fn handshake_refuses_incomplete_identity_and_unsupported_requirements()
 }
 
 #[tokio::test]
-async fn required_durability_survives_workspace_restart() -> Result<(), Box<dyn std::error::Error>>
-{
-    let directory = tempfile::tempdir()?;
-    let options = crate::LocalOptions::new(directory.path());
-    let filesystem = Fs::local(options.clone()).await?;
-    let service = FilesystemWireService::new(filesystem, FilesystemWireLimits::default())?;
-    let mut request = handshake_request();
-    let durable = protocol::Capability {
-        name: "filesystem.durable".to_owned(),
-        version: "1".to_owned(),
-    };
-    request
-        .protocol
-        .as_mut()
-        .ok_or("missing handshake")?
-        .required
-        .as_mut()
-        .ok_or("missing requirements")?
-        .capabilities
-        .push(durable.clone());
-    let response = service.handshake(Request::new(request)).await?.into_inner();
-    assert!(
-        response
+async fn required_durability_tracks_native_policy_and_survives_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    for policy in [
+        acyclic_stream::LocalDurability::FullFlush,
+        acyclic_stream::LocalDurability::Barrier,
+    ] {
+        let directory = tempfile::tempdir()?;
+        let mut options = crate::LocalOptions::new(directory.path());
+        options.stream.durability = policy;
+        let durable_expected = policy == acyclic_stream::LocalDurability::FullFlush
+            || cfg!(not(target_vendor = "apple"));
+        let filesystem = Fs::local(options.clone()).await?;
+        let service = FilesystemWireService::new(filesystem, FilesystemWireLimits::default())?;
+        let mut request = handshake_request();
+        let durable = protocol::Capability {
+            name: "filesystem.durable".to_owned(),
+            version: "1".to_owned(),
+        };
+        request
             .protocol
-            .and_then(|response| response.supported)
-            .ok_or("missing advertised capabilities")?
+            .as_mut()
+            .ok_or("missing handshake")?
+            .required
+            .as_mut()
+            .ok_or("missing requirements")?
             .capabilities
-            .contains(&durable)
-    );
-    let created = service
-        .create_workspace(Request::new(wire::CreateWorkspaceRequest {
-            name: "persistent-workspace".to_owned(),
-            profile: wire::FilesystemProfile::Portable as i32,
-            operation: operation(1),
-        }))
-        .await?
-        .into_inner()
-        .workspace
-        .ok_or("missing workspace")?;
-    drop(service);
-    let reopened =
-        FilesystemWireService::new(Fs::local(options).await?, FilesystemWireLimits::default())?;
-    let observed = reopened
-        .open_workspace(Request::new(wire::OpenWorkspaceRequest {
-            selector: Some(wire::open_workspace_request::Selector::Name(
-                "persistent-workspace".to_owned(),
-            )),
-        }))
-        .await?
-        .into_inner()
-        .workspace
-        .ok_or("missing reopened workspace")?;
-    assert_eq!(created.workspace, observed.workspace);
+            .push(durable.clone());
+        let required_response = service.handshake(Request::new(request)).await;
+        if !durable_expected {
+            assert_eq!(
+                required_response
+                    .expect_err("barrier cannot promise device flush")
+                    .code(),
+                tonic::Code::FailedPrecondition
+            );
+            let discovered = service
+                .handshake(Request::new(handshake_request()))
+                .await?
+                .into_inner();
+            assert!(
+                !discovered
+                    .protocol
+                    .and_then(|response| response.supported)
+                    .ok_or("missing advertised capabilities")?
+                    .capabilities
+                    .contains(&durable)
+            );
+        } else {
+            let response = required_response?.into_inner();
+            assert!(
+                response
+                    .protocol
+                    .and_then(|response| response.supported)
+                    .ok_or("missing advertised capabilities")?
+                    .capabilities
+                    .contains(&durable)
+            );
+        }
+        let created = service
+            .create_workspace(Request::new(wire::CreateWorkspaceRequest {
+                name: "persistent-workspace".to_owned(),
+                profile: wire::FilesystemProfile::Portable as i32,
+                operation: operation(1),
+            }))
+            .await?
+            .into_inner()
+            .workspace
+            .ok_or("missing workspace")?;
+        drop(service);
+        if !durable_expected {
+            continue;
+        }
+        let reopened =
+            FilesystemWireService::new(Fs::local(options).await?, FilesystemWireLimits::default())?;
+        let observed = reopened
+            .open_workspace(Request::new(wire::OpenWorkspaceRequest {
+                selector: Some(wire::open_workspace_request::Selector::Name(
+                    "persistent-workspace".to_owned(),
+                )),
+            }))
+            .await?
+            .into_inner()
+            .workspace
+            .ok_or("missing reopened workspace")?;
+        assert_eq!(created.workspace, observed.workspace);
+    }
     Ok(())
 }
 

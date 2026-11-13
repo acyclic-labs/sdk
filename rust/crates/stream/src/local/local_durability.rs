@@ -10,6 +10,17 @@ pub enum LocalDurability {
     Barrier,
 }
 
+impl LocalDurability {
+    /// Whether successful publication guarantees a storage-device flush.
+    #[must_use]
+    pub const fn guarantees_device_flush(self) -> bool {
+        matches!(
+            native_durability(self).minimum_guarantee(),
+            acyclic_native_runtime::Durability::Full
+        )
+    }
+}
+
 tokio::task_local! {
     /// Whether mutations made on this task leave their frames unflushed; see
     static DEFERRED: Deferral;

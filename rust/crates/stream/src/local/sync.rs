@@ -55,7 +55,7 @@ fn sync_file_data(
     })
 }
 
-fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
+const fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     match durability {
         LocalDurability::FullFlush => acyclic_native_runtime::Durability::Full,
         LocalDurability::Barrier => acyclic_native_runtime::Durability::Barrier,
