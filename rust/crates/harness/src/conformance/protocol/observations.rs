@@ -59,7 +59,11 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                         ExecutionPayloadField::Invocation,
                     )
                     .await?;
-                    original.descriptor().verify(&bytes, &mut None)?;
+                    if bytes != endpoint.read_file(agent, original).await? {
+                        return Err(
+                            "execution reader changed the original invocation envelope".into()
+                        );
+                    }
                     let recorded: RecordedInvocation = serde_json::from_slice(&bytes)?;
                     if recorded.metadata != super::invocation_metadata()
                         || recorded.target.is_some()
@@ -203,16 +207,14 @@ async fn read(
     sequence: u64,
     field: ExecutionPayloadField,
 ) -> Result<Vec<u8>> {
-    super::read(
-        endpoint,
-        agent,
-        ReadTarget::Execution {
-            input,
-            sequence,
-            field,
-        },
-    )
-    .await
+    let reply = call(endpoint, &command(agent, input, sequence, field)).await??;
+    let (bytes, length) = reply.content()?;
+    // The shared echo fixture's payloads fit one ordinary range. A truncated
+    // result fails instead of being certified from a matching prefix.
+    if bytes.len() as u64 != length {
+        return Err("the shared tool payload was truncated".into());
+    }
+    Ok(bytes)
 }
 
 async fn refuse(

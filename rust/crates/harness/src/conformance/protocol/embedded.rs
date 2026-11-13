@@ -289,6 +289,16 @@ impl Endpoint for Embedded {
     fn drain<'a>(&'a self, agent: &'a AgentPath) -> BoxProviderFuture<'a, Result> {
         Box::pin(self.deliver(agent))
     }
+    fn read_file<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        file: &'a FileRef,
+    ) -> BoxProviderFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            let (bytes, _) = self.bound.read_file(agent, file, 0, u64::MAX).await?;
+            Ok(bytes)
+        })
+    }
     fn effects(&self) -> BoxProviderFuture<'_, Result<u64>> {
         Box::pin(async { Ok(self.effects.load(Ordering::SeqCst) as u64) })
     }

@@ -193,7 +193,8 @@ async function endpoint(env: Env, policy: Preset["approval_policy"], name = `pro
   await agent.create("protocol-root");
   const ledger = env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite");
   return { binding: () => agent.binding(), call: (invocation: Uint8Array) => agent.call(invocation),
-    provider: () => streamLedgerPort(ledger, ""), drain: () => agent.wake(), effects: () => agent.effects() };
+    provider: () => streamLedgerPort(ledger, ""), drain: () => agent.wake(),
+    readFile: (_agent: string, file: WasmFileRefWire) => agent.readFile(file), effects: () => agent.effects() };
 }
 
 export class Suite extends DurableObject {

@@ -6,9 +6,8 @@ use acyclic_auth::addressing::{
 };
 
 const DOMAIN: &str = "run.example.com";
-type CheckResult = Result<(), Box<dyn std::error::Error>>;
 
-fn host_url_boundary() -> CheckResult {
+fn host_url_boundary() {
     let invalid = "xn--a.account.example.com";
     assert!(
         invalid
@@ -22,12 +21,13 @@ fn host_url_boundary() -> CheckResult {
         "URL-incompatible A-label must retain typed refusal"
     );
     let valid = "xn--caf-dma.account.example.com";
-    assert_eq!(CanonicalHost::parse(valid)?.as_str(), valid);
+    assert_eq!(CanonicalHost::parse(valid).unwrap().as_str(), valid);
     assert_eq!(
-        url::Url::parse(&format!("https://{valid}"))?.host_str(),
+        url::Url::parse(&format!("https://{valid}"))
+            .unwrap()
+            .host_str(),
         Some(valid)
     );
-    Ok(())
 }
 
 fn header<T>(
@@ -35,13 +35,10 @@ fn header<T>(
     offset: usize,
     invalid: IdentityError,
     decode: impl Fn(&[u8]) -> Result<T, IdentityError>,
-) -> CheckResult {
-    let mut header = bytes
-        .get(..=offset)
-        .ok_or("missing identity header")?
-        .to_vec();
+) {
+    let mut header = bytes[..=offset].to_vec();
     for other in [0, 2, u8::MAX] {
-        *header.get_mut(offset).ok_or("missing identity version")? = other;
+        header[offset] = other;
         assert!(
             matches!(decode(&header), Err(IdentityError::UnsupportedVersion)),
             "identity version must refuse before fields"
@@ -50,17 +47,13 @@ fn header<T>(
     header.pop();
     assert!(matches!(decode(&header), Err(error) if error == invalid));
     let mut alias = bytes.to_vec();
-    *alias.first_mut().ok_or("missing identity domain")? ^= 1;
-    for value in [
-        alias.as_slice(),
-        bytes.get(offset + 1..).ok_or("missing identity body")?,
-    ] {
+    alias[0] ^= 1;
+    for value in [alias.as_slice(), &bytes[offset + 1..]] {
         assert!(
             matches!(decode(value), Err(error) if error == invalid),
             "identity domain must retain typed refusal"
         );
     }
-    Ok(())
 }
 
 /// Require exact framing of admitted bytes through the owning production decoder.
@@ -71,30 +64,26 @@ pub fn framing<T>(bytes: &[u8], decode: impl Fn(&[u8]) -> Result<T, IdentityErro
         matches!(decode(&alias), Err(IdentityError::Malformed)),
         "identity framing must refuse trailing bytes"
     );
-    alias.pop();
-    alias.pop();
+    alias.truncate(bytes.len() - 1);
     assert!(
         matches!(decode(&alias), Err(IdentityError::Malformed)),
         "identity framing must refuse truncated fields"
     );
 }
 
-fn label(bytes: &[u8]) -> CheckResult {
+fn label(bytes: &[u8]) {
     // Construct an LDH label; this is a generator, not another admission parser.
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-";
-    let edge = *ALPHABET
-        .get(usize::from(bytes.first().copied().unwrap_or(0)) % 36)
-        .ok_or("missing DNS edge character")?;
+    let edge = ALPHABET[usize::from(bytes.first().copied().unwrap_or(0)) % 36];
     let mut value = vec![edge];
-    for byte in bytes.iter().take(61) {
-        value.push(
-            *ALPHABET
-                .get(usize::from(*byte) % ALPHABET.len())
-                .ok_or("missing DNS character")?,
-        );
-    }
+    value.extend(
+        bytes
+            .iter()
+            .take(61)
+            .map(|byte| ALPHABET[usize::from(*byte) % ALPHABET.len()]),
+    );
     value.push(edge);
-    for valid in [value.as_slice(), std::slice::from_ref(&edge)] {
+    for valid in [value.as_slice(), &value[..1]] {
         assert!(
             validate_dns_label(valid).is_ok(),
             "generated DNS label must admit"
@@ -112,9 +101,7 @@ fn label(bytes: &[u8]) -> CheckResult {
         (0, 255),
     ] {
         let mut alias = value.clone();
-        *alias
-            .get_mut(index)
-            .ok_or("missing DNS mutation position")? = byte;
+        alias[index] = byte;
         assert!(
             validate_dns_label(&alias).is_err(),
             "DNS label aliases must refuse"
@@ -135,18 +122,13 @@ fn label(bytes: &[u8]) -> CheckResult {
         "oversized DNS label must refuse"
     );
     value.truncate(63);
-    *value.first_mut().ok_or("missing DNS first character")? = b'a';
-    *value
-        .get_mut(60)
-        .ok_or("missing DNS final label boundary")? = b'a';
-    let label = std::str::from_utf8(&value)?;
+    value[0] = b'a';
+    value[60] = b'a';
+    let label = std::str::from_utf8(&value).unwrap();
     // Four valid labels of 63/63/63/61 bytes reach the 253-byte host boundary.
-    let mut maximum = format!(
-        "{label}.{label}.{label}.{}",
-        label.get(..61).ok_or("missing DNS label prefix")?
-    );
+    let mut maximum = format!("{label}.{label}.{label}.{}", &label[..61]);
     assert_eq!(
-        CanonicalHost::parse(&maximum)?.as_str(),
+        CanonicalHost::parse(&maximum).unwrap().as_str(),
         maximum,
         "maximum DNS host must admit"
     );
@@ -165,7 +147,6 @@ fn label(bytes: &[u8]) -> CheckResult {
         );
     }
     let _ = validate_dns_label(bytes);
-    Ok(())
 }
 
 /// Check the real hostname producer against canonical and identity admission.
@@ -179,11 +160,11 @@ pub fn identity(value: &ResourceIdentity) {
     }
 }
 
-fn route(pattern: &str, url: &str) -> CheckResult {
+fn route(pattern: &str, url: &str) {
     let Ok(original) = RoutePattern::parse(pattern) else {
-        return Ok(());
+        return;
     };
-    let canonical = RoutePattern::parse(original.as_str())?;
+    let canonical = RoutePattern::parse(original.as_str()).unwrap();
     assert_eq!(canonical, original);
     let matched = original.matches(url);
     assert_eq!(canonical.matches(url), matched);
@@ -211,7 +192,7 @@ fn route(pattern: &str, url: &str) -> CheckResult {
     assert_eq!(select_route(&routes, url), expected);
     routes.push(first);
     assert_eq!(select_route(&routes, url), expected);
-    routes.get_mut(1).ok_or("missing second route")?.target = Some("second".into());
+    routes[1].target = Some("second".into());
     assert_eq!(
         select_route(&routes, url),
         match matched {
@@ -219,23 +200,17 @@ fn route(pattern: &str, url: &str) -> CheckResult {
             other => other.map(|_| None),
         }
     );
-    routes.get_mut(1).ok_or("missing second route")?.target = None;
+    routes[1].target = None;
     routes.remove(0);
     assert_eq!(
         select_route(&routes, url),
         matched.map(|matched| matched.then_some(None))
     );
-    Ok(())
 }
 
 /// Check binary identities, hostnames and route tuples through production APIs.
 pub fn check(bytes: &[u8]) {
-    let result = checked(bytes);
-    assert!(result.is_ok(), "addressing oracle failed: {result:?}");
-}
-
-fn checked(bytes: &[u8]) -> CheckResult {
-    host_url_boundary()?;
+    host_url_boundary();
     assert_eq!(
         AccountId::new(b""),
         Err(IdentityError::EmptyAccount),
@@ -247,7 +222,7 @@ fn checked(bytes: &[u8]) -> CheckResult {
         "empty resource id must retain typed refusal"
     );
     if !bytes.is_empty() {
-        let value = ResourceIdentity::new(bytes, bytes)?;
+        let value = ResourceIdentity::new(bytes, bytes).unwrap();
         assert_eq!(
             ResourceIdentity::decode(&value.encode()),
             Ok(value),
@@ -271,7 +246,7 @@ fn checked(bytes: &[u8]) -> CheckResult {
                 "actor name aliases must refuse"
             );
         }
-        let value = ActorReference::new(bytes, b"fuzz", &name)?;
+        let value = ActorReference::new(bytes, b"fuzz", &name).unwrap();
         assert_eq!(
             ActorReference::decode(&value.encode()),
             Ok(value),
@@ -284,7 +259,7 @@ fn checked(bytes: &[u8]) -> CheckResult {
             super::RESOURCE_DOMAIN.len(),
             IdentityError::UnsupportedVersion,
             ResourceIdentity::decode,
-        )?;
+        );
         framing(bytes, ResourceIdentity::decode);
         identity(&value);
         assert_eq!(
@@ -300,15 +275,15 @@ fn checked(bytes: &[u8]) -> CheckResult {
             super::actor::HEADER.len() - 1,
             IdentityError::Malformed,
             ActorReference::decode,
-        )?;
+        );
         framing(bytes, ActorReference::decode);
         assert_eq!(value.encode(), bytes, "actor bytes must roundtrip exactly");
         assert_eq!(ActorReference::decode(&value.encode()), Ok(value));
         assert!(ResourceIdentity::decode(bytes).is_err());
     }
-    label(bytes)?;
+    label(bytes);
     let Ok(text) = std::str::from_utf8(bytes) else {
-        return Ok(());
+        return;
     };
     if let Ok(host) = CanonicalHost::parse(text) {
         assert_eq!(host.as_str(), text);
@@ -320,13 +295,13 @@ fn checked(bytes: &[u8]) -> CheckResult {
         }
     }
     if let Ok(value) = ResourceIdentity::from_hostname(text, DOMAIN) {
-        assert_eq!(value.hostname(DOMAIN)?.as_str(), text);
+        assert_eq!(value.hostname(DOMAIN).unwrap().as_str(), text);
         assert!(ResourceIdentity::from_hostname(text, "foreign.example.com").is_err());
         identity(&value);
     }
     // The separator is only a fuzz input tuple, never a product format.
     let (pattern, url) = text.split_once('\0').unwrap_or((text, text));
-    route(pattern, url)
+    route(pattern, url);
 }
 
 /// Canonical SDK host/pattern output, with caller-owned URL context for routes.
