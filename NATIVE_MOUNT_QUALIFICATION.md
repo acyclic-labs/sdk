@@ -40,54 +40,38 @@ the provider. On Linux the probe checks device access, Docker's default
 AppArmor profile, effective and bounding mount capabilities, `no_new_privs`
 and setuid helper availability. A custom security policy can still refuse a
 mount after the probe; select `physical` explicitly on such hosts. Physical
-mode needs no device, capability, mount helper or privileged process.
+mode needs no device, capability, mount helper or privileged process for the
+root checkout. Native access to child forks requires a provider.
 
-Physical mounting is the checkout's existing plain-directory path, applied to
-every task view. The checkout is always a plain directory; its persistent
-watcher (per-directory inotify on Linux, FSEvents, ReadDirectoryChangesW) and
-capture engine commit each tool call's effects at that call's boundary. A
-spawned agent's first binding promotes every lazily inherited entry of its fork
-view (`exactify`) and materializes that exact generation into
-`.volumes/agents/.physical/<workspace-id>`, through staging and a no-replace
-rename. Later bindings reuse the directory. Its tools, commands, file
-publications, Git facade checkouts and captures then take the same unmounted
-path as the checkout. Merge, diff and fork read the views, never the directories.
+Physical mounting applies to the admitted root checkout. Its watcher and
+capture engine commit each tool call's effects at that call's boundary. Child
+projects remain copy-on-write volume forks. Native access to a fork uses the
+same sparse task-view projection as native mode, without exactifying or
+materializing the inherited tree. Linux and Windows share one native instance
+across these task views. macOS uses its existing native mount backend.
 
-Guarantees that differ from native mounting:
+A host without a native provider can operate its plain root checkout and
+logical volumes. Binding a fork for native execution refuses with the typed
+`MountUnavailable` error before exposing a directory; there is no full-copy
+fallback. Logical fork history and joins do not require native projection.
 
-- Observation is by notification at tool boundaries, not interception. Native
-  providers see each operation as it happens. A physical capture records what
-  the directory holds when the call completes, and attributes to that call any
-  change another process of the same user made since the previous boundary.
-- Cost is bounded by the changed paths reported by the watcher, except for one
-  full reconciliation of a directory when an owner first binds it (each spawned
-  agent turn, and each checkout open) and after a watcher overflow. A native
-  view is lazy and never scans. Each spawned agent's first binding copies its
-  whole view. Physical mounting therefore does not meet the O(1) per-agent scale
-  target: it costs a copy, a directory and a watcher per agent view.
-- No volume is projected. `.volumes/home` and other bound volumes are absent,
-  and the model's context omits the home-volume convention.
-  Shell overflow is retained as `shell-<operation>.log` in the primary view,
-  captured and committed with the command's other effects. A projected home
-  retains the same output in that private volume instead.
-- Archiving an agent removes its physical project directory through the
-  original volume binding. Its committed logical filesystem history,
-  conversation and captured shell output remain readable through the archived
-  agent. Uncaptured physical files are not retained. The root checkout and
-  session-shared volumes remain available to their owners. Live physical views
-  reside below the reserved `.volumes/agents` root, which checkout capture,
-  the Git facade and Git exclusions omit; other processes of the harness user
-  can change their ordinary files, and the next capture records those changes.
-- After a crash, edits not yet captured in a physical directory are reconciled
-  at its next binding, as the checkout's are.
-- `--host-workspace` coordination for native coding hosts still requires
-  native mounting.
+Guarantees that differ for the plain root checkout:
 
-The shipping GraphCoder end-to-end matrix runs its checkout, file-tool, Git
-facade, child and resume cases a second time on Linux with
-`--workspace-mounting physical` (the `-physical` case variants). These host
-variants alone do not prove execution without FUSE or mount privileges.
+- Observation is by notification at tool boundaries. Capture records the
+  directory at completion and attributes changes made since the previous
+  boundary, including changes by other processes of the same user.
+- Capture processes changed paths, with full reconciliation on first import
+  and after watcher overflow. Fork binding never performs that reconciliation
+  or creates a per-child physical watcher.
+- After a crash, uncaptured root edits are reconciled at the next binding.
+- Native coding-host coordination still requires native mounting.
 
+Sparse task views retire with their last command/view lease. Logical volume
+history, conversation and captured output survive retirement and archive.
+The child projection regression compares source observations for one file and
+6,000 files, requires zero inherited payload reads and materializations at
+binding, and verifies demand reads and copy-on-write isolation afterwards.
+A separate admission regression proves missing providers refuse without a copy.
 ### Stock Docker acceptance (R27)
 
 Build `graphcoder`, `harness-mock-model` and `harness-filesystem-fixture` on Linux, then supply a locally

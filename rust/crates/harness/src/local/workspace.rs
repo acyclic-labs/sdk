@@ -10,10 +10,6 @@ pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
 /// The one namespace below [`HOST_VIEW_ROOT`] holding every task binding of
 /// a checkout's tree, one directory per bound project.
 const BINDINGS: &str = ".bindings";
-/// Physical task-view directories, below [`HOST_VIEW_ROOT`] so that no
-/// checkout capture or Git facade ever reads them as authored content.
-const PHYSICAL_VIEW_ROOT: &str = ".physical";
-
 // Git's private namespace is never imported or captured by the harness. The
 // shared native primitives omit it by name without opening it or its contents.
 pub(super) const SOURCE_EXCLUDED_ROOTS: &[&str] = &[".git"];

@@ -38,15 +38,16 @@ pub(super) enum LocalProject {
 /// `Native` projects every task view, the home volume and bound volumes
 /// through the platform's native provider (Linux FUSE, Windows ProjFS, macOS
 /// NFS) and refuses to open without it. `Physical` needs no device, capability
-/// or mount helper: the checkout and every task view are plain directories,
-/// and their changes are captured from userspace at each tool boundary. See
+/// or mount helper for the admitted checkout, which remains a plain directory.
+/// Its changes are captured from userspace at each tool boundary. Forked task
+/// views always use sparse native projection and require its provider. See
 /// `NATIVE_MOUNT_QUALIFICATION.md` for the guarantees that differ.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WorkspaceMounting {
     /// Native projection; opening refuses when the host lacks it.
     #[default]
     Native,
-    /// Plain directories with userspace change capture.
+    /// Plain root checkout with userspace capture; task forks use native projection.
     Physical,
 }
 
