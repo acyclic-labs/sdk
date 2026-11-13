@@ -113,7 +113,7 @@ impl LocalCoreStateStore {
                     .as_ref()
                     .expect("bound native work")
                     .work();
-                let paths = namespace.content_record(T::FAMILY, &T::address(id))?;
+                let paths = namespace.record(T::FAMILY, &T::address(id))?;
                 {
                     let paths = &paths;
                     let Some(mut owned) = read_published::<T>(paths)? else {
@@ -180,7 +180,7 @@ impl LocalCoreStateStore {
                         .as_ref()
                         .expect("bound native work")
                         .work();
-                    let paths = namespace.content_record(T::FAMILY, &T::address(id))?;
+                    let paths = namespace.record(T::FAMILY, &T::address(id))?;
                     let mut encoded = LogBuffer {
                         bytes: Vec::new(),
                         allocation: Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
