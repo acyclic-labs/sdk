@@ -244,7 +244,7 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
         );
         let snapshot = store.load(&address).await?;
         for after in [None, Some("inbox"), Some("z")] {
-            let (trigger, record) = runtime
+            let (trigger, record, _) = runtime
                 .next_record(snapshot.state().ok_or("missing ordered state")?, after)
                 .await?
                 .ok_or("missing indexed input")?;
@@ -259,6 +259,108 @@ async fn indexed_inputs_preserve_source_order_without_changing_default_fairness(
     Ok(())
 }
 
+#[tokio::test]
+async fn ordered_source_backlog_yields_to_an_unrelated_ready_input() -> TestResult {
+    for ordered in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let source = StreamPath::new("group/source")?;
+        let unrelated = StreamPath::new("group/unrelated")?;
+        for (path, keys) in [
+            (source.clone(), vec!["z", "z", "a"]),
+            (unrelated.clone(), vec!["other", "other", "other", "b"]),
+        ] {
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: keys
+                        .into_iter()
+                        .map(|id| {
+                            Ok(AppendRecord {
+                                value: Bytes::from_static(b"emit").into(),
+                                headers: acyclic_stream::RecordHeaders::new(
+                                    vec![Bytes::copy_from_slice(id.as_bytes()).into()],
+                                    vec![],
+                                )?,
+                            })
+                        })
+                        .collect::<Result<_, StreamError>>()?,
+                    if_tail: Some(0),
+                    idempotency_key: key(if path == source {
+                        "group/source"
+                    } else {
+                        "group/unrelated"
+                    })?,
+                })
+                .await?;
+        }
+        let store = Store::new(provider.clone(), StreamPath::new("group/actors")?);
+        let address = actor("group")?;
+        let mut creation = PreparedPublish::foreign(key("group/create")?);
+        creation.join(
+            store.create(
+                None,
+                &address,
+                crate::local::Creation {
+                    subscriptions: ["a", "b", "z"]
+                        .into_iter()
+                        .map(|id| {
+                            (
+                                id.into(),
+                                Subscription {
+                                    path: if id == "b" {
+                                        unrelated.clone()
+                                    } else {
+                                        source.clone()
+                                    },
+                                    cursor: 0,
+                                },
+                            )
+                        })
+                        .collect(),
+                    checkpoint: Some(ledger("group/out")?),
+                    escrow: None,
+                },
+            )?,
+        )?;
+        store.submit(creation).await?;
+        let package = Package::new()?;
+        let mut manifest = crate::guest::wire::decode_manifest(
+            &crate::guest::wire::encode_manifest(package.manifest()),
+        )?;
+        manifest.subscriptions = ["a", "b", "z"].into_iter().map(str::to_owned).collect();
+        let runtime = Runtime::new(
+            Store::new(provider.clone(), store.root().clone()),
+            Arc::new(OrderedPackage {
+                package,
+                manifest,
+                ordered: if ordered {
+                    vec!["a".into(), "z".into()]
+                } else {
+                    vec![]
+                },
+            }),
+            Arc::new(SystemClock),
+        );
+        runtime.track(address.clone())?;
+        runtime.drain_actor(&address).await?;
+        let expected = if ordered {
+            vec!["r0", "r3", "r1", "r2"]
+        } else {
+            vec!["r2", "r3", "r0", "r1"]
+        };
+        assert_eq!(
+            records(provider.as_ref(), "group/out").await?,
+            expected.into_iter().map(Bytes::from).collect::<Vec<_>>(),
+            "ordered source backlog monopolized delivery or lost source order",
+        );
+        let settled = store.load(&address).await?;
+        let state = settled.state().ok_or("missing group state")?;
+        assert_eq!(state.cursor("a"), Some(3));
+        assert_eq!(state.cursor("b"), Some(4));
+        assert_eq!(state.cursor("z"), Some(2));
+    }
+    Ok(())
+}
 async fn append_source<P: StreamProvider + ?Sized>(
     provider: &P,
     path: &StreamPath,

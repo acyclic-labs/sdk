@@ -698,12 +698,18 @@ mod tests {
             (continued, finishing),
         ]));
         let provider = Arc::new(
-            ScriptedModelProvider::new([
-                ScriptedTurn::Text("first".into()),
-                ScriptedTurn::Text("independent input".into()),
-                ScriptedTurn::Text("done".into()),
-                ScriptedTurn::Text("independent goal completed".into()),
-            ])
+            ScriptedModelProvider::new(
+                ["first", "independent input", "done", "independent goal completed"].map(|text| {
+                    ScriptedTurn::Events(vec![
+                        ScriptedEvent::Event(crate::model::ModelEvent::Content {
+                            delta: text.into(),
+                        }),
+                        ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                            metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
+                        }),
+                    ])
+                }),
+            )
             .with_dispatch_observer(move |_| {
                 let selected = gate.lock().unwrap().pop_front();
                 Box::pin(async move {
@@ -769,6 +775,9 @@ mod tests {
                 .unwrap()
         );
         let done = "---\nstatus: done\n---\nFinish the objective.\n";
+        let mut interleaved_policy = policy.clone();
+        interleaved_policy.no_progress_turns = Some(11);
+        interleaved_policy.reservation.tokens = Some(2000);
         conversation
             .publish_files(
                 FileRoot::Home {},
@@ -776,7 +785,7 @@ mod tests {
                 vec![ClientFileChange {
                     path: "control/supervision.json".into(),
                     expected: Some(pinned.policy.clone()),
-                    text: Some("{invalid replacement policy".into()),
+                    text: Some(serde_json::to_string(&interleaved_policy).map_err(failed)?),
                 }],
             )
             .await?;
@@ -877,8 +886,9 @@ mod tests {
             .await?;
         finish.send(()).unwrap();
         assert!(matches!(run.await?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
+        let accepted = provider.request_count();
         let first = provider.request(0).unwrap();
-        let second = provider.request(1).unwrap();
+        let second = provider.request(2).unwrap();
         assert!(second.messages.len() >= first.messages.len());
         assert_eq!(
             &second.messages[..first.messages.len()],
@@ -919,8 +929,9 @@ mod tests {
             done,
             "recovery overwrote goal progress"
         );
-        assert!(
-            provider.request(2).is_none(),
+        assert_eq!(
+            provider.request_count(),
+            accepted,
             "replayed admission dispatched another model"
         );
         assert!(matches!(
@@ -941,8 +952,9 @@ mod tests {
                 .value,
             forged_policy
         );
-        assert!(
-            provider.request(2).is_none(),
+        assert_eq!(
+            provider.request_count(),
+            accepted,
             "a forged marker bypassed its original reservation"
         );
         Ok(())
