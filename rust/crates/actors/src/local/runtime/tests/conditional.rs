@@ -50,6 +50,10 @@ impl ExplicitStreamProvider for Interleaved {
         self.source.lease_ephemeral(root).await
     }
 
+    async fn is_ephemeral(&self, path: &acyclic_stream::StreamPath) -> Result<bool, StreamError> {
+        self.source.is_ephemeral(path).await
+    }
+
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
         let is_page = request.children.is_some();
         let result = self.source.heads(request).await?;

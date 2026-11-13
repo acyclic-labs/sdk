@@ -366,7 +366,7 @@ impl Drop for CommitGuard<'_> {
 
 /// Upper bound on the conditions, and separately the mutations, that one
 /// creation adds; matches the standalone creation request.
-const CREATION_ENTRIES: usize = 9;
+const CREATION_ENTRIES: usize = 10;
 
 /// The hard effect filesystem contributions joined, if any.
 pub(super) fn hard(request: &CommitRequest) -> Option<&CommitEffect> {
@@ -504,7 +504,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         // once every entry is prepared: a failed preparation leaves the
         // commit exactly as it was, with no publishable fragment. One creation
         // adds at most this many conditions and mutations: four absent
-        // streams, records, epoch, gate, lineage and namespace changes.
+        // streams, records, operation locator, epoch, gate, lineage and
+        // namespace changes.
         let mut part = CommitRequest {
             deadline_unix_millis: None,
             effects: crate::distributed::composition::funded_effect(

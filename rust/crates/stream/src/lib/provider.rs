@@ -118,6 +118,12 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         )
     }
 
+    /// Whether a live lease owns `path`, so a write to it is never durable.
+    /// A provider without leases owns none.
+    async fn is_ephemeral(&self, _path: &StreamPath) -> Result<bool, StreamError> {
+        Ok(false)
+    }
+
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,
@@ -163,12 +169,17 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     ) -> std::result::Result<CommittedEnvelope, StreamError>;
 }
 
+/// A lease's pending release, taken exactly once.
+type Release = Option<BoxProviderFuture<'static, Result<(), StreamError>>>;
+
 /// Custody of one ephemeral subtree; see [`StreamProvider::lease_ephemeral`].
 /// Dropping it releases the subtree without blocking.
 #[must_use = "dropping the lease releases its subtree"]
 pub struct EphemeralLease {
     root: StreamPath,
-    release: Option<BoxProviderFuture<'static, Result<(), StreamError>>>,
+    // Only ever reached through `&mut self`, so the lock is never contended:
+    // it makes custody shareable across threads, as every owner needs.
+    release: std::sync::Mutex<Release>,
 }
 
 impl EphemeralLease {
@@ -179,7 +190,7 @@ impl EphemeralLease {
     ) -> Self {
         Self {
             root,
-            release: Some(release),
+            release: std::sync::Mutex::new(Some(release)),
         }
     }
 
@@ -191,11 +202,18 @@ impl EphemeralLease {
 
     /// Releases the subtree and waits until it is gone.
     pub async fn settle(mut self) -> Result<(), StreamError> {
-        match self.release.take() {
+        match take_release(&mut self.release) {
             Some(release) => release.await,
             None => Ok(()),
         }
     }
+}
+
+fn take_release(release: &mut std::sync::Mutex<Release>) -> Release {
+    release
+        .get_mut()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
 }
 
 impl std::fmt::Debug for EphemeralLease {
@@ -210,7 +228,7 @@ impl std::fmt::Debug for EphemeralLease {
 impl Drop for EphemeralLease {
     fn drop(&mut self) {
         #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-        if let Some(release) = self.release.take() {
+        if let Some(release) = take_release(&mut self.release) {
             crate::runtime::PlatformExecutor
                 .spawn_owned(futures::FutureExt::map(release, |_released| ()));
         }

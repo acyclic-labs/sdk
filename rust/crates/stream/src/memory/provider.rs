@@ -487,6 +487,11 @@ impl StreamProvider for MemoryStream {
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn is_ephemeral(&self, path: &StreamPath) -> Result<bool, StreamError> {
+        Ok(self.ephemeral_mask(std::slice::from_ref(path)).await == [true])
+    }
+
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         acyclic_observability::async_operation!(
             "acyclic.stream.heads",

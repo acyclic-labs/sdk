@@ -196,3 +196,127 @@ async fn registered_source_proofs_survive_collection_without_rewalking_the_closu
     }
     Ok(())
 }
+
+const CRASH_CHILD: &str = "facade::tests::fork_proof::local::fork_then_crash_child";
+const FORK_ONLY: &str = "written only into the fork";
+
+// The child forks the source, writes into the fork, and dies without settling
+// it: no destructor, flush or release runs.
+#[test]
+fn fork_then_crash_child() -> Result<(), Box<dyn Error>> {
+    let Some(root) = std::env::var_os("ACYCLIC_EPHEMERAL_FORK_ROOT") else {
+        return Ok(());
+    };
+    let durable = std::env::var_os("ACYCLIC_EPHEMERAL_FORK_DURABLE").is_some();
+    let root = std::path::PathBuf::from(root);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let cancel = CancellationToken::new();
+            let fs = Fs::local(crate::LocalOptions::new(&root)).await?;
+            let source = fs.create_workspace("source", B, &cancel).await?.value;
+            source.write_text("/base", "base").await?;
+            let log = std::fs::metadata(root.join("objects/log"))?.len();
+            std::fs::write(root.join("baseline"), log.to_string())?;
+            let head = source.head(B, &cancel).await?.value;
+            let options = ForkOptions::from_generation(head, IdempotencyKey::new());
+            let (fork, custody) = if durable {
+                let fork = source
+                    .fork::<_, _, WorkspaceError>(
+                        "fork",
+                        options,
+                        crate::PublicationPermit::Unrestricted,
+                        B,
+                        &cancel,
+                        &mut allow::<FsError>,
+                    )
+                    .await?
+                    .value;
+                (fork, None)
+            } else {
+                let (fork, custody) = source
+                    .fork_ephemeral("fork", options, B, &cancel)
+                    .await?
+                    .value;
+                (fork, Some(custody))
+            };
+            fork.write_text("/fork", FORK_ONLY).await?;
+            assert_eq!(
+                fork.read("/fork", 64, B, &cancel).await?.value.as_ref(),
+                FORK_ONLY.as_bytes()
+            );
+            // The owner dies here, with the fork and its custody still live.
+            let _live = (fs, source, fork, custody);
+            std::process::exit(86)
+        })
+}
+
+// An ephemeral fork dies with its owner: after a crash its authority is gone
+// and none of its objects reached storage, while the source is intact. The
+// negative control makes a durable fork the same way: it survives the crash,
+// and its objects were stored.
+#[test]
+fn an_ephemeral_fork_leaves_nothing_after_its_owner_crashes() -> Result<(), Box<dyn Error>> {
+    for durable in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let mut child = std::process::Command::new(std::env::current_exe()?);
+        child
+            .args(["--exact", CRASH_CHILD, "--nocapture"])
+            .env("ACYCLIC_EPHEMERAL_FORK_ROOT", directory.path());
+        if durable {
+            child.env("ACYCLIC_EPHEMERAL_FORK_DURABLE", "1");
+        }
+        let output = child.output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(86),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let baseline: u64 = std::fs::read_to_string(directory.path().join("baseline"))?.parse()?;
+        let stored = std::fs::metadata(directory.path().join("objects/log"))?.len();
+        if durable {
+            assert!(stored > baseline, "the durable fork stored no objects");
+        } else {
+            assert_eq!(
+                stored, baseline,
+                "the ephemeral fork's objects reached storage"
+            );
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let cancel = CancellationToken::new();
+                let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+                let source = fs.open_workspace("source", B, &cancel).await?.value;
+                let head = source.head(B, &cancel).await?.value;
+                assert_eq!(
+                    head.read("/base", 8, B, &cancel).await?.value.as_ref(),
+                    b"base"
+                );
+                let fork = fs.open_workspace("fork", B, &cancel).await;
+                if durable {
+                    let head = fork?.value.head(B, &cancel).await?.value;
+                    assert_eq!(
+                        head.read("/fork", 64, B, &cancel).await?.value.as_ref(),
+                        FORK_ONLY.as_bytes()
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            fork.map(|_| ()).map_err(|failure| failure.error),
+                            Err(WorkspaceError::Filesystem(FsError::Authority(
+                                AuthorityStoreError::Missing
+                            )))
+                        ),
+                        "the ephemeral fork survived its owner"
+                    );
+                }
+                Ok::<_, Box<dyn Error>>(())
+            })?;
+    }
+    Ok(())
+}
