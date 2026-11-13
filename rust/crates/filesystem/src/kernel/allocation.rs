@@ -595,6 +595,8 @@ impl AllocationLedger {
 pub(crate) mod fixed_index;
 pub(crate) mod retained;
 pub use fixed_index::FixedIndex;
+#[cfg(not(target_arch = "wasm32"))]
+pub use retained::{ErasedRetainedArc, ErasedRetainedWeak};
 pub use retained::{RetainedArc, RetainedWeak};
 
 /// Retains the allocation backing a value returned by a kernel operation.

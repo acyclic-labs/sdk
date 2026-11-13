@@ -1,11 +1,13 @@
 //! Original binding preparation and physical retirement share one keyed owner.
 use super::*;
-use acyclic_fs::kernel::allocation::{FixedIndex, RetainedArc, RetainedWeak};
+use acyclic_fs::kernel::allocation::{ErasedRetainedWeak, FixedIndex, RetainedArc, RetainedWeak};
 use acyclic_stream::{OperationClaim, OperationTermination};
 
 #[derive(Default)]
 pub(super) struct Bindings {
-    entries: crate::sync::SyncMutex<FixedIndex<RetainedWeak<Binding>, 32>>,
+    // The index observes custody without embedding the owner's recursive graph
+    // in every workspace's Send/Sync proof. Upgrade restores the concrete type.
+    entries: crate::sync::SyncMutex<FixedIndex<ErasedRetainedWeak, 32>>,
 }
 
 pub(in crate::local) struct Binding {
@@ -41,7 +43,9 @@ impl Bindings {
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retire_if(key, |entry| std::ptr::eq(entry.as_ptr(), original));
+            .retire_if(key, |entry| {
+                std::ptr::eq(entry.as_ptr().cast::<()>(), original.cast())
+            });
     }
 
     pub(super) fn new(cancellation: &acyclic_fs::CancellationToken) -> Result<RetainedArc<Self>> {
@@ -74,7 +78,13 @@ impl Bindings {
         if let Some(binding) = entries
             .get(key, &mut accounting)
             .map_err(storage)?
-            .and_then(RetainedWeak::upgrade)
+            .and_then(ErasedRetainedWeak::upgrade)
+            .map(|binding| {
+                binding.downcast::<Binding>().ok_or_else(|| {
+                    Error::Conflict("binding index contains another owner type".into())
+                })
+            })
+            .transpose()?
         {
             let result = binding
                 .preparing
@@ -116,7 +126,7 @@ impl Bindings {
                     preparing: preparing.downgrade(),
                     mounts: std::sync::OnceLock::new(),
                 })?;
-                let weak = binding.downgrade();
+                let weak = binding.clone().erase().downgrade();
                 selected = Some(Selection {
                     binding,
                     result: SelectedResult::Preparing(preparing),

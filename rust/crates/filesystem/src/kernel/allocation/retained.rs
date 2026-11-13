@@ -7,7 +7,7 @@ mod shared;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::NativeAccounting;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use shared::{ErasedRetainedArc, ErasedRetainedWeak};
+pub use shared::{ErasedRetainedArc, ErasedRetainedWeak};
 pub use shared::{RetainedArc, RetainedWeak};
 
 /// A handoff keeps the same counters, budget and live-byte owner. The caller

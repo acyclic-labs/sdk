@@ -303,7 +303,7 @@ impl LocalWorkspace {
             workspace.binding = binding_owner
                 .as_ref()
                 .map(|_| Arc::clone(&workspace.mounts));
-            workspace.binding_owner = binding_owner;
+            workspace.binding_owner = binding_owner.map(|binding| binding.erase());
             let reuse_primary = self.mounting == WorkspaceMounting::Physical
                 && workspace.view().workspace().id() == self.view().workspace().id();
             let (active, pending) = if reuse_primary {
