@@ -93,7 +93,7 @@ fn is_user_input(part: &ModelContentPart) -> bool {
         if file.descriptor().media_type() == USER_INPUT_MEDIA_TYPE)
 }
 
-pub(crate) async fn read_user_input(
+async fn read_user_input(
     file: &FileRef,
     reader: &dyn crate::conversation::ContentResidencyVerifier,
 ) -> crate::Result<ModelContent> {
