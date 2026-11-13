@@ -48,7 +48,7 @@ impl ModelSelection {
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     data: Arc<RegistryData>,
-    sources: Vec<Arc<dyn ToolSource>>,
+    sources: Option<Arc<Vec<Arc<dyn ToolSource>>>>,
     source_ceiling: Option<Arc<BTreeSet<String>>>,
 }
 
@@ -96,8 +96,11 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
 }
 
 impl ToolRegistry {
+    fn sources(&self) -> &[Arc<dyn ToolSource>] {
+        self.sources.as_deref().map_or(&[], Vec::as_slice)
+    }
     pub(crate) fn has_lazy_tools(&self) -> bool {
-        self.sources.iter().any(|source| source.has_lazy_tools())
+        self.sources().iter().any(|source| source.has_lazy_tools())
     }
 
     /// Resolve one file-authored alias without materializing a catalog. Fixed
@@ -109,7 +112,7 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Arc<Tool>>> {
         let mut selected = None;
-        for source in &self.sources {
+        for source in self.sources() {
             if source.has_lazy_tools()
                 && (self.source_allowed(name)
                     || source
@@ -160,7 +163,7 @@ impl ToolRegistry {
         if !self.source_allowed(&tool.name) {
             return Ok(false);
         }
-        for source in &self.sources {
+        for source in self.sources() {
             let snapshot = source.snapshot()?;
             if source
                 .capability()
@@ -201,7 +204,7 @@ impl ToolRegistry {
         if let Some(tool) = self.get_shared(&definition.name, Some(&definition.revision), io)? {
             return Ok(Some(Arc::clone(tool)));
         }
-        for source in &self.sources {
+        for source in self.sources() {
             if let Some(tool) = source.recover(definition, io)? {
                 return Ok(Some(tool));
             }
@@ -212,7 +215,7 @@ impl ToolRegistry {
         Ok(None)
     }
     pub(crate) fn was_removed(&self, name: &str) -> Result<bool> {
-        for source in &self.sources {
+        for source in self.sources() {
             if source.was_removed(name)? {
                 return Ok(true);
             }
@@ -221,16 +224,18 @@ impl ToolRegistry {
     }
     /// Attach one host-owned live source, shared by all registry clones.
     pub fn with_source(mut self, source: Arc<dyn ToolSource>) -> Self {
-        self.sources.push(source);
+        Arc::make_mut(self.sources.get_or_insert_with(|| Arc::new(Vec::new()))).push(source);
         self
     }
 
     pub(crate) fn retain_sources(&mut self, mut keep: impl FnMut(&dyn ToolSource) -> bool) {
-        self.sources.retain(|source| keep(source.as_ref()));
+        if let Some(sources) = &mut self.sources {
+            Arc::make_mut(sources).retain(|source| keep(source.as_ref()));
+        }
     }
 
     pub(crate) async fn refresh(&self) -> Result<()> {
-        for source in &self.sources {
+        for source in self.sources() {
             source.refresh().await?;
         }
         Ok(())
@@ -244,7 +249,7 @@ impl ToolRegistry {
         name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<Arc<Tool>>> {
-        for source in &self.sources {
+        for source in self.sources() {
             if let Some(tool) = source.snapshot()?.resolve(name, io)?
                 && self.source_allowed(&tool.definition.name)
             {
@@ -265,7 +270,7 @@ impl ToolRegistry {
     }
 
     pub(crate) fn has_sources(&self) -> bool {
-        !self.sources.is_empty()
+        !self.sources().is_empty()
     }
 }
 
@@ -281,6 +286,9 @@ mod merge;
 const REGISTRY_BYTES: usize = std::mem::size_of::<ToolRegistry>()
     + std::mem::size_of::<RegistryData>()
     + 2 * std::mem::size_of::<usize>();
+#[cfg(not(target_arch = "wasm32"))]
+const SOURCE_BYTES: usize =
+    std::mem::size_of::<Vec<Arc<dyn ToolSource>>>() + 2 * std::mem::size_of::<usize>();
 const VERSION_SLOT_BYTES: usize = std::mem::size_of::<(String, String)>()
     + std::mem::size_of::<Arc<Tool>>()
     + std::mem::size_of::<Tool>()

@@ -299,7 +299,7 @@ impl ToolRegistry {
             false,
             io,
         )?;
-        for source in &self.sources {
+        for source in self.sources() {
             for definition in source.snapshot()?.definitions_in_namespace(prefix, io)? {
                 if self.source_allowed(&definition.name) {
                     crate::executor::stock_vec_push(&mut definitions, definition, io)?;
@@ -330,7 +330,7 @@ impl ToolRegistry {
             true,
             io,
         )?;
-        for source in &self.sources {
+        for source in self.sources() {
             let snapshot = source.snapshot()?;
             if source
                 .capability()
