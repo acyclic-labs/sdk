@@ -90,6 +90,10 @@ impl FencedHandler {
 }
 
 impl Handler for FencedHandler {
+    fn accepts_actor(&self, actor: &crate::addressing::ActorReference) -> bool {
+        self.package.handler.accepts_actor(actor)
+    }
+
     fn accepts_interrupt<'a>(
         &'a self,
         delivery: &'a Delivery,

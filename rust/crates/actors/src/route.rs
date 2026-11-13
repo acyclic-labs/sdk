@@ -272,17 +272,18 @@ impl Envelope {
         let prefix = format!("{}/relay/", paths.0);
         // Admission may debit its own reservation, but may not author or
         // replace the opaque relay operation whose receipt is returned here.
-        if admission
-            .iter()
-            .flat_map(|effect| &effect.mutations)
-            .any(|mutation| {
-                let path = mutation.path().as_str();
-                path.starts_with(&prefix)
-                    || matches!(mutation, CommitMutation::Fork { .. })
-                        && prefix
-                            .strip_prefix(path)
-                            .is_some_and(|suffix| suffix.starts_with('/'))
-            })
+        if admission.iter().any(|effect| effect.soft)
+            || admission
+                .iter()
+                .flat_map(|effect| &effect.mutations)
+                .any(|mutation| {
+                    let path = mutation.path().as_str();
+                    path.starts_with(&prefix)
+                        || matches!(mutation, CommitMutation::Fork { .. })
+                            && prefix
+                                .strip_prefix(path)
+                                .is_some_and(|suffix| suffix.starts_with('/'))
+                })
         {
             return Err(Error::InvalidRecord);
         }

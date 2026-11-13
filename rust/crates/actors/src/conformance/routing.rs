@@ -361,6 +361,39 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         .publish_relay(provider, &paths, &placement.node, Vec::new())
         .await
         .map_err(violation)?;
+    let mut unfunded = envelope.clone();
+    unfunded.request.idempotency_key = key(&root, "unfunded-send")?;
+    let soft_debit = CommitEffect {
+        conditions: vec![CommitCondition::Present {
+            path: StreamPath::new(format!("{root}/missing-credit")).map_err(Error::from)?,
+        }],
+        mutations: vec![CommitMutation::Append {
+            path: StreamPath::new(format!("{root}/skipped-debit")).map_err(Error::from)?,
+            records: vec!["unfunded debit".into()],
+        }],
+        soft: true,
+    };
+    require(
+        matches!(
+            unfunded
+                .publish_relay(provider, &paths, &placement.node, vec![soft_debit])
+                .await,
+            Err(crate::route::Error::InvalidRecord)
+        ),
+        "a skipped storage debit admitted an unfunded relay",
+    )?;
+    let unfunded_key = unfunded
+        .relay_request(&paths, &placement.node)
+        .map_err(violation)?
+        .idempotency_key;
+    require(
+        provider
+            .inspect_idempotency(unfunded_key)
+            .await
+            .map_err(Error::from)?
+            .is_none(),
+        "refused storage admission spent the intent",
+    )?;
     let debit = StreamPath::new(format!("{root}/later-storage-debit")).map_err(Error::from)?;
     let changed_guards = vec![CommitEffect::hard(
         vec![CommitCondition::Present {
