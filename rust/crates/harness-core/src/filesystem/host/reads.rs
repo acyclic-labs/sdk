@@ -409,14 +409,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation_optional(
-            &generation,
-            &requested.0,
-            maximum_bytes,
-            io,
-            path_read_refusal,
-        )
-        .await?;
+        let bytes = read_generation_optional(&generation, &requested.0, maximum_bytes, io).await?;
         let selected = if let Some(bytes) = bytes {
             let bytes_hold = io.guard_bytes(&bytes)?;
             let bytes = (bytes, bytes_hold);
@@ -835,27 +828,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 }
 // Only the selected user path is classified here. Metadata, backing storage,
 // cancellation and accounting failures retain their original terminal cause.
-fn path_read_refusal(error: Error) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Error::NativeWorkspace { source, .. } = &error {
-        let (code, reason) = match source.as_ref() {
-            WorkspaceError::NotFound => (
-                crate::wire::ErrorCode::NotFound,
-                crate::conversation::SELECTED_FILE_MISSING,
-            ),
-            WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
-                crate::wire::ErrorCode::Invalid,
-                "selected path is not a regular file",
-            ),
-            WorkspaceError::ReadLimitExceeded => (
-                crate::wire::ErrorCode::Invalid,
-                "selected file exceeds the admitted read bound",
-            ),
-            _ => return error,
-        };
-        return Error::ToolRejected { code, reason };
-    }
-    error
+fn path_read_refusal(error: WorkspaceError) -> Error {
+    let (code, reason) = match error {
+        WorkspaceError::NotFound => (
+            crate::wire::ErrorCode::NotFound,
+            crate::conversation::SELECTED_FILE_MISSING,
+        ),
+        WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
+            crate::wire::ErrorCode::Invalid,
+            "selected path is not a regular file",
+        ),
+        WorkspaceError::ReadLimitExceeded => (
+            crate::wire::ErrorCode::Invalid,
+            "selected file exceeds the admitted read bound",
+        ),
+        error => return error.into(),
+    };
+    Error::ToolRejected { code, reason }
 }
 
 // An absent application policy reads the immutable file's own extent through
@@ -878,24 +867,11 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     io.retain_read_bytes(bytes)
 }
 
-pub(in crate::filesystem) async fn read_generation_if_present<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    generation: &acyclic_fs::Generation<A, O>,
-    path: &str,
-    maximum: Option<u64>,
-    io: &PreparationIo,
-) -> Result<Option<acyclic_stream::OwnedBytes>> {
-    read_generation_optional(generation, path, maximum, io, Into::into).await
-}
-
 async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: Option<u64>,
     io: &PreparationIo,
-    classify: fn(WorkspaceError) -> Error,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
     let (result, recorded) = generation.read(path, maximum, io, io.cancellation()).await;
@@ -905,7 +881,7 @@ async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let result = match result {
         Ok(bytes) => Ok(Some(bytes)),
         Err(WorkspaceError::NotFound) => Ok(None),
-        Err(error) => Err(classify(error)),
+        Err(error) => Err(path_read_refusal(error)),
     };
     result?.map(|bytes| io.retain_read_bytes(bytes)).transpose()
 }
