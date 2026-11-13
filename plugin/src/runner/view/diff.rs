@@ -1,15 +1,18 @@
 //! The terminal renders one authorized query page and retains its continuation.
-use super::{Conversation, Failure, Line, query::Source};
+use super::{
+    Conversation, Failure,
+    query::{Context, Source},
+};
 use acyclic_harness::{
     client::{AgentPageRequest, DiffFilePage, DiffKind, DiffProjection, DiffQueryEvent},
-    tui::display_text,
+    tui::{DiffPage, QueryPage, display_text},
 };
 use std::sync::Arc;
 
 pub(super) type Continuation =
     Arc<tokio::sync::Mutex<acyclic_harness::local::agent_conversation::WorkspaceDiff>>;
 
-type DiffPanel = acyclic_harness::tui::QueryPage<Source>;
+type DiffPanel = super::query::Panel;
 
 /// Keep only the visible page. The existing session owns the request's wait;
 /// dropping this future on close or replacement cancels that consumer.
@@ -32,7 +35,7 @@ pub(super) async fn query(
         )),
     };
     let mut reader = cursor.lock().await;
-    let mut lines = Vec::new();
+    let mut presentation = DiffPage::default();
     let more = loop {
         match reader.next().await? {
             Some(DiffQueryEvent::Snapshot(_)) => {}
@@ -43,7 +46,7 @@ pub(super) async fn query(
             }
             Some(DiffQueryEvent::Page(fragments)) => {
                 for fragment in &fragments {
-                    render(fragment, &mut lines);
+                    presentation.file(header(fragment), &fragment.patch);
                 }
                 break true;
             }
@@ -51,34 +54,37 @@ pub(super) async fn query(
                 return Err("patch query returned summary data".into());
             }
             None => {
-                lines.push(Line::raw(if continued {
+                presentation.hint(if continued {
                     "End of changes"
                 } else {
                     "No changes"
-                }));
+                });
                 break false;
             }
         }
     };
     drop(reader);
     if more {
-        lines.push(Line::raw("PgDn: more · PgUp: newest · Esc: close"));
+        presentation.hint("PgDn: more · PgUp: newest · Tab: hunk · Space: fold · Esc: close");
     } else {
-        lines.push(Line::raw("PgDn/PgUp: scroll · Esc: close"));
+        presentation.hint("PgDn/PgUp: scroll · Esc: close");
     }
 
-    Ok(DiffPanel::new(
-        lines,
+    let mut context = Context::default();
+    context.diff = Some(presentation);
+    Ok(QueryPage::new(
+        Vec::new(),
         more.then(|| match agent {
             Some(agent) => Source::AgentDiff(agent, Some(cursor)),
             None => Source::Diff(Some(cursor)),
         }),
         continued,
-    ))
+    )
+    .with_context(context))
 }
 
-fn render(fragment: &DiffFilePage, lines: &mut Vec<Line<'static>>) {
-    if !fragment.continued {
+fn header(fragment: &DiffFilePage) -> Option<String> {
+    (!fragment.continued).then(|| {
         let kind = match fragment.kind {
             DiffKind::Added => "added",
             DiffKind::Removed => "removed",
@@ -91,15 +97,6 @@ fn render(fragment: &DiffFilePage, lines: &mut Vec<Line<'static>>) {
         } else {
             format!("+{} -{}", fragment.added, fragment.removed)
         };
-        lines.push(Line::raw(format!(
-            "{} ({kind}) {detail}",
-            display_text(&fragment.path),
-        )));
-    }
-    lines.extend(
-        fragment
-            .patch
-            .lines()
-            .map(|line| Line::raw(display_text(line).into_owned())),
-    );
+        format!("{} ({kind}) {detail}", display_text(&fragment.path),)
+    })
 }

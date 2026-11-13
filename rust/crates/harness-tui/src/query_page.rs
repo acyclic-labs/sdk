@@ -34,6 +34,14 @@ impl<C> QueryPage<C> {
 }
 
 impl<C, M> QueryPage<C, M> {
+    /// Replace only this page's presentation, retaining its original source
+    /// continuation and metadata. Used by source-specific theme/reflow views.
+    pub fn replace_source(&mut self, source: Vec<Line<'static>>) {
+        self.source = source;
+        self.lines.clear();
+        self.columns = 0;
+    }
+
     /// Attach source metadata without copying rows or changing their cursor.
     pub fn with_context<N>(self, context: N) -> QueryPage<C, N> {
         QueryPage {

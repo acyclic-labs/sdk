@@ -23,7 +23,7 @@ use acyclic_harness::{
         Screen, Thinking, TranscriptRows, Viewport,
         config::Token,
         context_summary, feedback_summary,
-        key_event::InputEvent,
+        key_event::{InputEvent, KeyCode, KeyEventKind},
         ratatui::{
             layout::{Position, Rect, Size},
             style::{Modifier, Style},
@@ -1158,7 +1158,13 @@ async fn run_current(
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
         if let Some(panel) = queries.page.as_mut() {
             let area = Rect::from((Position::ORIGIN, size));
-            panel.wrap(Screen::default().areas(area, &input).overlay_columns());
+            let columns = Screen::default().areas(area, &input).overlay_columns();
+            if let Some(diff) = panel.context.diff.as_mut()
+                && let Some(lines) = diff.render(columns, size.width >= 160, input.theme)
+            {
+                panel.replace_source(lines);
+            }
+            panel.wrap(columns);
         }
         let (areas, page) = {
             let status = Line::raw(
@@ -1522,6 +1528,19 @@ async fn run_current(
                         continue;
                     }
                     let Ok(event) = event else { continue };
+                    if input.editor.text().is_empty() && view.prompt.is_none() && overlay.is_none()
+                        && let InputEvent::Key(key) = &event
+                        && key.kind != KeyEventKind::Release
+                        && key.modifiers.is_empty()
+                        && let Some(diff) = queries.page.as_mut().and_then(|page| page.context.diff.as_mut())
+                    {
+                        let consumed = match key.code {
+                            KeyCode::Tab => diff.select_hunk(false),
+                            KeyCode::Char(' ') => diff.toggle_hunk(),
+                            _ => false,
+                        };
+                        if consumed { overlay_top = 0; continue; }
+                    }
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
                         .collect::<Vec<_>>();
