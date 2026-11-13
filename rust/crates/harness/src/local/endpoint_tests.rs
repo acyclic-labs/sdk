@@ -191,6 +191,25 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 })
                 .await
                 .map_err(exchange)?;
+            // Prompt recall follows the selected agent's accepted input with
+            // the same read-only credential, without actor invocation rights.
+            let _inputs = session
+                .subscribe(acyclic_stream::wire::SessionSubscription {
+                    credential: selected.controls.observation_credential(),
+                    resume: Some(acyclic_stream::wire::SessionCursor::default()),
+                    kind: Some(acyclic_stream::wire::session_subscription::Kind::Follow(
+                        acyclic_stream::wire::SessionFollow {
+                            resource: acyclic_stream::wire_codec::session::stream_resource(
+                                child.inbox().map_err(exchange)?.as_str(),
+                            ),
+                            delivery: acyclic_stream::wire::SessionDelivery::Latest as i32,
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                })
+                .await
+                .map_err(exchange)?;
             // Adoption publishes the first status; the turn's own status
             // event announces its committed conversation entry.
             let mut status = acyclic_stream::records_only(
