@@ -6,6 +6,11 @@ pub enum NativeTreeMaterializationError {
     /// Invalid operation layout or persisted payload.
     #[error("invalid native materialization layout")]
     InvalidLayout,
+    /// Atomic checkout renames would cross a native mount boundary.
+    #[error(
+        "native checkout publication requires one mount with no mounted entries beneath the checkout; choose an unmounted checkout and recovery directory on the same mount"
+    )]
+    MountBoundary,
     /// Persisted bytes use an unsupported codec version.
     #[error("unsupported native materialization format")]
     UnsupportedFormat,
