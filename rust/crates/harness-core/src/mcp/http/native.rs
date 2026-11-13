@@ -93,10 +93,37 @@ mod tests {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    #[tokio::test]
-    async fn notification_eof_reconnects_and_invalidates_the_disconnected_gap() -> Result<()> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
+    async fn notification_request(
+        listener: &tokio::net::TcpListener,
+    ) -> Result<tokio::net::TcpStream> {
         use tokio::io::{AsyncBufReadExt as _, BufReader};
+        let (socket, _) = listener.accept().await.map_err(Error::process_io)?;
+        let mut socket = BufReader::new(socket);
+        let mut line = String::new();
+        socket
+            .read_line(&mut line)
+            .await
+            .map_err(Error::process_io)?;
+        assert!(line.starts_with("GET "));
+        loop {
+            line.clear();
+            assert_ne!(
+                socket
+                    .read_line(&mut line)
+                    .await
+                    .map_err(Error::process_io)?,
+                0
+            );
+            if line == "\r\n" {
+                break;
+            }
+        }
+        Ok(socket.into_inner())
+    }
+
+    #[tokio::test]
+    async fn notification_transients_reconnect_and_invalidate_the_disconnected_gap() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(Error::process_io)?;
@@ -104,40 +131,16 @@ mod tests {
         let connections = Arc::new(AtomicUsize::new(0));
         let accepted = connections.clone();
         let server = tokio::spawn(async move {
-            for index in 0..3 {
-                let (socket, _) = listener.accept().await.map_err(Error::process_io)?;
+            for index in 0..4 {
+                let mut socket = notification_request(&listener).await?;
                 accepted.fetch_add(1, Ordering::SeqCst);
-                let mut socket = BufReader::new(socket);
-                let mut line = String::new();
-                socket
-                    .read_line(&mut line)
-                    .await
-                    .map_err(Error::process_io)?;
-                assert!(line.starts_with("GET "));
-                loop {
-                    line.clear();
-                    assert_ne!(
-                        socket
-                            .read_line(&mut line)
-                            .await
-                            .map_err(Error::process_io)?,
-                        0
-                    );
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
-                let status = if index == 2 {
-                    "405 Method Not Allowed"
-                } else {
-                    "200 OK"
+                let status = match index {
+                    0 => "503 Service Unavailable",
+                    3 => "405 Method Not Allowed",
+                    _ => "200 OK",
                 };
-                socket.get_mut().write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(Error::process_io)?;
-                socket
-                    .get_mut()
-                    .shutdown()
-                    .await
-                    .map_err(Error::process_io)?;
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.map_err(Error::process_io)?;
+                socket.shutdown().await.map_err(Error::process_io)?;
             }
             Ok::<_, Error>(())
         });
@@ -156,22 +159,103 @@ mod tests {
         let mut watch = Arc::try_unwrap(transport.notifications.take().expect("watch armed"))
             .ok()
             .expect("one watch owner");
-        (&mut watch.0)
+        (&mut watch.task)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
             connections.load(Ordering::SeqCst),
-            3,
-            "EOF must reconnect until the server declines GET"
+            4,
+            "transient HTTP and EOF reconnect until the server declines GET"
         );
         assert_eq!(
             transport.tools_generation(),
-            4,
+            5,
             "both EOF and resubscription invalidate each disconnected interval"
         );
         server
             .await
             .map_err(|error| Error::Storage(error.to_string()))??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn notification_permanent_failures_are_retained_without_reconnecting() -> Result<()> {
+        use crate::wire::ErrorCode;
+        use std::sync::atomic::Ordering;
+        for (status, media, body, code) in [
+            (
+                "401 Unauthorized",
+                "text/event-stream",
+                "",
+                ErrorCode::Unauthorized,
+            ),
+            (
+                "404 Not Found",
+                "text/event-stream",
+                "",
+                ErrorCode::NotFound,
+            ),
+            (
+                "200 OK",
+                "text/event-stream",
+                "data: not-json\n\n",
+                ErrorCode::Invalid,
+            ),
+            ("200 OK", "application/json", "{}", ErrorCode::Invalid),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(Error::process_io)?;
+            let address = listener.local_addr().map_err(Error::process_io)?;
+            let server = tokio::spawn(async move {
+                let mut socket = notification_request(&listener).await?;
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.map_err(Error::process_io)?;
+                Ok::<_, Error>(())
+            });
+            let provider = Arc::new(ObservedProvider {
+                inner: NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?,
+                exchanges: Default::default(),
+            });
+            let mut transport = HttpMcpTransport::new(
+                provider.clone(),
+                format!("http://{address}/mcp"),
+                Some("session".into()),
+                8192,
+                1000,
+                None,
+            )?;
+            transport.watch_tools()?;
+            let mut watch = Arc::try_unwrap(transport.notifications.take().expect("watch armed"))
+                .ok()
+                .expect("one watch owner");
+            // Wait for actual completion, then observe the retained cause
+            // through ordinary catalog reads without another exchange.
+            (&mut watch.task)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            let watch = Arc::new(watch);
+            transport.notifications = Some(watch.clone());
+            let (_, original) = watch.failure.get().expect("terminal cause retained");
+            for _ in 0..2 {
+                let error = transport
+                    .list_tools(OperationId::new(), None)
+                    .await
+                    .expect_err("watch failure reaches catalog refresh");
+                assert_eq!(error.code(), code);
+                let Error::Command(error) = error else {
+                    panic!("retained local cause expected");
+                };
+                assert!(std::ptr::eq(
+                    error.original().expect("local cause"),
+                    original.as_ref()
+                ));
+            }
+            assert!(transport.tools_generation() > 0);
+            assert_eq!(provider.exchanges.load(Ordering::SeqCst), 1);
+            server
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))??;
+        }
         Ok(())
     }
 

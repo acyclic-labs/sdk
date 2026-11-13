@@ -1136,6 +1136,8 @@ pub struct CommandFailure {
 #[derive(Debug)]
 enum CommandCause {
     Original(Error),
+    #[cfg(not(target_arch = "wasm32"))]
+    Shared(std::sync::Arc<Error>),
     Projection(Option<String>),
 }
 
@@ -1145,6 +1147,8 @@ impl CommandFailure {
     pub fn original(&self) -> Option<&Error> {
         match &self.cause {
             CommandCause::Original(error) => Some(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(error) => Some(error),
             CommandCause::Projection(_) => None,
         }
     }
@@ -1155,6 +1159,8 @@ impl CommandFailure {
         match &self.cause {
             CommandCause::Projection(diagnostic) => diagnostic.as_deref(),
             CommandCause::Original(_) => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(_) => None,
         }
     }
 }
@@ -1163,6 +1169,10 @@ impl std::fmt::Display for CommandFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.cause {
             CommandCause::Original(error) => {
+                write!(formatter, "command {}: {error}", self.operation)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(error) => {
                 write!(formatter, "command {}: {error}", self.operation)
             }
             CommandCause::Projection(diagnostic) => formatter.write_str(
@@ -1193,6 +1203,17 @@ impl Error {
             operation,
             classification,
             cause: CommandCause::Original(self),
+        }))
+    }
+
+    /// Observe a shared producer failure without erasing its original cause.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn shared_for_request(source: std::sync::Arc<Self>, operation: OperationId) -> Self {
+        let classification = source.classification();
+        Self::Command(Box::new(CommandFailure {
+            operation,
+            classification,
+            cause: CommandCause::Shared(source),
         }))
     }
 
