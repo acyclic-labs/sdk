@@ -251,6 +251,6 @@ impl LocalHarness {
     }
 }
 
-fn storage(error: impl std::fmt::Display) -> Error {
-    Error::Storage(error.to_string())
+fn storage(error: impl std::error::Error) -> Error {
+    Error::Storage(Error::format_chain(&error))
 }
