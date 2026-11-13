@@ -106,8 +106,16 @@ impl StockExecution<'_> {
                         .select(journal, input.operation_id, step, self.io)?
                         .await?
                 {
+                    let changed = !std::ptr::eq(&*self.stock, selected.as_ref());
                     self.stock = ExecutionConfiguration::Shared(selected);
-                    self.compaction.take();
+                    if changed {
+                        self.compaction.take();
+                        // A continuation owns the preceding binding's model,
+                        // sampling and tools as well as its message history.
+                        // Rebuild that request from the journal when the
+                        // binding changes; unchanged bindings retain it.
+                        self.begin_request_continuation().await;
+                    }
                 }
                 let model_events = async {
                     self.run_model_step(
