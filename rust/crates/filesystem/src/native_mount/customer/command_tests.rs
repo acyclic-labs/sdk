@@ -101,10 +101,19 @@ async fn command_final_join(revoke: bool, guarded: bool) -> Result<(), Box<dyn s
             .apply_private_command_join(&plan, options, None)
             .await;
         if revoke {
-            assert!(matches!(
-                outcome,
-                Err(MountLifecycleError::Source(MountSourceError::AccessDenied))
-            ));
+            // The shared fixture owner deliberately cannot refresh policy.
+            // A changed persisted cut must reach that refusal, while the
+            // unchanged-policy control above still publishes successfully.
+            assert!(
+                matches!(
+                    outcome,
+                    Err(MountLifecycleError::Source(
+                        MountSourceError::NativeUnsupported
+                    ))
+                ),
+                "changed policy did not reach the fixture owner's refresh refusal: {:?}",
+                outcome.as_ref().err(),
+            );
         } else {
             let (outcome, _allocation) = outcome?;
             assert!(matches!(outcome, crate::JoinOutcome::Applied(_)));
