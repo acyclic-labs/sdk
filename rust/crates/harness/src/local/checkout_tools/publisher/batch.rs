@@ -3,6 +3,33 @@ use crate::conversation::{ContentAccess, ContentChange, ContentChangeResult, Con
 use acyclic_fs::access::Action;
 
 impl CheckoutPublisher {
+    /// Check every source path before choosing a publication binding. Aliases
+    /// can grant disjoint roots; the first volume alias need not grant any of
+    /// this batch, and a named read-only alias cannot lend write authority.
+    fn changes_mount<'m>(
+        &self,
+        mounts: &'m workspace::Mounts,
+        volume: &VolumeRef,
+        changes: Option<&[ContentChange<'_>]>,
+        access: ContentAccess<'_, '_>,
+    ) -> Result<&'m crate::workspace::Mount<Option<Arc<workspace::MountedVolume>>>> {
+        let mut selected = None;
+        for change in changes.into_iter().flatten() {
+            let mount = mounts.by_volume_path(
+                volume,
+                change.path(),
+                change.action(),
+                self.tools.clock.now_unix_millis() / 1000,
+                access
+                    .io
+                    .as_ref()
+                    .and_then(crate::store::HistoryIo::original_native_work),
+            )?;
+            selected.get_or_insert(mount);
+        }
+        selected.map_or_else(|| mounts.by_volume(volume, access.io), Ok)
+    }
+
     pub(super) fn publish_changes<'a, 'io: 'a, Output: acyclic_stream::ProviderTask + 'a>(
         &'a self,
         volume: &'a VolumeRef,
@@ -14,18 +41,12 @@ impl CheckoutPublisher {
     ) -> Result<BoundedContentFuture<'a, (Output, Option<ContentHold<'io>>)>> {
         BoundedContentFuture::new(access.io, || async move {
             if let Some(changes) = changes {
-                let mount = self.tools.workspace.mounts.by_volume(volume, access.io)?;
-                for change in changes {
-                    mount.check_with_work(
-                        change.action(),
-                        change.path(),
-                        self.tools.clock.now_unix_millis() / 1000,
-                        access
-                            .io
-                            .as_ref()
-                            .and_then(crate::store::HistoryIo::original_native_work),
-                    )?;
-                }
+                let mount = self.changes_mount(
+                    &self.tools.workspace.mounts,
+                    volume,
+                    Some(changes),
+                    access,
+                )?;
                 let (selected, _) = self.tools.workspace.selected_view().await?;
                 let selected = selected
                     .as_ref()
@@ -78,21 +99,7 @@ impl CheckoutPublisher {
             }
             serialized(&self.tools.state, async move |mut state| {
                 let physical = self.selected_workspace(&state)?;
-                let mount = physical.mounts.by_volume(volume, access.io)?;
-                if let Some(changes) = changes {
-                    for change in changes {
-                        physical.mounts.by_volume_path(
-                            volume,
-                            change.path(),
-                            change.action(),
-                            self.tools.clock.now_unix_millis() / 1000,
-                            access
-                                .io
-                                .as_ref()
-                                .and_then(crate::store::HistoryIo::original_native_work),
-                        )?;
-                    }
-                }
+                let mount = self.changes_mount(&physical.mounts, volume, changes, access)?;
                 let view = state
                     .active
                     .as_ref()

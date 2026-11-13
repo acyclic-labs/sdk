@@ -188,11 +188,12 @@ impl CheckoutPublisher {
         // revalidate under the guard; an original receipt bypasses new-path
         // admission so a replay never acquires a later destination's meaning.
         if !matches!(&publication, Publication::Replace(_)) {
-            let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-            mount.check(
+            let (mount, relative) = self.tools.workspace.mounts.file_for(
                 acyclic_fs::access::Action::Write,
-                &relative,
+                volume,
+                path,
                 self.tools.clock.now_unix_millis() / 1000,
+                None,
             )?;
             let (selected, _) = self.tools.workspace.selected_view().await?;
             let selected = selected
