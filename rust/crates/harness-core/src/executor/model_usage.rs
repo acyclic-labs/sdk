@@ -190,8 +190,6 @@ pub(crate) struct ModelUsageAdmission<'a> {
     pub sampling: Option<crate::model::ModelSampling>,
 }
 
-impl crate::filesystem::PreparationRecord for ModelUsageRecord {}
-
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
     pub const VERSION: u32 = 5;
