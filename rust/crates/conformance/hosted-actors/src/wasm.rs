@@ -56,44 +56,133 @@ impl ActorsDomain {
         WasmStream::from_provider(self.store.provider().clone())
     }
 
-    /// Incremental discovery uses the ORIGINAL Store root activation records.
-    /// The platform persists the returned cursor after admitting every address.
-    pub async fn created(&self, from: u64) -> Result<JsValue, JsValue> {
-        let records = match self
-            .store
-            .provider()
-            .read(ReadRequest {
-                key: None,
-                path: self.store.root().clone(),
-                at_least: Default::default(),
-                from,
-                limit: 256,
-            })
-            .await
-        {
-            Ok(records) => records.try_collect::<Vec<_>>().await.map_err(failed)?,
-            Err(StreamError::NotFound) => Vec::new(),
-            Err(error) => return Err(failed(error)),
-        };
-        let next = records.last().map_or(from, |record| record.sequence + 1);
-        let full = records.len() == 256;
+    /// Public scheduling paths whose committed changes require discovery.
+    #[wasm_bindgen(js_name = schedulingPaths)]
+    pub fn scheduling_paths(&self) -> Result<js_sys::Array, JsValue> {
+        let paths = js_sys::Array::new();
+        for shard in 0..self.store.scheduling_shards() {
+            paths.push(
+                &self
+                    .store
+                    .scheduling_path(shard)
+                    .map_err(failed)?
+                    .as_str()
+                    .into(),
+            );
+        }
+        Ok(paths)
+    }
+
+    /// One bounded page across the Store's stable activation shards.
+    /// Persist all returned cursors only after admitting every address.
+    pub async fn created(&self, mut from: Vec<u64>) -> Result<JsValue, JsValue> {
+        let shards = usize::from(self.store.scheduling_shards());
+        if from.is_empty() {
+            from.resize(shards, 0);
+        }
+        if from.len() != shards {
+            return Err(failed("discovery cursor shape"));
+        }
         let actors = js_sys::Array::new();
-        for record in records {
-            if let Ok(actor) = ActorReference::decode(&record.value) {
+        let mut full = false;
+        for (shard, cursor) in from.iter_mut().enumerate() {
+            let records = match self
+                .store
+                .provider()
+                .read(ReadRequest {
+                    key: None,
+                    path: self.store.scheduling_path(shard as u16).map_err(failed)?,
+                    at_least: Default::default(),
+                    from: *cursor,
+                    limit: 256,
+                })
+                .await
+            {
+                Ok(records) => records.try_collect::<Vec<_>>().await.map_err(failed)?,
+                Err(StreamError::NotFound) => Vec::new(),
+                Err(error) => return Err(failed(error)),
+            };
+            *cursor = records.last().map_or(*cursor, |record| record.sequence + 1);
+            full |= records.len() == 256;
+            for record in records {
+                let actor = ActorReference::decode(&record.value).map_err(failed)?;
                 actors.push(&Uint8Array::from(actor.encode().as_slice()));
             }
         }
+        let next = js_sys::Array::new();
+        for cursor in from {
+            next.push(&JsValue::from(js_sys::BigInt::from(cursor)));
+        }
         let result = js_sys::Object::new();
-        js_sys::Reflect::set(
-            &result,
-            &"next".into(),
-            &JsValue::from(js_sys::BigInt::from(next)),
-        )?;
+        js_sys::Reflect::set(&result, &"next".into(), &next)?;
         js_sys::Reflect::set(&result, &"actors".into(), &actors)?;
         js_sys::Reflect::set(&result, &"full".into(), &full.into())?;
         Ok(result.into())
     }
-
+    /// Qualification of paged activation discovery and authority alarm admission.
+    #[wasm_bindgen(js_name = verifyDiscovery)]
+    pub async fn verify_discovery(&self) -> Result<(), JsValue> {
+        use acyclic_actors::local::{Creation, PreparedPublish};
+        use acyclic_stream::IdempotencyKey;
+        use std::collections::BTreeSet;
+        let mut expected = BTreeSet::new();
+        let mut selected = [0; 2];
+        for index in 0_u64.. {
+            let actor = ActorReference::new(b"discovery", b"pages", index.to_string().as_bytes())
+                .map_err(failed)?;
+            let shard = self.store.scheduling_shard(&actor);
+            if shard > 1 || selected[usize::from(shard)] >= if shard == 0 { 257 } else { 1 } {
+                continue;
+            }
+            let mut publication = PreparedPublish::foreign(
+                IdempotencyKey::new(index.to_le_bytes().to_vec()).map_err(failed)?,
+            );
+            publication
+                .join(
+                    self.store
+                        .create(None, &actor, Creation::default())
+                        .map_err(failed)?,
+                )
+                .map_err(failed)?;
+            publication
+                .join(self.store.activation(&actor).map_err(failed)?)
+                .map_err(failed)?;
+            self.store.submit(publication).await.map_err(failed)?;
+            expected.insert(actor.encode());
+            selected[usize::from(shard)] += 1;
+            if selected == [257, 1] {
+                break;
+            }
+        }
+        let mut cursor = Vec::new();
+        let mut found = BTreeSet::new();
+        let mut pages = 0;
+        loop {
+            let page = self.created(cursor).await?;
+            let actors = js_sys::Array::from(&js_sys::Reflect::get(&page, &"actors".into())?);
+            for actor in actors {
+                found.insert(Uint8Array::new(&actor).to_vec());
+            }
+            cursor =
+                js_sys::BigUint64Array::new(&js_sys::Reflect::get(&page, &"next".into())?).to_vec();
+            pages += 1;
+            if !js_sys::Reflect::get(&page, &"full".into())?
+                .as_bool()
+                .ok_or_else(|| failed("discovery page flag"))?
+            {
+                break;
+            }
+        }
+        if found != expected || pages != 2 {
+            return Err(failed("activation discovery lost a shard or page"));
+        }
+        acyclic_actors::conformance::early_alarm(
+            self.store.provider().clone(),
+            StreamPath::new("discovery-alarm").map_err(failed)?,
+        )
+        .await
+        .map_err(failed)
+    }
     pub async fn verify(&self) -> Result<(), JsValue> {
         acyclic_actors::conformance::verify(self)
             .await

@@ -52,7 +52,7 @@ test("one guest heap admits distinct Machines for two actors and re-admits every
       deliveries++;
       try { return await guest.onRecord(bytes, signal, interrupt); }
       finally { attempts.delete(delivery.request); }
-    }, policy: () => true, admitted: async () => {},
+    }, acceptsInterrupt: (query, signal) => guest.acceptsInterrupt(query, signal), policy: () => true, admitted: async () => {},
   });
   const firstHost = openHost(), secondHost = openHost();
   try {

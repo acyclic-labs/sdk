@@ -22,6 +22,7 @@ use wasm_bindgen_futures::JsFuture;
 #[wasm_bindgen]
 pub struct AgentGuest {
     manifest: Vec<u8>,
+    diagnostics: super::BrowserHandler,
     providers: WasmAgentProviders,
     options: WasmBrowserAgentOptions,
     owner: WasmAgentAuthority,
@@ -49,6 +50,7 @@ impl AgentGuest {
                 .handler(&options, owner, registry, &owner.admission()?)?;
         Ok(Self {
             manifest: wire::encode_manifest(handler.manifest()),
+            diagnostics: handler,
             providers: WasmAgentProviders {
                 providers: providers.providers.clone(),
             },
@@ -130,6 +132,8 @@ impl AgentGuest {
                 &self.owner.admission()?,
             )?;
             handler
+                .with_diagnostics_from(&self.diagnostics)
+                .map_err(guest_error)?
                 .on_record(delivery, checkpoint.as_ref(), cancellation)
                 .await
                 .map_err(guest_error)
