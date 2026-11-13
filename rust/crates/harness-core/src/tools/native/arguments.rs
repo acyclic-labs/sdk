@@ -25,6 +25,9 @@ pub(crate) struct Arguments {
 }
 
 impl Arguments {
+    pub(super) fn binding(&self) -> (&Value, &[String]) {
+        (&self.template, &self.refuse)
+    }
     /// Checks the template's operators once, when the profile binds.
     pub(crate) fn new(template: Value, refuse: Vec<String>) -> Result<Self> {
         check(&template)?;

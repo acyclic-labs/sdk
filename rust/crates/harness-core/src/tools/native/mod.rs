@@ -276,23 +276,43 @@ impl NativeTools {
             let original = implementation
                 .clone()
                 .unwrap_or_else(|| Arc::clone(&capability));
-            let definition = definition.clone();
+            let already_bound = tools
+                .get_shared(&definition.name, Some(&definition.revision), None)?
+                .is_some_and(|registered| {
+                    let Some(binding) = registered.executor.canonical_binding() else {
+                        return false;
+                    };
+                    let (template, refused) = arguments.binding();
+                    Arc::ptr_eq(binding.capability, &capability)
+                        && Arc::ptr_eq(binding.implementation, &original)
+                        && binding.arguments == template
+                        && binding.refused == refused
+                        && registered.definition.name == definition.name
+                        && registered.definition.revision == definition.revision
+                        && registered.definition.description == definition.description
+                        && registered.definition.input_schema == definition.input_schema
+                        && registered.definition.output_schema == original.definition.output_schema
+                        && registered.definition.projection_schema
+                            == original.definition.projection_schema
+                });
             let native = definition.name.clone();
             let revision = definition.revision.clone();
-            tools.register(
-                (
-                    adapted(
-                        definition,
-                        capability,
-                        original,
-                        Arc::clone(arguments),
+            if !already_bound {
+                tools.register(
+                    (
+                        adapted(
+                            definition.clone(),
+                            capability,
+                            original,
+                            Arc::clone(arguments),
+                            None,
+                        )?,
                         None,
-                    )?,
+                    ),
+                    &mut None,
                     None,
-                ),
-                &mut None,
-                None,
-            )?;
+                )?;
+            }
             tools.select_model_version(&native, &revision)?;
             presented.entry(name).or_default().push(native);
         }
