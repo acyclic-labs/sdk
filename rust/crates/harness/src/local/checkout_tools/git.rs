@@ -219,4 +219,112 @@ mod tests {
         );
         Ok(())
     }
+
+    fn scope_for(harness: &LocalHarness) -> Result<RuntimeScope> {
+        RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())
+    }
+
+    #[tokio::test]
+    async fn conflicted_fs_returns_paths_and_refuses_unrepaired_continuation() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        std::fs::write(directory.path().join("shared.txt"), b"base\n").map_err(storage)?;
+        let harness = LocalHarness::open(
+            crate::LocalHarnessConfig::native_host(directory.path())
+                .state_directory(state.path())
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+                .without_default_tools(),
+        )
+        .await?;
+        let workspace = harness
+            .workspace()
+            .ok_or_else(|| Error::NotFound("checkout".into()))?;
+        let tools = CheckoutTools::new(
+            workspace.clone(),
+            &harness.project,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
+            &harness.verifier,
+            None,
+        )
+        .await?;
+        let scope = RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?;
+        let task = Arc::new(crate::runtime::test_context::agent_context(
+            scope_for(&harness)?,
+            None,
+        )?);
+        let context = ToolContext::new(task, OperationId::new(), "conflict-branch")?;
+        let mut checkout = lock_owned(StateArc::clone(&tools.state)).await;
+        tools
+            .fs(
+                crate::tools::parse_fs_command("branch agents/repair")?,
+                &context,
+                &mut checkout,
+                workspace,
+            )
+            .await?;
+        let repository = acyclic_fs::GitCompatRepository::new(
+            workspace.view().workspace().id(),
+            workspace.store.clone(),
+        );
+        let child = acyclic_fs::WorkspaceResolver::resolve(
+            &(
+                workspace.filesystem.clone(),
+                acyclic_fs::WorkspaceGraph::new(workspace.store.clone()),
+            ),
+            repository.load().await.map_err(storage)?.branches["agents/repair"].workspace_id,
+        )
+        .await
+        .map_err(storage)?;
+        child
+            .write_text("/shared.txt", "child\n")
+            .await
+            .map_err(storage)?;
+        std::fs::write(directory.path().join("shared.txt"), b"parent\n").map_err(storage)?;
+        for command in ["merge agents/repair", "merge --continue"] {
+            let task = Arc::new(crate::runtime::test_context::agent_context(
+                scope_for(&harness)?,
+                None,
+            )?);
+            let context = ToolContext::new(task, OperationId::new(), "conflicted-merge")?;
+            let result = tools
+                .fs(
+                    tools.fs_arguments(command, &scope)?,
+                    &context,
+                    &mut checkout,
+                    workspace,
+                )
+                .await?;
+            assert_eq!(result.value["kind"], "merge conflict", "{result:?}");
+            assert_eq!(result.value["paths"], serde_json::json!(["/shared.txt"]));
+            let text =
+                std::fs::read_to_string(directory.path().join("shared.txt")).map_err(storage)?;
+            assert!(
+                text.contains("<<<<<<<") && text.contains("parent") && text.contains("child"),
+                "{text}"
+            );
+        }
+        std::fs::write(directory.path().join("shared.txt"), b"repaired\n").map_err(storage)?;
+        for command in ["add shared.txt", "merge --continue"] {
+            let task = Arc::new(crate::runtime::test_context::agent_context(
+                scope_for(&harness)?,
+                None,
+            )?);
+            let context = ToolContext::new(task, OperationId::new(), "repaired-merge")?;
+            let result = tools
+                .fs(
+                    tools.fs_arguments(command, &scope)?,
+                    &context,
+                    &mut checkout,
+                    workspace,
+                )
+                .await?;
+            assert!(result.value.get("error").is_none(), "{result:?}");
+        }
+        assert_eq!(
+            std::fs::read(directory.path().join("shared.txt")).map_err(storage)?,
+            b"repaired\n"
+        );
+        Ok(())
+    }
 }
