@@ -95,17 +95,10 @@ impl<'a> Tree<'a> {
                 })
         {
             let reason = "retained settings cut has another version or original owner";
-            #[cfg(not(target_arch = "wasm32"))]
-            if io
-                .and_then(crate::executor::PreparationIo::original_native_work)
-                .is_some()
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Storage,
-                    reason,
-                });
-            }
-            return Err(Error::Storage(reason.into()));
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Storage,
+                reason,
+            });
         }
         let mut tree = Self::pinned(volumes, retained.cut.home.1, io)?;
         tree.configuration = std::borrow::Cow::Owned(retained.cut.configuration);

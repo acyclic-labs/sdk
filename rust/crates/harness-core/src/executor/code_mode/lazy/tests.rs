@@ -84,7 +84,7 @@ impl ToolSource for Programs {
             let program =
                 crate::plugins::load_program(&PreparedPrograms(self, io), &format!("tools/{name}"))
                     .await?;
-            program.bind(self.shell.clone()).map(Arc::new).map(Some)
+            program.bind(self.shell.clone()).map(Some)
         })
     }
 }

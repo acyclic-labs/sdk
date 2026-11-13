@@ -769,7 +769,7 @@ mod tests {
             journal: harness.journal.clone(),
             verifier: harness.verifier.clone(),
             scope: harness.signed.copy(&mut None)?,
-            shell: Arc::clone(harness.tools.get_shared("shell", None, None)?.unwrap()),
+            shell: Arc::new(harness.tools.get("shell", None, None)?.unwrap().clone()),
             catalog: crate::tool::ToolRegistry::default(),
         };
         let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
@@ -1216,20 +1216,22 @@ mod tests {
                 .await?
                 .unwrap();
             let bytes = journal.load(&reference, None)?.await?;
-            let recorded: serde_json::Value = serde_json::from_slice(&bytes).map_err(storage)?;
+            let recorded: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(crate::local::storage)?;
             for index in 0..configuration.len() {
                 let foreign = crate::layers::PinnedLayer {
                     volume: harness.seed.0.clone(),
                     generation: harness.seed.1.clone(),
                 };
-                let mut replacements = vec![serde_json::to_value(foreign).map_err(storage)?];
+                let mut replacements =
+                    vec![serde_json::to_value(foreign).map_err(crate::local::storage)?];
                 if present {
                     replacements.push(serde_json::Value::Null);
                 }
                 for replacement in replacements {
                     let mut forged = recorded.clone();
                     forged["configuration"][index] = replacement;
-                    let bytes = serde_json::to_vec(&forged).map_err(storage)?;
+                    let bytes = serde_json::to_vec(&forged).map_err(crate::local::storage)?;
                     let operation = crate::OperationId::new();
                     journal
                         .stage(

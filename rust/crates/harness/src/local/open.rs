@@ -707,6 +707,8 @@ impl Opening {
         } else {
             (None, None)
         };
+        #[cfg(any(test, not(target_arch = "wasm32")))]
+        drop(settings_tree);
         Ok(LocalHarness {
             topology: self.config.topology,
             files,

@@ -342,7 +342,7 @@ async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() 
         harness
             .agent
             .clone()
-            .map(|binding| Arc::new(crate::model::ResolvedModel::new(binding))),
+            .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
         None,
         None,
         harness.clock.as_ref(),
@@ -1086,7 +1086,7 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             harness
                 .agent
                 .clone()
-                .map(|binding| Arc::new(crate::model::ResolvedModel::new(binding))),
+                .map(|binding| std::sync::Arc::new(crate::model::ResolvedModel::new(binding))),
             None,
             None,
             harness.clock.as_ref(),
