@@ -188,7 +188,7 @@ where
     Ok(if writable {
         checkout
     } else {
-        checkout.into_unpublishable_capture_candidate()
+        checkout.into_unpublishable_candidate()
     })
 }
 

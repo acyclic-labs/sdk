@@ -69,7 +69,7 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
             cut,
             paths,
             start,
-            crate::PublicationPermit::Unrestricted,
+            super::super::exactify::Exactification::Publish(crate::PublicationPermit::Unrestricted),
             &mut accounting,
         )
         .await
@@ -97,14 +97,208 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
 }
 
 #[tokio::test]
+async fn inspection_needs_only_read_access_and_preserves_the_original_writer() {
+    let fs = Fs::memory();
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+    let mut config = VolumeConfig::portable(crate::Lifecycle::Ephemeral);
+    config.concurrency = crate::model::ConcurrencyMode::ExclusiveWriter;
+    let (owner, _) = LazyWorkspace::attach(
+        &fs,
+        "root",
+        source,
+        MemoryLazyWorkspaceStore::default(),
+        crate::VolumeInitialization {
+            config,
+            access_policy: Some(crate::access::INITIAL_POLICY),
+        },
+        crate::OperationId::new(),
+        accounting!(),
+    )
+    .await
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let reader = owner
+        .workspace()
+        .clone()
+        .bind_coarse_access(&[crate::access::Action::Read], &cancellation)
+        .await
+        .unwrap();
+    let inspector = owner.inspect_related(reader, accounting!()).await.unwrap();
+    let mut writer = owner
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .unwrap()
+        .value;
+    writer
+        .write_text("/owner.txt", "original writer")
+        .await
+        .unwrap();
+    let cut = inspector.snapshot(accounting!()).await.unwrap();
+    let (page, total) = inspector
+        .read_page_at_snapshot(cut, "/file.txt", 1, 3, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(page.bytes.as_ref(), b"our");
+    assert_eq!(total, 6);
+    let exact = inspector
+        .exact_generation(cut, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(
+        exact
+            .read("/file.txt", 32, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value
+            .as_slice(),
+        b"source"
+    );
+    // A writable inspection would fence this original ExclusiveWriter even
+    // without publishing content. The retained transaction must still commit.
+    let committed = writer
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+        .unwrap()
+        .value;
+    assert!(matches!(committed, TransactionCommit::Committed(_)));
+    let before = owner.head(accounting!()).await.unwrap().id();
+    // Local staging never inherits publication authority, including when the
+    // selected generation was opened by a caller that does have write access.
+    let checkout = owner
+        .workspace()
+        .checkout(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::read_only_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .unwrap()
+        .value
+        .into_unpublishable_candidate();
+    let mut unpublished = crate::Transaction::from_checkout(
+        owner.workspace(),
+        checkout,
+        IdempotencyKey::new(),
+        false,
+    );
+    unpublished
+        .write_text("/forbidden.txt", "private only")
+        .await
+        .unwrap();
+    let Err(refused) = unpublished
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+    else {
+        panic!("private inspection candidate published");
+    };
+    assert!(matches!(
+        refused.error,
+        WorkspaceError::Filesystem(crate::FsError::WritableCheckoutRequiresHead)
+    ));
+    assert_eq!(owner.head(accounting!()).await.unwrap().id(), before);
+    // A publication may become pending after the inspector was opened.
+    // Every later inspection still leaves recovery to the original owner.
+    let mut pending = owner.inspect_state(accounting!()).await.unwrap();
+    let revision = pending.revision;
+    pending.revision += 1;
+    pending.pending_remove = Some(PendingLazyRemove {
+        prior_overlay: pending.overlay,
+        prior_shadows: pending.shadows,
+        prepared_overlay: pending.overlay,
+        kind: PendingLazyRemoveKind::Exactify {
+            idempotency_key: IdempotencyKey::new(),
+        },
+    });
+    assert!(
+        owner
+            .store
+            .compare_and_swap_lazy_workspace(
+                owner.workspace().id(),
+                revision,
+                pending.clone(),
+                accounting!(),
+            )
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        inspector.inspect_state(accounting!()).await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert!(matches!(
+        inspector.snapshot(accounting!()).await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert!(matches!(
+        inspector
+            .source_tombstones_owned(usize::MAX, accounting!())
+            .await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert!(matches!(
+        owner
+            .inspect_related(owner.workspace().clone(), accounting!())
+            .await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert_eq!(
+        owner
+            .store
+            .load_lazy_workspace(owner.workspace().id(), accounting!())
+            .await
+            .unwrap(),
+        Some(pending)
+    );
+}
+
+#[tokio::test]
 async fn historical_exactification_keeps_observations_and_refreshes_unresolved_paths() {
-    for observed in [false, true] {
+    for (observed, detached) in [(false, false), (true, false), (false, true), (true, true)] {
         let fs = Fs::memory();
         let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-        let root = attach(
+        let mut config = VolumeConfig::portable(crate::Lifecycle::Ephemeral);
+        // Root and file occupy distinct chunks, exercising immutable handback
+        // between batches as well as the ordinary publishing path.
+        config.limits.maximum_mutations_per_batch = 4;
+        let (root, _) = LazyWorkspace::attach(
             &fs,
+            "root",
             Arc::clone(&source),
             MemoryLazyWorkspaceStore::default(),
+            crate::VolumeInitialization {
+                config,
+                access_policy: None,
+            },
+            crate::OperationId::new(),
+            accounting!(),
         )
         .await
         .unwrap();
@@ -114,10 +308,39 @@ async fn historical_exactification_keeps_observations_and_refreshes_unresolved_p
         let cut = root.snapshot(accounting!()).await.unwrap();
         source.replace(Bytes::from_static(b"changed"));
         root.state(accounting!()).await.unwrap();
-        let exact = root
-            .exactify_snapshot(cut, "exact", IdempotencyKey::new(), accounting!())
-            .await
+        let exact = if detached {
+            let before = root
+                .store
+                .load_lazy_workspace(root.workspace.id(), accounting!())
+                .await
+                .unwrap();
+            let cancellation = CancellationToken::new();
+            let mut first = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let mut second = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+            let (exact, other) = futures::try_join!(
+                root.exact_generation(cut, &mut first),
+                root.exact_generation(cut, &mut second),
+            )
             .unwrap();
+            assert_eq!(exact.id(), other.id());
+            assert_eq!(exact.workspace_id(), root.workspace.id());
+            assert_eq!(
+                root.head(accounting!()).await.unwrap().id(),
+                cut.authored_generation
+            );
+            assert_eq!(
+                root.store
+                    .load_lazy_workspace(root.workspace.id(), accounting!())
+                    .await
+                    .unwrap(),
+                before
+            );
+            exact
+        } else {
+            root.exactify_snapshot(cut, "exact", IdempotencyKey::new(), accounting!())
+                .await
+                .unwrap()
+        };
         let bytes = exact
             .read(
                 "/file.txt",

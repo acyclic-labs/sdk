@@ -31,46 +31,35 @@ where
                     ));
                 };
                 let lazy = current
-                    .open_related(
+                    .inspect_related(
                         workspace,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
-                    .map_err(Error::from)?;
-                let snapshot_bytes = snapshot.id.into_bytes();
-                let destination = format!("git-exact-{}", hex::encode(&snapshot_bytes[..12]));
-                let mut identity = [0; 16];
-                identity.copy_from_slice(&snapshot_bytes[..16]);
-                let (child, initial) = lazy
-                    .fork_snapshot(
-                        &destination,
+                    .map_err(super::errors::inspection_error)?;
+                let generation = lazy
+                    .exact_generation(
                         snapshot,
-                        IdempotencyKey::from_bytes(identity),
-                        PublicationPermit::Unrestricted,
                         &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
                     )
                     .await
                     .map_err(Error::from)?;
-                WorkspaceGraph::new(self.store.clone())
-                    .register_existing_child_at_generation(
-                        lazy.workspace(),
-                        child.workspace(),
-                        snapshot.authored_generation,
-                        initial.authored_generation,
+                // Retain each distinct returned value through the source
+                // workspace's lifetime. Repeated inspections of unchanged
+                // content share an immutable pin, never a mutable scratch view.
+                generation
+                    .retain_if_unpublished(
+                        format!(
+                            "git-exact-{}",
+                            hex::encode(generation.id().to_bytes().as_slice())
+                        ),
                         WorkBudget::UNBOUNDED,
                         &CancellationToken::new(),
                     )
                     .await
                     .map_err(|failure| failure.error)
-                    .map_err(S::lineage_error)?;
-                child
-                    .exactify(
-                        "/",
-                        PublicationPermit::Unrestricted,
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                    )
-                    .await
-                    .map_err(Error::from)
+                    .map_err(Error::from)?;
+                Ok(generation)
             }
             #[cfg(target_arch = "wasm32")]
             GitTreeRef::Lazy(_) => Err(Error::Unsupported(

@@ -16,18 +16,8 @@ where
         let (target, target_view) = self.agent_view(branch, current).await?;
         // Both sides must include the same inherited source namespace before
         // attributing parent changes against the refined common ancestor.
-        let parent_tree = self.lazy_current.tree(true, self.permit).await?;
-        let target_tree = target_view
-            .view()
-            .tree(
-                true,
-                if target.workspace_id == self.current.id() {
-                    self.permit
-                } else {
-                    PublicationPermit::Unrestricted
-                },
-            )
-            .await?;
+        let parent_tree = self.lazy_current.tree(false, self.permit).await?;
+        let target_tree = target_view.view().tree(false, self.permit).await?;
         let tracked_paths = GitCompatRepository::new(self.repository_id, self.store.clone())
             .tracked_paths()
             .await
@@ -55,12 +45,12 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let OwnedView::Checkout(witness) = &target_view {
             let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
-            if let Some(origin) = witness.state(&mut accounting).await?.fork_origin
+            if let Some(origin) = witness.inspect_state(&mut accounting).await?.fork_origin
                 && origin.snapshot.authored_generation == plan.common_ancestor()
             {
                 let owner = self
                     .lazy_current
-                    .related(self.workspace(origin.snapshot.workspace_id).await?)
+                    .inspect_related(self.workspace(origin.snapshot.workspace_id).await?)
                     .await?;
                 let OwnedView::Checkout(owner) = owner else {
                     return Err(Error::Conflict("fork base has no source binding".into()));
@@ -157,7 +147,7 @@ where
             .find(|candidate| candidate.name == branch)
             .ok_or_else(|| Error::NotFound(branch.into()))?;
         let workspace = self.workspace(target.workspace_id).await?;
-        let target_view = self.lazy_current.related(workspace).await?;
+        let target_view = self.lazy_current.inspect_related(workspace).await?;
         Ok((target, target_view))
     }
 
@@ -176,8 +166,10 @@ where
             OwnedView::Checkout(view) => {
                 let cancellation = CancellationToken::new();
                 let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+                let cut = view.snapshot(&mut accounting).await?;
                 let (bytes, total) = view
-                    .read_page(
+                    .read_page_at_snapshot(
+                        cut,
                         &path,
                         offset,
                         super::actions::SHOW_PAGE_BYTES,

@@ -13,6 +13,7 @@ use acyclic_stream::{
 use futures::TryStreamExt;
 use std::{path::Path, sync::Arc};
 
+mod merge_repair;
 mod workspace_files;
 
 /// The root conversation `harness` serves to its own in-process session.

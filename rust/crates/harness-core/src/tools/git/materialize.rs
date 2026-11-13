@@ -29,22 +29,67 @@ impl RootMaterializingGitExecutor<'_, '_> {
                 || self.inner.current.clone(),
                 |lazy| lazy.workspace().clone(),
             );
+        let cancellation = CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let publication = CheckoutPublication::new(
+            self.root,
+            self.source_root_identity,
+            operation_id,
+            self.inner.store,
+            &work,
+        )?;
+        let options = MaterializeOptions::native(publication.directory().join("target"));
+        if publication
+            .resume(
+                self.inner.store,
+                &options,
+                &work,
+                |generation| {
+                    let work = &work;
+                    async move {
+                        let workspace = self
+                            .inner
+                            .fs
+                            .generation_workspace_id(
+                                generation,
+                                self.inner.current.volume_config(),
+                                work,
+                                work.cancellation(),
+                            )
+                            .await?;
+                        self.inner
+                            .workspace(workspace)
+                            .await?
+                            .generation(generation, work, work.cancellation())
+                            .await
+                            .map_err(Error::from)
+                    }
+                },
+                || self.validate(),
+            )
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
         let to_generation = target
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
-        publish_checkout_transition(
-            self.root,
-            self.source_root_identity,
-            self.inner.store,
-            operation_id,
-            from,
-            to_generation,
-            &|| self.validate(),
-        )
-        .await
+        publication
+            .publish(
+                &from,
+                &to_generation,
+                self.inner.store,
+                &options,
+                (&work, None),
+                || self.validate(),
+            )
+            .await?;
+        Ok(())
     }
 }
 

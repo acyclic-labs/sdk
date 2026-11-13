@@ -391,8 +391,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn into_unpublishable_capture_candidate(mut self) -> Self {
+    /// Stage local mutations after the caller has authorized reading. The
+    /// discarded authority head makes every publication entry point refuse.
+    pub(crate) fn into_unpublishable_candidate(mut self) -> Self {
         self.mode = CheckoutMode {
             access: AccessMode::ReadWrite,
             consistency: ConsistencyMode::Pinned,

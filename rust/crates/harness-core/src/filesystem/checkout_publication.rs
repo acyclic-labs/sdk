@@ -123,6 +123,54 @@ impl CheckoutPublication {
             Err((source, _)) => Err(source.into()),
         }
     }
+
+    /// Resumes this operation's retained transition, independently of the
+    /// workspace heads observed by a later delivery. The journal owns the
+    /// original generation pair; callers must not reconstruct it from heads.
+    pub(crate) async fn resume<R, Resolved, F, Fut>(
+        &self,
+        state: &LocalCoreStateStore,
+        options: &MaterializeOptions,
+        work: &NativeMaterializationWork,
+        mut resolve: R,
+        mut guard: F,
+    ) -> Result<Option<MaterializationJournal>>
+    where
+        R: FnMut(acyclic_fs::GenerationId) -> Resolved + Send,
+        Resolved: Future<Output = Result<LocalGeneration>> + Send,
+        F: FnMut() -> Fut + Send,
+        Fut: Future<Output = Result<()>> + Send,
+    {
+        guard().await?;
+        let retained =
+            acyclic_fs::load_native_materialization_journal(state, self.operation, work.clone())
+                .await
+                .map_err(|(cause, _)| Error::from(cause))?
+                .value;
+        let Some(journal) = retained else {
+            return Ok(None);
+        };
+        let acyclic_fs::MaterializationIntent::GenerationTransition { from, to } =
+            journal.plan().intent
+        else {
+            return Err(Error::Storage(
+                "checkout publication is not a generation transition".into(),
+            ));
+        };
+        if journal.root_identity != Some(self.identity.to_bytes()) {
+            return Err(Error::Storage(
+                "checkout publication belongs to another root".into(),
+            ));
+        }
+        // Each recorded generation supplies its own workspace. A later branch
+        // selection must not rebind the original transition's identities.
+        // The caller resolves both through its ordinary authorization boundary.
+        let from = resolve(from).await?;
+        let to = resolve(to).await?;
+        self.publish(&from, &to, state, options, (work, Some(&journal)), guard)
+            .await
+            .map(Some)
+    }
     /// Publishes with the caller's guard and original native work ledger.
     pub(crate) async fn publish<F, Fut>(
         &self,

@@ -1,6 +1,16 @@
 use crate::Error;
 use acyclic_fs::{GitCompatError, GitCompatRunError};
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn inspection_error(error: acyclic_fs::LazyWorkspaceError) -> Error {
+    match error {
+        acyclic_fs::LazyWorkspaceError::Concurrent => {
+            Error::Refused("inspection target has an unfinished publication".into())
+        }
+        error => Error::from(error),
+    }
+}
+
 pub(super) fn run_error<S: super::CommandStore>(
     error: GitCompatRunError<S::StoreError, Error>,
 ) -> Error {

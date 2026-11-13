@@ -7,16 +7,6 @@ impl<
     S: LazyWorkspaceStore,
 > LazyWorkspace<A, O, D, S>
 {
-    pub(super) async fn append_overlay(
-        &self,
-        path: &str,
-        change: LazyOverlayChange,
-        ctx: &mut KernelAccounting<'_>,
-    ) -> Result<(), LazyWorkspaceError> {
-        let state = self.state(ctx).await?;
-        self.append_overlay_at(state, path, change, ctx).await
-    }
-
     pub(super) async fn append_overlay_at(
         &self,
         state: LazyWorkspaceState,

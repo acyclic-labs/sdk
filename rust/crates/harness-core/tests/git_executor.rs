@@ -720,11 +720,9 @@ async fn fixture_native_source(
     Ok((temp, root, fs, store, main, source))
 }
 
-/// A child projection authors its volume alias beside its own work. Merging
-/// the child must publish and track the work, never the alias, and record
-/// each parent once.
+/// Inspect a child's native content without opening a writer or rebasing it.
 #[tokio::test]
-async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
+async fn agent_diff_reads_a_frozen_cut_without_writing_the_inspected_agent() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
     let repository = main.workspace().id();
     acyclic_fs::WorkspaceGraph::new(store.clone())
@@ -768,33 +766,136 @@ async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
             .await
             .is_err()
     );
-    let output = git::run(
-        git::Workspace {
-            access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
-            filesystem: &fs,
-            store: &store,
-            view: (&main).into(),
-            root: &root,
-            repository,
-            lease: Some(lease.clone()),
-            checkout: None,
-            author: "test",
-            authored_at_seconds: 1,
-            request: None,
-        },
-        &["diff".into(), "agents/child".into()],
+    let child_before = child
+        .state(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
+        .await?;
+    let head_before = child
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await?
+        .value
+        .id();
+    let window_before = coordinator.snapshot(child.workspace().id()).await?;
+    let inspect = async |operation, arguments: Vec<String>| {
+        git::run(
+            git::Workspace {
+                access: &acyclic_harness_core::filesystem::local_owner_workspace_access("test")?,
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: &root,
+                repository,
+                lease: Some(lease.clone()),
+                checkout: None,
+                author: "test",
+                authored_at_seconds: 1,
+                request: Some(acyclic_fs::GitRequest {
+                    operation,
+                    merge_source: None,
+                    unanswered: Arc::new(|_| true),
+                }),
+            },
+            &arguments,
+        )
+        .await
+    };
+    let arguments = || vec!["diff".into(), "agents/child".into()];
+    let operation = OperationId::new();
+    let output = inspect(operation, arguments()).await?;
+    let replay = inspect(operation, arguments()).await?;
+    let other = inspect(OperationId::new(), arguments()).await?;
+    let shown = inspect(
+        OperationId::new(),
+        vec!["show".into(), "agents/child:native.txt".into()],
     )
     .await?;
-    let Some(GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. })) =
-        output.command
-    else {
-        return Err("agent diff returned no data".into());
+    assert!(matches!(
+        shown.command,
+        Some(GitCommandOutput::Filesystem(
+            acyclic_fs::GitFilesystemResult::Data { .. }
+        ))
+    ));
+    let exact_cut = |output: &git::Output| -> Result<String> {
+        let Some(GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+            kind,
+            value,
+        })) = &output.command
+        else {
+            return Err("inspection returned no diff".into());
+        };
+        assert_eq!(kind, "diff");
+        Ok(value["to"]
+            .as_str()
+            .ok_or("diff has no exact generation")?
+            .to_owned())
     };
     assert_eq!(
-        value["fileChanges"], 0,
-        "source materialization is not a child write"
+        exact_cut(&output)?,
+        exact_cut(&replay)?,
+        "replay lost its immutable generation"
     );
-    assert_eq!(value["paths"], serde_json::json!([]));
+    assert_eq!(
+        exact_cut(&output)?,
+        exact_cut(&other)?,
+        "unchanged inspections created distinct saved state"
+    );
+    let inspected = acyclic_fs::GenerationId::from_bytes(&hex::decode(exact_cut(&output)?)?)
+        .ok_or("invalid returned generation reference")?;
+    assert_eq!(
+        fs.generation_workspace_id(
+            inspected,
+            child.workspace().volume_config(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value,
+        child.workspace().id(),
+        "inspection created a scratch workspace"
+    );
+    // Only scalar result references remain after run returns. Collection must
+    // preserve the distinct returned value without a saved scratch workspace.
+    fs.collect_local_garbage(Some(&store), &CancellationToken::new())
+        .await?;
+    assert_eq!(
+        child
+            .workspace()
+            .generation(inspected, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .read(
+                "/native.txt",
+                64,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await?
+            .value
+            .as_slice(),
+        b"native origin\n"
+    );
+    assert_eq!(
+        child
+            .state(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
+            .await?,
+        child_before,
+        "inspection changed the child's lazy binding"
+    );
+    assert_eq!(
+        child
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?
+            .value
+            .id(),
+        head_before,
+        "inspection exactified or rebased the child's authored head"
+    );
+    assert_eq!(
+        coordinator.snapshot(child.workspace().id()).await?,
+        window_before,
+        "inspection opened a competing child window"
+    );
     assert_eq!(
         child
             .read(

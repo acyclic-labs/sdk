@@ -21,7 +21,7 @@ impl<
         maximum: usize,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<(String, SourceVersion)>>, LazyWorkspaceError> {
-        let state = self.state(ctx).await?;
+        let state = self.inspect_state(ctx).await?;
         let mut pending = Owned::allocate(1, ctx)?;
         pending.value.push(state.overlay);
         let mut output = Owned::allocate(0, ctx)?;
