@@ -141,6 +141,12 @@ pub fn merge_bytes(
     let base = optional_text(base, limits)?;
     let ours = optional_text(ours, limits)?;
     let theirs = optional_text(theirs, limits)?;
+    if ours == theirs || base == theirs {
+        return Ok(ByteMerge::Merged(ours.unwrap_or("").as_bytes().to_vec()));
+    }
+    if base == ours {
+        return Ok(ByteMerge::Merged(theirs.unwrap_or("").as_bytes().to_vec()));
+    }
     match (ours, theirs) {
         (Some(ours), Some(theirs)) => {
             let result = merge_optional_base(base, ours, theirs, ours_label, theirs_label);
@@ -359,6 +365,27 @@ mod tests {
         let limits = ByteMergeLimits {
             max_bytes: Some(16),
         };
+        for (base, kept, expected) in [
+            (Some("same"), "same", ""),
+            (Some(""), "", ""),
+            (None, "added", "added"),
+            (None, "", ""),
+        ] {
+            let kept = Some(kept.as_bytes());
+            for (ours, theirs) in [(kept, None), (None, kept)] {
+                assert_eq!(
+                    merge_bytes(
+                        base.map(str::as_bytes),
+                        ours,
+                        theirs,
+                        "fork",
+                        "main",
+                        limits
+                    ),
+                    Ok(ByteMerge::Merged(expected.as_bytes().to_vec()))
+                );
+            }
+        }
         for (ours, theirs) in [("", "added"), ("added", ""), ("one\n", "two\n")] {
             let ByteMerge::Conflicted { bytes, hunks, .. } = merge_bytes(
                 None,
