@@ -484,8 +484,15 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         let mut policy: acyclic_fs::access::Policy =
             serde_json::from_slice(include_bytes!("../host/journal-policy.json"))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-        policy.layers[0].retain(|rule| rule.id != "published-input");
-        policy.layers[0][0].id = "saved-host-custody-".repeat(256);
+        let layer = policy
+            .layers
+            .first_mut()
+            .ok_or_else(|| Error::Invalid("journal policy has no layers".into()))?;
+        layer.retain(|rule| rule.id != "published-input");
+        layer
+            .first_mut()
+            .ok_or_else(|| Error::Invalid("journal policy has no host rule".into()))?
+            .id = "saved-host-custody-".repeat(256);
         assert!(
             crate::contract::canonical_json_bytes(&policy)?.len()
                 > include_bytes!("../host/journal-policy.json").len()
