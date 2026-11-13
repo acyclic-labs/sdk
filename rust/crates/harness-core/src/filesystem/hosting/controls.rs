@@ -128,8 +128,8 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         .map_err(|_| Error::Record("control actor identity"))
     }
 
-    fn source(&self, private: &WorkspaceEntry) -> crate::Result<StreamPath> {
-        let (name, _) = self.volumes.volume_creation(private.volume()?)?;
+    fn source(&self, volume: &VolumeRef) -> crate::Result<StreamPath> {
+        let (name, _) = self.volumes.volume_creation(volume)?;
         let volume = self
             .volumes
             .filesystem
@@ -178,7 +178,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 &self.store,
                 &delivery.actor,
                 &state.agent,
-                self.source(&state.private).map_err(turn)?,
+                self.source(
+                    &crate::conversation::journal_volume(
+                        self.volumes.provider.clone(),
+                        &state.agent.id(),
+                    )
+                    .map_err(turn)?,
+                )
+                .map_err(turn)?,
                 record,
             )?);
             return state.transition(effects, false);
@@ -191,7 +198,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 context.ok_or(Error::Record("control source is not a publication"))?,
             )
             .map_err(Error::Stream)?;
-            let source = self.source(&state.private).map_err(turn)?;
+            let source = self.source(state.private.volume()?).map_err(turn)?;
             if delivery
                 .subscriptions
                 .get(subscription)
@@ -552,7 +559,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
         else {
             return Ok(vec![]);
         };
-        let source = self.source(private).map_err(turn)?;
+        let source = self.source(private.volume()?).map_err(turn)?;
         let actor = self.actor(within, agent)?;
         let state = State {
             version: 4,

@@ -425,18 +425,15 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
         execution.clock = Arc::new(clock);
         let placed = placement(&stream)?;
         let within = placed.within.clone();
-        let bound = Bound::local_root(
-            AuthorityRoot::new(
-                "agents",
-                [7; 32],
-                Authority {
-                    kind: AggregateKind::Conversation,
-                    id: "quiet".into(),
-                },
-            ),
-            placed,
-            execution,
-        )?;
+        let issuer = AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "quiet".into(),
+            },
+        );
+        let bound = Bound::local_root(issuer.clone(), placed, execution)?;
         let RootSubmission::Created(agent) = bound
             .create_root(
                 &intent("quiet-root"),
@@ -522,24 +519,69 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             wait(&mut states, Some(110), false).await?;
             commit_clock.0.store(105, Ordering::SeqCst);
             let path = acyclic_harness_core::runtime::tool_output_activity_path(execution, call);
+            let cursor =
+                serde_json::to_string(&acyclic_harness_core::runtime::ToolOutputActivity {
+                    version: 1,
+                    turn: execution,
+                    call,
+                    through: 1,
+                })?;
+            // A model-writable lookalike cannot postpone the host's alarm.
             bound
                 .publish_files(
                     &agent,
                     FileRoot::Private {},
                     OperationId::from_bytes([234; 16]),
                     &[ClientFileChange {
-                        path,
+                        path: path.clone(),
                         expected: None,
-                        text: Some(serde_json::to_string(
-                            &acyclic_harness_core::runtime::ToolOutputActivity {
-                                version: 1,
-                                turn: execution,
-                                call,
-                                through: 1,
-                            },
-                        )?),
+                        text: Some(cursor.clone()),
                     }],
                 )
+                .await?;
+            bound.agents().runtime().complete().await?;
+            assert_eq!(
+                store
+                    .load(&actor)
+                    .await?
+                    .state()
+                    .ok_or("quiet actor missing")?
+                    .alarm()
+                    .deadline_unix_ms(),
+                Some(110),
+            );
+            use acyclic_harness_core::conversation::{
+                ContentAccess, ContentPublisher, VolumeOperation,
+            };
+            let journal =
+                acyclic_harness_core::conversation::journal_volume(provider()?, &agent.id())?;
+            let scope = issuer.bootstrap_scope(
+                "quiet-output",
+                &acyclic_harness_core::Capabilities::new([
+                    journal.capability(VolumeOperation::Read, &mut None)?,
+                    journal.capability(VolumeOperation::Write, &mut None)?,
+                    acyclic_harness_core::contract::capability::HARNESS_HOST.to_owned(),
+                ]),
+                None,
+                &mut None,
+            )?;
+            let publisher = acyclic_harness_core::filesystem::FilesystemContentPublisher::new(
+                bound.volumes().clone(),
+                &journal,
+                &issuer.verifier(&mut None)?,
+                &scope,
+                65_536,
+                None,
+            )?;
+            publisher
+                .stage_once(
+                    OperationId::from_bytes([236; 16]),
+                    &path,
+                    cursor.as_bytes(),
+                    "application/json",
+                    "activity.json",
+                    ContentAccess::default(),
+                )?
                 .await?;
             wait(&mut states, Some(115), false).await?;
             time.advance_to(110)?;

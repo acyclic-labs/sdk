@@ -260,8 +260,8 @@ impl Session {
             operation: OperationId::new(),
             change: ClientFileChange {
                 path: FEEDBACK.into(),
-                expected: source.map(|file| file.file.clone()),
-                text: serde_json::to_string(&document)?,
+                expected: source.and_then(|file| file.original().cloned()),
+                text: Some(serde_json::to_string(&document)?),
             },
         });
         Ok(())
@@ -515,7 +515,7 @@ mod tests {
         let mut stale = Session::open(&conversation).await?;
         let mut conflicting = Session::open(&conversation).await?;
         let displayed = conflicting.layout_digest();
-        let original_generation = conflicting.snapshot.generation.clone();
+        let original_cut = conflicting.snapshot.cut.clone();
         conflicting
             .prepare_feedback(&conversation, "An edit lost its source.")
             .await?;
@@ -527,11 +527,7 @@ mod tests {
             .as_ref()
             .ok_or("pending feedback absent")?;
         let (snapshot, ()) = futures::try_join!(
-            follow(
-                Arc::clone(&conversation),
-                reader.snapshot.generation.clone()
-            )
-            .map_err(Failure::from),
+            follow(Arc::clone(&conversation), reader.snapshot.cut.clone()).map_err(Failure::from),
             conversation
                 .publish_client_files(
                     conversation.client_session(),
@@ -553,7 +549,10 @@ mod tests {
             .as_ref()
             .ok_or("feedback absent")?;
         assert_eq!(
-            file.file.volume().class(),
+            file.original()
+                .ok_or("feedback is not authored")?
+                .volume()
+                .class(),
             acyclic_harness::conversation::VolumeClass::SessionShared
         );
         assert_eq!(serde_json::from_str::<FeedbackFile>(&file.text)?.version, 1);
@@ -566,9 +565,9 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(conflicting.snapshot.generation, original_generation);
+        assert_eq!(conflicting.snapshot.cut, original_cut);
         assert_eq!(conflicting.layout_digest(), displayed);
-        conflicting.snapshot = follow(Arc::clone(&conversation), original_generation).await?;
+        conflicting.snapshot = follow(Arc::clone(&conversation), original_cut).await?;
         conflicting.project()?;
         let mut previous = displayed;
         let mut overlay = None;
