@@ -46,7 +46,9 @@ a request to its own mount. Admission requires Linux thread-pidfd support and
 refuses unsupported kernels before mounting. Other owners keep their connections;
 the host exits after its last connection retires. A shared admission lock in the
 OS account's home (resolved independently of HOME/XDG or login sessions) makes
-bind/listen/connect and final listener closure one ordered handoff; kernel
+bind/listen/connect and final listener closure one ordered handoff. The endpoint
+is inside that same private directory, with the shared IPC directory-descriptor
+adapter supporting arbitrarily deep home paths. Kernel
 filesystem events wake retirement when a contender releases the lock. There are
 no timed readiness checks or reconnect loops. Original reply payloads and
 allocation credit remain held until physical device publication, and retirement

@@ -296,20 +296,17 @@ fn owner_exit() -> io::Result<&'static OwnedFd> {
     Ok(OWNER.get_or_init(|| descriptor))
 }
 
-fn address() -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
-    // SAFETY: getuid has no arguments or failure case.
-    let namespace = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata("/proc/self/ns/mnt")?);
-    let name = format!("acyclic-packet-device-v1-{}-{namespace}", unsafe {
-        libc::geteuid()
-    });
-    // SAFETY: all-zero is valid address storage, including the abstract NUL.
+fn address(path: &std::path::Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = path.as_os_str().as_bytes();
+    // SAFETY: all-zero is valid address storage, including its trailing NUL.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     address.sun_family = libc::AF_UNIX as _;
     if name.len() + 1 > address.sun_path.len() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    for (target, byte) in address.sun_path[1..].iter_mut().zip(name.bytes()) {
-        *target = byte as _;
+    for (target, byte) in address.sun_path.iter_mut().zip(name) {
+        *target = *byte as _;
     }
     let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + name.len();
     Ok((address, length as _))
@@ -326,7 +323,7 @@ fn socket() -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(file) })
 }
 
-fn admission_file() -> io::Result<File> {
+fn admission_file() -> io::Result<(File, std::path::PathBuf)> {
     use std::os::unix::fs::MetadataExt;
     let namespace =
         |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
@@ -334,7 +331,10 @@ fn admission_file() -> io::Result<File> {
     let directory = admission_directory(&root)?;
     let path = directory.join(format!("{}-{}.lock", namespace("mnt")?, namespace("net")?));
     // Never unlink this authority inode: replacing it would split the lock.
-    crate::private_file::open_or_create(&path)
+    Ok((
+        crate::private_file::open_or_create(&path)?,
+        path.with_extension("sock"),
+    ))
 }
 
 fn admission_directory(root: &std::path::Path) -> io::Result<std::path::PathBuf> {
@@ -385,7 +385,7 @@ fn admission_events(file: &File) -> io::Result<OwnedFd> {
 }
 
 fn connect() -> io::Result<UnixStream> {
-    let file = admission_file()?;
+    let (file, path) = admission_file()?;
     #[cfg(test)]
     BEFORE_ADMISSION.with_borrow_mut(|probe| {
         if let Some(probe) = probe.take() {
@@ -394,10 +394,10 @@ fn connect() -> io::Result<UnixStream> {
     });
     #[cfg(test)]
     if WITHOUT_ADMISSION_LOCK.get() {
-        return connect_locked();
+        return connect_locked(&path);
     }
     let admission = crate::FileLock::new(file);
-    let connected = admission.with_lock(crate::FileLockMode::Exclusive, connect_locked);
+    let connected = admission.with_lock(crate::FileLockMode::Exclusive, || connect_locked(&path));
     // Signal after explicit unlock, not just last-close: an unrelated fork
     // can temporarily retain a duplicate open description across its exec.
     // No fsync buys a guarantee here; this write is only a kernel watch event.
@@ -408,18 +408,43 @@ fn connect() -> io::Result<UnixStream> {
     }
 }
 
-fn connect_locked() -> io::Result<UnixStream> {
+fn connect_locked(path: &std::path::Path) -> io::Result<UnixStream> {
     #[cfg(test)]
     BEFORE_CONNECT.with_borrow_mut(|probe| {
         if let Some(probe) = probe.take() {
             probe();
         }
     });
-    let (address, length) = address()?;
-    let listener = socket()?;
-    // Binding is the single kernel election: only one host can own the name.
-    // SAFETY: the initialized address remains live throughout bind.
-    if unsafe { libc::bind(listener.as_raw_fd(), (&raw const address).cast(), length) } == 0 {
+    // Reuse the held-directory IPC adapter, so long account homes need no
+    // public abstract name that another user could reserve before this owner.
+    let (_directory, socket_path) = crate::ipc::socket_path(path)?;
+    let (address, length) = address(&socket_path)?;
+    let mut stream = socket()?;
+    // SAFETY: live socket and initialized pathname address.
+    if unsafe { libc::connect(stream.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
+        let error = io::Error::last_os_error();
+        #[cfg(test)]
+        if WITHOUT_ADMISSION_LOCK.get() {
+            return Err(error);
+        }
+        match error.raw_os_error() {
+            Some(libc::ENOENT) => {}
+            Some(libc::ECONNREFUSED) => {
+                use std::os::unix::fs::FileTypeExt;
+                // Under the admission lock a refused socket is the original
+                // host's closed endpoint, never a bind-before-listen contender.
+                if !std::fs::symlink_metadata(path)?.file_type().is_socket() {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                std::fs::remove_file(path)?;
+            }
+            _ => return Err(error),
+        }
+        let listener = socket()?;
+        // SAFETY: the held directory and address remain live throughout bind.
+        if unsafe { libc::bind(listener.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
         #[cfg(test)]
         BEFORE_LISTEN.with_borrow_mut(|probe| {
             if let Some(probe) = probe.take() {
@@ -433,19 +458,16 @@ fn connect_locked() -> io::Result<UnixStream> {
         }
         // This must be a separate open description, not a duplicate of the
         // contender's held flock. The event watch precedes its first release.
-        let authority = admission_file()?;
+        let (authority, _) = admission_file()?;
         let events = admission_events(&authority)?;
         runner::start_packet_device_host(listener, authority, events)?;
-    } else {
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() != Some(libc::EADDRINUSE) {
-            return Err(error);
+        stream = socket()?;
+        // Reconnect only after this call has installed a listening endpoint;
+        // this is a state transition, never a readiness retry.
+        // SAFETY: live socket and initialized pathname address.
+        if unsafe { libc::connect(stream.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
+            return Err(io::Error::last_os_error());
         }
-    }
-    let stream = socket()?;
-    // SAFETY: live socket and initialized abstract address.
-    if unsafe { libc::connect(stream.as_raw_fd(), (&raw const address).cast(), length) } < 0 {
-        return Err(io::Error::last_os_error());
     }
     let control = UnixStream::from(stream);
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
