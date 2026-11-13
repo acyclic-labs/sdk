@@ -94,7 +94,9 @@ impl MemoryStream {
             .then_some(_publication);
             let mut state = self.state.write().await;
             let ephemeral = matches!(
-                state.ephemeral.write_scope(&canonical.command)?,
+                state
+                    .ephemeral
+                    .write_scope(&state.paths, &canonical.command)?,
                 Scope::Ephemeral(_)
             );
             match &canonical.command {

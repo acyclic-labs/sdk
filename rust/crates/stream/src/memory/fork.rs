@@ -11,7 +11,7 @@ impl MemoryStream {
         StreamError,
     > {
         let digest = fork_digest(request)?;
-        let scope = state.ephemeral.fork_scope(request)?;
+        let scope = state.ephemeral.fork_scope(&state.paths, request)?;
         if let Some(result) = self.replay_fork(state, &scope, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned(result));
         }

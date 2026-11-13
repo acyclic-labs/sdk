@@ -96,15 +96,20 @@ pub trait StreamProvider: ProviderPlatform + 'static {
 
     /// Reserves `root` as an ephemeral subtree held by the returned lease.
     /// `root` must be absent, outside every other lease, beneath a present
-    /// parent (or top-level). A write publishing only beneath `root` is then
-    /// atomic, conditioned, idempotent and observable like any other, but
-    /// lives only in this process's memory: never journalled or flushed,
-    /// never listed by a children page, never in a snapshot. A write that
-    /// publishes durably may name no ephemeral path at all, so it is refused
-    /// with `InvalidArgument`, as is one mixing scopes or leases. Dropping or
-    /// settling the lease removes the whole subtree, and its followers then
-    /// observe `NotFound`; process death removes it too. Providers that
-    /// cannot hold one in process report `Unsupported`.
+    /// parent (or top-level). The lease owns `root`'s subtree and every path
+    /// it adopts: a commit publishing into the lease may also publish paths
+    /// it creates, each beneath a present parent or one the commit creates,
+    /// and the topmost created path of each joins the lease with its subtree.
+    /// A write publishing only into owned paths is atomic, conditioned,
+    /// idempotent and observable like any other, but lives only in this
+    /// process's memory: never journalled or flushed, never listed by a
+    /// children page, inherited by a durable fork, or in a snapshot. A write
+    /// that publishes durably may name no owned path at all, so it is refused
+    /// with `InvalidArgument`, as is one that also writes an existing durable
+    /// path or another lease's; a fresh path without a parent is `NotFound`.
+    /// Dropping or settling the lease removes every subtree it owns, and
+    /// their followers then observe `NotFound`; process death removes them
+    /// too. Providers that cannot hold one in process report `Unsupported`.
     async fn lease_ephemeral(&self, _root: StreamPath) -> Result<EphemeralLease, StreamError> {
         acyclic_observability::operation!(
             "acyclic.stream.lease_ephemeral",

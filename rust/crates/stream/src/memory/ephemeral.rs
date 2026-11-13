@@ -1,7 +1,8 @@
-// Ephemeral subtrees. A lease root and everything published beneath it live
-// only in this incarnation's memory: never journalled, snapshotted, listed or
-// counted in the canonical decision order. Releasing the lease, or losing the
-// process, removes the whole subtree; nothing is ever scanned to reap it.
+// Ephemeral subtrees. A lease owns its root subtree and every subtree it
+// adopts; all of them live only in this incarnation's memory: never
+// journalled, snapshotted, listed or counted in the canonical decision order.
+// Releasing the lease, or losing the process, removes exactly the subtrees it
+// owns; each is recorded as it is created, so nothing is ever scanned to reap.
 
 /// Where one write publishes. Every write is classified once, under the state
 /// lock that plans it.
@@ -9,13 +10,15 @@
 enum Scope {
     /// The canonical journalled decision order.
     Durable,
-    /// The subtree of one live lease, by its root.
+    /// The subtrees of one live lease, by its root.
     Ephemeral(StreamPath),
 }
 
 #[derive(Default)]
 struct Ephemeral {
     roots: std::collections::BTreeMap<StreamPath, EphemeralRoot>,
+    /// The top of every owned subtree, rooted or adopted, to its lease root.
+    owned: std::collections::BTreeMap<StreamPath, StreamPath>,
     /// Lease and ephemeral commit identities issued by this incarnation.
     issued: u64,
     /// Releases so far: a guard cut moves whenever a subtree may have vanished.
@@ -24,6 +27,8 @@ struct Ephemeral {
 
 struct EphemeralRoot {
     lease: u64,
+    /// Subtrees this lease created outside its root, released with it.
+    adopted: Vec<StreamPath>,
     /// Retry identities of this subtree's publications, released with it.
     replays: std::collections::HashMap<Vec<u8>, EphemeralReplay>,
     records: usize,
@@ -41,33 +46,33 @@ struct EphemeralReplay {
 }
 
 impl Ephemeral {
-    /// The lease root holding `path`: the path itself or its nearest ancestor.
+    /// The root of the lease owning `path`: through the path itself or its
+    /// nearest owned ancestor.
     fn root_of(&self, path: &str) -> Option<&StreamPath> {
-        if self.roots.is_empty() {
+        if self.owned.is_empty() {
             return None;
         }
         path.match_indices('/')
             .map(|(end, _)| end)
             .chain(std::iter::once(path.len()))
-            .find_map(|end| self.roots.get_key_value(path.get(..end)?))
-            .map(|(root, _)| root)
+            .find_map(|end| self.owned.get(path.get(..end)?))
     }
 
-    /// Lease roots strictly beneath `path`, relative to it.
+    /// Owned subtrees strictly beneath `path`, relative to it.
     fn nested(&self, path: &StreamPath) -> Result<Vec<crate::RelativePath>, StreamError> {
-        if self.roots.is_empty() {
+        if self.owned.is_empty() {
             return Ok(Vec::new());
         }
         let lower = format!("{}/", path.as_str());
         let upper = format!("{}0", path.as_str());
-        self.roots
+        self.owned
             .range::<str, _>((
                 std::ops::Bound::Included(lower.as_str()),
                 std::ops::Bound::Excluded(upper.as_str()),
             ))
-            .map(|(root, _)| {
+            .map(|(top, _)| {
                 StreamPath::new(
-                    root.as_str()
+                    top.as_str()
                         .strip_prefix(lower.as_str())
                         .ok_or(StreamError::InvalidPath)?,
                 )
@@ -75,47 +80,80 @@ impl Ephemeral {
             .collect()
     }
 
-    /// A write whose every published path lies in one lease's subtree is
-    /// ephemeral; one publishing none is durable and may name no ephemeral
-    /// path at all, since replay could never re-evaluate it. Anything else is
-    /// refused.
+    /// A write publishing into exactly one lease is ephemeral, provided every
+    /// other path it publishes is created by it: those are adopted by that
+    /// lease, so ownership always extends from a path the lease already
+    /// holds. A fresh path needs a present parent, or one this write creates,
+    /// so adoption never takes a shared ancestor. A write publishing into no
+    /// lease is durable and may name no ephemeral path at all, since replay
+    /// could never re-evaluate it. Anything else is refused.
     fn scope<'a>(
         &self,
-        published: impl IntoIterator<Item = &'a StreamPath>,
+        paths: &Namespace,
+        published: impl IntoIterator<Item = &'a StreamPath> + Clone,
         observed: impl IntoIterator<Item = &'a StreamPath>,
     ) -> Result<Scope, StreamError> {
-        if self.roots.is_empty() {
+        if self.owned.is_empty() {
             return Ok(Scope::Durable);
         }
-        let mut published = published
+        let mut lease = None;
+        for root in published
+            .clone()
             .into_iter()
-            .map(|path| self.root_of(path.as_str()));
-        let first = published.next().flatten();
-        if published.any(|root| root != first) {
-            return Err(StreamError::InvalidArgument);
+            .filter_map(|path| self.root_of(path.as_str()))
+        {
+            if lease.is_some_and(|lease| lease != root) {
+                return Err(StreamError::InvalidArgument);
+            }
+            lease = Some(root);
         }
-        match first {
-            Some(root) => Ok(Scope::Ephemeral(root.clone())),
-            None if observed
+        let Some(root) = lease else {
+            return if observed
                 .into_iter()
-                .any(|path| self.root_of(path.as_str()).is_some()) =>
+                .any(|path| self.root_of(path.as_str()).is_some())
             {
                 Err(StreamError::InvalidArgument)
+            } else {
+                Ok(Scope::Durable)
+            };
+        };
+        let all = published.clone();
+        for path in published {
+            if self.root_of(path.as_str()).is_some() {
+                continue;
             }
-            None => Ok(Scope::Durable),
+            if paths.contains_key(path) {
+                return Err(StreamError::InvalidArgument);
+            }
+            if path.parent().is_some_and(|parent| {
+                !paths.contains_key(&parent)
+                    && !all.clone().into_iter().any(|other| *other == parent)
+            }) {
+                return Err(StreamError::NotFound);
+            }
         }
+        Ok(Scope::Ephemeral(root.clone()))
     }
 
-    fn append_scope(&self, request: &AppendRequest) -> Result<Scope, StreamError> {
-        self.scope([&request.path], [])
+    fn append_scope(
+        &self,
+        paths: &Namespace,
+        request: &AppendRequest,
+    ) -> Result<Scope, StreamError> {
+        self.scope(paths, [&request.path], [])
     }
 
-    fn fork_scope(&self, request: &ForkRequest) -> Result<Scope, StreamError> {
-        self.scope([&request.destination], [&request.source])
+    fn fork_scope(&self, paths: &Namespace, request: &ForkRequest) -> Result<Scope, StreamError> {
+        self.scope(paths, [&request.destination], [&request.source])
     }
 
-    fn commit_scope(&self, request: &CommitRequest) -> Result<Scope, StreamError> {
+    fn commit_scope(
+        &self,
+        paths: &Namespace,
+        request: &CommitRequest,
+    ) -> Result<Scope, StreamError> {
         self.scope(
+            paths,
             request.mutations().map(CommitMutation::path),
             request
                 .conditions()
@@ -127,12 +165,35 @@ impl Ephemeral {
         )
     }
 
-    fn write_scope(&self, command: &crate::WriteRequest) -> Result<Scope, StreamError> {
+    /// Records the topmost path `published` created, absent from `previous`,
+    /// as owned by `scope`'s lease unless that lease already owns it.
+    fn adopt(&mut self, scope: &Scope, previous: &Namespace, published: &StreamPath) {
+        let Scope::Ephemeral(root) = scope else {
+            return;
+        };
+        if self.root_of(published.as_str()).is_some() {
+            return;
+        }
+        let Some(lease) = self.roots.get_mut(root) else {
+            return;
+        };
+        let mut top = published.clone();
+        while let Some(parent) = top.parent().filter(|parent| !previous.contains_key(parent)) {
+            top = parent;
+        }
+        lease.adopted.push(top.clone());
+        self.owned.insert(top, root.clone());
+    }
+    fn write_scope(
+        &self,
+        paths: &Namespace,
+        command: &crate::WriteRequest,
+    ) -> Result<Scope, StreamError> {
         match command {
-            crate::WriteRequest::Append(request) => self.append_scope(request),
-            crate::WriteRequest::Fork(request) => self.fork_scope(request),
+            crate::WriteRequest::Append(request) => self.append_scope(paths, request),
+            crate::WriteRequest::Fork(request) => self.fork_scope(paths, request),
             crate::WriteRequest::Commit(request) | crate::WriteRequest::CommitAccepted(request) => {
-                self.commit_scope(request)
+                self.commit_scope(paths, request)
             }
         }
     }
@@ -168,13 +229,15 @@ impl Ephemeral {
         }
     }
 
-    /// `paths` without any lease's subtree: exactly the durable namespace.
+    /// `paths` without any owned subtree: exactly the durable namespace.
     fn without(&self, paths: &Namespace) -> Namespace {
         let mut durable = paths.clone();
-        for root in self.roots.keys().filter(|root| paths.contains_key(*root)) {
-            durable
-                .remove(root, &mut NamespaceBuilder::new(&|_| Ok(None)))
-                .unwrap_or_else(|_| unreachable!("a present path's ancestors are present"));
+        for top in self.owned.keys() {
+            if durable.contains_key(top) {
+                durable
+                    .remove(top, &mut NamespaceBuilder::new(&|_| Ok(None)))
+                    .unwrap_or_else(|_| unreachable!("a present path's ancestors are present"));
+            }
         }
         durable
     }
@@ -283,11 +346,13 @@ impl MemoryStream {
             root.clone(),
             EphemeralRoot {
                 lease,
+                adopted: Vec::new(),
                 replays: Default::default(),
                 records: 0,
                 payload_bytes: 0,
             },
         );
+        state.ephemeral.owned.insert(root.clone(), root.clone());
         let stream = Self {
             work: None,
             ..self.clone()
@@ -299,7 +364,7 @@ impl MemoryStream {
         ))
     }
 
-    /// Removes one lease's whole subtree and wakes every follow beneath it.
+    /// Removes every subtree one lease owns and wakes every follow in them.
     /// A later lease of the same root is never touched.
     async fn release_ephemeral(&self, root: &StreamPath, lease: u64) -> Result<(), StreamError> {
         let _publication = self.publication.lock().await;
@@ -320,20 +385,24 @@ impl MemoryStream {
         state.ephemeral.released = state.ephemeral.released.wrapping_add(1);
         state.record_count = state.record_count.saturating_sub(held.records);
         state.payload_bytes = state.payload_bytes.saturating_sub(held.payload_bytes);
-        if !state.paths.contains_key(root) {
-            return Ok(());
-        }
         let mut next = state.paths.clone();
-        next.remove(root, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
+        let mut gone = Vec::new();
+        for top in std::iter::once(root.clone()).chain(held.adopted) {
+            state.ephemeral.owned.remove(&top);
+            if !next.contains_key(&top) {
+                continue;
+            }
+            next.remove(&top, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
+            let lower = format!("{}/", top.as_str());
+            let upper = format!("{}0", top.as_str());
+            gone.extend(state.signals.keys_in::<str, _>((
+                std::ops::Bound::Included(lower.as_str()),
+                std::ops::Bound::Excluded(upper.as_str()),
+            ))?);
+            gone.push(top);
+        }
         state.path_bytes = next.bytes();
         let previous = std::mem::replace(&mut state.paths, next);
-        let lower = format!("{}/", root.as_str());
-        let upper = format!("{}0", root.as_str());
-        let mut gone = state.signals.keys_in::<str, _>((
-            std::ops::Bound::Included(lower.as_str()),
-            std::ops::Bound::Excluded(upper.as_str()),
-        ))?;
-        gone.push(root.clone());
         for path in gone {
             if let Some(signals) = state.signals.get(&path)? {
                 signals.changed.send_replace(0);
