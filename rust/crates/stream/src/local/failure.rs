@@ -61,3 +61,5 @@ impl std::fmt::Display for LocalStreamFailure {
         Ok(())
     }
 }
+
+impl std::error::Error for LocalStreamFailure {}

@@ -35,11 +35,19 @@ pub struct Connection {
 
 /// The client's cause together with the one its in-process owner retained.
 #[derive(Debug, thiserror::Error)]
-#[error("{client}; {owner}")]
-struct OwnerFailure<E: std::error::Error + 'static> {
-    #[source]
-    client: E,
-    owner: String,
+enum OwnerFailure<E: std::error::Error + 'static> {
+    #[error("{client}; {owner}")]
+    Stream {
+        client: E,
+        #[source]
+        owner: acyclic_stream::LocalStreamFailure,
+    },
+    #[error("{client}; {owner}")]
+    Runtime {
+        #[source]
+        client: E,
+        owner: String,
+    },
 }
 
 impl Connection {
@@ -138,23 +146,31 @@ impl Connection {
         &self,
         error: impl std::error::Error + Send + Sync + 'static,
     ) -> Error {
-        let cause = self._host.as_ref().and_then(|host| {
-            host.agent_stream
+        if let Some(host) = &self._host {
+            if let Some(owner) = host
+                .agent_stream
                 .as_ref()
                 .and_then(|stream| stream.failure())
-                .map(|cause| cause.to_string())
-                .or_else(|| host.agents.get()?.runtime.failure())
-        });
-        match cause {
-            Some(owner) => Error::exchange(
-                ExchangeStep::Session,
-                OwnerFailure {
-                    client: error,
-                    owner,
-                },
-            ),
-            None => Error::exchange(ExchangeStep::Session, error),
+            {
+                return Error::exchange(
+                    ExchangeStep::Session,
+                    OwnerFailure::Stream {
+                        client: error,
+                        owner,
+                    },
+                );
+            }
+            if let Some(owner) = host.agents.get().and_then(|host| host.runtime.failure()) {
+                return Error::exchange(
+                    ExchangeStep::Session,
+                    OwnerFailure::Runtime {
+                        client: error,
+                        owner,
+                    },
+                );
+            }
         }
+        Error::exchange(ExchangeStep::Session, error)
     }
 
     /// Executes `command` once on this connection's tree.

@@ -890,6 +890,47 @@ async fn child_show_of_a_directory_settles_as_the_models_error() -> Result<()> {
     // Negative control: a lost lazy record is not the request's error.
     let lost = Error::from(acyclic_fs::LazyWorkspaceError::Store("record lost".into()));
     assert!(!lost.settles_tool_call(), "{lost:?}");
+    // Actual failed accounting, whether direct or wrapped by a lazy checkout,
+    // must retain a harness failure rather than settle the accepted model call.
+    use acyclic_fs::{LazyWorkspaceError, WorkCounters, WorkspaceError};
+    let mut counters = WorkCounters::UNCHARGED;
+    let exhausted = counters
+        .charge_items(1, &WorkBudget::UNCHARGED)
+        .expect_err("the operation has no admitted item credit");
+    let prior = WorkCounters {
+        items_examined: u64::MAX,
+        ..WorkCounters::UNCHARGED
+    };
+    let backend = WorkCounters {
+        items_examined: 1,
+        ..WorkCounters::UNCHARGED
+    };
+    let overflow = prior
+        .checked_add(backend)
+        .expect_err("the completed work sum is not representable");
+    for lazy in [false, true] {
+        for source in [
+            WorkspaceError::Work(exhausted),
+            WorkspaceError::WorkMerge {
+                prior: Box::new(prior),
+                backend: Box::new(backend),
+                error: overflow,
+            },
+        ] {
+            let error = if lazy {
+                Error::from(LazyWorkspaceError::WorkspaceCause(source))
+            } else {
+                Error::from(source)
+            };
+            assert_eq!(
+                error.code(),
+                acyclic_harness_core::wire::ErrorCode::Storage,
+                "{error:?}"
+            );
+            assert!(error.leaves_outcome_uncertain(), "{error:?}");
+            assert!(!error.settles_tool_call(), "{error:?}");
+        }
+    }
     Ok(())
 }
 

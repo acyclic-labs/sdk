@@ -609,6 +609,18 @@ fn message(error: Error) -> String {
     message
 }
 
+fn provider_message(error: Error, expected: acyclic_stream::LocalStreamFailure) -> String {
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        if let Some(retained) = cause.downcast_ref::<acyclic_stream::LocalStreamFailure>() {
+            assert_eq!(*retained, expected);
+            return message(error);
+        }
+        source = cause.source();
+    }
+    panic!("exchange lost the typed provider cause: {error:?}");
+}
+
 #[tokio::test]
 async fn local_commands_and_observation_report_the_original_provider_failure() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
@@ -693,10 +705,10 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         Err(StreamError::Unavailable)
     );
     assert!(cut.0.load(Ordering::SeqCst));
-    let cause = stream
+    let original = stream
         .failure()
-        .ok_or_else(|| Error::Invalid("original failure was lost".into()))?
-        .to_string();
+        .ok_or_else(|| Error::Invalid("original failure was lost".into()))?;
+    let cause = original.to_string();
     // Use the serving codec on the real provider failure, then the exact
     // command projection used by execute; neither delivery order is guessed.
     let host_result = host_files
@@ -709,48 +721,53 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         .expect_err("failed host query returned client files");
     let refusal = AgentExchangeError::Control(refusal);
     assert_eq!(refusal.code(), "unavailable");
-    let refused = message(connection.command_failure(&files, refusal));
+    let refused = provider_message(connection.command_failure(&files, refusal), original);
     assert!(
         refused.contains(&cause),
         "host refusal lost original provider cause: {refused}"
     );
-    let closed = message(connection.command_failure(
-        &files,
-        AgentExchangeError::Session(StreamError::Unavailable),
-    ));
+    let closed = provider_message(
+        connection.command_failure(
+            &files,
+            AgentExchangeError::Session(StreamError::Unavailable),
+        ),
+        original,
+    );
     assert!(
         closed.contains(&cause),
         "session close lost cause: {closed}"
     );
-    let files_error = message(
+    let files_error = provider_message(
         waiting_files
             .await
             .err()
             .ok_or_else(|| Error::Invalid("closed producer answered client files".into()))?,
+        original,
     );
     assert!(
         files_error.contains(&cause),
         "client files lost original provider cause: {files_error}"
     );
-    let command = message(
+    let command = provider_message(
         connection
             .execute(&AgentCommand::Root {})
             .await
             .err()
             .ok_or_else(|| Error::Invalid("failed provider answered command".into()))?,
+        original,
     );
     assert!(
         command.contains(&cause),
         "command lost original provider cause: {command}"
     );
-    let observed = message(terminal(&mut observer).await);
+    let observed = provider_message(terminal(&mut observer).await, original);
     assert!(
         observed.contains(&cause),
         "observation lost original provider cause: {observed}"
     );
     let projected = loop {
         match projected.next_projected().await {
-            Err(error) | Ok((Err(error), _)) => break message(error),
+            Err(error) | Ok((Err(error), _)) => break provider_message(error, original),
             Ok(_) => {}
         }
     };
