@@ -1,4 +1,5 @@
 use super::*;
+use crate::WorkCounters;
 use crate::native_host::NativeHostWork as _;
 use std::io::Read as _;
 use std::os::unix::ffi::OsStrExt as _;
