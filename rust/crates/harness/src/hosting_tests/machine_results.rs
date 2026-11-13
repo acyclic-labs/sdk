@@ -19,7 +19,7 @@ use acyclic_machines::{
     MachineContract, MachineId, MachineObservation, MachineState, Platform as MachinePlatform,
     SuspensionPolicy,
 };
-use acyclic_stream::{StreamProvider as _, wire as session_wire};
+use acyclic_stream::wire as session_wire;
 use futures::StreamExt as _;
 use std::sync::Mutex;
 
@@ -164,12 +164,18 @@ impl TurnExecutors for NativeTurns {
                 ScriptedTurn::Text("done".into()),
             ]));
             let tools = crate::tools::registry(&["shell".into()], |_| true, Vec::new())?;
+            let model = (
+                Model::new("test".into(), "text".into(), "1".into())?,
+                model as Arc<dyn crate::model::ModelProvider>,
+            );
+            let models = crate::test_support::fixture_models(model.clone());
             StockExecutors::new(
-                (Model::new("test".into(), "text".into(), "1".into())?, model),
+                model,
                 tools,
                 (limits, CompactionPolicy::Disabled),
                 Arc::new(Tasks(bindings)),
             )
+            .with_models(models)
             .executor(agent, turn, input, authority)
             .await
         })
