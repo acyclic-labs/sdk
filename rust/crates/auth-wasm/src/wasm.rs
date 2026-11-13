@@ -81,6 +81,7 @@ impl TrustSnapshot {
         revoked_key_ids: Vec<String>,
         revoked_block_ids: Uint8Array,
         environment_keys_valid_until: Option<BigInt>,
+        not_before_unix_seconds: BigInt,
     ) -> Result<Self, JsValue> {
         Ok(Self(Snapshot {
             environment,
@@ -92,6 +93,8 @@ impl TrustSnapshot {
             account,
             issuer_keys: block_ids(&issuer_keys.to_vec()).map_err(error)?,
             minimum_key_epoch: u64::try_from(minimum_key_epoch)
+                .map_err(|_| error(VerifyError::Malformed))?,
+            not_before_unix_seconds: u64::try_from(not_before_unix_seconds)
                 .map_err(|_| error(VerifyError::Malformed))?,
             revoked_key_ids: revoked_key_ids.into_iter().collect(),
             revoked_block_ids: block_ids(&revoked_block_ids.to_vec())

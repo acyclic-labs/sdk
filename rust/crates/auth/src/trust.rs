@@ -31,6 +31,8 @@ pub struct Snapshot {
     pub issuer_keys: Vec<BlockId>,
     /// Monotone floor from the current keyring.
     pub minimum_key_epoch: u64,
+    /// Earliest verification time supported by retained account evidence.
+    pub not_before_unix_seconds: u64,
     /// Cumulative revoked online key identities.
     pub revoked_key_ids: HashSet<String>,
     /// Cumulative unexpired ancestor block revocations.
@@ -65,7 +67,7 @@ impl Trust for Snapshot {
             Ok(AccountState {
                 issuer_keys: (&self.issuer_keys).into(),
                 minimum_key_epoch: self.minimum_key_epoch,
-                not_before_unix_seconds: 0,
+                not_before_unix_seconds: self.not_before_unix_seconds,
             })
         } else {
             Err(VerifyError::Trust)

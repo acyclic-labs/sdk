@@ -10,6 +10,8 @@ export interface TrustState {
   readonly account: string;
   readonly issuerKeys: readonly Uint8Array[];
   readonly minimumKeyEpoch: bigint;
+  /** Earliest verification time supported by retained account evidence. */
+  readonly notBeforeUnixSeconds: bigint;
   readonly revokedKeyIds: readonly string[];
   readonly revokedBlockIds: readonly Uint8Array[];
 }
@@ -27,7 +29,7 @@ function joined(values: readonly Uint8Array[]): Uint8Array {
 export class TrustSnapshot extends RustTrustSnapshot {
   constructor(state: TrustState) {
     super(state.environment, joined(state.environmentKeys), state.account,
-      joined(state.issuerKeys), state.minimumKeyEpoch, [...state.revokedKeyIds], joined(state.revokedBlockIds), state.environmentKeysValidUntil);
+      joined(state.issuerKeys), state.minimumKeyEpoch, [...state.revokedKeyIds], joined(state.revokedBlockIds), state.environmentKeysValidUntil, state.notBeforeUnixSeconds);
   }
 }
 

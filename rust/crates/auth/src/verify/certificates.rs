@@ -257,6 +257,7 @@ mod tests {
                 environment: "test".into(),
                 environment_keys: vec![environment.verifying_key().to_bytes()],
                 environment_keys_valid_until: None,
+                not_before_unix_seconds: 0,
                 account: "account".into(),
                 issuer_keys: vec![issuer.verifying_key().to_bytes()],
                 minimum_key_epoch: 1,
