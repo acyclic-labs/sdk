@@ -5,6 +5,13 @@ use crate::runtime::{Target, TargetResolver};
 #[tokio::test]
 async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_recovery()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
+    filesystem_binding_replay(false).await?;
+    filesystem_binding_replay(true).await
+}
+
+async fn filesystem_binding_replay(
+    retained_alias: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     use crate::{
         agent::{AgentPath, AgentState, ForkAdopted, WorkspaceEntry},
         conversation::{VolumeClass, VolumeOperation, VolumeOwner},
@@ -228,11 +235,27 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
         )
         .await?;
     let operation = OperationId::new();
-    let invocation = ToolInvocation {
+    let mut invocation = ToolInvocation {
         operation_id: operation,
         call_id: "status".into(),
         name: "fs".into(),
         arguments: json!({"command":"show HEAD:secret"}),
+    };
+    let pinned = if retained_alias {
+        let capability = base.tool_binding("fs")?.expect("filesystem capability");
+        let mut definition = capability.definition.clone();
+        definition.name = "retained-filesystem".into();
+        assert!(base.tool_binding(&definition.name)?.is_none());
+        let binding = Arc::new(crate::tools::native::alias(
+            definition,
+            capability,
+            invocation.arguments.clone(),
+            None,
+        )?);
+        invocation.name = binding.definition.name.clone();
+        Some(binding)
+    } else {
+        None
     };
     let bound = base
         .clone()
@@ -243,7 +266,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &*journal,
             operation,
             0,
-            (invocation.clone(), None),
+            (invocation.clone(), pinned.clone()),
             0,
             &mut messages,
             &mut Vec::new(),
@@ -276,7 +299,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                (invocation.clone(), None),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
@@ -294,7 +317,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                (invocation.clone(), None),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
@@ -323,7 +346,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                (invocation.clone(), None),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut replay,
                 &mut Vec::new(),
@@ -341,7 +364,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                     &*journal,
                     operation,
                     0,
-                    (invocation.clone(), None),
+                    (invocation.clone(), pinned.clone()),
                     0,
                     &mut replay,
                     &mut Vec::new(),
@@ -403,7 +426,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
                 &*journal,
                 operation,
                 0,
-                (invocation.clone(), None),
+                (invocation.clone(), pinned.clone()),
                 0,
                 &mut vec![call_message(&invocation)],
                 &mut Vec::new(),
@@ -429,7 +452,7 @@ async fn filesystem_calls_record_the_provider_binding_and_refuse_retargeted_reco
             &*journal,
             operation,
             0,
-            (invocation.clone(), None),
+            (invocation.clone(), pinned.clone()),
             0,
             &mut vec![call_message(&invocation)],
             &mut Vec::new(),

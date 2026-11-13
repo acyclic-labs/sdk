@@ -51,6 +51,12 @@ type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>
 // The original result precedes its replay decode credit, retained until consumption.
 type ToolReceipt<'a> = (ToolResult, Option<crate::conversation::ContentHold<'a>>);
 
+// One canonical resolution binds both device routing and filesystem identity.
+#[derive(Default)]
+struct CallTarget {
+    device: Option<Arc<crate::runtime::Target>>,
+    filesystem: Option<[u8; 32]>,
+}
 /// A settled call can be shown to the model; an interrupted effect ends the turn.
 enum ToolInvocationOutcome<'a> {
     Controlled(crate::supervision::Control),
@@ -264,7 +270,7 @@ impl<'io> StockExecution<'io> {
                 pinned.as_deref(),
             )?
         } else {
-            Ok(None)
+            Ok(CallTarget::default())
         };
         // A settled refusal is a durable result, independent of today's catalog.
         if matches!(recorded, RecordedCall::Failed { started: None, .. }) {
@@ -390,7 +396,10 @@ impl<'io> StockExecution<'io> {
                 .authorize_tool_invocation(
                     &tool,
                     &invocation,
-                    target.as_ref().ok().and_then(|target| target.clone()),
+                    target
+                        .as_ref()
+                        .ok()
+                        .and_then(|target| target.device.clone()),
                 )?
                 .map(|(context, capability)| (tool, context, capability)),
             None if self
@@ -499,7 +508,10 @@ impl<'io> StockExecution<'io> {
                 match self.authorize_tool_invocation(
                     tool,
                     &effective,
-                    target.as_ref().ok().and_then(|target| target.clone()),
+                    target
+                        .as_ref()
+                        .ok()
+                        .and_then(|target| target.device.clone()),
                 )? {
                     Ok((authorized, _)) => context = authorized,
                     Err(rejection) => {
@@ -614,7 +626,8 @@ impl<'io> StockExecution<'io> {
                     Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
                     Err(error) => return Err(error),
                 };
-                let target = target.as_ref().map(|target| &target.record);
+                let filesystem = target.filesystem;
+                let target = target.device.as_ref().map(|target| &target.record);
                 if !started
                     && let Some(barrier) = journal.tool_barrier(invocation.operation_id, self.io)
                 {
@@ -710,7 +723,7 @@ impl<'io> StockExecution<'io> {
                             filesystem: if started || target.is_some() {
                                 None
                             } else {
-                                self.filesystem_binding(&invocation)
+                                filesystem
                             },
                         },
                         tool,
@@ -820,7 +833,7 @@ impl<'io> StockExecution<'io> {
         invocation: &ToolInvocation,
         original: Option<&crate::tool::RecordedInvocation>,
         pinned: Option<&crate::tool::Tool>,
-    ) -> Result<Result<Option<Arc<crate::runtime::Target>>>> {
+    ) -> Result<Result<CallTarget>> {
         // A native call runs where its capability's call would, and its start
         // records that target. A call its declaration refuses runs nowhere;
         // admission settles the refusal.
@@ -850,12 +863,12 @@ impl<'io> StockExecution<'io> {
             None => None,
         };
         let invocation = canonical.as_deref().unwrap_or(invocation);
+        let filesystem = self.filesystem_binding(invocation);
+        let destination = |device| CallTarget { device, filesystem };
         if let Some(original) = original {
             if let Some(identity) = original.filesystem {
-                return if original.target.is_none()
-                    && self.filesystem_binding(invocation) == Some(identity)
-                {
-                    Ok(Ok(None))
+                return if original.target.is_none() && filesystem == Some(identity) {
+                    Ok(Ok(destination(None)))
                 } else {
                     Err(Error::Indeterminate(invocation.operation_id))
                 };
@@ -863,14 +876,14 @@ impl<'io> StockExecution<'io> {
             if original.target.is_none() && crate::runtime::is_workspace_call(invocation) {
                 return Err(Error::Indeterminate(invocation.operation_id));
             }
-        } else if self.filesystem_binding(invocation).is_some() {
-            return Ok(Ok(None));
+        } else if filesystem.is_some() {
+            return Ok(Ok(destination(None)));
         }
         let Some(targets) = self.context.and_then(|(task, _)| task.harness.targets()) else {
             return if original.is_some_and(|original| original.target.is_some()) {
                 Err(Error::Indeterminate(invocation.operation_id))
             } else {
-                Ok(Ok(None))
+                Ok(Ok(destination(None)))
             };
         };
         if let Some(original) = original {
@@ -879,7 +892,7 @@ impl<'io> StockExecution<'io> {
                 return if crate::runtime::is_workspace_call(invocation) {
                     Err(Error::Indeterminate(invocation.operation_id))
                 } else {
-                    Ok(Ok(None))
+                    Ok(Ok(destination(None)))
                 };
             };
             let target = targets
@@ -888,9 +901,11 @@ impl<'io> StockExecution<'io> {
             if target.record.name != name || name.starts_with(crate::agent::USER_PREFIX) {
                 return Err(Error::Indeterminate(invocation.operation_id));
             }
-            return Ok(Ok(Some(target)));
+            return Ok(Ok(destination(Some(target))));
         }
-        Ok(crate::runtime::call_target(&**targets, invocation).transpose())
+        Ok(crate::runtime::call_target(&**targets, invocation)
+            .transpose()
+            .map(destination))
     }
 
     fn filesystem_binding(&self, invocation: &ToolInvocation) -> Option<[u8; 32]> {
