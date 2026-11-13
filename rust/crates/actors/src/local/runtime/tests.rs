@@ -1773,6 +1773,102 @@ impl Handler for Gated {
     }
 }
 
+/// Hold the old handler across placement: its process can still exist, but
+/// only the current placement may publish an activation's checkpoint/effects.
+#[tokio::test]
+async fn placement_and_restart_admit_only_one_publishing_activation() -> TestResult {
+    activation_transfer(Arc::new(MemoryStream::default())).await?;
+    let directory = tempfile::tempdir()?;
+    activation_transfer(Arc::new(
+        LocalStream::open(directory.path(), Default::default()).await?,
+    ))
+    .await?;
+    // The old runtimes and every provider clone are gone before opening the
+    // native journal again. Reconstruct placement rather than reusing a slot.
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let store = Store::new(provider.clone(), root()?);
+    let address = actor("activation-transfer")?;
+    let observed = store.load(&address).await?;
+    let input = observed
+        .state()
+        .and_then(|state| state.subscriptions().get("inbox"))
+        .ok_or("missing restarted subscription")?
+        .path
+        .clone();
+    let mut publication = PreparedPublish::foreign(key("after-restart")?);
+    publication.join(CommitEffect::hard(
+        Vec::new(),
+        vec![CommitMutation::Append {
+            path: input,
+            records: vec![Bytes::from_static(b"emit").into()],
+        }],
+    ))?;
+    publication.join(store.activation(&address)?)?;
+    store.submit(publication).await?;
+    let handler = Arc::new(Gated::new()?);
+    let restarted =
+        Runtime::new(store, handler.clone(), Arc::new(SystemClock)).with_external_placement();
+    restarted.place(address.clone(), 3).await?;
+    handler.gate.add_permits(1);
+    restarted.drain_actor(&address).await?;
+    assert_eq!(handler.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        records(&*provider, "out/activation-transfer").await?.len(),
+        2
+    );
+    Ok(())
+}
+
+async fn activation_transfer<P: StreamProvider>(provider: Arc<P>) -> TestResult {
+    let store = Store::new(provider.clone(), root()?);
+    let address = spawn_with(&store, "activation-transfer", &[b"emit"]).await?;
+    let handler = Arc::new(Gated::new()?);
+    let next_handler = Arc::new(Gated::new()?);
+    let original = Runtime::new(
+        Store::new(provider.clone(), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement();
+    let replacement = Runtime::new(
+        Store::new(provider.clone(), root()?),
+        next_handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .with_external_placement();
+    original.place(address.clone(), 1).await?;
+    let mut first = Box::pin(original.drain_actor(&address));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    assert_eq!(handler.active.load(Ordering::SeqCst), 1);
+
+    replacement.place(address.clone(), 2).await?;
+    assert_eq!(original.placement_state(&address).await?, (2, false));
+    assert_eq!(replacement.placement_state(&address).await?, (2, true));
+    let mut next = Box::pin(replacement.drain_actor(&address));
+    assert!(futures::poll!(next.as_mut()).is_pending());
+    assert_eq!(next_handler.active.load(Ordering::SeqCst), 1);
+    handler.gate.add_permits(1);
+    assert!(
+        matches!(first.await, Err(Error::Conflict)),
+        "a superseded activation published after ownership changed"
+    );
+    assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+    assert!(
+        records(&*provider, "out/activation-transfer")
+            .await?
+            .is_empty()
+    );
+    next_handler.gate.add_permits(1);
+    next.await?;
+    assert_eq!(handler.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(next_handler.peak.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        records(&*provider, "out/activation-transfer").await?.len(),
+        1
+    );
+    Ok(())
+}
+
 async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);

@@ -587,11 +587,25 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
-    let result = store.invoke(&invocation).await?;
-    assert_eq!(
-        result, committed,
-        "reconciliation must return the original reply"
-    );
+    // Reopen the real store after each ownership transfer. The caller's
+    // completed result must remain the original terminal, independently of
+    // the actor's current state revision or the new owner's in-memory state.
+    for epoch in 2..=4 {
+        let reopened = Store::new(provider.clone(), path("participant/actors")?)
+            .with_composer(Arc::new(Participants(counts.clone())));
+        reopened
+            .claim(
+                &reopened.load(&actor).await?,
+                epoch,
+                key(&format!("completed-result-owner-{epoch}"))?,
+            )
+            .await?;
+        let result = reopened.invoke(&invocation).await?;
+        assert_eq!(
+            result, committed,
+            "ownership change must preserve the original completed result"
+        );
+    }
     assert_eq!(provider.tail(path("participant/child")?).await?, 1);
     assert_eq!(
         store
@@ -1001,7 +1015,10 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
             key("rejected-participant")?,
         )
         .await;
-    assert!(matches!(result, Err(Error::Conflict)));
+    assert!(
+        matches!(result, Err(Error::Conflict)),
+        "a refused publication was reported as success: {result:?}"
+    );
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     assert_eq!(counts.rejected.load(Ordering::SeqCst), 1);

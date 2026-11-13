@@ -585,6 +585,13 @@ async fn invocation_reconciles_the_original_records_after_durable_provider_reope
         Arc::new(LocalStream::open(directory.path(), Default::default()).await?),
         state_root()?,
     );
+    store
+        .claim(
+            &store.load(&address).await?,
+            2,
+            key("durable-invoke/new-owner")?,
+        )
+        .await?;
     let reopened = store.invoke(&invocation).await?;
     assert_eq!(reopened, committed);
     assert_eq!(
