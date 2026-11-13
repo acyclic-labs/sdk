@@ -201,9 +201,7 @@ impl LocalWorkspace {
         if self.mounting != WorkspaceMounting::Physical {
             return Ok(());
         }
-        let Some(project) = crate::agent::WorkspaceTable::primary_in(bindings)
-            .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
-        else {
+        let Some(project) = crate::agent::WorkspaceTable::primary_in(bindings) else {
             return Ok(());
         };
         if project.volume()?.class() == crate::conversation::VolumeClass::SessionShared {

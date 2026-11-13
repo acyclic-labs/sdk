@@ -383,6 +383,13 @@ async fn child_views_select_roles_without_assuming_names_or_volume_classes() -> 
             .await,
             Err(Error::Unauthorized(_))
         ));
+        let physical = opened.path().to_path_buf();
+        drop(attached);
+        drop(reopened);
+        drop(opened);
+        workspace.release_physical_bindings(&entries)?;
+        assert!(!physical.exists());
+        assert!(parent.path().exists());
         let nonprimary = [WorkspaceEntry::initial_volume(
             WorkspaceRole::Private,
             "project".into(),
