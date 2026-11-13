@@ -256,14 +256,15 @@ pub use git_compat::{
     GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
     GitCompatStore, GitDiff, GitDiffCounts, GitDirtyState, GitFilesystemAction,
     GitFilesystemExecutor, GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult,
-    GitIgnorePolicy, GitPatchError, GitPathChange, GitPathStatus, GitPendingMutation,
-    GitPendingTransition, GitPublicationRecord, GitRequest, GitRequestUnanswered, GitResetMode,
-    GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef, MemoryGitCompatStore, apply_git_patch,
-    blame_git_generations, canonicalize_git_output_json, canonicalize_git_pending_transition_json,
-    capture_git_compatible_generation, capture_git_compatible_generation_at,
-    capture_git_compatible_generation_incremental, git_compatible_diff, git_compatible_diff_counts,
-    git_generation_with_paths_from, git_merge_resolution, git_restore_paths,
-    git_tracked_paths_after, grep_git_generation, parse_git_public_command, walk_git_tree,
+    GitIgnorePolicy, GitMergeResolution, GitPatchError, GitPathChange, GitPathStatus,
+    GitPendingMutation, GitPendingTransition, GitPublicationRecord, GitRequest,
+    GitRequestUnanswered, GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef,
+    MemoryGitCompatStore, apply_git_patch, blame_git_generations, canonicalize_git_output_json,
+    canonicalize_git_pending_transition_json, capture_git_compatible_generation,
+    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
+    git_compatible_diff, git_compatible_diff_counts, git_generation_with_paths_from,
+    git_merge_resolution, git_restore_paths, git_tracked_paths_after, grep_git_generation,
+    parse_git_public_command, walk_git_tree,
 };
 pub use git_compat::{GitCompatCas, StreamGitCompatStore, StreamGitCompatStoreError};
 
