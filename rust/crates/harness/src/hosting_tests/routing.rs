@@ -235,9 +235,143 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             ),
             "account router hosted a remote root"
         );
-        drop(link);
+        let local = acyclic_stream::MemoryStream::default();
+        assert!(matches!(
+            local
+                .commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: IdempotencyKey::new(b"source-publication".to_vec())?,
+                    effects: vec![message.outbox_effect(&paths)?],
+                })
+                .await?,
+            CommitOutcome::Committed(_)
+        ));
+        // The account has admitted this intent, but the source crashes before
+        // acknowledging it. Closing its link must cancel the pending callback.
+        let control = link.sender();
+        let (admitted, observed) = tokio::sync::oneshot::channel();
+        let mut admitted = Some(admitted);
+        let forwarding = route::run_link(
+            link,
+            &local,
+            stream.as_ref(),
+            &paths,
+            &source,
+            async |envelope| {
+                assert_eq!(route::admit(&client, 1, &envelope, 4096).await?, expected);
+                admitted
+                    .take()
+                    .ok_or(StreamError::InvalidResponse)?
+                    .send(())
+                    .map_err(|_| StreamError::Unavailable)?;
+                std::future::pending::<std::result::Result<Routed, route::Error>>().await
+            },
+            async |_| Err(route::Error::InvalidRecord),
+        );
+        let disconnect = async {
+            observed.await?;
+            control
+                .send(
+                    acyclic_actors::sockets::SocketFrame::Close {
+                        code: 1000,
+                        reason: "disconnect before acknowledgment".into(),
+                        initiator: acyclic_actors::guest::SocketCloseInitiator::Peer,
+                    }
+                    .encode(),
+                )
+                .await?;
+            Ok(()) as Result
+        };
+        let (stopped, disconnected) = futures::join!(forwarding, disconnect);
+        disconnected?;
+        assert!(
+            matches!(stopped, Err(route::Error::Stream(error)) if error.category() == StreamError::Unavailable)
+        );
         assert!(
             !NodePresence::decode(&presence.try_next().await?.ok_or("no Close")?.value)?.online
+        );
+        assert!(matches!(
+            local.tail(paths.outbox_cursor(&source)?).await,
+            Err(StreamError::NotFound)
+        ));
+        let link = route::open_link(&client, 1, b"account", &source).await?;
+        assert!(
+            NodePresence::decode(&presence.try_next().await?.ok_or("no reconnect")?.value)?.online
+        );
+        let destination_socket = route::open_request(b"account", &destination)?.resource();
+        client.register_credential(3, credential(&destination_socket))?;
+        let receiving = route::open_link(&client, 3, b"account", &destination).await?;
+        let destination_store = acyclic_stream::MemoryStream::default();
+        let mut acknowledgments = acyclic_stream::records_only(
+            local
+                .follow(FollowRequest {
+                    when_absent: acyclic_stream::WhenAbsent::Wait,
+                    ..FollowRequest::new(paths.outbox_cursor(&source)?, 0)
+                })
+                .await?,
+        );
+        let mut drained = acyclic_stream::records_only(
+            stream
+                .follow(FollowRequest {
+                    when_absent: acyclic_stream::WhenAbsent::Wait,
+                    ..FollowRequest::new(paths.relay_cursor(&destination)?, 0)
+                })
+                .await?,
+        );
+        {
+            let forwarding = route::run_link(
+                link,
+                &local,
+                stream.as_ref(),
+                &paths,
+                &source,
+                async |envelope| route::admit(&client, 1, &envelope, 4096).await,
+                async |_| Err(route::Error::InvalidRecord),
+            );
+            let receiving = route::run_link(
+                receiving,
+                &destination_store,
+                stream.as_ref(),
+                &paths,
+                &destination,
+                async |_| Err(route::Error::InvalidRecord),
+                async |envelope| match destination_store.commit(envelope.request).await? {
+                    CommitOutcome::Committed(_) => Ok(()),
+                    CommitOutcome::Conflict(_) => Err(route::Error::InvalidRecord),
+                },
+            );
+            let pumps = futures::future::try_join(forwarding, receiving);
+            let completed = async {
+                acknowledgments
+                    .try_next()
+                    .await?
+                    .ok_or("no source acknowledgment")?;
+                drained.try_next().await?.ok_or("no drain acknowledgment")?;
+                assert_eq!(
+                    route::receipt(&local, &paths, &source, 0, &message.request.idempotency_key)
+                        .await?,
+                    Some(expected)
+                );
+                assert_eq!(stream.tail(paths.relay(&destination)?).await?, 1);
+                assert_eq!(
+                    destination_store
+                        .tail(StreamPath::new("remote/recipient/inbox")?)
+                        .await?,
+                    1
+                );
+                Ok(()) as Result
+            };
+            futures::pin_mut!(pumps, completed);
+            match futures::future::select(pumps, completed).await {
+                futures::future::Either::Left((result, _)) => {
+                    return Err(format!("link stopped before delivery: {result:?}").into());
+                }
+                futures::future::Either::Right((result, _)) => result?,
+            }
+        }
+        assert!(
+            !NodePresence::decode(&presence.try_next().await?.ok_or("no owner shutdown")?.value)?
+                .online
         );
         assert!(matches!(
             call(&client, "agents", &AgentCommand::Root {}).await??,

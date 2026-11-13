@@ -28,6 +28,48 @@ const NAMESPACE: &str = "acyclic.route.node.";
 /// Dropping it produces the ordinary peer Close, including on transport loss.
 pub type NodeLink = ActorSocket;
 
+/// Own both durable pumps for one already accepted node link. Its terminal
+/// frame or transport loss drops both follows and any in-flight callback;
+/// reopening resumes from the original committed acknowledgement cursors.
+/// The host supplies its authenticated account provider and ordinary delivery.
+/// No reconnect, readiness probe or independent task is created here.
+pub async fn run_link<P, A, F, D>(
+    mut link: NodeLink,
+    local: &P,
+    account: &A,
+    paths: &Paths,
+    node: &NodeId,
+    admit: F,
+    deliver: D,
+) -> Result<std::convert::Infallible, Error>
+where
+    P: StreamProvider + ?Sized,
+    A: StreamProvider + ?Sized,
+    F: AsyncFnMut(super::Envelope) -> Result<super::Routed, Error>,
+    D: AsyncFnMut(super::Envelope) -> Result<(), Error>,
+{
+    let outgoing = super::forward(local, paths, node, admit);
+    let incoming = super::drain(account, paths, node, deliver);
+    let closed = async {
+        match link.next().await? {
+            Some(frame) if !matches!(SocketFrame::decode(&frame)?, SocketFrame::Close { .. }) => {
+                Err(Error::InvalidRecord)
+            }
+            _ => Err(StreamError::Unavailable.into()),
+        }
+    };
+    futures::pin_mut!(outgoing, incoming, closed);
+    let pumps = futures::future::select(outgoing, incoming);
+    futures::pin_mut!(pumps);
+    match futures::future::select(closed, pumps).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right((result, _)) => match result {
+            futures::future::Either::Left((result, _))
+            | futures::future::Either::Right((result, _)) => result,
+        },
+    }
+}
+
 fn codec() -> CodecIdentity {
     CodecIdentity {
         name: "acyclic.actors.route.node".into(),

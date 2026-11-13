@@ -11,7 +11,7 @@ use futures::TryStreamExt as _;
 use prost::Message as _;
 
 mod node;
-pub use node::{NodeActor, NodeLink, NodePresence, open_link, open_request};
+pub use node::{NodeActor, NodeLink, NodePresence, open_link, open_request, run_link};
 mod drain;
 pub use drain::{drain, forward, receipt};
 mod admission;
