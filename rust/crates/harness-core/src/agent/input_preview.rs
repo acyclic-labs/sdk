@@ -6,7 +6,7 @@
 pub struct InputPreview {
     /// UTF-8 prefix, ending at a complete scalar boundary.
     pub text: String,
-    /// Complete original message length, before display truncation.
+    /// Complete original human text length, before display truncation.
     pub bytes: u64,
 }
 

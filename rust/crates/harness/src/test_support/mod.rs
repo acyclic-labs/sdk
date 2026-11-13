@@ -265,7 +265,7 @@ pub async fn prompt_settled(
                     break;
                 }
                 Event::Turn(_) => break,
-                Event::Delta => {}
+                Event::Delta | Event::Input { .. } => {}
             }
         }
     };

@@ -428,6 +428,14 @@ fn query_history_replies_preserve_edits_and_cancelled_searches() {
     press(&mut input, KeyCode::Esc, M::NONE, 8);
     assert_eq!(input.editor.text(), "new older prompt");
     assert!(!input.resolve_history(*request, "new older prompt", Some("late match"), true, 9));
+    let reopened = press(&mut input, KeyCode::Char('r'), M::CONTROL, 10);
+    let [InputEffect::History { restart: true, .. }] = reopened.as_slice() else {
+        panic!("reopened search retained its old position")
+    };
+    let repeated = press(&mut input, KeyCode::Char('r'), M::CONTROL, 11);
+    let [InputEffect::History { restart: false, .. }] = repeated.as_slice() else {
+        panic!("repeated search restarted instead of advancing")
+    };
     assert!(
         input.history().entries().is_empty(),
         "query recall copied a second history authority"
