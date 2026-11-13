@@ -484,3 +484,42 @@ fn query_history_replies_preserve_edits_and_cancelled_searches() {
         }]
     ));
 }
+
+#[test]
+fn a_changed_history_query_accepts_only_its_own_completed_match() {
+    for completed in [false, true] {
+        let mut input = PromptInput::new(Editor::new("draft"));
+        input.use_history_query();
+        let original = press(&mut input, KeyCode::Char('r'), M::CONTROL, 0);
+        let [InputEffect::History { request, .. }] = original.as_slice() else {
+            panic!("missing original search")
+        };
+        assert!(input.resolve_history(*request, "draft", Some("old match"), true, 1));
+        let changed = press(&mut input, KeyCode::Char('x'), M::NONE, 2);
+        let [
+            InputEffect::History {
+                request,
+                search: Some(query),
+                ..
+            },
+        ] = changed.as_slice()
+        else {
+            panic!("missing changed search")
+        };
+        assert_eq!(query, "x");
+        if completed {
+            assert!(input.resolve_history(*request, "old match", Some("new match"), true, 3));
+        }
+        assert_eq!(
+            press(&mut input, KeyCode::Enter, M::NONE, 4),
+            vec![InputEffect::HistorySearchFinished {
+                accepted: completed
+            }]
+        );
+        assert_eq!(
+            input.editor.text(),
+            if completed { "new match" } else { "draft" }
+        );
+        assert!(!input.resolve_history(*request, "draft", Some("late match"), true, 5));
+    }
+}
