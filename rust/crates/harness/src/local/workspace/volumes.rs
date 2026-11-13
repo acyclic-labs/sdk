@@ -186,7 +186,7 @@ struct CommandView {
     address: String,
     source: Arc<MountedVolume>,
     mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
-    fork: Option<VolumeWorkspace>,
+    fork: Option<(VolumeWorkspace, acyclic_fs::EphemeralFork)>,
 }
 
 impl MountedVolume {
@@ -235,26 +235,20 @@ impl MountedVolume {
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        // The fork is all-or-nothing scratch: only its hand-back join is
-        // committed work, and that join flushes eagerly, carrying any earlier
-        // frame of the shared journal with it. Creating or retiring the fork
-        // therefore buys no guarantee from a flush of its own; a fork a crash
-        // leaves behind holds no committed work and is reaped at next open.
-        let stream = workspace.filesystem().stream_provider();
-        let fork = acyclic_stream::deferring_provider_durability(
-            stream.as_ref(),
-            workspace.fork::<_, _, acyclic_fs::WorkspaceError>(
-                format!("{COMMAND_FORK_PREFIX}{}", hex::encode(key.into_bytes())),
+        // The fork is all-or-nothing scratch, so it is ephemeral: never
+        // journalled, listed or flushed, and gone with its custody, whether
+        // the command settles or its owner dies. Only the hand-back join is
+        // committed work.
+        let (fork, custody) = workspace
+            .fork_ephemeral(
+                hex::encode(key.into_bytes()),
                 acyclic_fs::ForkOptions::from_generation(head, key),
-                acyclic_fs::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-                (),
-            ),
-        )
-        .await
-        .map_err(|failure| Error::from(failure.error))?
-        .value;
+            )
+            .await
+            .map_err(|failure| Error::from(failure.error))?
+            .value;
         let mount = async {
             let options = authority
                 .mount_options(&fork, Some(volume), true, &work)
@@ -268,34 +262,13 @@ impl MountedVolume {
             .map_err(Error::from)
         }
         .await;
-        match mount {
-            Ok(mount) => Ok(CommandView {
-                address: address.to_owned(),
-                source: Arc::clone(self),
-                mount,
-                fork: Some(fork),
-            }),
-            Err(error) => {
-                retire_fork(&fork).await;
-                Err(error)
-            }
-        }
-    }
-}
-
-/// Names every command's fork, so a fork a crash left behind is recognised.
-const COMMAND_FORK_PREFIX: &str = "command-";
-
-/// Retires a command fork without a flush of its own: see `command_view`.
-async fn retire_fork(fork: &VolumeWorkspace) {
-    let stream = fork.filesystem().stream_provider();
-    let retired = acyclic_stream::deferring_provider_durability(
-        stream.as_ref(),
-        fork.delete(acyclic_fs::IdempotencyKey::new()),
-    )
-    .await;
-    if let Err(error) = retired {
-        tracing::error!(?error, "command volume fork retirement failed");
+        // A failed mount drops the custody, which ends the fork.
+        Ok(CommandView {
+            address: address.to_owned(),
+            source: Arc::clone(self),
+            mount: mount?,
+            fork: Some((fork, custody)),
+        })
     }
 }
 
@@ -305,8 +278,8 @@ impl CommandView {
         if let Err(error) = self.mount.abandon_command().await {
             tracing::error!(?error, "command volume view retirement failed");
         }
-        if let Some(fork) = &self.fork {
-            retire_fork(fork).await;
+        if let Some((_, custody)) = self.fork {
+            settle(custody).await;
         }
     }
 
@@ -314,7 +287,7 @@ impl CommandView {
     /// that moved is replanned on the new head; overlapping text writes land
     /// as git conflict markers and are reported, never silently overwritten.
     async fn hand_back(self) -> Result<Vec<String>> {
-        let Some(fork) = self.fork else {
+        let Some((fork, custody)) = self.fork else {
             self.mount.complete_command(true).await?;
             return Ok(Vec::new());
         };
@@ -325,8 +298,15 @@ impl CommandView {
             }
             Err(error) => Err(error.into()),
         };
-        retire_fork(&fork).await;
+        settle(custody).await;
         merged
+    }
+}
+
+/// Ends a command's ephemeral fork.
+async fn settle(custody: acyclic_fs::EphemeralFork) {
+    if let Err(error) = custody.settle().await {
+        tracing::error!(?error, "command volume fork release failed");
     }
 }
 

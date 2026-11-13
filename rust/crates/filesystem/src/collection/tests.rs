@@ -151,7 +151,8 @@ async fn prepared_generation_pin_hands_sweep_admission_to_the_root_registry()
         let pin = collection
             .hold_generation_with_accounting(
                 &crate::MemoryObjectStore::default(),
-                &proof,
+                proof.generation_id.object_id(),
+                &proof.objects,
                 config,
                 collection.sweeps(),
                 &mut accounting,

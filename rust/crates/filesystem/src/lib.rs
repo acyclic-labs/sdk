@@ -211,10 +211,10 @@ pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLi
 pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
     AppendGroupOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError,
-    AuthorityGroupCost, AuthorityGuard, AuthorityWork, DynObjectStore, GenerationFork,
-    GenerationForkSource, OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask, PolicyCut,
-    PolicyOwner, PublicationScope, SharedObjectStore, WorkspaceForkCommit, WorkspaceForkOutcome,
-    shared_objects,
+    AuthorityGroupCost, AuthorityGuard, AuthorityWork, DynObjectStore, EphemeralForkCommit,
+    GenerationFork, GenerationForkSource, OwnedAuthorityGroup, OwnedAuthorityGuard,
+    OwnedAuthorityTask, PolicyCut, PolicyOwner, PublicationScope, SharedObjectStore,
+    WorkspaceForkCommit, WorkspaceForkOutcome, shared_objects,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
@@ -422,9 +422,9 @@ pub use windows_usn::{
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, ChangedPathEntry, ChangedPaths, DrivenJoinError,
-    FileCondition, FileIdentityPaths, ForkOptions, Generation, IdempotencyKey, JoinApplication,
-    JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, OperationPublication, Transaction,
-    TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
+    EphemeralFork, FileCondition, FileIdentityPaths, ForkOptions, Generation, IdempotencyKey,
+    JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, OperationPublication,
+    Transaction, TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata,
     WorkspaceName, WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
     WorkspaceRestore, WorkspaceStat,

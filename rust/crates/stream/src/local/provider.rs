@@ -30,6 +30,16 @@ impl StreamProvider for LocalStream {
         )
     }
 
+    async fn is_ephemeral(&self, path: &StreamPath) -> Result<bool, StreamError> {
+        self.check_available()?;
+        Ok(self
+            .inner
+            .provider
+            .ephemeral_mask(std::slice::from_ref(path))
+            .await
+            == [true])
+    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,

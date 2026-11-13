@@ -24,7 +24,10 @@ pub use cache::{
     DecodedCacheAdmission, DecodedCacheKey, DecodedCacheLookup, DecodedCacheMiss, DecodedCacheValue,
 };
 mod fork;
-pub use fork::{GenerationFork, GenerationForkSource, WorkspaceForkCommit, WorkspaceForkOutcome};
+pub use fork::{
+    EphemeralForkCommit, GenerationFork, GenerationForkSource, WorkspaceForkCommit,
+    WorkspaceForkOutcome,
+};
 pub(crate) use fork::{first_record, seal, workspace_fork};
 mod work;
 pub(crate) use work::AuthorityFrame;
