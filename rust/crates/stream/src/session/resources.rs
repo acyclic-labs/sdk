@@ -55,10 +55,31 @@ impl ResourceAuthorization {
     }
     /// Current trusted runtime clock for the volume policy's time conditions.
     pub fn now_unix_seconds(&self) -> Result<u64, StreamError> {
-        self.authority
-            .snapshot()
-            .map(|snapshot| snapshot.now_unix_seconds)
-            .map_err(|_| StreamError::AccessDenied)
+        let work = || {
+            self.authority
+                .snapshot()
+                .map(|snapshot| snapshot.now_unix_seconds)
+                .map_err(|source| StreamError::AccessDenied.with_source(source))
+        };
+        #[cfg(feature = "serde")]
+        {
+            crate::trace::observe_sync(
+                crate::trace::Request {
+                    name: "stream.resource_policy_clock",
+                    mechanism: crate::trace::Mechanism::ProviderCall,
+                    parent: None,
+                    guarantee: Some("authenticated_trust_snapshot_with_monotonic_protected_time"),
+                },
+                work,
+                |result| {
+                    result
+                        .is_ok()
+                        .then_some((Some(0), crate::trace::Outcome::Succeeded, None))
+                },
+            )
+        }
+        #[cfg(not(feature = "serde"))]
+        work()
     }
     /// Checks every capability ancestor, audience, holder, expiry and full path,
     /// intersecting the owning volume's policy. Headers belong to this entry.
@@ -128,7 +149,7 @@ impl ResourceAuthorization {
         let snapshot = self
             .authority
             .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?;
+            .map_err(|source| StreamError::AccessDenied.with_source(source))?;
         let capability = self.current()?;
         if let Some(account) = account {
             let certified = capability

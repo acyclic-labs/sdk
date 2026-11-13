@@ -962,8 +962,8 @@ fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
         assert!(!matches(format!("{path}-other").as_bytes()));
     }
 }
-#[test]
-fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
+#[tokio::test]
+async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
     for revoke in [false, true] {
         let state = State::new();
         let auth = Arc::new(authority(state.clone()));
@@ -974,6 +974,53 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
             .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
             .unwrap();
         let attributes = RecordAttributes::try_new(vec![]).unwrap();
+        #[cfg(feature = "serde")]
+        {
+            use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+            let trace = crate::Stream::new(Arc::new(crate::MemoryStream::default()), "owner/trace")
+                .unwrap();
+            let recorder = Arc::new(Recorder::new(trace.clone(), [39; 16]));
+            let root = recorder
+                .start(
+                    "policy_owner",
+                    Mechanism::ActorDelivery,
+                    None,
+                    Some("original_policy_request"),
+                )
+                .await
+                .unwrap()
+                .into_owned();
+            let parent = root.id();
+            assert_eq!(
+                root.within_sync(|| context.now_unix_seconds()).unwrap(),
+                signed::NOW
+            );
+            let mut query = TraceQuery::new(
+                trace.follow(0, Default::default()).await.unwrap(),
+                Default::default(),
+            );
+            loop {
+                if let Observation::Completed {
+                    start,
+                    bytes,
+                    result,
+                    ..
+                } = query.next().await.unwrap().expect("original trace")
+                {
+                    assert_eq!(start.name, "stream.resource_policy_clock");
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::ProviderCall);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("authenticated_trust_snapshot_with_monotonic_protected_time")
+                    );
+                    assert_eq!(bytes, Some(0));
+                    assert_eq!(result, Outcome::Succeeded);
+                    break;
+                }
+            }
+            root.finish_submitted(None, Outcome::Succeeded).unwrap();
+        }
         for checks in [1, 100, 1000] {
             let authorize = || {
                 for _ in 0..checks {
@@ -1023,6 +1070,31 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
                 .authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow)
                 .is_err()
         );
+        if !revoke {
+            use std::error::Error as _;
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _held = state.trust.write().unwrap();
+                    panic!("original trust owner failed");
+                }))
+                .is_err()
+            );
+            for result in [
+                context.now_unix_seconds().map(|_| ()),
+                context.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow),
+            ] {
+                let error = result.expect_err("lost trust cannot authorize disclosure");
+                assert_eq!(error.category(), StreamError::AccessDenied);
+                assert!(
+                    std::iter::successors(error.source(), |source| source.source()).any(
+                        |source| matches!(
+                            source.downcast_ref::<verify::VerifyError>(),
+                            Some(verify::VerifyError::Trust)
+                        )
+                    )
+                );
+            }
+        }
     }
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
