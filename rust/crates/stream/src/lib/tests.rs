@@ -559,6 +559,25 @@ mod replay_tests {
         assert!(matches!(appended, AppendOutcome::Committed(_)));
         assert_eq!(forked.append("next", append_key).await?, appended);
         assert_eq!(forked.tail().await?, 2);
+        let mut live = root.within(data.follow(0, Default::default())).await?;
+        assert_eq!(
+            live.next()
+                .await
+                .ok_or("original followed row missing")??
+                .value
+                .as_ref(),
+            b"original"
+        );
+        drop(live);
+        let mut diagnostic_live = root.within(trace.follow(0, Default::default())).await?;
+        assert!(
+            diagnostic_live
+                .next()
+                .await
+                .ok_or("original diagnostic follow missing")?
+                .is_ok()
+        );
+        drop(diagnostic_live);
         let mut diagnostic = root.within(trace.read(0, 1)).await?;
         assert!(
             diagnostic
@@ -589,6 +608,12 @@ mod replay_tests {
             ("stream.fork", "immutable_selected_prefix_and_origin", None),
             ("stream.append", "atomic_contiguous_append_decision", None),
             ("stream.append", "atomic_contiguous_append_decision", None),
+            (
+                "stream.follow_open",
+                "ordered_history_and_live_cursor",
+                None,
+            ),
+            ("stream.record_delivery", "ordered_cursor_delivery", Some(8)),
         ] {
             query.next().await?;
             assert!(
@@ -602,14 +627,14 @@ mod replay_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            24,
+            28,
             "diagnostic publication recursively traced its own head check"
         );
         assert_eq!(data.head().await?, original);
         drop(data.read(0, 1).await?);
         assert_eq!(
             trace.tail().await?,
-            24,
+            28,
             "completed scope leaked its owner into unrelated work"
         );
         Ok(())

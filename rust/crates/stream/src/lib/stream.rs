@@ -288,7 +288,9 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + ProviderTask + use<P>,
         StreamError,
     > {
-        Ok(records_only(
+        #[cfg(feature = "serde")]
+        let diagnostic = crate::trace::is_source(&self.path);
+        let work = async {
             self.provider
                 .follow(FollowRequest {
                     bootstrap_head: false,
@@ -301,8 +303,28 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                     progress: false,
                     at_least: Default::default(),
                 })
-                .await?,
-        ))
+                .await
+                .map(records_only)
+        };
+        #[cfg(feature = "serde")]
+        if diagnostic {
+            return work.await;
+        }
+        #[cfg(feature = "serde")]
+        return crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.follow_open",
+                mechanism: crate::trace::Mechanism::Io,
+                parent: None,
+                guarantee: Some("ordered_history_and_live_cursor"),
+            },
+            work,
+            |_| None,
+        )
+        .await
+        .map(crate::trace::records);
+        #[cfg(not(feature = "serde"))]
+        work.await
     }
 }
 
