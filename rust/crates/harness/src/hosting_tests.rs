@@ -279,22 +279,41 @@ async fn diff_call(
 }
 
 #[test]
-fn serving_reply_codec_preserves_invalid_and_capacity_refusals() -> Result {
+fn serving_reply_codec_preserves_invalid_refusals_and_complete_large_results() -> Result {
     let command = AgentCommand::Root {};
     let call = acyclic_harness_client::AgentCall::decode(&invocation("agents", &command)?)?;
+    let bind_command = AgentCommand::Bind { agent: None };
+    let bind_call =
+        acyclic_harness_client::AgentCall::decode(&invocation("agents", &bind_command)?)?;
+    let mut binding = bind_call.invocation().clone();
+    binding.body.clear();
+    binding.invocation_order = None;
+    let large = Ok(acyclic_harness_client::AgentBinding::reply(
+        &binding,
+        format!(
+            "fs://tools/{}",
+            "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES + 1)
+        ),
+        None,
+    ));
     assert!(matches!(
-        super::reply(&call, &Ok(AgentReply::Staged {})),
+        super::reply(&call, &large),
         Err(StreamError::InvalidResponse)
     ));
-    let oversized = AgentReply::Bound {
-        binding: "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES + 1),
-        tools: String::new(),
-        observation: None,
+    let encoded = super::reply(&bind_call, &large)?;
+    let response = wire::InvokeActorResponse::decode(encoded)?;
+    let Ok(decoded) = decode_agent_reply(&response.body, &bind_command)? else {
+        return Err("valid large binding reply was refused".into());
     };
-    assert!(matches!(
-        super::reply(&call, &Ok(oversized)),
-        Err(StreamError::LimitExceeded)
-    ));
+    let (decoded_binding, tools) = acyclic_harness_client::AgentBinding::from_reply(&decoded)?;
+    assert_eq!(decoded_binding.binding_bytes(), binding.encode_to_vec());
+    let Ok(AgentReply::Bound {
+        tools: expected, ..
+    }) = &large
+    else {
+        unreachable!("the public binding writer returns Bound");
+    };
+    assert_eq!(&tools, expected);
     let root = AgentPath::root(&AgentId::from_bytes([13; 16]));
     let encoded = super::reply(
         &call,
