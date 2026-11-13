@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeCaptureEvidence {
-    /// An original authored DATA receipt and its unique predecessor.
+    /// An original authored DATA receipt and its actual serial predecessor.
     Authored {
         /// Original capture operation.
         operation: acyclic_fs::OperationId,

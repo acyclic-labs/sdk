@@ -27,6 +27,8 @@ async fn exercise_original_publication<
         .create_workspace("evidence", budget, &cancellation)
         .await?
         .value;
+    workspace.write_text("/seed", "before").await?;
+    let before = workspace.head(budget, &cancellation).await?.value;
     let key = IdempotencyKey::new();
     let mut transaction = workspace
         .begin_transaction(key, budget, &cancellation)
@@ -49,6 +51,7 @@ async fn exercise_original_publication<
     let TransactionCommit::Committed(original) = published else {
         return Err("publication failed".into());
     };
+    assert_eq!(original.id(), before.id(), "clean receipt changed the root");
     workspace.write_text("/later", "later head").await?;
     let current = workspace.head(budget, &cancellation).await?.value.id();
     assert_ne!(current, original.id());
@@ -64,6 +67,34 @@ async fn exercise_original_publication<
     let publication = publication.value.ok_or("publication disappeared")?;
     assert_eq!(publication.generation().id(), original.id());
     assert_eq!(publication.evidence(), Some(b"original context".as_slice()));
+    let predecessor = publication
+        .predecessor(budget, &cancellation)
+        .await?
+        .value
+        .ok_or("clean publication lost its actual predecessor")?;
+    assert_eq!(
+        predecessor.id(),
+        before.id(),
+        "clean publication borrowed an earlier generation's parent"
+    );
+    assert!(
+        !publication
+            .generation()
+            .content_changed_from(&predecessor, budget, &cancellation)
+            .await?
+            .value,
+        "clean publication borrowed earlier native progress"
+    );
+    assert!(
+        workspace
+            .head(budget, &cancellation)
+            .await?
+            .value
+            .content_changed_from(&predecessor, budget, &cancellation)
+            .await?
+            .value,
+        "later real edit was not distinguished from the original clean receipt"
+    );
     assert!(
         original
             .stat("/.system", budget, &cancellation)
@@ -173,6 +204,12 @@ async fn exercise_original_publication<
         .await
         .err()
         .ok_or("cancelled read admitted")?;
+    assert_eq!(*failure.work, crate::WorkCounters::default());
+    let failure = publication
+        .predecessor(budget, &cancellation)
+        .await
+        .err()
+        .ok_or("cancelled predecessor lookup admitted")?;
     assert_eq!(*failure.work, crate::WorkCounters::default());
     Ok(())
 }
