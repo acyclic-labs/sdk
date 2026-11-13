@@ -19,6 +19,7 @@ pub(super) mod skills;
 /// the same bound view used by its tools, including for a spawned agent.
 pub(super) struct Binding<'a> {
     pub(super) project: &'a VolumeRef,
+    pub(super) project_root: &'a str,
     pub(super) scratch: &'a VolumeRef,
     #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(super) journal: &'a VolumeRef,
@@ -438,7 +439,7 @@ impl LocalHarness {
         let generation = self.files.resolve(&workspace, None).await?.generation;
         let root = crate::context::ContextRoot {
             volume: binding.project.clone(),
-            directory: String::new(),
+            directory: binding.project_root.into(),
         };
         let mut source = VolumeInstructions {
             harness: self,
@@ -450,7 +451,7 @@ impl LocalHarness {
         };
         let instructions = crate::context::capture_instructions(
             &mut source,
-            "",
+            binding.project_root,
             &self.active_directory,
             names,
             work,
@@ -836,7 +837,7 @@ mod tests {
                 &'static std::path::Path,
                 &'static super::super::workspace::View,
                 &'static mut crate::context::DiscoveryWork,
-            )| sources.catalog(root, view, work),
+            )| sources.catalog(root, view, "", work),
         );
         #[cfg(not(target_arch = "wasm32"))]
         let users = retained_operation_bytes(

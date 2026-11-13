@@ -702,9 +702,9 @@ impl LocalHarness {
         content: &'a crate::runtime::ContentBindings,
     ) -> BoxProviderFuture<'a, Result<TurnBindings<'a>>> {
         Box::pin(async move {
-            let project = WorkspaceTable::primary_in(&agent.volumes)
-                .and_then(|binding| binding.as_volume())
+            let primary = WorkspaceTable::primary_in(&agent.volumes)
                 .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
+            let project = primary.volume()?;
             let scratch = agent
                 .volumes
                 .iter()
@@ -721,6 +721,7 @@ impl LocalHarness {
                 .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
             let context = super::context::Binding {
                 project,
+                project_root: &primary.root,
                 scratch,
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 journal,

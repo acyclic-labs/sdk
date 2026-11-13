@@ -32,6 +32,7 @@ impl LocalHarness {
         let reader = self.context_reader()?;
         let binding = Binding {
             project: &self.project,
+            project_root: "",
             scratch: &self.scratch,
             reader: reader.as_ref(),
             #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -87,7 +88,35 @@ impl LocalHarness {
                 )));
             }
             let view = selected.as_ref().unwrap_or_else(|| workspace.view());
-            skills = sources.catalog(&workspace.path, view, work)?.await?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let native_work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let io = crate::filesystem::PreparationIo::from_native_work(&native_work)?;
+            self.authorize_checkout_context(
+                workspace,
+                view.workspace(),
+                &io,
+                (&binding.verifier, binding.scope),
+            )
+            .await?;
+            skills = sources
+                .catalog(
+                    workspace.source_root.workspace(),
+                    view,
+                    binding.project_root,
+                    work,
+                )?
+                .await?;
+            self.authorize_checkout_context(
+                workspace,
+                view.workspace(),
+                &io,
+                (&binding.verifier, binding.scope),
+            )
+            .await?;
         }
         if !native_project {
             #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -152,7 +181,7 @@ impl LocalHarness {
         let stack = if private {
             stack_digest([(SEED, seeded.as_resource().key()), home])
         } else {
-            stack_digest([home])
+            stack_digest([("source-root", binding.project_root.as_bytes()), home])
         };
         {
             let cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
@@ -205,14 +234,19 @@ impl LocalHarness {
         } else {
             let mut skills = Vec::new();
             for directory in PROJECT_ROOTS {
+                let directory = if binding.project_root.is_empty() {
+                    std::borrow::Cow::Borrowed(directory)
+                } else {
+                    std::borrow::Cow::Owned(format!("{}/{directory}", binding.project_root))
+                };
                 skills.extend(
                     crate::context::discover_skills_from(
                         &mut crate::context::VolumeDiscovery {
                             reader: binding.reader,
-                            root: &root(volume, directory),
+                            root: &root(volume, &directory),
                             io: None,
                         },
-                        directory,
+                        &directory,
                         "SKILL.md",
                         work,
                         Some(generation),

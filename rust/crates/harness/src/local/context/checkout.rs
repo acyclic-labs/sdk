@@ -9,7 +9,7 @@ fn archive_path(name: &str, bytes: &[u8]) -> String {
 }
 
 impl LocalHarness {
-    async fn authorize_checkout_context(
+    pub(super) async fn authorize_checkout_context(
         &self,
         physical: &LocalWorkspace,
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
@@ -412,6 +412,19 @@ mod tests {
         ] {
             std::fs::write(directory.path().join(path), bytes).map_err(storage)?;
         }
+        for (root, name) in [("", "outside"), ("selected", "inside"), ("peer", "peer")] {
+            let skill = directory
+                .path()
+                .join(root)
+                .join(crate::context::PROJECT_SKILL_ROOTS[0])
+                .join(name);
+            std::fs::create_dir_all(&skill).map_err(storage)?;
+            std::fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: scoped skill\n---\n{name} body"),
+            )
+            .map_err(storage)?;
+        }
         let mut harness = LocalHarness::open(
             crate::LocalHarnessConfig::native_host(directory.path())
                 .workspace_mounting(crate::local::WorkspaceMounting::Physical)
@@ -454,6 +467,49 @@ mod tests {
             )
             .await?;
         let issuer = harness.root_authority.as_ref().expect("fixture signer");
+        let sources = crate::context::native_skills::NativeSkills::new(
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            harness.journal.clone(),
+            Some((
+                selected.view(),
+                selected.filesystem.clone(),
+                selected.store.clone(),
+            )),
+            Vec::new(),
+        )?;
+        for (root, expected) in [
+            ("selected", "inside"),
+            ("peer", "peer"),
+            ("selected", "inside"),
+        ] {
+            let skills = sources
+                .catalog(
+                    workspace.source_root.workspace(),
+                    selected.view(),
+                    root,
+                    &mut Default::default(),
+                )?
+                .await?;
+            assert_eq!(
+                skills
+                    .iter()
+                    .map(|skill| skill.name.as_str())
+                    .collect::<Vec<_>>(),
+                [expected],
+                "same-snapshot catalog cache crossed selected roots"
+            );
+        }
+        assert!(
+            sources
+                .catalog(
+                    workspace.source_root.workspace(),
+                    selected.view(),
+                    "../peer",
+                    &mut Default::default()
+                )?
+                .await
+                .is_err()
+        );
         let scope = issuer.bootstrap_scope(
             "selected-context",
             &Capabilities::new([harness

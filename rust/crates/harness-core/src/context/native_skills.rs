@@ -168,7 +168,7 @@ impl UserWatch {
     }
 }
 
-type Catalog = Option<(acyclic_fs::LazySnapshotId, u64, SkillCatalog)>;
+type Catalog = Option<(acyclic_fs::LazySnapshotId, String, u64, SkillCatalog)>;
 
 #[derive(Clone)]
 struct SkillWorkspace {
@@ -490,10 +490,14 @@ impl NativeSkills {
         &'a self,
         root: &'a Path,
         view: &'a View,
+        source_root: &'a str,
         bounds: &'a mut DiscoveryWork,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             bounds.limits.validate()?;
+            if !source_root.is_empty() {
+                crate::conversation::validate_content_path(source_root, &mut None)?;
+            }
             let before = *bounds;
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = native_work(&cancellation)?;
@@ -503,8 +507,9 @@ impl NativeSkills {
             };
             let cut = view.snapshot(&mut accounting).await?;
             let mut cached = crate::sync::owned::lock_owned(self.cache.clone()).await;
-            if let Some((id, generation, catalog)) = &*cached
+            if let Some((id, root, generation, catalog)) = &*cached
                 && id == &cut.id
+                && root == source_root
                 && *generation == self.user_watch.current()
                 && let Some(skills) = catalog.reuse(bounds)?
             {
@@ -536,10 +541,15 @@ impl NativeSkills {
                 records: &mut records,
             };
             for directory in PROJECT_SKILL_ROOTS {
+                let directory = if source_root.is_empty() {
+                    std::borrow::Cow::Borrowed(directory)
+                } else {
+                    std::borrow::Cow::Owned(format!("{source_root}/{directory}"))
+                };
                 skills.extend(
                     discover_skills_from(
                         &mut scan,
-                        directory,
+                        &directory,
                         "SKILL.md",
                         bounds,
                         Some(&cut),
@@ -552,7 +562,8 @@ impl NativeSkills {
             drop(scan);
             records.publish(&self.records, &work).await?;
             // An unwatchable user source must not enter either catalog cache.
-            *cached = generation.map(|generation| (cut.id, generation, catalog));
+            *cached =
+                generation.map(|generation| (cut.id, source_root.into(), generation, catalog));
             Ok(skills)
         })
     }
@@ -1064,7 +1075,7 @@ mod binding_tests {
         assert_eq!(
             names(
                 sources
-                    .catalog(&checkout, &view, &mut DiscoveryWork::default())?
+                    .catalog(&checkout, &view, "", &mut DiscoveryWork::default())?
                     .await?
             ),
             ["first"]
@@ -1110,7 +1121,7 @@ mod binding_tests {
         assert_eq!(listed, ["first", "second"]);
         let mut listed = names(
             sources
-                .catalog(&checkout, &view, &mut DiscoveryWork::default())?
+                .catalog(&checkout, &view, "", &mut DiscoveryWork::default())?
                 .await?,
         );
         listed.sort();
