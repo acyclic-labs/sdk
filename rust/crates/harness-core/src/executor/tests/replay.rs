@@ -614,7 +614,6 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
                 tooling: None,
                 current_date: "2026-10-22".into(),
                 timezone: "UTC".into(),
-                model: "model".into(),
             }),
             ..Default::default()
         };
