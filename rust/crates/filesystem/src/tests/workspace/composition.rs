@@ -967,3 +967,73 @@ async fn a_dropped_preparation_rolls_the_commit_back() -> Result<(), Box<dyn Err
     };
     Ok(())
 }
+
+/// Ordinary transactions retain every external source across the publication
+/// combiner; an edit or retirement of either source refuses the whole write.
+#[tokio::test]
+async fn transaction_publication_retains_all_external_policy_sources() -> Result<(), Box<dyn Error>>
+{
+    for changed in [
+        None,
+        Some((0_usize, false)),
+        Some((1, false)),
+        Some((0, true)),
+        Some((1, true)),
+    ] {
+        let stream = Arc::new(MemoryStream::default());
+        let fs = placed(&stream)?;
+        let token = CancellationToken::new();
+        let names = ["first-source", "second-source"];
+        let sources = [
+            unbounded!(fs, create_workspace(names[0]))?,
+            unbounded!(fs, create_workspace(names[1]))?,
+        ];
+        let target = unbounded!(fs, create_workspace("target"))?;
+        let before = unbounded!(target, head())?.id();
+        let cuts = [
+            unbounded!(sources[0], capture_policy_cut())?,
+            unbounded!(sources[1], capture_policy_cut())?,
+        ];
+        let policy = crate::PolicyGroup::new(&cuts, WorkBudget::UNBOUNDED, &token)
+            .map_err(|failure| failure.error)?
+            .value;
+        let mut transaction = unbounded!(target, begin_transaction(IdempotencyKey::new()))?;
+        unbounded!(
+            transaction,
+            write("/answer", OwnedBytes::from_static(b"accepted"))
+        )?;
+        if let Some((position, retired)) = changed {
+            if retired {
+                assert_eq!(
+                    fs.delete_workspace(names[position], IdempotencyKey::new())
+                        .await?,
+                    crate::WorkspaceDelete::Deleted
+                );
+            } else {
+                sources[position].write_text("/settings", "changed").await?;
+            }
+        }
+        let committed = policy
+            .scope(transaction.commit::<WorkspaceError, _, _>(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &token,
+                allow::<WorkspaceError>,
+            ))
+            .await;
+        let accepted = matches!(committed, Ok(receipt) if matches!(receipt.value, crate::TransactionCommit::Committed(_) | crate::TransactionCommit::AlreadyCommitted(_)));
+        assert_eq!(accepted, changed.is_none());
+        let after = unbounded!(target, head())?.id();
+        if changed.is_some() {
+            assert_eq!(after, before, "a stale source published the candidate");
+        } else {
+            assert_ne!(after, before);
+            assert_eq!(
+                unbounded!(target, read("/answer", 8))?.as_ref(),
+                b"accepted"
+            );
+        }
+    }
+    Ok(())
+}
