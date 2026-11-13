@@ -280,7 +280,7 @@ mod tests {
         runtime.block_on(async {
             let mut lines = AsyncLines::new(super::reader(input)?, usize::MAX);
             // The input is open and empty: its read waits on its own thread
-            // while the one blocking slot runs other work to completion.
+            // while coordination blocking work runs to completion.
             tokio::select! {
                 biased;
                 line = lines.next_line() => panic!("an empty input produced {line:?}"),
@@ -305,7 +305,10 @@ mod tests {
     /// job queued behind it until input arrives.
     #[test]
     fn an_open_read_on_the_blocking_slot_starves_queued_work() -> std::io::Result<()> {
-        let runtime = crate::coordination_runtime()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()?;
         let (mut input, mut writer) = std::io::pipe()?;
         let (started, reading) = std::sync::mpsc::channel();
         let read = runtime.spawn_blocking(move || {

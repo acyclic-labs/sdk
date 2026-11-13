@@ -48,13 +48,16 @@ where
 /// remains on the calling thread, so terminal ownership stays with its caller.
 ///
 /// Durable storage uses its own shared, fixed service through
-/// [`spawn_persistence`]. The one additional blocking slot runs only
-/// work that completes on its own, in submission order; an open stdin, whose
-/// read may never return, is read on its own thread through [`crate::stdin`].
+/// [`spawn_persistence`]. Blocking work also has one slot per available CPU,
+/// so independent CPU-heavy futures can progress together. Per-file fences
+/// retain physical operation ordering independently of executor scheduling.
+/// An open stdin, whose read may never return, is read on its own thread
+/// through [`crate::stdin`].
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    let workers = crate::workers::parallelism();
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
-        .max_blocking_threads(1)
+        .worker_threads(workers)
+        .max_blocking_threads(workers)
         .enable_all()
         .build()
 }
@@ -441,10 +444,10 @@ mod tests {
                     receive.recv().unwrap();
                 }
             }
-            // The expanding-pool control must physically start a second
-            // worker before the first is released, rather than depending on
-            // which worker wins the runnable queue after release.
-            for _ in 1..starters {
+            // Wait for every created worker to enter before releasing work.
+            // A regressed service with fewer slots must fail the identity
+            // assertion below instead of waiting for a nonexistent worker.
+            for _ in 1..starters.min(runtime.metrics().num_blocking_threads()) {
                 receive.recv().unwrap();
             }
             for _ in 0..tasks {
@@ -458,15 +461,12 @@ mod tests {
                 identities.len()
             })
         }
+        let workers = crate::workers::parallelism();
         let runtime = super::coordination_runtime().unwrap();
-        assert_eq!(identities(&runtime, 4, 1), 1);
-        assert_eq!(identities(&runtime, 8, 1), 1);
-        // Actual previous owner construction: Tokio's default blocking pool.
-        let expanding = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        assert!(identities(&expanding, 8, 2) > 1);
+        // Every CPU must make progress before any held job is released;
+        // further submissions queue without creating per-task threads.
+        assert_eq!(identities(&runtime, 2 * workers, workers), workers);
+        assert_eq!(identities(&runtime, 4 * workers, workers), workers);
     }
 
     // Outside a simulation, blocking work must stay visible to a paused Tokio
@@ -537,6 +537,8 @@ mod tests {
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let runtime = super::coordination_runtime()?;
         let submission_context = runtime.handle().clone();
+        let overlap =
+            crate::workers::workers(&crate::workers::PERSISTENCE_WORKERS, false)?.threads > 1;
         runtime.block_on(async {
             let custody = std::sync::Arc::new(std::sync::Mutex::new(()));
             let retained = custody.clone();
@@ -556,6 +558,19 @@ mod tests {
                 },
             ));
             accepted_starting.await.unwrap();
+            let mut accepted_release = Some(accepted_release);
+            let mut accepted_finishing = accepted_finishing;
+            if !overlap {
+                // A single-worker service must finish this producer before
+                // another can run. Its retained observer must still refuse
+                // a same-service wait, even after physical completion.
+                drop(accepted_release.take());
+                assert!((&mut accepted_finishing).await.unwrap().is_err());
+                // Physical completion precedes retirement of the task's wait
+                // report. Join that owner before checking the report below.
+                accepted.as_mut().await.unwrap();
+                assert!(custody.try_lock().is_ok());
+            }
             let (started, starting) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel();
             let job = super::spawn_persistence(
@@ -602,12 +617,18 @@ mod tests {
             report.report(&mut bytes).unwrap();
             let observed = String::from_utf8(bytes).unwrap();
             assert!(!observed.contains("local/write/11/0"), "{observed}");
-            assert!(observed.contains("local/retained/10/0"), "{observed}");
-            assert!(custody.try_lock().is_err());
-            // Loss of the original release producer terminates the job. A
-            // refused observer has no authority to release its held storage.
-            drop(accepted_release);
-            assert!(accepted_finishing.await.unwrap().is_err());
+            assert_eq!(
+                observed.contains("local/retained/10/0"),
+                overlap,
+                "{observed}"
+            );
+            assert_eq!(custody.try_lock().is_err(), overlap);
+            if overlap {
+                // Loss of the original release producer terminates the job. A
+                // refused observer has no authority to release its held storage.
+                drop(accepted_release.take());
+                assert!(accepted_finishing.await.unwrap().is_err());
+            }
             assert!(custody.try_lock().is_ok());
         });
         Ok(())

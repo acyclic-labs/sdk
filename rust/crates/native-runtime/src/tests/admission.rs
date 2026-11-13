@@ -481,9 +481,9 @@ fn whole_pool_fixtures_sharing_a_process_deadlock_and_starve_other_tests() -> io
     for _ in 0..threads {
         tally(&mut entered, started.recv().map_err(io::Error::other)?.0);
     }
-    // Every worker now runs a gated job, so no queued job can start.
+    // Every worker now runs a gated job, so no queued job can start. With
+    // one worker the other fixture queues; wider services split the workers.
     assert_eq!(entered, [threads.div_ceil(2), threads / 2]);
-    assert!(entered.iter().all(|&count| count < threads));
     assert_eq!(started.try_recv(), Err(mpsc::TryRecvError::Empty));
     let (body_tx, body) = mpsc::sync_channel(1);
     let mut victim = run_blocking_io(move || body_tx.send(()).unwrap(), None)?;
