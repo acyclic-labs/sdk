@@ -970,7 +970,17 @@ async fn a_dropped_preparation_rolls_the_commit_back() -> Result<(), Box<dyn Err
 
 /// Ordinary transactions retain every external source across the publication
 /// combiner; an edit or retirement of either source refuses the whole write.
-async fn transaction_policy_sources(pinned: bool) -> Result<(), Box<dyn Error>> {
+#[derive(Clone, Copy)]
+enum PolicyPublication {
+    Standalone,
+    #[cfg(not(target_arch = "wasm32"))]
+    Native,
+}
+
+async fn transaction_policy_sources(
+    pinned: bool,
+    publication: PolicyPublication,
+) -> Result<(), Box<dyn Error>> {
     for changed in [
         None,
         Some((0_usize, false)),
@@ -1004,11 +1014,40 @@ async fn transaction_policy_sources(pinned: bool) -> Result<(), Box<dyn Error>> 
                 unbounded!(sources[1], capture_policy_cut())?,
             ])
         };
-        let mut transaction = unbounded!(target, begin_transaction(IdempotencyKey::new()))?;
-        unbounded!(
-            transaction,
-            write("/answer", OwnedBytes::from_static(b"accepted"))
-        )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_original = match publication {
+            PolicyPublication::Standalone => None,
+            PolicyPublication::Native => Some(
+                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+                    .map_err(|(error, _)| error)?,
+            ),
+        };
+        let mut transaction = match publication {
+            PolicyPublication::Standalone => {
+                let mut transaction = unbounded!(target, begin_transaction(IdempotencyKey::new()))?;
+                unbounded!(
+                    transaction,
+                    write("/answer", OwnedBytes::from_static(b"accepted"))
+                )?;
+                transaction
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PolicyPublication::Native => {
+                let original = native_original.as_ref().unwrap();
+                let mut transaction = target
+                    .begin_transaction(IdempotencyKey::new(), original, &token)
+                    .await?;
+                transaction
+                    .write(
+                        "/answer",
+                        OwnedBytes::from_static(b"accepted"),
+                        original,
+                        &token,
+                    )
+                    .await?;
+                transaction
+            }
+        };
         if let Some((position, retired)) = changed {
             if retired {
                 assert_eq!(
@@ -1029,25 +1068,80 @@ async fn transaction_policy_sources(pinned: bool) -> Result<(), Box<dyn Error>> 
             ],
             None => captured.unwrap(),
         };
-        let policy = crate::PolicyGroup::new(&[&cuts], WorkBudget::UNBOUNDED, &token)
-            .map_err(|failure| failure.error)?
-            .value;
-        let committed = policy
-            .scope(transaction.commit::<WorkspaceError, _, _>(
-                None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &token,
-                allow::<WorkspaceError>,
-            ))
-            .await;
+        let committed = match publication {
+            PolicyPublication::Standalone => {
+                let policy = crate::PolicyGroup::new(&[&cuts], WorkBudget::UNBOUNDED, &token)
+                    .map_err(|failure| failure.error)?
+                    .value;
+                policy
+                    .scope(transaction.commit::<WorkspaceError, _, _>(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        WorkBudget::UNBOUNDED,
+                        &token,
+                        allow::<WorkspaceError>,
+                    ))
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PolicyPublication::Native => {
+                let original = native_original.as_ref().unwrap();
+                let policy = crate::PolicyGroup::new(&[&cuts], original, &token)?;
+                let mut ready = |_: &crate::NativeMaterializationWork| {
+                    std::future::ready(Ok::<(), FsError>(()))
+                };
+                let committed = policy
+                    .scope(transaction.commit_with_native_work::<FsError, _, _>(
+                        None,
+                        crate::PublicationPermit::Unrestricted,
+                        original,
+                        &token,
+                        &mut ready,
+                    ))
+                    .await
+                    .map_err(WorkspaceError::from);
+                if changed.is_none() {
+                    assert!(matches!(
+                        committed,
+                        Ok(crate::TransactionCommit::Committed(_))
+                    ));
+                    // Revocation cannot erase the receipt of the operation
+                    // that already committed under this original native owner.
+                    for source in &sources {
+                        source
+                            .write_text("/settings", "revoked after commit")
+                            .await?;
+                    }
+                    let retry = policy
+                        .scope(transaction.commit_with_native_work::<FsError, _, _>(
+                            None,
+                            crate::PublicationPermit::Unrestricted,
+                            original,
+                            &token,
+                            &mut ready,
+                        ))
+                        .await?;
+                    assert!(matches!(
+                        retry,
+                        crate::TransactionCommit::AlreadyCommitted(_)
+                    ));
+                }
+                committed
+            }
+        };
         if changed.is_some() {
             assert!(
                 committed.is_err(),
                 "an unchanged target must refuse stale sources without requesting rebase"
             );
         }
-        let accepted = matches!(committed, Ok(receipt) if matches!(receipt.value, crate::TransactionCommit::Committed(_) | crate::TransactionCommit::AlreadyCommitted(_)));
+        let accepted = matches!(
+            committed,
+            Ok(crate::TransactionCommit::Committed(_)
+                | crate::TransactionCommit::AlreadyCommitted(_))
+        );
         assert_eq!(accepted, changed.is_none());
         let after = unbounded!(target, head())?.id();
         if changed.is_some() {
@@ -1066,6 +1160,12 @@ async fn transaction_policy_sources(pinned: bool) -> Result<(), Box<dyn Error>> 
 #[tokio::test]
 async fn transaction_publication_retains_all_external_policy_sources() -> Result<(), Box<dyn Error>>
 {
-    transaction_policy_sources(false).await?;
-    transaction_policy_sources(true).await
+    transaction_policy_sources(false, PolicyPublication::Standalone).await?;
+    transaction_policy_sources(true, PolicyPublication::Standalone).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        transaction_policy_sources(false, PolicyPublication::Native).await?;
+        transaction_policy_sources(true, PolicyPublication::Native).await?;
+    }
+    Ok(())
 }
