@@ -1237,6 +1237,7 @@ async fn shown(
         .execute(
             GitCommand::Show {
                 object: Some(object.to_owned()),
+                offset: 0,
             },
             tree(2),
         )
@@ -1269,6 +1270,7 @@ async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
     let file = GitCommandOutput::Action(GitFilesystemAction::ShowFile {
         tree: commit.tree,
         path: "tracked.txt".to_owned(),
+        offset: 0,
     });
     // The committed tree, not the live one, answers REV:PATH.
     assert_eq!(
@@ -1332,6 +1334,7 @@ async fn a_failed_read_leaves_no_pending_transition() {
     for command in [
         GitCommand::Show {
             object: Some("HEAD:large.bin".to_owned()),
+            offset: 0,
         },
         GitCommand::Diff { cached: false },
         GitCommand::Grep {

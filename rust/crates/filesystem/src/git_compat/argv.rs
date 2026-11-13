@@ -35,9 +35,18 @@ pub fn parse_git_argv<E: std::error::Error + 'static>(
         "log" => Ok(GitCommand::Log {
             maximum: parse_log_maximum(args)?,
         }),
-        "show" => Ok(GitCommand::Show {
-            object: optional_single_value(command, args)?,
-        }),
+        "show" => {
+            let (args, offset) = match args {
+                [object, flag, offset] if flag == "--offset" => (
+                    std::slice::from_ref(object),
+                    offset.parse::<u64>().map_err(|_| GitCompatError::InvalidCommand(
+                        "show --offset requires an unsigned byte position".to_owned(),
+                    ))?,
+                ),
+                _ => (args, 0),
+            };
+            Ok(GitCommand::Show { object: optional_single_value(command, args)?, offset })
+        }
         "add" => {
             if args.is_empty() {
                 return Err(GitCompatError::InvalidCommand(

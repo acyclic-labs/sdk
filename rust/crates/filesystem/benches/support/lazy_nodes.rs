@@ -113,7 +113,7 @@ fn input<'a, T: Clone>(
 }
 
 fn overlay(size: usize) -> LazyOverlay {
-    let empty = LazyOverlayId::from_bytes(*blake3::hash(br#""Empty""#).as_bytes());
+    let empty = LazyOverlayId::from_bytes(*blake3::hash(br#""v2.Empty""#).as_bytes());
     LazyOverlay::Node {
         path: format!("/{}", "a".repeat(size)),
         priority: 1,

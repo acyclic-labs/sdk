@@ -27,7 +27,7 @@ pub mod native;
 mod workspace_executor;
 pub use command::parse_command;
 #[doc(hidden)]
-pub use fs_command::{FsCommand, parse_fs_command};
+pub use fs_command::{FsCommand, child_branch_operand, parse_fs_command};
 pub mod git;
 
 /// The one conversion of a rejected fs/shell operand into a model-visible

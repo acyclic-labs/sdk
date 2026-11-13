@@ -661,6 +661,20 @@ async fn fixture_native(
     LocalCoreStateStore,
     Lazy,
 )> {
+    let (temp, root, fs, store, main, _) = fixture_native_source(native_file).await?;
+    Ok((temp, root, fs, store, main))
+}
+
+async fn fixture_native_source(
+    native_file: bool,
+) -> Result<(
+    tempfile::TempDir,
+    std::path::PathBuf,
+    LocalFs,
+    LocalCoreStateStore,
+    Lazy,
+    Arc<NativeDemandSource>,
+)> {
     acyclic_native_runtime::initialize_native_io_services().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("root");
@@ -674,23 +688,25 @@ async fn fixture_native(
     let store = LocalCoreStateStore::open_owned(temp.path().join("core")).unwrap();
     let config = VolumeConfig::native(Lifecycle::Durable);
     let stop = CancellationToken::new();
-    let source = NativeDemandSource::open(
-        Cow::Borrowed(&root),
-        config.profile,
-        config.limits,
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        &stop,
-    )
-    .await
-    .unwrap()
-    .value;
+    let source = Arc::new(
+        NativeDemandSource::open(
+            Cow::Borrowed(&root),
+            config.profile,
+            config.limits,
+            None,
+            None,
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await
+        .unwrap()
+        .value,
+    );
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
     let (main, _) = LazyWorkspace::attach(
         &fs,
         "main",
-        Arc::new(source),
+        Arc::clone(&source),
         store.clone(),
         acyclic_fs::VolumeInitialization {
             config,
@@ -701,7 +717,7 @@ async fn fixture_native(
     )
     .await
     .unwrap();
-    Ok((temp, root, fs, store, main))
+    Ok((temp, root, fs, store, main, source))
 }
 
 /// A child projection authors its volume alias beside its own work. Merging
@@ -769,6 +785,16 @@ async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
         &["diff".into(), "agents/child".into()],
     )
     .await?;
+    let Some(GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. })) =
+        output.command
+    else {
+        return Err("agent diff returned no data".into());
+    };
+    assert_eq!(
+        value["fileChanges"], 0,
+        "source materialization is not a child write"
+    );
+    assert_eq!(value["paths"], serde_json::json!([]));
     assert_eq!(
         child
             .read(
@@ -793,6 +819,610 @@ async fn agent_diff_exactifies_only_its_authorized_target() -> Result<()> {
         coordinator.snapshot(child.workspace().id()).await?.phase,
         acyclic_fs::OperationWindowPhase::Idle
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn exactification_preserves_deletions_and_admits_new_inherited_source_entries() -> Result<()>
+{
+    use acyclic_fs::GitFilesystemResult;
+    // Exercise both a still-current source and an explicitly advanced source
+    // cut. Completion cannot certify absence in either live namespace.
+    for invalidate in [false, true] {
+        let (_temp, root, fs, store, main, source) = fixture_native_source(true).await?;
+        std::fs::create_dir(root.join("recreated"))?;
+        std::fs::write(root.join("recreated/deleted.md"), b"deleted\n")?;
+        let cancellation = CancellationToken::new();
+        let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        main.remove("/recreated", None, &mut work).await?;
+        main.write(
+            "/recreated/new.md",
+            bytes::Bytes::from_static(b"new\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+        for _ in 0..2 {
+            main.exactify("/recreated", PublicationPermit::Unrestricted, &mut work)
+                .await?;
+            assert!(
+                main.inspect("/recreated/deleted.md", &mut work)
+                    .await
+                    .is_err()
+            );
+            let (page, _guard) = main
+                .list_directory("/recreated", None, 16, &mut work)
+                .await?;
+            assert_eq!(page.entries.len(), 1);
+            assert_eq!(
+                page.entries[0]
+                    .name
+                    .unicode_text(WorkBudget::UNBOUNDED, &cancellation)?
+                    .value,
+                "new.md"
+            );
+        }
+        main.exactify("/", PublicationPermit::Unrestricted, &mut work)
+            .await?;
+        std::fs::write(root.join("inherited-later.md"), b"inherited\n")?;
+        if invalidate {
+            source.invalidate();
+        }
+        let repository = main.workspace().id();
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(main.workspace(), WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?;
+        let (_, child) = run(
+            &fs,
+            &store,
+            &main,
+            repository,
+            &["checkout", "-b", "agents/later-source"],
+        )
+        .await?;
+        let child = child.ok_or("later-source checkout missing")?;
+        run(&fs, &store, &child, repository, &["checkout", "main"]).await?;
+        for _ in 0..2 {
+            let (output, _) = run(
+                &fs,
+                &store,
+                &main,
+                repository,
+                &["diff", "agents/later-source"],
+            )
+            .await?;
+            let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = output
+            else {
+                return Err("expected untouched child diff".into());
+            };
+            assert_eq!(value["fileChanges"], 0, "invalidate={invalidate}: {value}");
+            assert_eq!(value["paths"], serde_json::json!([]));
+        }
+        // The base was fully saved with a native deletion mask and an
+        // authored replacement. Replacing that saved directory with a file
+        // deletes its visible child, never the already-masked native file.
+        child.remove("/recreated/new.md", None, &mut work).await?;
+        child.remove("/recreated", None, &mut work).await?;
+        child
+            .write(
+                "/recreated",
+                bytes::Bytes::from_static(b"replacement\n").into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+        let (output, _) = run(
+            &fs,
+            &store,
+            &main,
+            repository,
+            &["diff", "agents/later-source"],
+        )
+        .await?;
+        let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = output else {
+            return Err("expected masked replacement diff".into());
+        };
+        assert_eq!(value["fileChanges"], 2);
+        assert_eq!(
+            value["paths"],
+            serde_json::json!([
+                {"path":"recreated", "status":"added", "side":"child"},
+                {"path":"recreated/new.md", "status":"deleted", "side":"child"},
+            ]),
+            "invalidate={invalidate}: {value}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn child_directory_deletions_distinguish_saved_and_partial_source_bases() -> Result<()> {
+    use acyclic_fs::GitFilesystemResult;
+    for (saved, late_before_fork, invalidate) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let (_temp, root, fs, store, main, source) = fixture_native_source(true).await?;
+        std::fs::create_dir_all(root.join("saved/nested"))?;
+        std::fs::write(root.join("saved/first.md"), b"first\n")?;
+        std::fs::write(root.join("saved/nested/second.md"), b"second\n")?;
+        let repository = main.workspace().id();
+        let cancellation = CancellationToken::new();
+        let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        // Creating this file promotes only its parents. Directory presence
+        // alone is not proof that the source descendants were saved.
+        main.write(
+            "/saved/authored.md",
+            bytes::Bytes::from_static(b"authored\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+        assert!(
+            main.workspace()
+                .head(WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .stat("/saved/first.md", WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .is_err()
+        );
+        if saved {
+            main.exactify("/saved", PublicationPermit::Unrestricted, &mut work)
+                .await?;
+        }
+        if late_before_fork {
+            std::fs::write(root.join("saved/new-before-fork.md"), b"new\n")?;
+            if invalidate {
+                source.invalidate();
+            }
+        }
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(main.workspace(), WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?;
+        let (_, child) = run(
+            &fs,
+            &store,
+            &main,
+            repository,
+            &["checkout", "-b", "agents/saved-review"],
+        )
+        .await?;
+        let child = child.ok_or("saved-directory checkout missing")?;
+        run(&fs, &store, &child, repository, &["checkout", "main"]).await?;
+        if late_before_fork {
+            let lookup = child.inspect("/saved/new-before-fork.md", &mut work).await;
+            if invalidate {
+                child.retire_lookup(lookup?, &mut work)?;
+            } else {
+                assert!(lookup.is_err());
+            }
+        }
+        child.remove("/saved/authored.md", None, &mut work).await?;
+        if saved {
+            child.remove("/saved/first.md", None, &mut work).await?;
+            child
+                .remove("/saved/nested/second.md", None, &mut work)
+                .await?;
+            child.remove("/saved/nested", None, &mut work).await?;
+        }
+        child.remove("/saved", None, &mut work).await?;
+        if saved && !late_before_fork {
+            // This changes the live directory version after deletion. The
+            // original saved generation still contains all comparison data.
+            std::fs::write(root.join("saved/new-after-fork.md"), b"later\n")?;
+        }
+        for _ in 0..2 {
+            let (output, _) = run(
+                &fs,
+                &store,
+                &main,
+                repository,
+                &["diff", "agents/saved-review"],
+            )
+            .await?;
+            let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = output
+            else {
+                return Err("expected saved-directory deletion diff".into());
+            };
+            assert_eq!(
+                value["fileChanges"],
+                if invalidate { 4 } else { 3 },
+                "saved={saved}, late={late_before_fork}, invalidate={invalidate}: {value}"
+            );
+            let mut expected = vec![
+                serde_json::json!({"path":"saved/authored.md", "status":"deleted", "side":"child"}),
+                serde_json::json!({"path":"saved/first.md", "status":"deleted", "side":"child"}),
+                serde_json::json!({"path":"saved/nested/second.md", "status":"deleted", "side":"child"}),
+            ];
+            if invalidate {
+                expected.push(serde_json::json!({"path":"saved/new-before-fork.md", "status":"deleted", "side":"child"}));
+            }
+            assert_eq!(value["paths"], serde_json::json!(expected), "saved={saved}");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn child_inspection_replays_its_fork_delta_and_reads_files_without_merging() -> Result<()> {
+    use acyclic_fs::{GitFilesystemResult, GitPathStatus};
+    for native in [false, true] {
+        let (_temp, _root, fs, store, main) = fixture_native(native).await?;
+        if native {
+            std::fs::create_dir_all(_root.join("unseen-directory/nested"))?;
+            std::fs::write(_root.join("unseen-directory/first.md"), b"first\n")?;
+            std::fs::write(_root.join("unseen-directory/nested/second.md"), b"second\n")?;
+            std::fs::write(_root.join("unseen-directory/ignored.tmp"), b"ignored\n")?;
+        }
+        #[cfg(unix)]
+        if native {
+            std::os::unix::fs::symlink("native.txt", _root.join("native-link"))?;
+            std::fs::hard_link(_root.join("native-link"), _root.join("native-link-alias"))?;
+        }
+        let repository = main.workspace().id();
+        let cancellation = CancellationToken::new();
+        let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        for (path, bytes) in [
+            ("/shared.md", b"base\n".as_slice()),
+            ("/removed.md", b"remove me\n"),
+            ("/.gitignore", b"*.tmp\n"),
+        ] {
+            main.write(
+                path,
+                bytes::Bytes::copy_from_slice(bytes).into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+        }
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(main.workspace(), WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?;
+        let (_, child) = run(
+            &fs,
+            &store,
+            &main,
+            repository,
+            &["checkout", "-b", "agents/review"],
+        )
+        .await?;
+        let child = child.ok_or("child checkout missing")?;
+        run(&fs, &store, &child, repository, &["checkout", "main"]).await?;
+        if native {
+            // Remove an inherited directory before any diff can materialize
+            // its descendants. A directory tombstone must retain every file
+            // deletion, including nested files, under the original ignores.
+            let (_, deleted) = run(
+                &fs,
+                &store,
+                &main,
+                repository,
+                &["checkout", "-b", "agents/deleted-directory"],
+            )
+            .await?;
+            let deleted = deleted.ok_or("deleted-directory checkout missing")?;
+            run(&fs, &store, &deleted, repository, &["checkout", "main"]).await?;
+            assert!(
+                deleted
+                    .workspace()
+                    .head(WorkBudget::UNBOUNDED, &cancellation)
+                    .await?
+                    .value
+                    .stat("/unseen-directory", WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .is_err()
+            );
+            deleted.remove("/unseen-directory", None, &mut work).await?;
+            for _ in 0..2 {
+                let (output, _) = run(
+                    &fs,
+                    &store,
+                    &main,
+                    repository,
+                    &["diff", "agents/deleted-directory"],
+                )
+                .await?;
+                let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = output
+                else {
+                    return Err("expected directory deletion diff".into());
+                };
+                assert_eq!(value["fileChanges"], 2);
+                assert_eq!(
+                    value["paths"],
+                    serde_json::json!([
+                        {"path":"unseen-directory/first.md", "status":"deleted", "side":"child"},
+                        {"path":"unseen-directory/nested/second.md", "status":"deleted", "side":"child"},
+                    ])
+                );
+            }
+        }
+        for (path, bytes) in [
+            ("/shared.md", b"parent edit\n".as_slice()),
+            ("/parent-only.md", b"parent finding\n"),
+        ] {
+            main.write(
+                path,
+                bytes::Bytes::copy_from_slice(bytes).into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+        }
+        // GC-176: the parent advanced after this fork; a child with no writes
+        // has no changes, including after demand materialization and replay.
+        #[cfg(unix)]
+        if native {
+            assert_eq!(
+                child
+                    .read_link("/native-link", None, &mut work)
+                    .await?
+                    .bytes
+                    .as_ref(),
+                b"native.txt"
+            );
+            let (shown, _) = run(
+                &fs,
+                &store,
+                &main,
+                repository,
+                &["show", "agents/review:native-link"],
+            )
+            .await?;
+            let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = shown
+            else {
+                return Err("expected native link target".into());
+            };
+            assert_eq!(value["text"], "native.txt");
+            // The promoted identity is shared by an alias with no authored
+            // namespace binding. Paging must read that exact Shadow record.
+            child
+                .promote(
+                    "/native-link",
+                    64 * 1024,
+                    IdempotencyKey::new(),
+                    PublicationPermit::Unrestricted,
+                    &mut work,
+                )
+                .await?;
+            assert!(
+                child
+                    .workspace()
+                    .head(WorkBudget::UNBOUNDED, &cancellation)
+                    .await?
+                    .value
+                    .stat("/native-link-alias", WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                    .is_err()
+            );
+            let lookup = child.lookup("/native-link-alias", &mut work).await?;
+            assert!(matches!(lookup.0, acyclic_fs::LazyLookup::Shadow { .. }));
+            child.retire_lookup(lookup, &mut work)?;
+            let (shown, _) = run(
+                &fs,
+                &store,
+                &main,
+                repository,
+                &["show", "agents/review:native-link-alias", "--offset", "3"],
+            )
+            .await?;
+            let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = shown
+            else {
+                return Err("expected shared link target page".into());
+            };
+            assert_eq!(value["text"], "ive.txt");
+            assert_eq!(value["offset"], "3");
+        }
+        for args in [
+            vec!["diff", "agents/review"],
+            vec!["diff", "agents/review", "--stat"],
+            vec!["diff", "--stat", "agents/review"],
+        ] {
+            let (output, switched) = run(&fs, &store, &main, repository, &args).await?;
+            assert!(switched.is_none());
+            let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = output
+            else {
+                return Err("expected child diff data".into());
+            };
+            assert_eq!(value["fileChanges"], 0);
+            assert_eq!(value["bindingChanges"], 0);
+            if args.len() == 2 {
+                assert_eq!(value["paths"], serde_json::json!([]));
+            }
+        }
+        for (path, bytes) in [
+            ("/shared.md", b"child edit\n".as_slice()),
+            ("/finding.md", b"live finding\n"),
+            ("/ignored.tmp", b"ignored\n"),
+        ] {
+            child
+                .write(
+                    path,
+                    bytes::Bytes::copy_from_slice(bytes).into(),
+                    IdempotencyKey::new(),
+                    PublicationPermit::Unrestricted,
+                    &mut work,
+                )
+                .await?;
+        }
+        child.remove("/removed.md", None, &mut work).await?;
+        if native {
+            child.remove("/native.txt", None, &mut work).await?;
+        }
+        let parent_head = main
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id();
+        let child_head = child
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .id();
+        let (shown, switched) = run(
+            &fs,
+            &store,
+            &main,
+            repository,
+            &["show", "agents/review:finding.md"],
+        )
+        .await?;
+        assert!(switched.is_none());
+        let GitCommandOutput::Filesystem(GitFilesystemResult::Data { kind, value }) = shown else {
+            return Err("expected child file".into());
+        };
+        assert_eq!(kind, "file");
+        assert_eq!(value["text"], "live finding\n");
+        assert_eq!(
+            main.workspace()
+                .head(WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .id(),
+            parent_head
+        );
+        assert_eq!(
+            child
+                .workspace()
+                .head(WorkBudget::UNBOUNDED, &cancellation)
+                .await?
+                .value
+                .id(),
+            child_head
+        );
+        for _replay in 0..2 {
+            let (output, switched) =
+                run(&fs, &store, &main, repository, &["diff", "agents/review"]).await?;
+            assert!(switched.is_none());
+            let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = output
+            else {
+                return Err("expected child delta".into());
+            };
+            assert_eq!(value["fileChanges"], if native { 4 } else { 3 });
+            let mut expected = vec![
+                serde_json::json!({"path":"finding.md", "status":GitPathStatus::Added, "side":"child"}),
+                serde_json::json!({"path":"removed.md", "status":GitPathStatus::Deleted, "side":"child"}),
+                serde_json::json!({"path":"shared.md", "status":GitPathStatus::Modified, "side":"both"}),
+            ];
+            if native {
+                expected.insert(1, serde_json::json!({"path":"native.txt", "status":GitPathStatus::Deleted, "side":"child"}));
+            }
+            assert_eq!(value["paths"], serde_json::json!(expected));
+            assert_eq!(
+                value["parentPaths"],
+                serde_json::json!([
+                    {"path":"parent-only.md", "status":GitPathStatus::Added, "side":"parent"},
+                    {"path":"shared.md", "status":GitPathStatus::Modified, "side":"both"},
+                ])
+            );
+        }
+        assert_eq!(
+            main.read("/shared.md", 64, &mut work).await?.bytes.as_ref(),
+            b"parent edit\n"
+        );
+        assert!(main.read("/finding.md", 64, &mut work).await.is_err());
+        assert!(
+            run(
+                &fs,
+                &store,
+                &main,
+                repository,
+                &["show", "agents/review:../outside"]
+            )
+            .await
+            .is_err()
+        );
+        // Each request reads one page, even though the file and its complete
+        // JSON projection would be larger. Both child and committed inspection
+        // use the same byte continuation and can reach the complete file.
+        let page = 64 * 1024;
+        let mut content = vec![b'p'; 2 * page + 7];
+        // Valid whole-file UTF-8 straddles the byte-page boundary. Each page
+        // describes its own exact bytes, independently of adjacent pages.
+        content[page - 1..page + 2].copy_from_slice("€".as_bytes());
+        for view in [&main, &child] {
+            view.write(
+                "/paged.bin",
+                bytes::Bytes::copy_from_slice(&content).into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+        }
+        run(
+            &fs,
+            &store,
+            &main,
+            repository,
+            &["commit", "-m", "inspect pages"],
+        )
+        .await?;
+        for object in ["agents/review:paged.bin", "HEAD:paged.bin"] {
+            let mut joined = Vec::new();
+            for offset in [0, page, 2 * page, content.len()] {
+                let offset_text = offset.to_string();
+                let (shown, _) = run(
+                    &fs,
+                    &store,
+                    &main,
+                    repository,
+                    &["show", object, "--offset", &offset_text],
+                )
+                .await?;
+                let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = shown
+                else {
+                    return Err("expected file page".into());
+                };
+                let length = (content.len() - offset).min(page);
+                let bytes = if let Some(text) = value["text"].as_str() {
+                    text.as_bytes().to_vec()
+                } else {
+                    base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        value["base64"].as_str().unwrap(),
+                    )?
+                };
+                assert_eq!(bytes, &content[offset..offset + length]);
+                joined.extend_from_slice(&bytes);
+                assert_eq!(value["byteLength"], content.len().to_string());
+                assert_eq!(value["offset"], offset.to_string());
+                assert_eq!(
+                    value["nextOffset"],
+                    serde_json::json!(
+                        (offset + length < content.len()).then(|| (offset + length).to_string())
+                    )
+                );
+            }
+            assert_eq!(joined, content);
+            let (shown, _) = run(
+                &fs,
+                &store,
+                &main,
+                repository,
+                &["show", object, "--offset", "18446744073709551615"],
+            )
+            .await?;
+            let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = shown
+            else {
+                return Err("expected exact maximum offset".into());
+            };
+            assert_eq!(value["offset"], u64::MAX.to_string());
+            assert!(value["nextOffset"].is_null());
+        }
+    }
     Ok(())
 }
 

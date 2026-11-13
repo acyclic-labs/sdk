@@ -138,6 +138,9 @@ pub enum GitFilesystemAction {
         tree: GitTreeRef,
         /// Portable path the commit tracks.
         path: String,
+        /// Byte offset of the requested bounded file page.
+        #[serde(with = "crate::git_compat::wire::decimal_u64")]
+        offset: u64,
     },
 }
 

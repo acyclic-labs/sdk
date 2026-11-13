@@ -48,7 +48,10 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         (&["status", "--short"], r#""Status""#),
         (&["diff", "--staged"], r#"{"Diff":{"cached":true}}"#),
         (&["log", "--max-count=7"], r#"{"Log":{"maximum":7}}"#),
-        (&["show", "HEAD"], r#"{"Show":{"object":"HEAD"}}"#),
+        (
+            &["show", "HEAD"],
+            r#"{"Show":{"object":"HEAD","offset":"0"}}"#,
+        ),
         (&["add", "--all"], r#"{"Add":{"paths":[]}}"#),
         (
             &["commit", "--message=ready", "--author=agent"],

@@ -184,16 +184,13 @@ pub fn resolve_child_branch(
     arguments: &mut [String],
     resolve: impl FnOnce(&AgentPath, &str) -> Result<AgentPath>,
 ) -> Result<Option<AgentPath>> {
-    let [command, branch] = arguments else {
+    let Some((index, branch, path)) = super::fs_command::child_branch_operand(arguments) else {
         return Ok(None);
     };
-    if !matches!(command.as_str(), "diff" | "merge" | "discard") {
-        return Ok(None);
-    }
     let child = if let Some(name) = branch.strip_prefix("agents/") {
         resolve(parent, name)?
     } else if branch.starts_with("harness/agents/") {
-        AgentPath::try_from(branch.clone()).map_err(Error::from)?
+        AgentPath::try_from(branch.to_owned()).map_err(Error::from)?
     } else {
         return Ok(None);
     };
@@ -202,7 +199,7 @@ pub fn resolve_child_branch(
             "only direct children can be coordinated; ask the owning parent".into(),
         ));
     }
-    *branch = child.as_str().to_owned();
+    arguments[index] = path.map_or_else(|| child.to_string(), |path| format!("{child}:{path}"));
     Ok(Some(child))
 }
 

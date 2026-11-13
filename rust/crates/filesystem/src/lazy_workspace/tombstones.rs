@@ -12,6 +12,15 @@ impl<
         maximum: usize,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Vec<(String, SourceVersion)>, KernelOwnedAllocation), LazyWorkspaceError> {
+        let output = self.source_tombstones_owned(maximum, ctx).await?;
+        Ok((output.value, output.allocation))
+    }
+
+    pub(super) async fn source_tombstones_owned(
+        &self,
+        maximum: usize,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<Vec<(String, SourceVersion)>>, LazyWorkspaceError> {
         let state = self.state(ctx).await?;
         let mut pending = Owned::allocate(1, ctx)?;
         pending.value.push(state.overlay);
@@ -70,7 +79,7 @@ impl<
             output.retire(ctx)?;
             return Err(error);
         }
-        Ok((output.value, output.allocation))
+        Ok(output)
     }
     /// Reads the current source version without consulting authored state.
     pub async fn current_source_version(
@@ -94,9 +103,11 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
         match self.overlay_fact(state.overlay, path, ctx).await? {
-            Some(LazyOverlayChange::Observe { node, .. }) => Ok(Some(node.version)),
+            Some(LazyOverlayChange::Observe { source, node, .. }) if source == state.source => {
+                Ok(Some(node.version))
+            }
             Some(LazyOverlayChange::Tombstone { removed }) => Ok(removed),
-            None => match self.source_lookup(state.source, path, ctx).await {
+            _ => match self.source_lookup(state.source, path, ctx).await {
                 Ok(node) => Ok(node.map(|n| n.version)),
                 Err(LazyWorkspaceError::Demand(
                     DemandError::Absent | DemandError::NotDirectory,

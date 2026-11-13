@@ -158,6 +158,16 @@ pub(super) async fn read_symbolic_link_record_with_accounting<
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::OwnedSourceChunk, FsError> {
+    read_link_range_record(volume, record, None, accounting, cancellation).await
+}
+
+async fn read_link_range_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    volume: &Volume<A, O>,
+    record: FileRecord,
+    range: Option<ByteRange>,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<crate::kernel::OwnedSourceChunk, FsError> {
     let FilePayload::SymbolicLink {
         target_bytes,
         target,
@@ -166,7 +176,18 @@ pub(super) async fn read_symbolic_link_record_with_accounting<
         return Err(FsError::NotSymbolicLink);
     };
     accounting.check()?;
-    if target_bytes == 0 {
+    let range = range.unwrap_or(ByteRange {
+        offset: 0,
+        length: target_bytes,
+    });
+    if range
+        .offset
+        .checked_add(range.length)
+        .is_none_or(|end| end > target_bytes)
+    {
+        return Err(crate::kernel::BlobReadError::InvalidRange.into());
+    }
+    if range.length == 0 {
         let bytes =
             crate::kernel::owned_read_bytes((Vec::new(), accounting.claim_owned(0, 0)?).into())?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -179,10 +200,7 @@ pub(super) async fn read_symbolic_link_record_with_accounting<
     let result = crate::kernel::read_blob_range_with_accounting(
         &volume.fs.inner.objects,
         target,
-        ByteRange {
-            offset: 0,
-            length: target_bytes,
-        },
+        range,
         DecodeLimits::for_volume(volume.config),
         accounting,
         cancellation,
@@ -381,20 +399,39 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     ) -> Result<FileRangeRead, FsError> {
         let before = readonly_standalone_live(accounting);
         let result = crate::heap_future::in_borrowed_frame!(accounting, |accounting| async {
-            let mut read = crate::kernel::read_file_range_with_accounting(
-                &self.volume.fs.inner.objects,
-                FileRangeRequest {
+            let mut read = if record.kind == FileKind::SymbolicLink {
+                let read = read_link_range_record(
+                    &self.volume,
                     record,
-                    range,
-                    maximum_spans: None,
-                    limits: DecodeLimits::for_volume(self.volume.config),
-                    budget: accounting.remaining()?,
-                },
-                accounting,
-                cancellation,
-            )
-            .await?;
-            if self.tracks_observations() && observed_range.length != 0 {
+                    Some(range),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+                FileRangeRead {
+                    logical_owned_bytes: read.logical_owned_bytes,
+                    bytes: read.bytes,
+                    work: accounting.spent(),
+                }
+            } else {
+                crate::kernel::read_file_range_with_accounting(
+                    &self.volume.fs.inner.objects,
+                    FileRangeRequest {
+                        record,
+                        range,
+                        maximum_spans: None,
+                        limits: DecodeLimits::for_volume(self.volume.config),
+                        budget: accounting.remaining()?,
+                    },
+                    accounting,
+                    cancellation,
+                )
+                .await?
+            };
+            if self.tracks_observations()
+                && record.kind == FileKind::Regular
+                && observed_range.length != 0
+            {
                 self.observe_base_regular_range_with_accounting(
                     record.file_id,
                     observed_range,
@@ -479,6 +516,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileRangeRead, FsError> {
+        if self.record.kind == FileKind::SymbolicLink {
+            let read = read_link_range_record(
+                &self.volume,
+                self.record,
+                Some(range),
+                accounting,
+                cancellation,
+            )
+            .await?;
+            return Ok(FileRangeRead {
+                logical_owned_bytes: read.logical_owned_bytes,
+                bytes: read.bytes,
+                work: accounting.spent(),
+            });
+        }
         crate::kernel::read_file_range_with_accounting(
             &self.volume.fs.inner.objects,
             FileRangeRequest {

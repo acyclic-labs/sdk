@@ -46,7 +46,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
         json!("Status"),
         json!({"Diff": {"cached": true}}),
         json!({"Log": {"maximum": 2}}),
-        json!({"Show": {"object": "HEAD"}}),
+        json!({"Show": {"object": "HEAD", "offset": "0"}}),
         json!({"Add": {"paths": ["path"]}}),
         json!({"Commit": {"message": "message", "author": "agent", "authored_at_seconds": 0}}),
         json!({"Branch": {"create": "topic"}}),
@@ -139,7 +139,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
             json!({"Diff": {"from": tree(1), "to": tree(2), "tracked_paths": []}}),
             json!({"RestoreGeneration": {"tree": tree(1), "paths": ["path"]}}),
             json!({"RestorePaths": {"tree": tree(1), "paths": ["path"]}}),
-            json!({"Join": {"target_tree": tree(1), "source_workspace": workspace(), "rebase": false, "tracked_paths": []}}),
+            json!({"Join": {"target_tree": tree(1), "source_workspace": workspace(), "source_generation": null, "rebase": false, "tracked_paths": []}}),
             json!({"ApplyCommit": {
                 "commit": commit.id, "reverse": false, "base": tree(1), "source": tree(2), "paths": [], "tracked_paths": [],
             }}),
@@ -149,7 +149,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
             json!({"Archive": {"tree": tree(1)}}),
             json!({"ApplyPatch": {"patch": [1, 2]}}),
             json!({"CheckIgnore": {"paths": ["path"], "tree": tree(1)}}),
-            json!({"ShowFile": {"tree": tree(1), "path": "path"}}),
+            json!({"ShowFile": {"tree": tree(1), "path": "path", "offset": "0"}}),
         ],
         GitFilesystemAction::variant_name,
     );
@@ -219,6 +219,37 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
 
 #[test]
 fn public_command_projection_uses_canonical_defaults_and_integer_bounds() {
+    for offset in [0, 9_007_199_254_740_993, u64::MAX] {
+        let command = GitCommand::Show {
+            object: Some("HEAD:path".into()),
+            offset,
+        };
+        let action = GitFilesystemAction::ShowFile {
+            tree: tree(1),
+            path: "path".into(),
+            offset,
+        };
+        let command_json = serde_json::to_value(&command).expect("command wire");
+        let action_json = serde_json::to_value(&action).expect("action wire");
+        assert_eq!(command_json["Show"]["offset"], offset.to_string());
+        assert_eq!(action_json["ShowFile"]["offset"], offset.to_string());
+        assert_eq!(
+            serde_json::from_value::<GitCommand>(command_json).unwrap(),
+            command
+        );
+        assert_eq!(
+            serde_json::from_value::<GitFilesystemAction>(action_json).unwrap(),
+            action
+        );
+        assert_eq!(
+            parse_git_public_command(
+                &json!({"kind":"show","object":"HEAD:path","offset":offset.to_string()})
+                    .to_string()
+            )
+            .unwrap(),
+            command
+        );
+    }
     assert_eq!(
         parse_git_public_command(r#"{"kind":"status"}"#).expect("status"),
         GitCommand::Status,
@@ -229,7 +260,10 @@ fn public_command_projection_uses_canonical_defaults_and_integer_bounds() {
     );
     assert_eq!(
         parse_git_public_command(r#"{"kind":"show"}"#).expect("show"),
-        GitCommand::Show { object: None },
+        GitCommand::Show {
+            object: None,
+            offset: 0
+        },
     );
     assert_eq!(
         parse_git_public_command(r#"{"kind":"branch"}"#).expect("branch"),

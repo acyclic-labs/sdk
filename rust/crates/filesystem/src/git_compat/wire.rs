@@ -1,5 +1,21 @@
 use super::*;
 
+// JSON numbers cannot carry every byte position. Keep the full u64 domain
+// exact across JavaScript command and action boundaries.
+pub(super) mod decimal_u64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// Parses public JavaScript command JSON into its canonical Rust command.
 pub fn parse_git_public_command(input: &str) -> Result<GitCommand, String> {
     let mut value: serde_json::Value = serde_json::from_str(input)
@@ -274,7 +290,7 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "ShowFile",
-        r#"{ readonly ShowFile: { readonly tree: GitTreeRef; readonly path: string } }"#,
+        r#"{ readonly ShowFile: { readonly tree: GitTreeRef; readonly path: string; readonly offset: string } }"#,
     ),
 ];
 

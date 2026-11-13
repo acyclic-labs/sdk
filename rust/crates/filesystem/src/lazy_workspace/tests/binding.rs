@@ -1,6 +1,44 @@
 use super::*;
 
 #[tokio::test]
+async fn retained_snapshot_rejects_the_previous_overlay_format_before_loading_it() {
+    // Overlay nodes are independently versioned, even when loaded outside a
+    // workspace binding or reconstructed from another retained context.
+    assert!(serde_json::from_str::<LazyOverlay>(r#""Empty""#).is_err());
+    let empty = serde_json::to_string(&LazyOverlay::Empty).unwrap();
+    assert_eq!(
+        serde_json::from_str::<LazyOverlay>(&empty).unwrap(),
+        LazyOverlay::Empty
+    );
+    let fs = Fs::memory();
+    let root = attach(
+        &fs,
+        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    let mut old_hash = blake3::Hasher::new();
+    old_hash.update(b"acyclic-fs-lazy-snapshot-v1\0");
+    old_hash.update(&cut.workspace_id.into_bytes());
+    old_hash.update(&cut.authored_generation.to_bytes());
+    old_hash.update(&cut.source.identity);
+    old_hash.update(&cut.source.epoch.to_le_bytes());
+    old_hash.update(&cut.overlay.into_bytes());
+    old_hash.update(&cut.shadows.into_bytes());
+    let previous = LazySnapshotRef {
+        id: LazySnapshotId(*old_hash.finalize().as_bytes()),
+        ..cut
+    };
+    assert!(matches!(
+        root.validate_snapshot(previous, accounting!()).await,
+        Err(LazyWorkspaceError::StaleSource)
+    ));
+    root.validate_snapshot(cut, accounting!()).await.unwrap();
+}
+
+#[tokio::test]
 async fn tombstones_distinguish_deletion_from_hiding() {
     let fs = Fs::memory();
     let root = attach(

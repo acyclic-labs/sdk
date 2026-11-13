@@ -223,12 +223,9 @@ impl LocalWorkspace {
         volumes: &[crate::agent::WorkspaceEntry],
         arguments: &mut [String],
     ) -> Result<()> {
-        let named = match &*arguments {
-            [command, branch] if matches!(command.as_str(), "diff" | "merge" | "discard") => {
-                branch.strip_prefix("agents/").map(str::to_owned)
-            }
-            _ => None,
-        };
+        let named = crate::tools::child_branch_operand(arguments)
+            .and_then(|(_, branch, _)| branch.strip_prefix("agents/"))
+            .map(str::to_owned);
         let resolved = if let Some(name) = named {
             resolver.resolve(agent, &name).await?.live()
         } else {

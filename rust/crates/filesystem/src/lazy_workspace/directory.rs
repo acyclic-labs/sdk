@@ -238,7 +238,11 @@ impl<
                 return Err(LazyWorkspaceError::NotFound);
             }
             if matches!(phase, LazyDirectoryPhase::Source(None))
-                && (hidden || mask.is_some_and(|(_, opaque)| opaque))
+                && (hidden
+                    || mask.is_some_and(|(_, opaque)| opaque)
+                    || self
+                        .saved_source_subtree(state.overlay, state.source, path, ctx)
+                        .await?)
             {
                 phase = LazyDirectoryPhase::Authored(None);
             }

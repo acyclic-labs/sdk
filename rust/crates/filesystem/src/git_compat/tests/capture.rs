@@ -208,7 +208,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     publish_fixture(transaction).await;
     let after = unbounded!(workspace, head()).expect("changed generation");
 
-    let counts = git_compatible_diff_counts(
+    let diff = git_compatible_diff(
         &before,
         &after,
         &GitIgnorePolicy::default(),
@@ -218,8 +218,21 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     )
     .await
     .expect("read-only diff");
-    assert_eq!(counts.binding_changes, 2);
-    assert_eq!(counts.file_changes, 2);
+    assert_eq!(diff.counts.binding_changes, 2);
+    assert_eq!(diff.counts.file_changes, 2);
+    assert_eq!(
+        diff.paths,
+        [
+            GitPathChange {
+                path: "src/.gitignore".into(),
+                status: GitPathStatus::Added
+            },
+            GitPathChange {
+                path: "src/keep.tmp".into(),
+                status: GitPathStatus::Added
+            },
+        ]
+    );
     assert_eq!(
         unbounded!(workspace, head()).expect("unchanged head").id(),
         after.id()
@@ -237,6 +250,154 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     .expect("tracked override");
     assert_eq!(tracked_counts.binding_changes, 3);
     assert_eq!(tracked_counts.file_changes, 3);
+}
+
+#[tokio::test]
+async fn diff_paths_are_portable_order_and_link_ranges_are_exact_on_windows_profile() {
+    let cancellation = CancellationToken::new();
+    let workspace = Fs::memory()
+        .create_workspace_with_config(
+            "windows-diff-and-link-ranges",
+            crate::VolumeConfig {
+                profile: crate::FilesystemProfile::Windows,
+                ..crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral)
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .expect("Windows-profile workspace")
+        .value;
+    let before = unbounded!(workspace, head()).expect("empty generation");
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    for name in ["/a", "/z", "/Ā"] {
+        transaction.write_text(name, "body").await.expect("file");
+    }
+    unbounded!(
+        transaction,
+        create_symbolic_link("/link", acyclic_stream::OwnedBytes::from_static(b"target"))
+    )
+    .expect("opaque link");
+    let after = publish_fixture(transaction).await;
+    let diff = git_compatible_diff(
+        &before,
+        &after,
+        &GitIgnorePolicy::default(),
+        &BTreeSet::new(),
+        None,
+        &cancellation,
+    )
+    .await
+    .expect("portable diff");
+    assert_eq!(
+        diff.paths
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "link", "z", "Ā"]
+    );
+    assert_eq!(
+        unbounded!(after, stat("/link"))
+            .expect("no-follow link stat")
+            .logical_bytes,
+        Some(6)
+    );
+    assert_eq!(
+        &unbounded!(after, read_range("/link", 1, 3))
+            .expect("exact link page")
+            .bytes[..],
+        b"arg"
+    );
+    assert!(
+        unbounded!(after, read_range("/link", 6, 0))
+            .expect("EOF empty page")
+            .bytes
+            .is_empty()
+    );
+    for (offset, length) in [(4, 3), (7, 0), (u64::MAX, 1)] {
+        assert!(
+            unbounded!(after, read_range("/link", offset, length)).is_err(),
+            "range {offset}+{length} must not be clipped"
+        );
+    }
+}
+
+#[tokio::test]
+async fn diff_treats_directory_endpoints_as_absent_files_under_each_sides_ignores() {
+    let workspace = memory_workspace("git-diff-kind-replacement").await;
+    let mut initial = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    unbounded!(initial, create_dir_all("/becomes-file")).expect("original directory");
+    initial
+        .write_text("/becomes-directory", "original file")
+        .await
+        .expect("original file");
+    initial
+        .write_text("/.gitignore", "becomes-file/\n")
+        .await
+        .expect("original ignores");
+    publish_fixture(initial).await;
+    let before = unbounded!(workspace, head()).expect("before");
+    let mut changed = begin_fixture(&workspace, IdempotencyKey::new()).await;
+    unbounded!(changed, remove("/becomes-file")).expect("remove empty directory");
+    changed
+        .write_text("/becomes-file", "replacement file")
+        .await
+        .expect("replacement file");
+    unbounded!(changed, remove("/becomes-directory")).expect("remove file");
+    unbounded!(changed, create_dir_all("/becomes-directory")).expect("replacement directory");
+    changed
+        .write_text("/becomes-directory/ignored.txt", "ignored")
+        .await
+        .expect("directory child");
+    changed
+        .write_text("/.gitignore", "becomes-directory/\n")
+        .await
+        .expect("replacement ignores");
+    publish_fixture(changed).await;
+    let after = unbounded!(workspace, head()).expect("after");
+    for (from, to, file_status, directory_status) in [
+        (
+            &before,
+            &after,
+            GitPathStatus::Added,
+            GitPathStatus::Deleted,
+        ),
+        (
+            &after,
+            &before,
+            GitPathStatus::Deleted,
+            GitPathStatus::Added,
+        ),
+    ] {
+        let diff = git_compatible_diff(
+            from,
+            to,
+            &GitIgnorePolicy::default(),
+            &BTreeSet::new(),
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("kind replacement diff");
+        assert_eq!(diff.counts.file_changes, 3);
+        assert_eq!(
+            diff.paths,
+            [
+                GitPathChange {
+                    path: ".gitignore".into(),
+                    status: GitPathStatus::Modified
+                },
+                GitPathChange {
+                    path: "becomes-directory".into(),
+                    status: directory_status
+                },
+                GitPathChange {
+                    path: "becomes-file".into(),
+                    status: file_status
+                },
+            ]
+        );
+    }
 }
 
 #[tokio::test]

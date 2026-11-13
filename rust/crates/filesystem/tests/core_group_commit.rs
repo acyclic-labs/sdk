@@ -11,7 +11,7 @@ use acyclic_native_runtime::testing::{DurableFault, Schedule};
 fn state(id: WorkspaceId) -> Result<LazyWorkspaceState, serde_json::Error> {
     let shadows = [3_u8; 32];
     serde_json::from_value(serde_json::json!({
-        "schema_version": 10,
+        "schema_version": LazyWorkspaceState::SCHEMA_VERSION,
         "revision": 1,
         "workspace_id": id,
         "parent_workspace_id": null,

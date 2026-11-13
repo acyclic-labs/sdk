@@ -63,11 +63,11 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
         GitCommand::Log { maximum } => {
             GitCommandOutput::Commits(walk_commits(state, current.head, maximum))
         }
-        GitCommand::Show { object } => {
+        GitCommand::Show { object, offset } => {
             if let Some((revision, path)) =
                 object.as_deref().and_then(|object| object.split_once(':'))
             {
-                return show_file(state, revision, path).map(GitCommandOutput::Action);
+                return show_file(state, revision, path, offset).map(GitCommandOutput::Action);
             }
             let id = resolve_object::<E>(state, object.as_deref())?;
             GitCommandOutput::Commits(vec![
@@ -488,6 +488,7 @@ fn show_file<E: std::error::Error + 'static>(
     state: &GitCompatState,
     revision: &str,
     path: &str,
+    offset: u64,
 ) -> Result<GitFilesystemAction, GitCompatError<E>> {
     if revision.is_empty() {
         return Err(GitCompatError::InvalidCommand(
@@ -502,5 +503,6 @@ fn show_file<E: std::error::Error + 'static>(
     Ok(GitFilesystemAction::ShowFile {
         tree: commit.tree,
         path: path.to_owned(),
+        offset,
     })
 }

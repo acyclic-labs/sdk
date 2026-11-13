@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{EncodeWorkStep, Encoder};
-const SNAPSHOT_VERSION: u16 = 2;
+const SNAPSHOT_VERSION: u16 = 3;
 const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v1\0";
 #[cfg(not(target_arch = "wasm32"))]
 const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v1\0";
@@ -239,13 +239,13 @@ mod tests {
         let cancellation = crate::CancellationToken::new();
         let mut accounting =
             KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
-        for version in [0_u16, 1, u16::MAX] {
+        for version in [0_u16, 1, 2, u16::MAX] {
             let mut bytes = SNAPSHOT_DOMAIN.to_vec();
             bytes.extend_from_slice(&version.to_le_bytes());
             assert!(matches!(
                 decode_publication_context(&bytes, crate::OperationId::new(), &mut accounting),
                 Err(crate::FsError::Decode(crate::kernel::CanonicalDecodeError::UnsupportedVersion {
-                    found, expected: 2
+                    found, expected: SNAPSHOT_VERSION
                 })) if found == version
             ));
         }

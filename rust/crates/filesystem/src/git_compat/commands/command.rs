@@ -48,7 +48,10 @@ pub enum GitCommand {
     Show {
         /// Object to show, defaulting to `HEAD`.
         object: Option<String>,
-    } => ("show", r#"{ readonly kind: "show"; readonly object?: string }"#),
+        /// Byte offset of the file page, defaulting to zero.
+        #[serde(default, with = "crate::git_compat::wire::decimal_u64")]
+        offset: u64,
+    } => ("show", r#"{ readonly kind: "show"; readonly object?: string; readonly offset?: string }"#),
 /// Accepted no-op because changes are always staged.
     Add {
         /// Accepted pathspecs; staging remains automatic.

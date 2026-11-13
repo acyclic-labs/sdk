@@ -118,7 +118,7 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
 pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
     let shadows = [3_u8; 32];
     serde_json::from_value(serde_json::json!({
-        "schema_version": 10,
+        "schema_version": LazyWorkspaceState::SCHEMA_VERSION,
         "revision": revision,
         "workspace_id": workspace_id,
         "parent_workspace_id": null,
@@ -388,7 +388,7 @@ pub(super) fn linked_overlay(
     right: LazyOverlayId,
 ) -> (LazyOverlayId, LazyOverlay) {
     let node: LazyOverlay = serde_json::from_value(serde_json::json!({
-        "Node": {
+        "v2.Node": {
             "path": path,
             "priority": 0,
             "change": {"Tombstone": {"removed": null}},

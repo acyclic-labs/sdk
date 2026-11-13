@@ -10,13 +10,52 @@ pub struct FsCommand {
     pub volume: Option<String>,
 }
 
-pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
+/// The child operand shared by admission, name resolution and execution.
+/// The optional suffix is the file path in `show CHILD:PATH`.
+#[doc(hidden)]
+pub fn child_branch_operand(args: &[String]) -> Option<(usize, &str, Option<&str>)> {
+    let (index, operand, path) = match args {
+        [command, branch] if matches!(command.as_str(), "diff" | "merge" | "discard") => {
+            (1, branch.as_str(), None)
+        }
+        [command, branch, flag] if command == "diff" && flag == "--stat" => {
+            (1, branch.as_str(), None)
+        }
+        [command, flag, branch] if command == "diff" && flag == "--stat" => {
+            (2, branch.as_str(), None)
+        }
+        [command, object] | [command, object, _, _] if command == "show" => {
+            show_offset(args)?;
+            let (branch, path) = object.split_once(':')?;
+            if path.is_empty() {
+                return None;
+            }
+            (1, branch, Some(path))
+        }
+        _ => return None,
+    };
+    (operand
+        .strip_prefix("agents/")
+        .is_some_and(|name| !name.is_empty())
+        || operand.starts_with("harness/agents/"))
+    .then_some((index, operand, path))
+}
+
+pub(crate) fn agent_diff(args: &[String]) -> Option<(&str, bool)> {
+    let (_, branch, _) = child_branch_operand(args)?;
+    (args[0] == "diff").then_some((branch, args.iter().any(|arg| arg == "--stat")))
+}
+
+pub(crate) fn agent_show(args: &[String]) -> Option<(&str, &str, u64)> {
+    let (_, branch, path) = child_branch_operand(args)?;
+    (args[0] == "show").then_some((branch, path?, show_offset(args)?))
+}
+
+fn show_offset(args: &[String]) -> Option<u64> {
     match args {
-        [command, branch]
-            if command == "diff"
-                && (branch.starts_with("agents/") || branch.starts_with("harness/agents/")) =>
-        {
-            Some(branch)
+        [command, _] if command == "show" => Some(0),
+        [command, _, flag, offset] if command == "show" && flag == "--offset" => {
+            offset.parse().ok()
         }
         _ => None,
     }
@@ -99,8 +138,9 @@ mod tests {
             let mut args = vec![command.to_owned(), branch.clone()];
             args.extend(extra);
             let selected = agent_diff(&args);
-            prop_assert_eq!(selected.is_some(), command == "diff" && agent && args.len() == 2);
-            if let Some(selected) = selected {
+            let supported = args.len() == 2 || (args.len() == 3 && args[2] == "--stat");
+            prop_assert_eq!(selected.is_some(), command == "diff" && agent && supported);
+            if let Some((selected, _)) = selected {
                 prop_assert_eq!(selected, branch);
             }
         }

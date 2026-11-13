@@ -77,11 +77,63 @@ impl<
     pub async fn read_link(
         &self,
         path: &str,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
         self.read_current(path, None, maximum, SourceNodeKind::SymbolicLink, ctx)
             .await
+    }
+
+    /// Reads one no-follow file page and its total length from the same resolved
+    /// record. Shadow aliases need no authored namespace binding. Native link
+    /// targets remain opaque OS objects; authored links use their blob range.
+    pub async fn read_page(
+        &self,
+        path: &str,
+        offset: u64,
+        length: u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(OwnedSourceChunk, u64), LazyWorkspaceError> {
+        let lookup = self.lookup(path, ctx).await?;
+        let result = async {
+            let stat = lookup.0.stat();
+            if stat.kind == SourceNodeKind::SymbolicLink
+                && matches!(&lookup.0, LazyLookup::Source { .. })
+            {
+                let mut bytes = self.read_resolved(&lookup.0, path, None, None, ctx).await?;
+                let total = bytes.bytes.len() as u64;
+                let start = offset.min(total) as usize;
+                let end = offset.saturating_add(length).min(total) as usize;
+                bytes.bytes = bytes.bytes.slice(start..end);
+                return Ok((bytes, total));
+            }
+            if !matches!(
+                stat.kind,
+                SourceNodeKind::RegularFile | SourceNodeKind::SymbolicLink
+            ) {
+                return Err(LazyWorkspaceError::NotRegularFile);
+            }
+            let total = stat
+                .logical_bytes
+                .ok_or(LazyWorkspaceError::NotRegularFile)?;
+            let length = total.saturating_sub(offset).min(length);
+            let bytes = self
+                .read_resolved(
+                    &lookup.0,
+                    path,
+                    Some(crate::ByteRange {
+                        offset: offset.min(total),
+                        length,
+                    }),
+                    length,
+                    ctx,
+                )
+                .await?;
+            Ok((bytes, total))
+        }
+        .await;
+        self.retire_lookup(lookup, ctx)?;
+        result
     }
     async fn read_current(
         &self,
@@ -207,7 +259,7 @@ impl<
                 }
                 Some(range)
             }
-            SourceNodeKind::SymbolicLink => None,
+            SourceNodeKind::SymbolicLink => range,
             _ => return Err(LazyWorkspaceError::NotRegularFile),
         };
         let bytes = match lookup {
@@ -232,7 +284,7 @@ impl<
             LazyLookup::Source { source, node } => {
                 let source_bound = match range {
                     Some(range) => range.length,
-                    None => maximum.ok_or(LazyWorkspaceError::NotRegularFile)?,
+                    None => maximum.unwrap_or(u64::MAX),
                 };
                 let namespace = self.namespace_path(path, ctx)?;
                 let result = accounted!(ctx, |work, cancel| async {

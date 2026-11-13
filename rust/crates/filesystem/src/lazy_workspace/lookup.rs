@@ -41,6 +41,10 @@ pub enum LazyLookup {
         metadata: crate::WorkspaceMetadata,
         /// Source-native alias count.
         source_link_count: u64,
+        /// Original source cut shared by unresolved native aliases.
+        source: SourceReference,
+        /// Source version and identity whose authored record supplies bytes.
+        node: SourceNode,
     },
     /// Exact source fact including its pinned epoch.
     Source {
@@ -93,22 +97,59 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyLookup, KernelOwnedAllocation), LazyWorkspaceError> {
         let lookup = self.inspect(path, ctx).await?;
-        if let LazyLookup::Source { source, node } = lookup.0 {
-            let change = LazyOverlayChange::Observe { source, node };
-            let recorded = async {
-                let state = self.state(ctx).await?;
-                if self.overlay_fact(state.overlay, path, ctx).await? != Some(change.clone()) {
-                    self.append_overlay(path, change, ctx).await?;
-                }
-                Ok::<_, LazyWorkspaceError>(())
-            }
-            .await;
-            if let Err(error) = recorded {
-                self.retire_lookup(lookup, ctx)?;
-                return Err(error);
-            }
+        if let Err(error) = self.retain_observation(path, &lookup.0, ctx).await {
+            self.retire_lookup(lookup, ctx)?;
+            return Err(error);
         }
         Ok(lookup)
+    }
+
+    pub(super) async fn retain_observation(
+        &self,
+        path: &str,
+        lookup: &LazyLookup,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
+        if matches!(lookup, LazyLookup::Authored { .. }) {
+            return Ok(());
+        }
+        let state = self.state(ctx).await?;
+        if self.tombstoned(state.overlay, path, ctx).await? {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        let overlay = self
+            .observed_overlay(state.overlay, path, lookup, ctx)
+            .await?;
+        if overlay != state.overlay {
+            self.publish_overlay(state, overlay, ctx).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn observed_overlay(
+        &self,
+        overlay: LazyOverlayId,
+        path: &str,
+        lookup: &LazyLookup,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazyOverlayId, LazyWorkspaceError> {
+        if let LazyLookup::Source { source, node } | LazyLookup::Shadow { source, node, .. } =
+            lookup
+        {
+            let previous = self.overlay_fact(overlay, path, ctx).await?;
+            let complete = matches!(&previous, Some(LazyOverlayChange::Observe {
+                source: saved_source, node: saved_node, complete: true,
+            }) if saved_source == source && saved_node == node);
+            let change = LazyOverlayChange::Observe {
+                source: *source,
+                node: *node,
+                complete,
+            };
+            if previous != Some(change.clone()) {
+                return self.insert_overlay(overlay, path, change, ctx).await;
+            }
+        }
+        Ok(overlay)
     }
 
     /// Inspects transiently without changing source observations.
@@ -248,7 +289,11 @@ impl<
             loaded = self.state(ctx).await?;
             &loaded
         };
-        if self.tombstoned(state.overlay, path, ctx).await? {
+        if self.tombstoned(state.overlay, path, ctx).await?
+            || self
+                .saved_source_subtree(state.overlay, state.source, path, ctx)
+                .await?
+        {
             return Ok((None, false, ctx.claim_owned(0, 0)?));
         }
         let fact = if basis.unobserved {
@@ -257,7 +302,7 @@ impl<
             self.overlay_fact(state.overlay, path, ctx).await?
         };
         let (source, node, used) = match fact {
-            Some(LazyOverlayChange::Observe { source, node })
+            Some(LazyOverlayChange::Observe { source, node, .. })
                 if basis.retain_pinned_observation || source == state.source =>
             {
                 (source, Some(node), false)
@@ -308,6 +353,8 @@ impl<
                         record,
                         metadata,
                         source_link_count: node.link_count.unwrap_or(1),
+                        source,
+                        node,
                     }),
                     used,
                     ctx.claim_owned(0, 0)?,

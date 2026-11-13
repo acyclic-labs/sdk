@@ -192,9 +192,21 @@ impl<
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
-        let state = self
+        let mut state = self
             .current_binding(|| LazyWorkspaceError::NotFound, ctx)
             .await?;
+        if matches!(
+            state.pending_remove.as_ref().map(|pending| pending.kind),
+            Some(PendingLazyRemoveKind::Exactify { .. })
+        ) {
+            // A later call on the original handle recovers the same durable
+            // operation after interruption; reopening is not required. Mounted
+            // DATA remains under its existing publication owner's custody.
+            self.recover_pending_remove(ctx).await?;
+            state = self
+                .current_binding(|| LazyWorkspaceError::NotFound, ctx)
+                .await?;
+        }
         if state.pending_remove.is_some() {
             return Err(LazyWorkspaceError::Concurrent);
         }
@@ -310,6 +322,10 @@ impl<
             return Ok(());
         };
         let committed = match pending.kind {
+            PendingLazyRemoveKind::Exactify { idempotency_key } => {
+                self.recover_exactification(idempotency_key, pending.prepared_overlay, ctx)
+                    .await?
+            }
             PendingLazyRemoveKind::SourceOnly => true,
             PendingLazyRemoveKind::Authored { idempotency_key }
             | PendingLazyRemoveKind::Mounted { idempotency_key } => self
@@ -343,6 +359,46 @@ impl<
             return Ok(());
         }
         Err(LazyWorkspaceError::Concurrent)
+    }
+
+    async fn recover_exactification(
+        &self,
+        key: IdempotencyKey,
+        overlay: LazyOverlayId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        let publication = accounted!(ctx, |work, cancel| self.workspace.operation_publication(
+            key,
+            Some(32),
+            work,
+            cancel
+        ))?;
+        if let Some(publication) = publication {
+            return Ok(publication.evidence() == Some(overlay.into_bytes().as_slice()));
+        }
+        // Absence is not a decision: DATA may still be in flight. An unchanged
+        // transaction seals this operation with a different fingerprint and no
+        // evidence. Either the original publication wins, or it can never land.
+        let mut fence = accounted!(ctx, |work, cancel| self
+            .workspace
+            .begin_transaction(key, work, cancel))?;
+        match self
+            .commit(&mut fence, crate::PublicationPermit::Unrestricted, ctx)
+            .await?
+        {
+            TransactionCommit::Committed(_)
+            | TransactionCommit::AlreadyCommitted(_)
+            | TransactionCommit::IdempotencyConflict => {}
+            _ => return Err(LazyWorkspaceError::Concurrent),
+        }
+        let publication = accounted!(ctx, |work, cancel| self.workspace.operation_publication(
+            key,
+            Some(32),
+            work,
+            cancel
+        ))?
+        .ok_or(LazyWorkspaceError::Concurrent)?;
+        Ok(publication.evidence() == Some(overlay.into_bytes().as_slice()))
     }
 
     pub(crate) async fn source_lookup(

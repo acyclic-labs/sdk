@@ -14,9 +14,28 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         let state = self.state(ctx).await?;
+        self.append_overlay_at(state, path, change, ctx).await
+    }
+
+    pub(super) async fn append_overlay_at(
+        &self,
+        state: LazyWorkspaceState,
+        path: &str,
+        change: LazyOverlayChange,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
         let overlay = self
             .insert_overlay(state.overlay, path, change, ctx)
             .await?;
+        self.publish_overlay(state, overlay, ctx).await
+    }
+
+    pub(super) async fn publish_overlay(
+        &self,
+        state: LazyWorkspaceState,
+        overlay: LazyOverlayId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(), LazyWorkspaceError> {
         let revision = state.revision;
         let next = LazyWorkspaceState {
             revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,

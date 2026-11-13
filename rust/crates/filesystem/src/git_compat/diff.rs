@@ -9,6 +9,36 @@ pub struct GitDiffCounts {
     pub binding_changes: usize,
 }
 
+/// A Git-visible path delta between two exact generations.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GitPathChange {
+    /// Portable repository-relative path.
+    pub path: String,
+    /// Whether the path was added, deleted or modified.
+    pub status: GitPathStatus,
+}
+
+/// The binding and record change at a path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitPathStatus {
+    /// The path is absent from the source.
+    Added,
+    /// The path is absent from the destination.
+    Deleted,
+    /// Both sides bind the path and their Git-visible values differ.
+    Modified,
+}
+
+/// Exact counts and the paths they describe, under one ignore-policy decision.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GitDiff {
+    /// Identity-aware file and binding counts.
+    pub counts: GitDiffCounts,
+    /// Changed paths in portable path order.
+    pub paths: Vec<GitPathChange>,
+}
+
 /// Compares exact generations using the ignore policy belonging to each side.
 ///
 /// `repository` is an optional lower-precedence ignore policy applied beneath
@@ -21,6 +51,32 @@ pub async fn git_compatible_diff_counts<A, O>(
     maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<GitDiffCounts, GitCaptureError>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    git_compatible_diff(
+        from,
+        to,
+        repository,
+        already_tracked,
+        maximum_changes,
+        cancellation,
+    )
+    .await
+    .map(|diff| diff.counts)
+}
+
+/// Compares exact generations once, returning eligible paths and counts.
+/// Directory records and hard-link count changes alone are not file changes.
+pub async fn git_compatible_diff<A, O>(
+    from: &Generation<A, O>,
+    to: &Generation<A, O>,
+    repository: &GitIgnorePolicy,
+    already_tracked: &BTreeSet<String>,
+    maximum_changes: impl Into<Option<u32>>,
+    cancellation: &CancellationToken,
+) -> Result<GitDiff, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -40,15 +96,21 @@ where
     let mut after = (BTreeMap::new(), None);
     let mut files = BTreeSet::new();
     let mut bindings = 0_usize;
+    let mut changed_paths = Vec::new();
     for change in paths {
         cancellation.check().map_err(WorkspaceError::from)?;
         let path = portable_changed_path(&change.path)?;
-        let record = change.after.or(change.before);
+        // Git tracks file endpoints, not directory identities. A kind change
+        // therefore adds or deletes a file rather than modifying a directory.
+        let before_file = change
+            .before
+            .filter(|record| record.kind != FileKind::Directory);
+        let after_file = change
+            .after
+            .filter(|record| record.kind != FileKind::Directory);
+        let record = after_file.or(before_file);
         let Some(record) = record else { continue };
-        if record.kind == FileKind::Directory {
-            continue;
-        }
-        let (generation, (policies, root)) = if change.after.is_some() {
+        let (generation, (policies, root)) = if after_file.is_some() {
             (to, &mut after)
         } else {
             (from, &mut before)
@@ -75,16 +137,33 @@ where
                 record
             })
         };
-        if comparable(change.before) != comparable(change.after) {
+        let file_changed = comparable(before_file) != comparable(after_file);
+        let binding_changed =
+            before_file.map(|record| record.file_id) != after_file.map(|record| record.file_id);
+        if file_changed {
             files.insert(record.file_id);
         }
-        if change.before.map(|record| record.file_id) != change.after.map(|record| record.file_id) {
+        if binding_changed {
             bindings = bindings.saturating_add(1);
         }
+        if file_changed || binding_changed {
+            changed_paths.push(GitPathChange {
+                path,
+                status: match (before_file, after_file) {
+                    (None, Some(_)) => GitPathStatus::Added,
+                    (Some(_), None) => GitPathStatus::Deleted,
+                    _ => GitPathStatus::Modified,
+                },
+            });
+        }
     }
-    Ok(GitDiffCounts {
-        file_changes: files.len(),
-        binding_changes: bindings,
+    changed_paths.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    Ok(GitDiff {
+        counts: GitDiffCounts {
+            file_changes: files.len(),
+            binding_changes: bindings,
+        },
+        paths: changed_paths,
     })
 }
 

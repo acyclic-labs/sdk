@@ -1,5 +1,28 @@
 use super::*;
 
+#[test]
+fn refused_exactification_evidence_returns_its_allocation_credit() {
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(
+        WorkBudget {
+            bytes_copied: 0,
+            peak_allocation_bytes: 32,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    for _ in 0..2 {
+        assert!(
+            super::super::transaction::exactify_evidence(
+                LazyOverlayId::from_bytes([7; 32]),
+                &mut accounting
+            )
+            .is_err()
+        );
+        assert_eq!(accounting.standalone_parts().unwrap().0.live_bytes(), 0);
+    }
+}
+
 #[tokio::test]
 async fn directory_pages_keep_authored_phase_and_reject_changed_cuts() {
     for changed in [false, true] {
@@ -292,4 +315,169 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         reopened.stat("/file.txt", accounting!()).await,
         Err(LazyWorkspaceError::NotFound),
     ));
+}
+
+#[tokio::test]
+async fn exactification_recovery_seals_the_original_operation_before_rollback() {
+    for published in [false, true] {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let store = MemoryLazyWorkspaceStore::default();
+        let root = attach(&fs, Arc::clone(&source), store.clone())
+            .await
+            .unwrap();
+        let prior = root.state(accounting!()).await.unwrap();
+        let lookup = root.inspect("/file.txt", accounting!()).await.unwrap();
+        let overlay = root
+            .observed_overlay(prior.overlay, "/file.txt", &lookup.0, accounting!())
+            .await
+            .unwrap();
+        let key = IdempotencyKey::new();
+        let mut transaction = root
+            .workspace()
+            .begin_transaction(key, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .unwrap()
+            .value;
+        root.apply_resolved_promotion(
+            &mut transaction,
+            "/file.txt",
+            &lookup.0,
+            u64::MAX,
+            accounting!(),
+        )
+        .await
+        .unwrap();
+        root.retire_lookup(lookup, accounting!()).unwrap();
+        assert!(
+            store
+                .compare_and_swap_lazy_workspace(
+                    root.workspace().id(),
+                    prior.revision,
+                    LazyWorkspaceState {
+                        revision: prior.revision + 1,
+                        overlay,
+                        pending_remove: Some(PendingLazyRemove {
+                            prior_overlay: prior.overlay,
+                            prior_shadows: prior.shadows,
+                            prepared_overlay: overlay,
+                            kind: PendingLazyRemoveKind::Exactify {
+                                idempotency_key: key
+                            },
+                        }),
+                        ..prior.clone()
+                    },
+                    accounting!()
+                )
+                .await
+                .unwrap()
+        );
+        if published {
+            let evidence =
+                super::super::transaction::exactify_evidence(overlay, accounting!()).unwrap();
+            assert!(matches!(
+                root.commit_context(
+                    &mut transaction,
+                    Some((
+                        crate::Digest::from_bytes(overlay.into_bytes()),
+                        evidence,
+                        crate::PublicationPermit::Unrestricted
+                    )),
+                    crate::PublicationPermit::Unrestricted,
+                    accounting!()
+                )
+                .await
+                .unwrap(),
+                TransactionCommit::Committed(_)
+            ));
+        } else {
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            let evidence =
+                super::super::transaction::exactify_evidence(overlay, accounting!()).unwrap();
+            assert!(
+                root.commit_context(
+                    &mut transaction,
+                    Some((
+                        crate::Digest::from_bytes(overlay.into_bytes()),
+                        evidence,
+                        crate::PublicationPermit::Unrestricted
+                    )),
+                    crate::PublicationPermit::Unrestricted,
+                    &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancelled),
+                )
+                .await
+                .is_err()
+            );
+            assert!(
+                store
+                    .load_lazy_workspace(root.workspace().id(), accounting!())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .pending_remove
+                    .is_some()
+            );
+        }
+        // Recovery also works through a fresh call on the interrupted handle.
+        assert!(
+            root.state(accounting!())
+                .await
+                .unwrap()
+                .pending_remove
+                .is_none()
+        );
+        let reopened = LazyWorkspace::open(
+            root.workspace().clone(),
+            Arc::clone(&source),
+            store.clone(),
+            accounting!(),
+        )
+        .await
+        .unwrap();
+        let state = reopened.state(accounting!()).await.unwrap();
+        assert!(state.pending_remove.is_none());
+        assert_eq!(
+            state.overlay,
+            if published { overlay } else { prior.overlay }
+        );
+        let evidence =
+            super::super::transaction::exactify_evidence(overlay, accounting!()).unwrap();
+        let late = root
+            .commit_context(
+                &mut transaction,
+                Some((
+                    crate::Digest::from_bytes(overlay.into_bytes()),
+                    evidence,
+                    crate::PublicationPermit::Unrestricted,
+                )),
+                crate::PublicationPermit::Unrestricted,
+                accounting!(),
+            )
+            .await
+            .unwrap();
+        assert!(if published {
+            matches!(late, TransactionCommit::AlreadyCommitted(_))
+        } else {
+            matches!(late, TransactionCommit::IdempotencyConflict)
+        });
+        let head = root.head(accounting!()).await.unwrap();
+        let file = head
+            .stat(
+                "/file.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(file.is_ok(), published);
+        if published {
+            assert!(matches!(
+                reopened
+                    .overlay_fact(state.overlay, "/file.txt", accounting!())
+                    .await
+                    .unwrap(),
+                Some(LazyOverlayChange::Observe { .. })
+            ));
+        }
+    }
 }

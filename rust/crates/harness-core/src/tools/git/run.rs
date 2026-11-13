@@ -239,9 +239,15 @@ where
         switched: Mutex::new(None),
     };
     executor.authorize_repository().await?;
-    if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
+    if let Some((branch, stat)) = crate::tools::fs_command::agent_diff(args) {
         before_effect().await?;
-        let output = executor.diff_agent(branch, tree).await?;
+        let output = executor.diff_agent(branch, tree, stat).await?;
+        before_effect().await?;
+        return Ok(Prepared::Complete(output));
+    }
+    if let Some((branch, path, offset)) = crate::tools::fs_command::agent_show(args) {
+        before_effect().await?;
+        let output = executor.show_agent(branch, path, offset, tree).await?;
         before_effect().await?;
         return Ok(Prepared::Complete(output));
     }

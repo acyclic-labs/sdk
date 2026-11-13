@@ -21,7 +21,16 @@ impl CheckoutTools {
     ) -> Result<crate::tools::FsCommand> {
         let parsed = self.commands().fs_arguments(command, scope)?;
         if !child_lifecycle(&parsed.arguments) {
-            return Err(Error::Invalid("fs supports status and a child fork's lifecycle: diff, merge or discard agents/<name> or a direct child's AgentPath, add <path> and merge --continue or --abort while resolving its conflicts; recovery: use shell for other git commands".into()));
+            let flag = parsed
+                .arguments
+                .iter()
+                .find(|arg| arg.starts_with('-'))
+                .map_or(String::new(), |flag| {
+                    format!("invalid option or operands near {flag}; ")
+                });
+            return Err(Error::Invalid(format!(
+                "{flag}fs accepts: status; diff [--stat] CHILD (also diff CHILD --stat); show CHILD:PATH or HEAD:PATH [--offset N] (read-only 64 KiB pages, follow nextOffset); merge CHILD; discard CHILD; add PATH...; merge --continue; merge --abort. CHILD is agents/<name> or a direct child's AgentPath. Use shell for other git commands"
+            )));
         }
         Ok(parsed)
     }
@@ -66,10 +75,21 @@ impl CheckoutTools {
 }
 
 /// The model-visible fs grammar: working-tree status and one child fork's lifecycle. A parent
-/// inspects, merges or discards `agents/<name>` or its canonical AgentPath, and a conflicted merge is
+/// inspects paths and reads, merges or discards `agents/<name>` or its canonical AgentPath, and a conflicted merge is
 /// completed the way the join's own refusal instructs, by marking resolved
 /// paths and continuing or aborting. Every other git command belongs to shell.
 fn child_lifecycle(arguments: &[String]) -> bool {
+    if crate::tools::child_branch_operand(arguments).is_some() {
+        return true;
+    }
+    if arguments
+        .first()
+        .is_some_and(|operation| operation == "show")
+    {
+        return matches!(acyclic_fs::git_compat::parse_git_argv::<std::io::Error>(arguments, "", 0),
+            Ok(acyclic_fs::git_compat::GitCommand::Show { object: Some(object), .. })
+                if object.strip_prefix("HEAD:").is_some_and(|path| !path.is_empty()));
+    }
     match arguments {
         [operation] if operation == "status" => true,
         [operation, argument] if matches!(operation.as_str(), "diff" | "merge" | "discard") => {
@@ -138,6 +158,12 @@ mod tests {
             for command in [
                 "status",
                 "diff agents/child",
+                "diff agents/child --stat",
+                "diff --stat agents/child",
+                "show agents/child:findings/report.md",
+                "show agents/child:findings/report.md --offset 65536",
+                "show HEAD:findings/report.md",
+                "show HEAD:findings/report.md --offset 65536",
                 "merge agents/child",
                 "discard agents/child",
                 "add resolved.txt",
@@ -157,7 +183,10 @@ mod tests {
                     ),
                     "child command bypassed volume authority: {command}"
                 );
-                if command.ends_with("diff agents/child") || command.ends_with("status") {
+                if command.contains("diff ")
+                    || command.contains("show ")
+                    || command.ends_with("status")
+                {
                     assert!(tools.fs_arguments(&command, &read_only).is_ok());
                 } else {
                     assert!(
@@ -172,6 +201,8 @@ mod tests {
             for command in [
                 "merge main",
                 "diff agents/",
+                "diff agents/child --unknown",
+                "show agents/child:",
                 "add --all",
                 "status --porcelain",
             ] {

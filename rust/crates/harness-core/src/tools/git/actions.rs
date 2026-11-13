@@ -1,8 +1,30 @@
 //! The Git filesystem actions the workspace executor performs.
 use super::*;
 
-/// Largest committed file `git show REV:PATH` returns, matching blame and grep.
-const SHOWN_FILE_BYTES: u64 = 16 * 1024 * 1024;
+/// A transport page, not a maximum file size. Follow nextOffset to read more.
+pub(super) const SHOW_PAGE_BYTES: u64 = 64 * 1024;
+
+pub(super) fn shown_file(path: &str, bytes: &[u8], offset: u64, total: u64) -> GitFilesystemResult {
+    let mut value = match std::str::from_utf8(bytes) {
+        Ok(text) => json!({ "path": path, "text": text }),
+        Err(_) => json!({
+            "path": path,
+            "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+        }),
+    };
+    value["offset"] = json!(offset.to_string());
+    value["byteLength"] = json!(total.to_string());
+    value["nextOffset"] = json!(
+        offset
+            .checked_add(bytes.len() as u64)
+            .filter(|next| *next < total)
+            .map(|next| next.to_string())
+    );
+    GitFilesystemResult::Data {
+        kind: "file".into(),
+        value,
+    }
+}
 
 impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
 where
@@ -181,7 +203,7 @@ where
         })
     }
 
-    /// Counts the Git-visible changes between two trees.
+    /// Describes the Git-visible changes between two trees.
     pub(super) async fn diff(
         &self,
         from: Option<&GitTreeRef>,
@@ -191,12 +213,12 @@ where
         let to = self.generation(*to).await?;
         let value = if let Some(from) = from {
             let from = self.generation(*from).await?;
-            let diff = git_compatible_diff_counts(
+            let diff = git_compatible_diff(
                 &from,
                 &to,
                 &self.repository,
                 tracked_paths,
-                100_000,
+                None,
                 &CancellationToken::new(),
             )
             .await
@@ -204,8 +226,9 @@ where
             json!({
                 "from": hex::encode(from.id().to_bytes().as_slice()),
                 "to": hex::encode(to.id().to_bytes().as_slice()),
-                "fileChanges": diff.file_changes,
-                "bindingChanges": diff.binding_changes
+                "fileChanges": diff.counts.file_changes,
+                "bindingChanges": diff.counts.binding_changes,
+                "paths": diff.paths
             })
         } else {
             json!({
@@ -528,45 +551,33 @@ where
         &self,
         tree: &GitTreeRef,
         path: &str,
+        offset: u64,
     ) -> Result<GitFilesystemResult, Error> {
         let generation = self.generation(*tree).await?;
         let shown = format!("/{path}");
         let cancellation = acyclic_fs::CancellationToken::new();
-        let kind = generation
+        let stat = generation
             .stat(&shown, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .map(|receipt| receipt.value.kind)
+            .map(|receipt| receipt.value)
             .map_err(|failure| Error::from(failure.error))?;
-        // Git stores a link as its target, so showing one prints the target
-        // and never follows it.
-        let bytes = if kind == FileKind::SymbolicLink {
-            generation
-                .read_symbolic_link(&shown, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .map(|receipt| receipt.value.bytes)
-        } else {
-            generation
-                .read(
-                    &shown,
-                    SHOWN_FILE_BYTES,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map(|receipt| receipt.value)
-        }
-        .map_err(|failure| Error::from(failure.error))?;
-        let value = match std::str::from_utf8(&bytes) {
-            Ok(text) => json!({ "path": path, "text": text }),
-            Err(_) => json!({
-                "path": path,
-                "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
-            }),
-        };
-        Ok(GitFilesystemResult::Data {
-            kind: "file".to_owned(),
-            value,
-        })
+        // The shared no-follow range reader pages regular bytes and opaque link targets.
+        let total = stat
+            .logical_bytes
+            .ok_or_else(|| Self::error("show requires a file"))?;
+        let length = total.saturating_sub(offset).min(SHOW_PAGE_BYTES);
+        let bytes = generation
+            .read_range(
+                &shown,
+                offset.min(total),
+                length,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| Error::from(failure.error))?;
+        Ok(shown_file(path, &bytes.bytes, offset, total))
     }
 
     /// Applies a Git patch to the live workspace.

@@ -1,5 +1,101 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("file.txt"), b"original").unwrap();
+    let source = native_source(directory.path(), crate::FilesystemProfile::Portable).await;
+    let fs = Fs::memory();
+    let root = attach(&fs, source, MemoryLazyWorkspaceStore::default())
+        .await
+        .unwrap();
+    let cut = root.snapshot(accounting!()).await.unwrap();
+    let state = root.state(accounting!()).await.unwrap();
+    let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let (paths, _) = root
+        .enumerate_paths("/", cut, &state, &mut accounting)
+        .await
+        .unwrap();
+    let lookup = root.inspect("/file.txt", accounting!()).await.unwrap();
+    let key = IdempotencyKey::new();
+    let mut transaction = root
+        .workspace()
+        .begin_transaction(key, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .unwrap()
+        .value;
+    root.apply_resolved_promotion(
+        &mut transaction,
+        "/file.txt",
+        &lookup.0,
+        u64::MAX,
+        accounting!(),
+    )
+    .await
+    .unwrap();
+    let prepared = root
+        .observed_overlay(state.overlay, "/file.txt", &lookup.0, accounting!())
+        .await
+        .unwrap();
+    root.remove("/file.txt", None, accounting!()).await.unwrap();
+    assert!(matches!(
+        root.retain_observation("/file.txt", &lookup.0, accounting!())
+            .await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    root.retire_lookup(lookup, accounting!()).unwrap();
+    assert!(matches!(
+        root.commit_overlay(
+            &mut transaction,
+            state.clone(),
+            prepared,
+            key,
+            crate::PublicationPermit::Unrestricted,
+            accounting!()
+        )
+        .await,
+        Err(LazyWorkspaceError::Concurrent)
+    ));
+    assert_eq!(
+        root.head(accounting!()).await.unwrap().id(),
+        cut.authored_generation
+    );
+    let start = root.head(accounting!()).await.unwrap();
+    let stale = root
+        .exactify_into(
+            "/",
+            cut,
+            paths,
+            start,
+            crate::PublicationPermit::Unrestricted,
+            &mut accounting,
+        )
+        .await
+        .map(|_| ());
+    assert!(
+        matches!(stale, Err(LazyWorkspaceError::Concurrent)),
+        "{stale:?}"
+    );
+    assert!(matches!(
+        root.inspect("/file.txt", accounting!()).await,
+        Err(LazyWorkspaceError::NotFound)
+    ));
+    assert!(
+        root.head(accounting!())
+            .await
+            .unwrap()
+            .stat(
+                "/file.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn historical_exactification_keeps_observations_and_refreshes_unresolved_paths() {
     for observed in [false, true] {

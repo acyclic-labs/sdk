@@ -242,7 +242,9 @@ where
             GitFilesystemAction::CheckIgnore { paths, tree } => {
                 self.check_ignore(paths, tree).await
             }
-            GitFilesystemAction::ShowFile { tree, path } => self.show_file(tree, path).await,
+            GitFilesystemAction::ShowFile { tree, path, offset } => {
+                self.show_file(tree, path, *offset).await
+            }
             unsupported => Err(Self::error(format!(
                 "Git filesystem action is not yet available in the Codex adapter: {unsupported:?}"
             ))),

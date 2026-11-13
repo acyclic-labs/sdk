@@ -5,8 +5,8 @@ pub fn workspace_media_type(bytes: &[u8]) -> &'static str {
     crate::filesystem::host::reads::media_type::classify(bytes)
 }
 
-/// Native agent-diff operand selected by the production filesystem command parser.
-pub fn agent_diff(arguments: &[String]) -> Option<&str> {
+/// Native agent-diff operand and stat selection from the production command parser.
+pub fn agent_diff(arguments: &[String]) -> Option<(&str, bool)> {
     crate::tools::fs_command::agent_diff(arguments)
 }
 

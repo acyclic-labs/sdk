@@ -1,4 +1,25 @@
 use super::*;
+pub(super) fn exactify_evidence(
+    overlay: LazyOverlayId,
+    ctx: &mut KernelAccounting<'_>,
+) -> Result<acyclic_stream::OwnedBytes, LazyWorkspaceError> {
+    let mut bytes = Owned::allocate(32, ctx)?;
+    let copied = WorkCounters {
+        bytes_copied: 32,
+        ..WorkCounters::UNCHARGED
+    };
+    let result = ctx.admit(copied).and_then(|()| {
+        bytes.value.extend_from_slice(&overlay.into_bytes());
+        ctx.record_completed(copied)
+    });
+    if let Err(error) = result {
+        bytes.retire(ctx)?;
+        return Err(error.into());
+    }
+    Ok(crate::kernel::owned_read_bytes(
+        (bytes.value, bytes.allocation).into(),
+    )?)
+}
 impl<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
@@ -6,9 +27,73 @@ impl<
     S: LazyWorkspaceStore,
 > LazyWorkspace<A, O, D, S>
 {
+    /// Publish authored bytes and their source facts under the existing
+    /// recoverable overlay decision. A concurrent source-only removal cannot
+    /// be overwritten between preparation and the DATA commit.
+    pub(super) async fn commit_overlay(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        state: LazyWorkspaceState,
+        overlay: LazyOverlayId,
+        key: IdempotencyKey,
+        permit: crate::PublicationPermit,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
+        let evidence = exactify_evidence(overlay, ctx)?;
+        let revision = state.revision;
+        let next = LazyWorkspaceState {
+            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
+            overlay,
+            pending_remove: Some(PendingLazyRemove {
+                prior_overlay: state.overlay,
+                prior_shadows: state.shadows,
+                prepared_overlay: overlay,
+                kind: PendingLazyRemoveKind::Exactify {
+                    idempotency_key: key,
+                },
+            }),
+            ..state
+        };
+        if !self
+            .store
+            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
+            .await?
+        {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        let result = self
+            .commit_context(
+                transaction,
+                Some((
+                    crate::Digest::from_bytes(overlay.into_bytes()),
+                    evidence,
+                    permit,
+                )),
+                permit,
+                ctx,
+            )
+            .await?;
+        self.recover_pending_remove(ctx).await?;
+        Ok(result)
+    }
+
     pub(super) async fn commit(
         &self,
         transaction: &mut crate::Transaction<A, O>,
+        permit: crate::PublicationPermit,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
+        self.commit_context(transaction, None, permit, ctx).await
+    }
+
+    pub(super) async fn commit_context(
+        &self,
+        transaction: &mut crate::Transaction<A, O>,
+        context: Option<(
+            crate::Digest,
+            acyclic_stream::OwnedBytes,
+            crate::PublicationPermit,
+        )>,
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<TransactionCommit<A, O>, LazyWorkspaceError> {
@@ -16,13 +101,13 @@ impl<
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = ctx.native_work() {
             return transaction
-                .commit_with_native_work(None, permit, work, cancel, &mut |_| async {
+                .commit_with_native_work(context, permit, work, cancel, &mut |_| async {
                     Ok::<(), LazyWorkspaceError>(())
                 })
                 .await;
         }
         let result = transaction
-            .commit(None, permit, ctx.remaining()?, cancel, |_| async {
+            .commit(context, permit, ctx.remaining()?, cancel, |_| async {
                 Ok::<_, crate::OperationFailure<LazyWorkspaceError>>(OperationReceipt {
                     value: (),
                     work: WorkCounters::UNCHARGED,

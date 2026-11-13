@@ -7,6 +7,8 @@ impl<
 > LazyWorkspace<A, O, D, S>
 {
     /// Materializes one visible subtree through bounded SDK transactions.
+    /// Its source namespace is then sealed for this source epoch; a source
+    /// invalidation reopens unresolved names without scanning saved subtrees.
     pub async fn exactify(
         &self,
         root: &str,
@@ -20,6 +22,18 @@ impl<
             return Err(LazyWorkspaceError::NotDirectory);
         }
         let cut = self.snapshot(ctx).await?;
+        let observation = match self.overlay_fact(cut.overlay, root, ctx).await? {
+            Some(LazyOverlayChange::Observe { source, node, .. }) if source == cut.source => {
+                Some((source, node))
+            }
+            // Completion is evidence about saved source contents, never a
+            // replacement for an authored deletion that still masks them.
+            _ if self.tombstoned(cut.overlay, root, ctx).await? => None,
+            _ => self
+                .source_lookup(cut.source, root, ctx)
+                .await?
+                .map(|node| (cut.source, node)),
+        };
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
         let (paths, _) = self.enumerate_paths(root, cut, &state, ctx).await?;
         let start = crate::Generation {
@@ -27,8 +41,30 @@ impl<
             id: cut.authored_generation,
             publication_closure: None,
         };
-        self.exactify_into(root, cut, paths, start, permit, ctx)
-            .await
+        let (generation, overlay) = self
+            .exactify_into(root, cut, paths, start, permit, ctx)
+            .await?;
+        if let Some((source, node)) = observation {
+            let state = self.state(ctx).await?;
+            if state.overlay != overlay
+                || state.source != cut.source
+                || state.shadows != cut.shadows
+            {
+                return Err(LazyWorkspaceError::Concurrent);
+            }
+            self.append_overlay_at(
+                state,
+                root,
+                LazyOverlayChange::Observe {
+                    source,
+                    node,
+                    complete: true,
+                },
+                ctx,
+            )
+            .await?;
+        }
+        Ok(generation)
     }
 
     /// Materializes `paths` of an immutable cut of this view, with their
@@ -67,7 +103,7 @@ impl<
         let live = self.source.reference();
         let mut overlay = cut.overlay;
         for path in paths {
-            let Some(LazyOverlayChange::Observe { source, node }) =
+            let Some(LazyOverlayChange::Observe { source, node, .. }) =
                 witness.overlay_fact(witnessed.overlay, path, ctx).await?
             else {
                 return Ok(None);
@@ -87,11 +123,235 @@ impl<
                 .insert_overlay(
                     overlay,
                     path,
-                    LazyOverlayChange::Observe { source, node },
+                    LazyOverlayChange::Observe {
+                        source,
+                        node,
+                        complete: false,
+                    },
                     ctx,
                 )
                 .await?;
         }
+        self.exactify_cut_overlay(cut, paths, overlay, ctx)
+            .await
+            .map(Some)
+    }
+
+    /// Refines a fork base with the source entries its child actually observed.
+    /// Authored additions remain absent from the base. Deleted source entries
+    /// participate through their recorded versions, even without authored rows.
+    /// Missing original source versions refuse instead of inventing a delta.
+    pub async fn exactify_observed_base(
+        &self,
+        cut: LazySnapshotRef,
+        paths: &[String],
+        witness: &Self,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        self.validate_snapshot(cut, ctx).await?;
+        let witnessed = witness.state(ctx).await?;
+        if witnessed.fork_origin.map(|origin| origin.snapshot) != Some(cut) {
+            return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+        }
+        let authored = accounted!(ctx, |work, cancel| self.workspace.generation(
+            cut.authored_generation,
+            work,
+            cancel
+        ))?;
+        let tombstones = witness.source_tombstones_owned(usize::MAX, ctx).await?;
+        let deleted_paths = match self.deleted_base_paths(cut, &tombstones.value, ctx).await {
+            Ok(paths) => paths,
+            Err(error) => {
+                tombstones.retire(ctx)?;
+                return Err(error);
+            }
+        };
+        let mut selected = match Owned::allocate(0, ctx) {
+            Ok(selected) => selected,
+            Err(error) => {
+                deleted_paths.retire(ctx)?;
+                tombstones.retire(ctx)?;
+                return Err(error.into());
+            }
+        };
+        let mut overlay = cut.overlay;
+        let result = async {
+            for path in paths
+                .iter()
+                .map(String::as_str)
+                .chain(tombstones.value.iter().map(|(path, _)| path.as_str()))
+                .chain(deleted_paths.value.iter().map(String::as_str))
+            {
+                match accounted!(ctx, |work, cancel| authored.stat(path, work, cancel)) {
+                    Ok(_) => continue,
+                    Err(LazyWorkspaceError::WorkspaceCause(error)) if error.is_absent() => {}
+                    Err(error) => return Err(error),
+                }
+                let live = self.source.reference();
+                let observation = match witness.overlay_fact(witnessed.overlay, path, ctx).await? {
+                    Some(LazyOverlayChange::Observe { source, node, .. }) => {
+                        if self
+                            .source_lookup(live, path, ctx)
+                            .await?
+                            .is_none_or(|current| {
+                                current.version != node.version
+                                    || current.file_identity != node.file_identity
+                            })
+                        {
+                            return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+                        }
+                        Some(LazyOverlayChange::Observe {
+                            source,
+                            node,
+                            complete: false,
+                        })
+                    }
+                    Some(LazyOverlayChange::Tombstone {
+                        removed: Some(version),
+                    }) => {
+                        let node = self
+                            .source_lookup(live, path, ctx)
+                            .await?
+                            .filter(|node| node.version == version)
+                            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+                        Some(LazyOverlayChange::Observe {
+                            source: live,
+                            node,
+                            complete: false,
+                        })
+                    }
+                    // Enumeration of the original cut certifies inherited
+                    // descendants hidden by a directory's single tombstone.
+                    _ if deleted_paths
+                        .value
+                        .binary_search_by(|entry| entry.as_str().cmp(path))
+                        .is_ok() =>
+                    {
+                        let node = self
+                            .source_lookup(live, path, ctx)
+                            .await?
+                            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+                        Some(LazyOverlayChange::Observe {
+                            source: live,
+                            node,
+                            complete: false,
+                        })
+                    }
+                    // No source observation certifies a new authored path.
+                    _ => None,
+                };
+                if let Some(observation) = observation {
+                    overlay = self.insert_overlay(overlay, path, observation, ctx).await?;
+                    let path = self.canonical_path(path, ctx)?;
+                    crate::Transaction::<A, O>::push_mutation(&mut selected, path, ctx)?;
+                }
+            }
+            selected.value.sort_unstable();
+            selected.value.dedup();
+            if selected.value.is_empty() {
+                return Ok(authored);
+            }
+            self.exactify_cut_overlay(cut, &selected.value, overlay, ctx)
+                .await
+        }
+        .await;
+        selected.retire(ctx)?;
+        deleted_paths.retire(ctx)?;
+        tombstones.retire(ctx)?;
+        result
+    }
+
+    /// Expand directory tombstones in the original cut, never the child's
+    /// authored replacement. Reuse the shared paged, accounted subtree walk.
+    async fn deleted_base_paths(
+        &self,
+        cut: LazySnapshotRef,
+        tombstones: &[(String, SourceVersion)],
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<Vec<String>>, LazyWorkspaceError> {
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let mut paths = Owned::allocate(0, ctx)?;
+        let result = async {
+            let mut expanded: Option<&str> = None;
+            for (path, version) in tombstones {
+                if self
+                    .saved_source_subtree(cut.overlay, cut.source, path, ctx)
+                    .await?
+                {
+                    continue;
+                }
+                if expanded.is_some_and(|root| {
+                    path.strip_prefix(root)
+                        .is_some_and(|tail| tail.starts_with('/'))
+                }) {
+                    continue;
+                }
+                let Some(node) = self
+                    .source_lookup(self.source.reference(), path, ctx)
+                    .await?
+                else {
+                    continue;
+                };
+                if node.kind != SourceNodeKind::Directory {
+                    continue;
+                }
+                if node.version != *version {
+                    return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+                }
+                let (descendants, _) = self.enumerate_paths(path, cut, &state, ctx).await?;
+                let copied = (|| {
+                    for path in &descendants.value {
+                        let path = self.canonical_path(path, ctx)?;
+                        crate::Transaction::<A, O>::push_mutation(&mut paths, path, ctx)?;
+                    }
+                    Ok::<_, LazyWorkspaceError>(())
+                })();
+                descendants.retire(ctx)?;
+                copied?;
+                expanded = Some(path);
+            }
+            paths.value.sort_unstable();
+            paths.value.dedup();
+            Ok::<_, LazyWorkspaceError>(())
+        }
+        .await;
+        if let Err(error) = result {
+            paths.retire(ctx)?;
+            return Err(error);
+        }
+        Ok(paths)
+    }
+
+    pub(super) async fn saved_source_subtree(
+        &self,
+        overlay: LazyOverlayId,
+        source: SourceReference,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        let mut path = path;
+        loop {
+            if matches!(
+                self.overlay_fact(overlay, path, ctx).await?,
+                Some(LazyOverlayChange::Observe { source: saved, complete: true, .. })
+                    if saved == source
+            ) {
+                return Ok(true);
+            }
+            if path == "/" {
+                return Ok(false);
+            }
+            path = parent_path(path).unwrap_or("/");
+        }
+    }
+
+    async fn exactify_cut_overlay(
+        &self,
+        cut: LazySnapshotRef,
+        paths: &[String],
+        overlay: LazyOverlayId,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
         let pinned = LazySnapshotRef::new(
             cut.workspace_id,
             cut.authored_generation,
@@ -154,12 +414,12 @@ impl<
             ctx,
         )
         .await
-        .map(Some)
+        .map(|(generation, _)| generation)
     }
 
     /// Promotes `paths` of the cut, under `root`'s batch keys, on top of
     /// `start`, a generation holding the cut's authored entries.
-    async fn exactify_into(
+    pub(super) async fn exactify_into(
         &self,
         root: &str,
         cut: LazySnapshotRef,
@@ -167,7 +427,7 @@ impl<
         start: crate::Generation<A, O>,
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
-    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+    ) -> Result<(crate::Generation<A, O>, LazyOverlayId), LazyWorkspaceError> {
         let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
         let workspace = &start.workspace;
         paths
@@ -179,8 +439,23 @@ impl<
                 .min(limits.maximum_mutations_per_batch as usize / 4)
                 .max(1);
             let mut generation = start.id;
+            let mut overlay = cut.overlay;
             for (batch, chunk) in paths.value.chunks(maximum).enumerate() {
                 ctx.check()?;
+                let live = workspace.id() == self.workspace.id();
+                let current = if live {
+                    let current = self.state(ctx).await?;
+                    if current.overlay != overlay
+                        || current.source != cut.source
+                        || current.shadows != cut.shadows
+                    {
+                        return Err(LazyWorkspaceError::Concurrent);
+                    }
+                    Some(current)
+                } else {
+                    None
+                };
+                let key = exactify_batch_key(cut.id, root, batch as u64);
                 let checkout = workspace
                     .checkout_accounted(
                         crate::model::GenerationSelector::Exact(generation),
@@ -189,12 +464,8 @@ impl<
                         cancellation(ctx),
                     )
                     .await?;
-                let mut transaction = crate::Transaction::from_checkout(
-                    workspace,
-                    checkout,
-                    exactify_batch_key(cut.id, root, batch as u64),
-                    false,
-                );
+                let mut transaction =
+                    crate::Transaction::from_checkout(workspace, checkout, key, false);
                 for path in chunk {
                     let (lookup, _, guard) = self
                         .inspect_unauthored(
@@ -210,15 +481,24 @@ impl<
                         )
                         .await?;
                     if let Some(lookup) = lookup {
-                        let promoted = self
-                            .apply_resolved_promotion(
+                        let promoted = async {
+                            // A live materialization must retain the source
+                            // version before authored rows can hide its origin.
+                            // Historical scratch cuts do not observe the owner.
+                            if live {
+                                overlay =
+                                    self.observed_overlay(overlay, path, &lookup, ctx).await?;
+                            }
+                            self.apply_resolved_promotion(
                                 &mut transaction,
                                 path,
                                 &lookup,
                                 u64::MAX,
                                 ctx,
                             )
-                            .await;
+                            .await
+                        }
+                        .await;
                         self.retire_lookup((lookup, guard), ctx)?;
                         promoted?;
                     } else {
@@ -228,14 +508,22 @@ impl<
                 if !transaction.checkout.has_pending_mutations() {
                     continue;
                 }
-                generation = match self.commit(&mut transaction, permit, ctx).await? {
+                let committed = match current {
+                    Some(current) => {
+                        self.commit_overlay(&mut transaction, current, overlay, key, permit, ctx)
+                            .await?
+                    }
+                    None => self.commit(&mut transaction, permit, ctx).await?,
+                };
+                generation = match committed {
                     TransactionCommit::Committed(generation)
                     | TransactionCommit::AlreadyCommitted(generation) => generation.id(),
                     _ => return Err(LazyWorkspaceError::Concurrent),
                 };
             }
-            accounted!(ctx, |work, cancel| workspace
-                .generation(generation, work, cancel))
+            let generation = accounted!(ctx, |work, cancel| workspace
+                .generation(generation, work, cancel))?;
+            Ok((generation, overlay))
         }
         .await;
         paths.retire(ctx)?;

@@ -1,9 +1,9 @@
 use super::*;
 
-pub(crate) const LAZY_STATE_SCHEMA: u32 = 10;
+pub(crate) const LAZY_STATE_SCHEMA: u32 = LazyWorkspaceState::SCHEMA_VERSION;
 
 /// Hash domain for an immutable lazy cut.
-pub const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
+pub const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v2\0";
 
 /// Stable logical identity of one constant-size lazy tree snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -162,7 +162,7 @@ pub enum LazyShadow {
     },
 }
 
-/// Durable intent that makes authored removal and source tombstoning recoverable.
+/// Durable intent for recovering a prepared removal or publication and its source facts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PendingLazyRemove {
@@ -179,9 +179,15 @@ pub struct PendingLazyRemove {
 /// Durable decision needed to recover a prepared lazy removal.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PendingLazyRemoveKind {
+    /// Exactification records its source facts in the publication's evidence.
+    /// Recovery seals the same operation before deciding an absent publication.
+    Exactify {
+        /// Original publication operation, also used by its recovery fence.
+        idempotency_key: IdempotencyKey,
+    },
     /// The removed binding existed only in the lazy source.
     SourceOnly,
-    /// An authored removal is identified by this stable publication key.
+    /// An authored publication is identified by this stable publication key.
     Authored {
         /// Idempotency key persisted before the authored transaction begins.
         idempotency_key: IdempotencyKey,
@@ -198,8 +204,10 @@ pub enum PendingLazyRemoveKind {
 pub enum LazyOverlay {
     /// Shared empty index root.
     #[default]
+    #[serde(rename = "v2.Empty")]
     Empty,
     /// One path fact and its immutable child indexes.
+    #[serde(rename = "v2.Node")]
     Node {
         /// Portable absolute path used as the search key.
         path: String,
@@ -223,6 +231,10 @@ pub enum LazyOverlayChange {
         source: SourceReference,
         /// Immutable source fact.
         node: SourceNode,
+        /// A complete materialization saved the visible subtree in authored
+        /// state for this source cut, preserving authored masks. Unresolved
+        /// names remain absent until the source invalidation epoch advances.
+        complete: bool,
     },
     /// Authored removal of a source path or subtree. `removed` is the source
     Tombstone {
@@ -255,6 +267,9 @@ pub struct LazyForkOrigin {
 }
 
 impl LazyWorkspaceState {
+    /// Current persisted lazy-state format, with explicit subtree completion.
+    pub const SCHEMA_VERSION: u32 = 11;
+
     /// Constructs the state represented by an immutable cut.
     pub fn new(
         workspace_id: WorkspaceId,

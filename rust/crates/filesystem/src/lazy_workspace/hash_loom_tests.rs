@@ -74,12 +74,17 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
         }
         let receipt = original.receipt();
         let hashed = receipt.bytes_hashed - before.bytes_hashed;
+        let encoded = if shadow {
+            br#""Empty""#.as_slice()
+        } else {
+            br#""v2.Empty""#.as_slice()
+        };
         if let Ok(digest) = result {
-            assert_eq!(digest, *blake3::hash(br#""Empty""#).as_bytes());
-            assert_eq!(hashed, 7);
+            assert_eq!(digest, *blake3::hash(encoded).as_bytes());
+            assert_eq!(hashed, encoded.len() as u64);
         } else {
             // Opening quote, the complete unit-variant spelling, closing quote.
-            assert!([0, 1, 6].contains(&hashed));
+            assert!([0, 1, encoded.len() as u64 - 1].contains(&hashed));
             assert!(matches!(
                 result.unwrap_err(),
                 LazyWorkspaceError::Filesystem(crate::FsError::Cancelled(_))
