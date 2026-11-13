@@ -51,15 +51,15 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
         let policy = Arc::new(crate::test_support::FixedToolPolicy::new(decision.clone())?);
         let mut tools = ToolRegistry::default();
         tools.register((crate::tool::files::write()?, None), &mut None, None)?;
-        let executor = StockExecutor::new(
+        let unissued = StockExecutor::new(
             Model::new("fixture".into(), "unused".into(), "1".into())?,
             model.clone(),
             ContextPipeline::default(),
             tools,
         )
         .with_compaction_policy(crate::context::CompactionPolicy::default())
-        .with_tool_authority(task.scope().clone(), policy.clone())?
-        .with_task_context(&task, parent)?;
+        .with_tool_authority(task.scope().clone(), policy.clone())?;
+        let executor = unissued.clone().with_task_context(&task, parent)?;
         // Tool publication has an original writer; model compaction deliberately
         // does not. A direct call must not inherit model-summary admission.
         assert!(
@@ -85,6 +85,93 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
         };
         let reader = ToolContext::new(Arc::new(task), parent, "verify")?;
         let mut hooks = Vec::new();
+        if matches!(decision, ToolPolicyDecision::Allow) {
+            let mut changed_name = call.clone();
+            changed_name.name.push_str("-changed");
+            for (executor, operation, attempt, code) in [
+                (
+                    &unissued,
+                    parent,
+                    call.clone(),
+                    crate::wire::ErrorCode::Unauthorized,
+                ),
+                (
+                    &executor,
+                    OperationId::new(),
+                    call.clone(),
+                    crate::wire::ErrorCode::Unauthorized,
+                ),
+                (
+                    &executor,
+                    parent,
+                    changed_name,
+                    crate::wire::ErrorCode::Invalid,
+                ),
+            ] {
+                assert!(matches!(
+                    executor.settle_invocation(
+                        journal.as_ref(),
+                        (operation, 0),
+                        (attempt, binding.clone()),
+                        &Value::Null,
+                        &mut hooks,
+                        None,
+                    )?.await,
+                    Err(error) if error.code() == code
+                ));
+            }
+            for cancelled in [false, true] {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let budget = if cancelled {
+                    acyclic_fs::performance::BOUNDARY_BUDGET
+                } else {
+                    acyclic_fs::WorkBudget {
+                        peak_allocation_bytes:
+                            acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+                        ..acyclic_fs::WorkBudget::UNBOUNDED
+                    }
+                };
+                let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let io = PreparationIo::from_native_work(&work)?;
+                if cancelled {
+                    cancellation.cancel();
+                }
+                let refused = match executor.settle_invocation(
+                    journal.as_ref(),
+                    (parent, 0),
+                    (call.clone(), binding.clone()),
+                    &Value::Null,
+                    &mut hooks,
+                    Some(&io),
+                ) {
+                    Ok(future) => future.await,
+                    Err(error) => Err(error),
+                };
+                if cancelled {
+                    assert!(
+                        matches!(refused, Err(error) if error.code() == crate::wire::ErrorCode::Cancelled)
+                    );
+                } else {
+                    assert!(matches!(refused, Err(Error::NativeWork { .. })));
+                }
+            }
+            assert!(journal.replay(parent, 0, 64, None)?.await?.is_empty());
+            assert!(
+                journal
+                    .staged_ref(parent, &format!("tool:0:{}:selection", call.call_id), None)?
+                    .await?
+                    .is_none()
+            );
+            assert!(
+                reader
+                    .read_tool_path("receipt.txt", None, None)
+                    .await
+                    .is_err()
+            );
+            assert!(hooks.is_empty());
+            assert!(model.requests().is_empty());
+        }
         let owner = journal
             .acquire_effect(parent, call.operation_id, None)?
             .into_owner(None)?;
