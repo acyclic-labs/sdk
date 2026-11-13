@@ -105,16 +105,25 @@ impl HostRoot {
             let options = NativeOpenOptions::Read;
             match open_leaf(&self.directory(), leaf, &options, work) {
                 Ok(mut file) => {
+                    let length = stat_file(&file, work)?.len();
+                    if length != bytes.len() as u64 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "immutable publication length changed",
+                        )
+                        .into());
+                    }
                     let mut offset = 0;
                     let mut chunk = [0; 4096];
-                    loop {
+                    while offset < bytes.len() {
+                        let maximum = chunk.len().min(bytes.len() - offset);
                         let count = work.with_admitted_work(
                             WorkCounters {
-                                source_bytes_read: chunk.len() as u64,
+                                source_bytes_read: maximum as u64,
                                 ..READ
                             },
                             || {
-                                let result = file.read(&mut chunk);
+                                let result = file.read(&mut chunk[..maximum]);
                                 let actual = WorkCounters {
                                     source_bytes_read: result.as_ref().copied().unwrap_or(0) as u64,
                                     ..READ
@@ -134,7 +143,9 @@ impl HostRoot {
                         }
                         offset += count;
                     }
-                    if offset != bytes.len() {
+                    // The length witnesses replace an extra read past EOF:
+                    // callers fund exactly the immutable payload's bytes.
+                    if offset != bytes.len() || stat_file(&file, work)?.len() != length {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "immutable publication length changed",
