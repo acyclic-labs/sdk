@@ -109,9 +109,8 @@ pub fn prepare<T>(
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
     // even when another native process caller requested inheritance.
     invocation.inherit_environment = false;
-    // The deadline runs from the call's admission, so queueing behind the
-    // checkout and preparation count against it; an expired call is refused
-    // at launch as a timeout instead of starting late.
+    // The caller admits native execution after checkout preparation. Queueing
+    // for the checkout consumes scope lifetime, not this process lifetime.
     invocation.schedule = input.timeout_ms()?.map_or(
         acyclic_native_runtime::CaptureSchedule::Unbounded,
         |timeout| {
