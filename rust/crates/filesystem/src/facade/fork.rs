@@ -313,6 +313,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             ),
             None => None,
         };
+        if let Some(base) = &base {
+            base.follow_ephemeral(fork_root.generation_root, volume_id, config);
+        }
         let (lineage, creation, changes) = self
             .prepare_fork_creation(
                 &ForkPublication {

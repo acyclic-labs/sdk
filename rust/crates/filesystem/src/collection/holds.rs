@@ -205,6 +205,19 @@ impl GenerationHold {
 }
 
 impl Hold {
+    /// The same funded base registration follows this authority until lease settlement.
+    pub(crate) fn follow_ephemeral(
+        &self,
+        base: ObjectId,
+        volume: crate::VolumeId,
+        config: crate::VolumeConfig,
+    ) {
+        self.update(Held::Ephemeral {
+            base,
+            volume,
+            config,
+        });
+    }
     pub(crate) fn belongs_to(&self, epochs: Option<&Epochs>) -> bool {
         epochs.is_some_and(|epochs| std::ptr::eq(epochs, self.collection.epochs()))
     }

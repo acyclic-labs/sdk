@@ -394,3 +394,101 @@ fn an_ephemeral_fork_leaves_nothing_after_its_owner_crashes() -> Result<(), Box<
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn idle_ephemeral_authority_retains_private_history_without_open_generations()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let cancel = CancellationToken::new();
+    let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+    let source = fs.create_workspace("idle-source", B, &cancel).await?.value;
+    source
+        .write_text("/private", &"foreign-old".repeat(2_000))
+        .await?;
+    let foreign_previous = source.head(B, &cancel).await?.value.id();
+    let mut foreign = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    foreign.generation(foreign_previous).await?;
+    let foreign_objects = foreign.marked().clone();
+    drop(foreign);
+    source
+        .write_text("/private", &"source".repeat(2_000))
+        .await?;
+    let source_head = source.head(B, &cancel).await?.value;
+    let (fork, custody) = source
+        .fork_ephemeral(
+            "idle-private",
+            ForkOptions::from_generation(source_head, IdempotencyKey::new()),
+            B,
+            &cancel,
+        )
+        .await?
+        .value;
+    fork.write_text("/private", &"older".repeat(2_000)).await?;
+    let previous = fork.head(B, &cancel).await?.value.id();
+    let mut expected = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    expected.generation(previous).await?;
+    let previous_objects = expected.marked().clone();
+    drop(expected);
+    fork.write_text("/private", &"newer".repeat(2_000)).await?;
+    // Only the workspace and stream lease remain. Neither pins a checkout or generation.
+    let held = fs.local_collection().held();
+    let (base, volume, config) = held
+        .into_iter()
+        .find_map(|held| match held {
+            crate::collection::Held::Ephemeral {
+                base,
+                volume,
+                config,
+            } if volume == fork.id().volume_id() => Some((base, volume, config)),
+            _ => None,
+        })
+        .ok_or("idle authority is not registered")?;
+    let authority = Volume {
+        fs: fs.clone(),
+        id: volume,
+        config,
+    };
+    let mut accounting = KernelAccounting::standalone(B, &cancel);
+    let (head, _) = authority
+        .resolve_head_generation(&mut accounting, &cancel)
+        .await?;
+    let mut marker = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    marker.generation(GenerationId::from_root(base)).await?;
+    marker
+        .history(volume, GenerationId::from_root(head))
+        .await?;
+    marker.lineage_roots().await?;
+    assert!(previous_objects.is_subset(marker.marked()));
+    assert!(
+        !foreign_objects.is_subset(marker.marked()),
+        "private history retained foreign source contents"
+    );
+
+    // Negative control uses the real objects and old metadata-only ancestry walk.
+    let mut incomplete = crate::kernel::Marker::new(&fs.inner.objects, &cancel);
+    incomplete.generation(GenerationId::from_root(base)).await?;
+    incomplete.generation(GenerationId::from_root(head)).await?;
+    incomplete.lineage_roots().await?;
+    assert!(
+        !previous_objects.is_subset(incomplete.marked()),
+        "history oracle cannot detect lost private content"
+    );
+    drop((marker, incomplete, accounting, authority));
+    fs.collect_local_garbage(None, &cancel).await?;
+    assert_eq!(
+        fork.read("/private", 10_000, B, &cancel)
+            .await?
+            .value
+            .as_ref(),
+        "newer".repeat(2_000).as_bytes()
+    );
+    custody.settle().await?;
+    assert!(
+        !fs.local_collection()
+            .held()
+            .iter()
+            .any(|held| matches!(held,
+        crate::collection::Held::Ephemeral { volume: held_volume, .. } if *held_volume == volume))
+    );
+    Ok(())
+}

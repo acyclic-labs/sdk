@@ -59,6 +59,11 @@ pub(crate) enum Held {
         record: crate::kernel::FileRecord,
         config: crate::model::VolumeConfig,
     },
+    Ephemeral {
+        base: ObjectId,
+        volume: crate::VolumeId,
+        config: crate::model::VolumeConfig,
+    },
     Generation {
         root: ObjectId,
         config: crate::model::VolumeConfig,

@@ -185,6 +185,42 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                         marker.set_limits(DecodeLimits::for_volume(config));
                         marker.record(&record).await.map_err(mark_error)?;
                     }
+                    crate::collection::Held::Ephemeral {
+                        base,
+                        volume,
+                        config,
+                    } => {
+                        marker.set_limits(DecodeLimits::for_volume(config));
+                        marker
+                            .generation(GenerationId::from_root(base))
+                            .await
+                            .map_err(mark_error)?;
+                        let workspace_volume = Volume {
+                            fs: self.clone(),
+                            id: volume,
+                            config,
+                        };
+                        let mut accounting =
+                            KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation);
+                        match workspace_volume
+                            .resolve_head_generation(&mut accounting, cancellation)
+                            .await
+                        {
+                            Ok((head, _)) => marker
+                                .history(volume, GenerationId::from_root(head))
+                                .await
+                                .map_err(mark_error)?,
+                            Err(
+                                FsError::EmptyAuthority
+                                | FsError::WorkspaceDeleted
+                                | FsError::Authority(
+                                    crate::AuthorityStoreError::Missing
+                                    | crate::AuthorityStoreError::Retired,
+                                ),
+                            ) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
                     crate::collection::Held::Generation { root, config } => {
                         marker.set_limits(DecodeLimits::for_volume(config));
                         marker
