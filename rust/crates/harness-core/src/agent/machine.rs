@@ -87,8 +87,8 @@ pub struct AgentState {
     pub volumes: Vec<WorkspaceEntry>,
     /// Approval policy file.
     pub policy: Option<FileRef>,
-    /// Original user submission whose protected file receipt owns this run's
-    /// configuration. Agent messages and continuations cannot replace it.
+    /// Original user submission whose protected file receipt owns the selected
+    /// turn's run. Self-continuations retain it in their original reply identity.
     pub run_admission: Option<crate::OperationId>,
     /// Identity digest of the brief its adoption named: on a spawned agent,
     /// the one file of its parent's it may read, granted to exactly that
@@ -1652,18 +1652,23 @@ async fn run<T: TurnDriver + ?Sized>(
         (Some(turn), _) => Some(turn.inbox),
         (None, input) => input.as_ref().map(|input| input.inbox),
     };
-    if state.turn.is_none()
-        && let Some(Queued {
-            input:
+    if state.turn.is_none() {
+        state.run_admission = input.as_ref().and_then(|queued| {
+            let id = match &queued.input {
                 TurnInput::Message {
                     from: Sender::User { .. },
                     id,
                     ..
-                },
-            ..
-        }) = &input
-    {
-        state.run_admission = crate::OperationId::parse(id.as_str()).ok();
+                } => Some(id),
+                TurnInput::Message { re, .. }
+                    if super::goal::continuing(&state.path, &queued.input).is_some() =>
+                {
+                    re.as_ref()
+                }
+                _ => None,
+            }?;
+            crate::OperationId::parse(id.as_str()).ok()
+        });
     }
     // A turn that fails for good settles as a committed failure, which
     // every observer reads like any other outcome; only an uncertain
