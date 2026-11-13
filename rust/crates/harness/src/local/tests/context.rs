@@ -103,7 +103,7 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
         .conversation
         .compact("compact", Some("KEEP_GUIDANCE"))
         .await?;
-    let entry = client.settled(inbox).await?;
+    let (sequence, entry) = client.settled_at(inbox).await?;
     super::agents::settled(&harness, &root).await?;
     usage.advance().await?;
     assert_eq!(usage.totals().completed, 2);
@@ -120,7 +120,7 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
             instructions: Some(_)
         })
     ));
-    let turn = client.conversation.turn(&entry).await?;
+    let turn = client.conversation.turn(sequence, &entry).await?;
     assert_eq!(
         (turn.prompt, turn.answer.as_str()),
         (None, "CHECKPOINT_SUMMARY")
@@ -148,7 +148,7 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
 
     // A rewind runs no model request and restores the checkpoint.
     let inbox = client.conversation.rewind("rewind").await?;
-    let entry = client.settled(inbox).await?;
+    let (sequence, entry) = client.settled_at(inbox).await?;
     assert_eq!(checkpoint(&entry), Some(&ContextAction::Rewind));
     super::agents::settled(&harness, &root).await?;
     usage.advance().await?;
@@ -161,7 +161,7 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
     );
     assert_eq!(provider.request_count(), 3);
     assert_eq!(
-        client.conversation.turn(&entry).await?.answer,
+        client.conversation.turn(sequence, &entry).await?.answer,
         "CHECKPOINT_SUMMARY"
     );
     client.send("kept", "KEPT_PROMPT").await?;
@@ -229,10 +229,10 @@ async fn a_cancelled_turn_settles_durably_without_a_model_request() -> Result<()
         }
     }
     assert_eq!(client.conversation.cancel().await?, Some(inbox));
-    let entry = client.settled(inbox).await?;
+    let (sequence, entry) = client.settled_at(inbox).await?;
     assert_eq!(entry.outcome, crate::agent::TurnOutcome::Cancelled);
     assert_eq!(checkpoint(&entry), None);
-    let prompt = client.conversation.turn(&entry).await?.prompt;
+    let prompt = client.conversation.turn(sequence, &entry).await?.prompt;
     assert_eq!(prompt.as_deref(), Some("CANCELLED_PROMPT"));
     assert_eq!(provider.request_count(), 1);
     // The cancelled prompt stays in the later context.

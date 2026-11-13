@@ -376,7 +376,8 @@ async fn empty_session_reconnects_keep_spacing_until_current_data_progresses() -
     pool.reconnect("old")?;
     let dial = pool.dials.remove("").ok_or("missing fresh recovery dial")?;
     let (_, _, ready) = dial.future.await;
-    ready?;
+    // Only the recovery dial's success matters here; close its stream.
+    drop(ready?);
     let waits = clock.0.lock().unwrap();
     assert_eq!(waits.len(), 10);
     assert!((5..=10).contains(&waits[9]));

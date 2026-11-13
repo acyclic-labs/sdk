@@ -414,7 +414,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                 phase: crate::agent::Phase::WaitingApproval { id, binding },
                 ..
             })) => break (id, binding, delivery),
-            Some(crate::local::Event::Turn(entry)) if entry.inbox == inbox => {
+            Some(crate::local::Event::Turn { sequence, entry }) if entry.inbox == inbox => {
                 let journal = client.execution_page(inbox, 0, false).await?;
                 let failures: Vec<_> = journal
                     .page
@@ -430,7 +430,7 @@ async fn approval_ranges_retain_the_original_status_until_every_chunk_flushes() 
                 return Err(Error::Invalid(format!(
                     "input settled before its expected approval: {:?}; {}; original tool failures: {failures:?}",
                     entry.outcome,
-                    client.turn(&entry).await?.answer
+                    client.turn(sequence, &entry).await?.answer
                 )));
             }
             Some(crate::local::Event::Status(StatusRecord {
@@ -1023,7 +1023,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         "settled producer outcome: {:?}",
         entry.outcome
     );
-    let turn = client.turn(&entry).await?;
+    let turn = client.turn(0, &entry).await?;
     assert_eq!(
         (turn.prompt.as_deref(), turn.answer.as_str()),
         (Some("hello"), "done")
@@ -1047,7 +1047,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         return Err(Error::Invalid("the settled input is not a prompt".into()));
     };
     **body = absent(body)?;
-    assert!(client.turn(&output_only).await.is_err());
+    assert!(client.turn(0, &output_only).await.is_err());
     assert_eq!(client.output_text(&output_only).await?, "done");
     output_only.output = absent(&entry.output)?;
     assert!(client.output_text(&output_only).await.is_err());
@@ -2883,8 +2883,8 @@ async fn a_prompt_past_two_frames_is_accepted_and_reads_back_exactly() -> Result
     let prompt = "0123456789abcdef\n".repeat(2 * MAX_AGENT_COMMAND_BYTES / 17 + 1);
     assert!(prompt.len() > 2 * MAX_AGENT_COMMAND_BYTES);
     let inbox = client.send("large", &prompt).await?;
-    let entry = observed.settled(inbox).await?;
-    let read = client.turn(&entry).await?.prompt;
+    let (sequence, entry) = observed.settled_at(inbox).await?;
+    let read = client.turn(sequence, &entry).await?.prompt;
     assert!(read.as_deref() == Some(prompt.as_str()));
     // A resend is the same delivery.
     assert_eq!(client.send("large", &prompt).await?, inbox);
@@ -2977,7 +2977,7 @@ async fn physical_siblings_use_the_original_shared_file_binding() -> Result<()> 
         let mut events = conversation.observe(Some(0)).await?;
         let entry = loop {
             match events.next().await? {
-                crate::local::Event::Turn(entry) => break entry,
+                crate::local::Event::Turn { entry, .. } => break entry,
                 crate::local::Event::Status(status)
                     if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
                 {
@@ -3938,7 +3938,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         .runtime;
     let settlement = async |observed: &mut ObservedConversation, inbox| {
         tokio::select! {
-            result = observed.settled(inbox) => result,
+            result = observed.settled_at(inbox) => result,
             result = runtime.completion() => {
                 result?;
                 Err(Error::Storage("agent runtime ended before settlement".into()))
@@ -3946,7 +3946,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
         }
     };
     let inbox = client.send("first", "hello").await?;
-    let first = settlement(&mut observed, inbox).await?;
+    let (_, first) = settlement(&mut observed, inbox).await?;
     assert!(first.outcome.is_completed(), "{:?}", first.outcome);
     settled(&harness, &root).await?;
     let mut usage = client.usage_query();
@@ -4037,7 +4037,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let inbox = client
         .restore("refuse", 0, RestoreMode::Both, expected)
         .await?;
-    let refusal = settlement(&mut observed, inbox).await?;
+    let (refusal_at, refusal) = settlement(&mut observed, inbox).await?;
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
     settled(&harness, &root).await?;
     for _ in notice..=inbox {
@@ -4050,7 +4050,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     );
     assert!(
         client
-            .turn(&refusal)
+            .turn(refusal_at, &refusal)
             .await?
             .answer
             .contains("expected project heads changed")
@@ -4216,11 +4216,11 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
     let inbox = client
         .restore("policy-refusal", 0, RestoreMode::Both, expected.clone())
         .await?;
-    let refusal = settlement(&mut observed, inbox).await?;
+    let (refusal_at, refusal) = settlement(&mut observed, inbox).await?;
     assert_eq!(refusal.outcome, TurnOutcome::RestoreConflict);
     assert!(
         client
-            .turn(&refusal)
+            .turn(refusal_at, &refusal)
             .await?
             .answer
             .contains("cannot replace the current access policy")
@@ -4400,7 +4400,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
     let inherited = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let branched = ConversationEntry::decode(&entries[1]).map_err(agent)?;
     assert!(matches!(branched.input, TurnInput::Brief { .. }));
-    assert_eq!(client.turn(&inherited).await?.answer, "answer 0");
+    assert_eq!(client.turn(0, &inherited).await?.answer, "answer 0");
     let saved =
         crate::filesystem::history_checkpoint(agents.provider().as_ref(), &child, 1).await?;
     assert_eq!(saved.context.tail, 2);
@@ -4891,16 +4891,16 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         );
     }
     let inherited = ConversationEntry::decode(&source[0]).map_err(agent)?;
-    let shown = selected_branch.turn_at(0, &inherited).await?;
+    let shown = selected_branch.turn(0, &inherited).await?;
     assert_eq!(shown.prompt.as_deref(), Some("first decision"));
     assert_eq!(shown.answer, "at cut");
     let future = ConversationEntry::decode(&source[1]).map_err(agent)?;
     assert!(
-        selected_branch.turn_at(0, &future).await.is_err(),
+        selected_branch.turn(0, &future).await.is_err(),
         "an exact record proof cannot authorize another turn's files"
     );
     assert!(
-        selected_branch.turn_at(1, &future).await.is_err(),
+        selected_branch.turn(1, &future).await.is_err(),
         "a proof beyond the inherited prefix cannot authorize future source files"
     );
     assert!(
@@ -5045,7 +5045,7 @@ async fn historical_sessions_preserve_the_source_and_fork_files_at_the_conversat
         crate::local::sessions::fork(&connection, root.clone(), 1, "fork-archived-source").await?;
     assert_eq!(
         Conversation::open(archived_branch)
-            .turn_at(1, &future)
+            .turn(1, &future)
             .await?
             .answer,
         "later"

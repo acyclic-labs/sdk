@@ -400,7 +400,7 @@ async fn verify_prompt(
     if conversation.settled().await? != 1 {
         return Err("local scenario did not retain its single prompt record".into());
     }
-    let staged = conversation.turn_at(0, &entry).await?.prompt;
+    let staged = conversation.turn(0, &entry).await?.prompt;
     let dispatched = first
         .messages
         .iter()
