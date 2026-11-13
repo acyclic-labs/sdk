@@ -448,37 +448,18 @@ async fn observe<P: StreamProvider + ?Sized>(
     path: Option<StreamPath>,
     children: Option<ChildrenPageRequest>,
 ) -> Result<Held<Heads>, StreamError> {
-    let mut control = Owner::default();
-    let mut paths = access.vector(usize::from(path.is_some()), &mut control)?;
-    if let Some(path) = path {
-        access.push(&mut paths, path, &mut control)?;
-    }
+    // A single named head fits the primitive's inline control storage.
     let request = HeadsRequest {
         at,
         retained: Default::default(),
         durable_through: None,
         projection: HeadProjection::Tail,
-        paths,
+        paths: path.into_iter().collect(),
         children,
         limit: 1,
         at_least: Default::default(),
     };
-    let mut paths = access.vector(request.paths.len(), &mut control)?;
-    for path in &request.paths {
-        access.push(&mut paths, path.clone(), &mut control)?;
-    }
-    let observed = access
-        .heads(HeadsRequest {
-            at: request.at.clone(),
-            retained: Default::default(),
-            durable_through: None,
-            projection: request.projection,
-            paths,
-            children: request.children.clone(),
-            limit: request.limit,
-            at_least: Default::default(),
-        })
-        .await?;
+    let observed = access.heads(request.clone()).await?;
     observed.value.validate_for(&request)?;
     Ok(observed)
 }

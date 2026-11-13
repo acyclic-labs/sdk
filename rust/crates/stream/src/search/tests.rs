@@ -262,8 +262,18 @@ async fn search_uses_current_session_grants_even_for_a_retained_cursor()
     use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
     use std::sync::Arc;
     let provider = Arc::new(MemoryStream::default());
-    append(&provider, "root/allowed", vec!["visible decision".into()]).await?;
-    append(&provider, "root/private", vec!["private decision".into()]).await?;
+    append(
+        provider.as_ref(),
+        "root/allowed",
+        vec!["visible decision".into()],
+    )
+    .await?;
+    append(
+        provider.as_ref(),
+        "root/private",
+        vec!["private decision".into()],
+    )
+    .await?;
     let fixture = fixture::Fixture::with_options(
         provider,
         "search",

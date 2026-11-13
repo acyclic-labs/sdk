@@ -41,9 +41,9 @@ pub(super) enum Records {
 }
 
 impl Owner {
-    pub fn absorb(&mut self, mut other: Self) -> Result<(), StreamError> {
+    pub fn absorb(&mut self, other: Self) -> Result<(), StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(mut incoming) = other.allocation.take() {
+        if let Some(mut incoming) = other.allocation {
             match &mut self.allocation {
                 Some(owned) => owned
                     .absorb(&mut incoming)
@@ -51,6 +51,7 @@ impl Owner {
                 None => self.allocation = Some(incoming),
             }
         }
+        #[cfg(target_arch = "wasm32")]
         let _ = other;
         Ok(())
     }
