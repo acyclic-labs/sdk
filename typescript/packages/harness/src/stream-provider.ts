@@ -1,4 +1,4 @@
-import type { WasmStream, WasmFollow } from "../generated/wasm/acyclic_harness_wasm.js";
+import { WasmStream, type WasmFollow } from "../generated/wasm/acyclic_harness_wasm.js";
 
 /** Any wasm-bindgen module's canonical provider: class identity is per module,
  * so a cursor is recognised by shape, never by one module's constructor. */
