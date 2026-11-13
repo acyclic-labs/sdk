@@ -528,7 +528,7 @@ pub fn actor_seeds()
         "invocation writer must be admitted"
     );
     let mut seeds = vec![(
-        "invocation-committed-v2",
+        "invocation-committed-actor-v1",
         invocation_bytes,
         "Store::enqueue_invoke original InvocationTicket::record and wire_codec::record_wire",
     )];
@@ -613,7 +613,7 @@ pub fn actor_seeds()
     assert_eq!(state.epoch(), 0);
     assert!(state.subscriptions().is_empty());
     assert_eq!(state.encode(), bytes);
-    seeds.push(("state-v2", bytes, "local::Store::create state encoder"));
+    seeds.push(("state-acs-v1", bytes, "local::Store::create state encoder"));
     let delivery = guest::Delivery {
         request: guest::RequestId::new(1),
         actor,
@@ -635,7 +635,7 @@ pub fn actor_seeds()
         wire::decode_delivery(&bytes)?,
         (delivery, Some(checkpoint.clone()))
     );
-    seeds.push(("delivery", bytes, "guest::wire::encode_delivery"));
+    seeds.push(("delivery-cuts-v1", bytes, "guest::wire::encode_delivery"));
     let mut transition = guest::Transition {
         response: None,
         checkpoint,
@@ -645,26 +645,26 @@ pub fn actor_seeds()
         subscriptions: Vec::new(),
     };
     for (name, alarm) in [
-        ("transition-state-v2", guest::AlarmChange::Keep),
+        ("transition-acs-v1", guest::AlarmChange::Keep),
         (
-            "transition-set-zero",
+            "transition-acs-set-zero-v1",
             guest::AlarmChange::Set {
                 deadline_unix_ms: 0,
             },
         ),
         (
-            "transition-set",
+            "transition-acs-set-v1",
             guest::AlarmChange::Set {
                 deadline_unix_ms: 42,
             },
         ),
         (
-            "transition-set-max",
+            "transition-acs-set-max-v1",
             guest::AlarmChange::Set {
                 deadline_unix_ms: u64::MAX,
             },
         ),
-        ("transition-clear", guest::AlarmChange::Clear),
+        ("transition-acs-clear-v1", guest::AlarmChange::Clear),
     ] {
         transition.alarm = alarm;
         let bytes = wire::encode_transition(&transition)?;
@@ -795,12 +795,12 @@ fn actor_socket_input_seeds()
         serde_json::from_str(include_str!("../captures/socket-deliveries.capture"))?;
     let mut seeds = Vec::new();
     for name in [
-        "socket-input-open",
-        "socket-input-text",
-        "socket-input-binary",
-        "socket-input-close-peer",
-        "socket-input-close-actor",
-        "socket-input-close-runtime",
+        "socket-input-open-cuts-v1",
+        "socket-input-text-cuts-v1",
+        "socket-input-binary-cuts-v1",
+        "socket-input-close-peer-cuts-v1",
+        "socket-input-close-actor-cuts-v1",
+        "socket-input-close-runtime-cuts-v1",
     ] {
         let capture = &captures[name];
         let bytes: Vec<u8> = serde_json::from_value(capture["bytes"].clone())?;
@@ -1135,7 +1135,7 @@ async fn actor_alarm_seeds()
     let mut seeds = Vec::new();
     for (name, trigger, alarm, cursor, generation, deadline, pending) in [
         (
-            "state-alarm-set-v2",
+            "state-alarm-set-acs-v1",
             Trigger::Record {
                 subscription: "inbox".into(),
                 sequence: 0,
@@ -1149,7 +1149,7 @@ async fn actor_alarm_seeds()
             Some(42),
         ),
         (
-            "state-alarm-delivered-v2",
+            "state-alarm-delivered-acs-v1",
             Trigger::Alarm {
                 generation: 1,
                 now_unix_ms: 42,
@@ -1161,7 +1161,7 @@ async fn actor_alarm_seeds()
             None,
         ),
         (
-            "state-alarm-clear-v2",
+            "state-alarm-clear-acs-v1",
             Trigger::Record {
                 subscription: "inbox".into(),
                 sequence: 1,
@@ -1395,5 +1395,35 @@ pub fn filesystem_codecs(bytes: &[u8]) {
         control!(decode_multi_root_plan, encode_multi_root_plan);
         control!(decode_multi_root_candidate, encode_multi_root_candidate);
         control!(decode_publication, encode_publication);
+    }
+}
+
+#[test]
+fn historical_invocations_are_typed_format_refusals() {
+    use acyclic_actors::{guest::GuestError, invocation::Invocation};
+    use acyclic_stream::Record;
+    use bytes::Bytes;
+    for bytes in [
+        &include_bytes!("../corpus/actor_codecs/invocation")[..],
+        &include_bytes!("../corpus/actor_codecs/invocation-v2")[..],
+        &include_bytes!("../corpus/actor_codecs/invocation-committed-v2")[..],
+    ] {
+        let record = acyclic_stream::wire_codec::record(
+            acyclic_stream::wire::Record::decode(bytes).unwrap(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            Invocation::decode(&record),
+            Err(GuestError::UnsupportedFormat)
+        );
+        let malformed = Record {
+            value: Bytes::from_static(b"not a protobuf").into(),
+            ..record
+        };
+        assert_eq!(
+            Invocation::decode(&malformed),
+            Err(GuestError::UnsupportedFormat)
+        );
     }
 }

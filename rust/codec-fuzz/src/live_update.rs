@@ -71,7 +71,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
                 "live-update writer must be admitted"
             );
             seeds.push((
-                concat!("live-update-", $name),
+                concat!("live-update-v1-", $name),
                 bytes,
                 concat!("live_update::encode::<", stringify!($ty), ">"),
             ));
@@ -164,15 +164,15 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     let envelope_text = String::from_utf8(live::encode(&envelope)?)?;
     for (name, bytes) in [
         (
-            "live-update-unknown-envelope-field",
+            "live-update-v1-unknown-envelope-field",
             envelope_text.replacen("\"epoch\":", "\"future\":1,\"epoch\":", 1),
         ),
         (
-            "live-update-duplicate-envelope-field",
+            "live-update-v1-duplicate-envelope-field",
             envelope_text.replacen("\"epoch\":", "\"epoch\":\"1\",\"epoch\":", 1),
         ),
         (
-            "live-update-noncanonical-decimal",
+            "live-update-v1-noncanonical-decimal",
             envelope_text.replace("18446744073709551615", "018446744073709551615"),
         ),
     ] {
@@ -258,26 +258,26 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     save!("policy", policy, live::RolloutPolicy);
     for (name, status_name, guard) in [
         (
-            "live-update-guard-awaiting",
-            "live-update-status-awaiting",
+            "live-update-v1-guard-awaiting",
+            "live-update-v1-status-awaiting",
             live::GuardDecision::AwaitingCoverage,
         ),
         (
-            "live-update-guard-advance",
-            "live-update-status-advance",
+            "live-update-v1-guard-advance",
+            "live-update-v1-status-advance",
             live::GuardDecision::Advance { policy: [1; 32] },
         ),
         (
-            "live-update-guard-rollback",
-            "live-update-status-rollback",
+            "live-update-v1-guard-rollback",
+            "live-update-v1-status-rollback",
             live::GuardDecision::Rollback {
                 policy: [2; 32],
                 reason: "failed".into(),
             },
         ),
         (
-            "live-update-guard-blocked",
-            "live-update-status-blocked",
+            "live-update-v1-guard-blocked",
+            "live-update-v1-status-blocked",
             live::GuardDecision::HandoffBlocked {
                 reason: "unknown".into(),
             },
@@ -308,14 +308,14 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn Err
     let mut whitespace = original.clone();
     whitespace.push(b'\n');
     seeds.push((
-        "live-update-noncanonical",
+        "live-update-v1-noncanonical",
         whitespace,
         "live_update::encode::<Selection> plus trailing whitespace",
     ));
     let mut future: serde_json::Value = serde_json::from_slice(&original)?;
     future["v"] = 2.into();
     seeds.push((
-        "live-update-future-version",
+        "live-update-v1-future-version",
         serde_json::to_vec(&future)?,
         "live_update::encode::<Selection> with unsupported version",
     ));
