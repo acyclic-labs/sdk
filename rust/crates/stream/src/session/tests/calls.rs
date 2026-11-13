@@ -273,10 +273,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     let mut lost = core::pin::pin!(lost);
     let (_, producer) = calls.recv().await.ok_or("second call did not dispatch")?;
     drop(producer);
-    assert!(matches!(
-        lost.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(lost.next().await, StreamError::Unavailable);
 
     let revoked = client.actor_call_chunks(&invocation, 0, 128).await?;
     let mut revoked = core::pin::pin!(revoked);
@@ -294,10 +291,7 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         Err(StreamError::AccessDenied),
         "dependent disclosure used a stale trust snapshot"
     );
-    assert!(matches!(
-        revoked.next().await,
-        Some(Err(StreamError::AccessDenied))
-    ));
+    assert_reply_failure(revoked.next().await, StreamError::AccessDenied);
     Ok(())
 }
 
@@ -574,10 +568,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
         "consumer loss must wake without escaped credit returning"
     );
     let mut abandoned_reply = core::pin::pin!(abandoned_reply);
-    assert!(matches!(
-        abandoned_reply.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(abandoned_reply.next().await, StreamError::Unavailable);
     assert_eq!(escaped.as_ref().as_ptr(), original.as_ptr());
     assert_eq!(escaped_second.as_ref().as_ptr(), second_original.as_ptr());
 
@@ -604,10 +595,7 @@ async fn product_input_control(resource: &'static str, action: &'static str) -> 
     drop(host);
     assert_eq!(finish.await, Err(StreamError::Unavailable));
     let mut lost = core::pin::pin!(lost);
-    assert!(matches!(
-        lost.next().await,
-        Some(Err(StreamError::Unavailable))
-    ));
+    assert_reply_failure(lost.next().await, StreamError::Unavailable);
     // The held EOF followed the queued data on the same ordered transport.
     // Once source loss is observed, a data-first adapter would disclose that
     // data instead of the original failure. Return the cause exactly once.
@@ -908,4 +896,23 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         &body[crate::MAX_RECORD_BYTES..2 * crate::MAX_RECORD_BYTES]
     );
     Ok(())
+}
+
+fn assert_reply_failure<T>(result: Option<Result<T, StreamError>>, expected: StreamError) {
+    let error = match result {
+        Some(Err(error)) => error,
+        _ => panic!("reply ended without its original failure"),
+    };
+    assert_eq!(error.category(), expected);
+    let mut cause = std::error::Error::source(&error);
+    while let Some(source) = cause {
+        if source
+            .downcast_ref::<StreamError>()
+            .is_some_and(|original| original.category() == expected)
+        {
+            return;
+        }
+        cause = source.source();
+    }
+    panic!("reply failure lost its original stream error");
 }
