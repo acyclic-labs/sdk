@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for path in [
         "runner/main.rs",
         "runner/request.rs",
+        "runner/packet_device.rs",
         "runner/sys.rs",
         "src/process_tree/record.rs",
         "src/process_tree/warden.rs",

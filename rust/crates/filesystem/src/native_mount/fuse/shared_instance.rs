@@ -171,7 +171,7 @@ impl SharedFuseInstance {
         );
         state.device = received
             .map(|descriptor| {
-                super::host_io::HostIo::new(std::fs::File::from(descriptor), &work).map(Arc::new)
+                super::host_io::HostIo::host(std::fs::File::from(descriptor), &work).map(Arc::new)
             })
             .transpose()?;
         opened?;

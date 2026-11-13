@@ -2,7 +2,7 @@
 
 use super::notification::PacketSink;
 use super::transport_io::{self, Ready};
-use acyclic_native_runtime::ProcessWake;
+use acyclic_native_runtime::{PacketDevice, PacketDeviceRetirement, ProcessWake};
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
@@ -71,6 +71,9 @@ pub(super) struct HostIo {
     // The session is the sole descriptor owner. Retained notification sinks
     // retain this control, never a live device after its server has stopped.
     device: RwLock<Option<File>>,
+    custody: Mutex<Option<PacketDeviceRetirement>>,
+    publication: Mutex<()>,
+    framed: bool,
     wake: ProcessWake,
     // Readiness is advisory. One owner keeps this queue's claim through the
     // physical read, then releases it before any source callback or reply.
@@ -88,8 +91,26 @@ pub(super) enum Received {
 }
 
 impl HostIo {
+    pub(super) fn host(
+        device: File,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, super::NativeMountError> {
+        let capacity = super::packet_session::MAXIMUM_WRITE + 4096;
+        let (stream, retirement) = PacketDevice::host(device, capacity)?.into_parts();
+        Self::from_stream(stream, Some(retirement), work)
+    }
+
+    #[cfg(test)]
     pub(super) fn new(
         device: File,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, super::NativeMountError> {
+        Self::from_stream(device, None, work)
+    }
+
+    fn from_stream(
+        device: File,
+        custody: Option<PacketDeviceRetirement>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
         let allocation = work.claim(
@@ -105,6 +126,9 @@ impl HostIo {
         Ok(Self {
             connection: OnceLock::new(),
             device: RwLock::new(Some(device)),
+            framed: custody.is_some(),
+            custody: Mutex::new(custody),
+            publication: Mutex::new(()),
             wake,
             receiver: Mutex::new(Some(receiver)),
             #[cfg(test)]
@@ -125,6 +149,17 @@ impl HostIo {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+        // The host acknowledges only after the actual /dev/fuse has closed.
+        // No kernel caller can remain pinned behind a stopped owner transport.
+        if let Some(mut custody) = self
+            .custody
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            && let Err(error) = custody.retire()
+        {
+            tracing::error!(%error, "FUSE device host retirement failed");
+        }
     }
 
     pub(super) fn with_device<T>(
@@ -162,12 +197,20 @@ impl HostIo {
         let Some(reader) = receiver.as_ref() else {
             return Ok(Received::Closed);
         };
+        let mut filled = 0;
+        let mut needed = if self.framed { 4 } else { bytes.len() };
+        if needed > bytes.len() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         loop {
             match reader.wait(&self.wake)? {
                 Ready::Closed => return Ok(Received::Closed),
                 Ready::Wake => {
                     self.wake.consume()?;
-                    return Ok(Received::Wake);
+                    if filled == 0 {
+                        return Ok(Received::Wake);
+                    }
+                    continue;
                 }
                 Ready::Device(_) => {
                     #[cfg(test)]
@@ -178,12 +221,27 @@ impl HostIo {
             let Some(device) = device.as_ref() else {
                 return Ok(Received::Closed);
             };
-            match (&*device).read(bytes) {
-                Ok(0) => return Ok(Received::Closed),
+            match (&*device).read(&mut bytes[filled..needed]) {
+                Ok(0) if filled == 0 => return Ok(Received::Closed),
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
                 Ok(length) => {
+                    filled += length;
+                    if self.framed && filled >= 4 {
+                        needed = u32::from_ne_bytes(
+                            bytes[..4]
+                                .try_into()
+                                .map_err(|_| io::ErrorKind::InvalidData)?,
+                        ) as usize;
+                        if needed < 4 || needed > bytes.len() {
+                            return Err(io::ErrorKind::InvalidData.into());
+                        }
+                    }
+                    if filled != needed {
+                        continue;
+                    }
                     #[cfg(test)]
                     self.receive_counts[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Ok(Received::Packet(length));
+                    return Ok(Received::Packet(filled));
                 }
                 Err(error)
                     if matches!(
@@ -207,11 +265,18 @@ impl HostIo {
 
 impl PacketSink for HostIo {
     fn publish(&self, packet: &[IoSlice<'_>]) -> io::Result<()> {
+        // Stream writes may split a frame; retain its one publication claim
+        // until every slice is sent, without interleaving another response.
+        let _publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let total = packet.iter().try_fold(0_usize, |length, part| {
             length
                 .checked_add(part.len())
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::EOVERFLOW))
         })?;
+        let mut sent = 0;
         loop {
             if self.wake.is_stopped() {
                 return Err(io::Error::from_raw_os_error(libc::ENODEV));
@@ -221,10 +286,29 @@ impl PacketSink for HostIo {
                 let device = device
                     .as_ref()
                     .ok_or_else(|| io::Error::from_raw_os_error(libc::ENODEV))?;
-                (&*device).write_vectored(packet)
+                if sent == 0 {
+                    (&*device).write_vectored(packet)
+                } else {
+                    let mut offset = sent;
+                    let tail = packet
+                        .iter()
+                        .find_map(|part| {
+                            if offset < part.len() {
+                                Some(&part[offset..])
+                            } else {
+                                offset -= part.len();
+                                None
+                            }
+                        })
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                    (&*device).write(tail)
+                }
             };
             match result {
-                Ok(length) if length == total => return Ok(()),
+                Ok(length) if sent + length == total => return Ok(()),
+                Ok(length) if self.framed && length > 0 => {
+                    sent += length;
+                }
                 // A short publication has uncertain completion. Never retry it.
                 Ok(_) => {
                     return Err(io::Error::new(
