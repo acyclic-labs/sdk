@@ -475,7 +475,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             (a, b) => a.or(b),
         };
         let effect = hard_effect(&mut commit.request, work)?;
-        effect.conditions.append(&mut part.effects[0].conditions);
+        for condition in part.effects[0].conditions.drain(..) {
+            super::policy::merge_condition(&mut effect.conditions, condition, work)?;
+        }
         effect.mutations.append(&mut part.effects[0].mutations);
         commit.authorities.push(append.authority_id);
         commit.contributions.push(Contribution {
