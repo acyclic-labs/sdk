@@ -40,7 +40,7 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
         },
     )
     .await?;
-    let mut page = TraceQuery::new(stream.read(0, 1).await?);
+    let mut page = TraceQuery::new(stream.read(0, 1).await?, Default::default());
     assert!(matches!(
         page.next().await?,
         Some(Observation::Started {
@@ -52,7 +52,10 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
     assert_eq!(page.active_waits(), 1);
     assert!(page.totals().is_empty(), "EOF cannot settle an active wait");
 
-    let mut live = TraceQuery::new(stream.follow(0, Default::default()).await?);
+    let mut live = TraceQuery::new(
+        stream.follow(0, Default::default()).await?,
+        BTreeMap::from([(Mechanism::Io, 10), (Mechanism::Wait, 100)]),
+    );
     assert!(matches!(
         live.next().await?,
         Some(Observation::Started { .. })
@@ -88,7 +91,11 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
     .await?;
     assert!(matches!(
         live.next().await?,
-        Some(Observation::Completed { elapsed_ns: 15, .. })
+        Some(Observation::Completed {
+            elapsed_ns: 15,
+            outlier: Some(true),
+            ..
+        })
     ));
     append(
         &stream,
@@ -97,6 +104,7 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
             at_ns: 30,
             bytes: None,
             result: Outcome::Unsettled,
+            outlier: Some(false),
         },
     )
     .await?;
@@ -118,9 +126,18 @@ async fn paged_and_live_queries_preserve_clock_domains_coverage_and_settlement()
     let (duration, original) = totals.longest.as_ref().ok_or("missing largest span")?;
     assert_eq!((*duration, original.sequence), (15, 1));
     assert_eq!(original.path, *stream.path());
+    assert_eq!(totals.outliers, Some(1));
     let waits = &live.totals()[&Mechanism::Wait];
     assert_eq!((waits.unsettled, waits.unknown_bytes), (1, 1));
+    assert_eq!(waits.outliers, Some(0));
     assert_eq!(live.missing_guarantees(), 1);
+    let mut unclassified = TraceQuery::new(stream.read(1, 2).await?, Default::default());
+    unclassified.next().await?;
+    assert!(matches!(
+        unclassified.next().await?,
+        Some(Observation::Completed { outlier: None, .. })
+    ));
+    assert_eq!(unclassified.totals()[&Mechanism::Io].outliers, None);
 
     // A finish in another producer domain cannot pair merely by sequence.
     append(
