@@ -526,7 +526,7 @@ async fn settle(
     let base = base_model.or(selection.as_deref()).ok_or_else(|| {
         Refused::Operation(Error::Invalid("startup model selection is absent".into()))
     })?;
-    let (value, _) = config::compose_result(
+    let value = config::compose_result(
         config::AGENT,
         layers,
         tree,

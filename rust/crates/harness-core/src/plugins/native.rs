@@ -106,7 +106,7 @@ pub async fn load_result(
     layers: &[Layer<'_>],
     enabler: &str,
 ) -> Result<Result<Enabled>> {
-    let (value, _) =
+    let value =
         match config::compose_result(MANIFEST, layers, tree, Value::Object(Default::default()))
             .await?
         {
