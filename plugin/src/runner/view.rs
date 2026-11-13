@@ -103,7 +103,7 @@ async fn turn(
     if entry.input.context().is_some() {
         return Ok(Vec::new());
     }
-    let turn = conversation.turn_at(sequence, entry).await?;
+    let turn = conversation.turn(sequence, entry).await?;
     let mut blocks = Vec::new();
     blocks.extend(turn.prompt.map(|text| prompt(&entry.input, text)));
     blocks.extend(work(turn.tools, turn.answer));
@@ -468,7 +468,7 @@ impl View {
         seen: u64,
     ) -> Result<(), Failure> {
         match event {
-            Event::Turn(entry) => {
+            Event::Turn { sequence, entry } => {
                 self.pending_dirty = true;
                 self.observe_settled_before(entry.inbox.saturating_add(1));
                 if let Some(action) = checkpoint(&entry) {
@@ -503,13 +503,7 @@ impl View {
                     .map(|at| self.pending.remove(at).1);
                 // A turn's text is its committed entry's, a cancelled one's
                 // too, whichever of it and its status arrived first.
-                let turn = conversation
-                    .turn_at(
-                        seen.checked_sub(1)
-                            .ok_or("turn has no committed sequence")?,
-                        &entry,
-                    )
-                    .await?;
+                let turn = conversation.turn(sequence, &entry).await?;
                 if let Some(text) = sent.or(turn.prompt) {
                     let (kind, text) = prompt(&entry.input, text);
                     self.transcript.push(kind, &text);
@@ -1410,7 +1404,7 @@ async fn run_current(
             }
             event = events.next() => {
                 let event = event?;
-                let settled = matches!(&event, Event::Turn(_));
+                let settled = matches!(&event, Event::Turn { .. });
                 if matches!(event, Event::Delta) {
                     events.absorb().await?;
                     // Another client can start a turn while this view is idle.
@@ -2056,7 +2050,7 @@ mod tests {
         let mut idle = false;
         while !answered || !idle {
             let event = completed_events.next().await?;
-            answered |= matches!(&event, Event::Turn(entry)
+            answered |= matches!(&event, Event::Turn { entry, .. }
                 if entry.inbox == completed && entry.outcome == TurnOutcome::Completed);
             idle |= matches!(&event, Event::Status(status)
                 if status.conversation >= 3 && matches!(status.phase, Phase::Idle));
@@ -2149,6 +2143,7 @@ mod tests {
                 ScriptedTurn::Text("before".into()),
                 ScriptedTurn::Text("after".into()),
                 ScriptedTurn::Text("fork ready".into()),
+                ScriptedTurn::Text("child settlement observed".into()),
             ])
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
@@ -2165,6 +2160,7 @@ mod tests {
                     ),
                 )?
                 .without_user_settings()
+                .feedback_plugin(false)
                 .state_directory(directory.path().join("state"))
                 .workspace_mounting(WorkspaceMounting::Physical)
                 .compaction(CompactionPolicy::Disabled),
@@ -2185,10 +2181,13 @@ mod tests {
         };
         let forked = conversation.select(child).await?;
         forked.wait_current_input().await?;
+        // The child's committed settlement wakes its parent. Fence that
+        // input too, so restoration cannot be blamed for its model turn.
+        conversation.wait_current_input().await?;
         let inherited = forked.entries(0, 1).await?;
         assert!(
-            forked.turn(&inherited[0]).await.is_err(),
-            "an inherited file needs its original conversation proof"
+            forked.turn(1, &inherited[0]).await.is_err(),
+            "a different conversation sequence cannot authorize an inherited file"
         );
         let page = older(Arc::clone(&forked), 0, 0, 1).await?;
         assert_eq!(
@@ -2274,6 +2273,11 @@ mod tests {
                 );
             }
         }
+        assert_eq!(
+            provider.request_count(),
+            4,
+            "task, fork initialization and parent settlement must finish before restoration"
+        );
         drop(events);
         let (mut events, phase) = conversation.observe_current().await?;
         let mut view = View {
@@ -2296,7 +2300,7 @@ mod tests {
             let mut turn = false;
             while !turn {
                 let event = events.next().await?;
-                turn |= matches!(&event, Event::Turn(entry) if entry.inbox == inbox);
+                turn |= matches!(&event, Event::Turn { entry, .. } if entry.inbox == inbox);
                 view.apply(&conversation, event, events.seen()).await?;
             }
             assert!(!view.busy());
@@ -2312,7 +2316,7 @@ mod tests {
         }
         assert_eq!(
             provider.request_count(),
-            3,
+            4,
             "restoration must not redispatch the model"
         );
         Ok(())
@@ -2606,7 +2610,7 @@ mod tests {
                 },
             )
             .await?;
-            view.apply(&conversation, Event::Turn(entry), sequence + 1)
+            view.apply(&conversation, Event::Turn { sequence, entry }, sequence + 1)
                 .await?;
             let failure = view.exit().expect_err("old turn replaced terminal failure");
             assert_eq!(failure.to_string(), message);
