@@ -74,7 +74,7 @@ struct ProposalCore {
     growth: usize,
     cost: Mutex<Option<crate::AuthorityGroupCost>>,
     native: bool,
-    cut: Option<crate::PolicyCut>,
+    cut: Option<crate::async_storage::ScopedCuts>,
     _allocation: RetainedAllocation,
 }
 

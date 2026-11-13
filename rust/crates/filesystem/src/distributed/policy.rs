@@ -34,21 +34,23 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             request = self.fence_policy(request, *cut, work)?;
         }
         if let Some(current) = crate::PolicyCut::current() {
-            let mut captured = false;
-            for cut in cuts {
-                let visit = WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                };
-                work.admit(visit)?;
-                work.charge(visit)?;
-                if *cut == current {
-                    captured = true;
-                    break;
+            for current in current.as_slice() {
+                let mut captured = false;
+                for cut in cuts {
+                    let visit = WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    work.admit(visit)?;
+                    work.charge(visit)?;
+                    if cut == current {
+                        captured = true;
+                        break;
+                    }
                 }
-            }
-            if !captured {
-                request = self.fence_policy(request, current, work)?;
+                if !captured {
+                    request = self.fence_policy(request, *current, work)?;
+                }
             }
         }
         Ok(request)
