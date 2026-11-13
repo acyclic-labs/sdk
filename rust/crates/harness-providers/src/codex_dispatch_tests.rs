@@ -314,6 +314,12 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_
 async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_model()
 -> acyclic_harness_core::Result<()> {
     let (root, login, server, _) = fixture(vec![(200, RESPONSE.into()), (200, RESPONSE.into())])?;
+    // The change is published through the login's watch, so the reread follows
+    // the event rather than whenever the OS delivers the file notification.
+    let (changes, _) = tokio::sync::watch::channel(0);
+    let login = login.watched(Arc::new(crate::registry::credential_tests::watched(
+        changes.clone(),
+    )));
     let registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), server.clone())
         .with_codex_login(login);
     let active = registry.resolve("openai/gpt-5")?;
@@ -326,6 +332,7 @@ async fn resolving_again_accepts_a_new_cli_account_without_switching_an_active_m
     let mut auth = crate::json(&std::fs::read(&path).map_err(|e| invalid(e.to_string()))?)?;
     auth["tokens"]["account_id"] = json!("new-account");
     std::fs::write(path, auth.to_string()).map_err(|e| invalid(e.to_string()))?;
+    changes.send_replace(1);
     let (request, dispatch) = crate::tests::request(&active)?;
     assert!(
         active
