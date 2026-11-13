@@ -82,7 +82,7 @@ fn notification_backpressure_does_not_stop_kernel_request_delivery()
     )? {
         return Ok(());
     }
-    let (mut source, custody, mut kernel, mut writer) = host_with_writer()?;
+    let (mut source, mut custody, mut kernel, mut writer) = host_with_writer()?;
     struct Disconnect(UnixStream);
     impl Drop for Disconnect {
         fn drop(&mut self) {
@@ -113,6 +113,7 @@ fn notification_backpressure_does_not_stop_kernel_request_delivery()
         queued > 0,
         "the original physical endpoint must exhaust actual kernel credit"
     );
+    drop(writer);
     let mut notification = [0; 40];
     notification[..4].copy_from_slice(&40_u32.to_ne_bytes());
     notification[4..8].copy_from_slice(&2_i32.to_ne_bytes());
@@ -128,18 +129,41 @@ fn notification_backpressure_does_not_stop_kernel_request_delivery()
         source.read_exact(&mut delivered)?;
         assert_eq!(delivered, original);
     }
+    // The second request is delivered only after notification admission. Stop
+    // while the original physical endpoint still has no write credit. Its
+    // borrowed descriptor and packet must survive until physical completion.
+    custody.request_stop()?;
     for _ in 0..queued {
         let mut physical = [0; OUTPUT_HEADER];
         kernel.read_exact(&mut physical)?;
         assert_eq!(physical, filler);
     }
-    let mut physical = [0; 40];
-    kernel.read_exact(&mut physical)?;
-    assert_eq!(physical, notification);
-    assert_eq!(
-        custody.publication(true)?,
-        PacketDevicePublication::Published
+    let mut notified = false;
+    loop {
+        let mut physical = [0; 40];
+        let length = kernel.read(&mut physical)?;
+        match length {
+            0 => break,
+            40 => {
+                assert!(!notified);
+                assert_eq!(physical, notification);
+                notified = true;
+            }
+            OUTPUT_HEADER => {
+                assert_eq!(&physical[4..8], &(-libc::EIO).to_ne_bytes());
+                assert!(matches!(
+                    u64::from_ne_bytes(physical[8..16].try_into()?),
+                    2 | 3
+                ));
+            }
+            _ => return Err("physical packet was split during retirement".into()),
+        }
+    }
+    assert!(
+        notified,
+        "retirement closed a device still borrowed by the notifier"
     );
+    custody.retire()?;
     Ok(())
 }
 
