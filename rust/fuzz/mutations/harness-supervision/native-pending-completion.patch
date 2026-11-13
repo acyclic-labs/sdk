@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/supervision/streams.rs b/rust/crates/harness-core/src/supervision/streams.rs
+index 380c41cd7de..a4292aae71c 100644
+--- a/rust/crates/harness-core/src/supervision/streams.rs
++++ b/rust/crates/harness-core/src/supervision/streams.rs
+@@ -450,7 +450,7 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
+                 let pending = if current == 1 {
+                     pending.checked_add(1)
+                 } else {
+-                    pending.checked_sub(1)
++                    pending.checked_sub(0)
+                 }
+                 .ok_or_else(|| invalid("native pending measurement count overflow or underflow"))?;
+                 Self::write_number(&mut projection, fence, pending);

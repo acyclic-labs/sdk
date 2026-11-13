@@ -99,3 +99,12 @@ another call's receipt and reject a foreign volume. The existing real Streams
 unavailable, positive and unchanged native measurements: unavailable evidence
 must not create a positive fact, and subsequent known unchanged spending turns
 must still reach the configured stop.
+`native_pending_measurements_settle_per_call_without_bypassing_no_progress`
+(`acyclic-harness-core --lib`) commits original pending and completed captures,
+then settles real spending. It must count unchanged completed calls, retain
+other calls' pending credit, refuse delayed-start downgrades, keep replay
+idempotent and distinguish unavailable evidence from positive progress.
+`native-pending-completion.patch` leaves a completed call's credit outstanding;
+the same regression must fail at
+`completed native measurements did not settle their own pending calls`.
+Reverse it and require the identical regression to pass again.

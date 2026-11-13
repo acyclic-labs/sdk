@@ -2,7 +2,7 @@
 use super::*;
 use crate::supervision::{
     Observation, Policy, Position,
-    streams::{Projection, Queries},
+    streams::{NativeMeasurement, Projection, Queries},
 };
 use std::borrow::Cow;
 
@@ -17,7 +17,10 @@ pub(super) enum Invocation<'a> {
 pub(super) enum Inputs<'a> {
     PolicyChanged,
     Progress,
-    NativeCapture(Option<bool>),
+    NativeCapture {
+        call: OperationId,
+        measurement: NativeMeasurement,
+    },
     Usage {
         tokens: Option<u64>,
         usd_nanos: Option<u64>,
@@ -136,7 +139,18 @@ where
                 >(self, receipt, io)
                 .await?;
                 record.validate(operation, receipt)?;
-                return Ok(Some(Inputs::NativeCapture(record.changed)));
+                let measurement = if matches!(
+                    record.evidence,
+                    crate::runtime::NativeCaptureEvidence::Pending { .. }
+                ) {
+                    NativeMeasurement::Pending
+                } else {
+                    NativeMeasurement::Complete(record.changed)
+                };
+                return Ok(Some(Inputs::NativeCapture {
+                    call: record.call,
+                    measurement,
+                }));
             }
             ExecutionEvent::Progress { .. } => {
                 return Ok(self
@@ -231,9 +245,9 @@ where
                 .await
                 .map(Some);
         }
-        if let Inputs::NativeCapture(changed) = inputs {
+        if let Inputs::NativeCapture { call, measurement } = inputs {
             return queries
-                .project_native_capture(source, *turn, *changed, policy)
+                .project_native_capture(source, *turn, *call, *measurement, policy)
                 .await
                 .map(Some);
         }
