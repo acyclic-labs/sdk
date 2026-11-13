@@ -75,7 +75,11 @@ fn writer_controls() {
     // refuses everything. Retain the original public writer's positive witness.
     assert!(
         matches!(
-            PreparedCommand::decode(include_bytes!("../corpus/agent_controls/command-root")),
+            PreparedCommand::decode(
+                PreparedCommand::new(&AgentCommand::Root {})
+                    .expect("public root writer")
+                    .command(),
+            ),
             Ok(AgentCommand::Root {})
         ),
         "captured writer command refused"
@@ -125,7 +129,11 @@ fn writer_controls() {
     };
     assert_eq!(*decoded, original, "writer recovery request changed");
     assert!(unknown(&wire, &command), "writer recovery wire changed");
-    let captured = include_bytes!("../corpus/agent_controls/reply-bind-observation");
+    let captured = &controls
+        .iter()
+        .find(|(name, _)| name == "reply-bind-observation")
+        .expect("public observation writer")
+        .1;
     let separator = captured.iter().position(|byte| *byte == 0).unwrap();
     let command = PreparedCommand::decode(&captured[..separator]).unwrap();
     let reply = decode_agent_reply(&captured[separator + 1..], &command)
