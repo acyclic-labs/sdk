@@ -3,7 +3,7 @@
   "workspace": {
     "kind": "plain",
     "files": {
-      "d.txt": "DIFF_E2E_BEFORE\n"
+      "d.txt": "let value = old_value;\n"
     }
   },
   "model": {
@@ -16,7 +16,7 @@
             "name": "write",
             "arguments": {
               "path": "d.txt",
-              "content": "DIFF_E2E_CONTENT\n"
+              "content": "let value = new_value;\n"
             }
           }
         ]
@@ -53,10 +53,125 @@
         },
         {
           "when": {
+            "styles": [
+              {
+                "bold": true,
+                "text": "old_value"
+              },
+              {
+                "bold": true,
+                "text": "new_value"
+              },
+              {
+                "bold": false,
+                "text": "let value = "
+              }
+            ],
             "contains": [
               "d.txt (modified) +1 -1",
-              "-DIFF_E2E_BEFORE",
-              "+DIFF_E2E_CONTENT"
+              "old_value",
+              "new_value"
+            ],
+            "separate_rows": [
+              [
+                "old_value",
+                "new_value"
+              ]
+            ]
+          },
+          "resize": {
+            "cols": 170,
+            "rows": 30
+          }
+        },
+        {
+          "when": {
+            "styles": [
+              {
+                "bold": true,
+                "text": "old_value"
+              },
+              {
+                "bold": true,
+                "text": "new_value"
+              },
+              {
+                "bold": false,
+                "text": "let value = "
+              }
+            ],
+            "same_row": [
+              [
+                "old_value",
+                "new_value"
+              ]
+            ],
+            "contains": [
+              "d.txt (modified) +1 -1",
+              "old_value",
+              "new_value"
+            ]
+          },
+          "send": " "
+        },
+        {
+          "when": {
+            "contains": [
+              "d.txt (modified) +1 -1",
+              "@@"
+            ],
+            "absent": [
+              "old_value",
+              "new_value"
+            ]
+          },
+          "send": " "
+        },
+        {
+          "when": {
+            "same_row": [
+              [
+                "old_value",
+                "new_value"
+              ]
+            ],
+            "contains": [
+              "d.txt (modified) +1 -1",
+              "old_value",
+              "new_value"
+            ]
+          },
+          "resize": {
+            "cols": 80,
+            "rows": 24
+          }
+        },
+        {
+          "when": {
+            "styles": [
+              {
+                "bold": true,
+                "text": "old_value"
+              },
+              {
+                "bold": true,
+                "text": "new_value"
+              },
+              {
+                "bold": false,
+                "text": "let value = "
+              }
+            ],
+            "contains": [
+              "d.txt (modified) +1 -1",
+              "old_value",
+              "new_value"
+            ],
+            "separate_rows": [
+              [
+                "old_value",
+                "new_value"
+              ]
             ]
           },
           "prompt": "/merge "
@@ -75,7 +190,7 @@
   "assert": {
     "requests": 2,
     "files": {
-      "d.txt": "DIFF_E2E_CONTENT\n"
+      "d.txt": "let value = new_value;\n"
     }
   }
 }

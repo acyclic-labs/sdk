@@ -22,7 +22,11 @@ export function rawNeedles(actions) {
 // text to paint before its turn settles.
 export function matches(screen, raw, condition, visible, diagnostic = visible, logical = visible, previous = "") {
   if (visible === undefined) ({ visible, diagnostic, logical } = screenSnapshot(screen));
+  const rows = condition.same_row?.length || condition.separate_rows?.length ? visible.split("\n") : undefined;
   return (condition.contains ?? []).every(text => logical.includes(text))
+    && (condition.same_row?.every(group => rows.some(row => group.every(text => row.includes(text)))) ?? true)
+    && (condition.separate_rows?.every(group => group.every(text => rows.some(row => row.includes(text)))
+      && !rows.some(row => group.every(text => row.includes(text)))) ?? true)
     && (condition.new_contains === undefined || condition.new_contains.some(group =>
       group.every(text => logical.includes(text)) && !group.every(text => previous.includes(text))))
     && (condition.delta === undefined || (logical.includes(condition.delta) && !logical.includes(IDLE)))
@@ -47,7 +51,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
-    let index = 0, failure, errors, detaching = false;
+    let index = 0, failure, errors, resizing, detaching = false;
     // Model requests this case made, the newest one's arrival, and the count
     // when a prompt was sent: a delta's latency runs from its turn's request
     // reaching the mock, which then streams the chunks, to their paint.
@@ -93,7 +97,7 @@ export async function pty(processes, binary, fixture, input, capture) {
           running.child.stdin.write("\u0004");
           return;
         }
-        if (!action || settled || !frames.available()) return;
+        if (!action || settled || resizing || !frames.available()) return;
         if (action.reject && matches(screen, raw, action.reject, visible, diagnostic, logical, previous)) {
           const error = new Error(`step=await terminal action ${index}: rejected terminal state before the required observation\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_action_rejected";
@@ -112,16 +116,22 @@ export async function pty(processes, binary, fixture, input, capture) {
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
         failures.accept(diagnostic, action.when, action.assert, visible);
         snapshots.push({ action: index, logical });
-        if (action.prompt !== undefined || action.send !== undefined || action.kill || action.detach) frames.consume();
+        if (action.prompt !== undefined || action.send !== undefined || action.resize || action.kill || action.detach) frames.consume();
         trace({ event: "action", prompt_bytes: Buffer.byteLength(action.prompt ?? ""),
-          send: action.send, kill: action.kill, available: frames.available() });
+          send: action.send, resize: action.resize, kill: action.kill, available: frames.available() });
         index++;
-        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
+        if (action.prompt !== undefined || action.send !== undefined || action.resize || action.kill) frames.consume();
         if (action.prompt !== undefined) {
           prompted = requests;
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
         }
         if (action.send !== undefined) running.child.stdin.write(action.send);
+        if (action.resize) {
+          resizing = running.resize(action.resize.cols, action.resize.rows, screen);
+          resizing.then(() => { resizing = undefined; frame(); }, error => {
+            failure = error; running.killExecutable();
+          });
+        }
         if (action.detach) {
           detaching = true;
           running.child.stdin.write("\u0004");
