@@ -13,7 +13,7 @@ struct Files {
 
 impl Files {
     fn program(root: &str) -> Self {
-        Self {
+        let mut tree = Self {
             files: [
                 (format!("{root}/program.ts"),
                     "import {description} from './description.ts'; export default {version: 1, name: 'count', description, inputSchema: {}, entry: {sh: 'main.sh', ps1: 'main.ps1'}};".into()),
@@ -23,7 +23,15 @@ impl Files {
                 ("tools/unselected/program.ts".into(), "throw new Error('must remain lazy')".into()),
             ].into_iter().collect(),
             reads: Mutex::new(Vec::new()),
+        };
+        if root.starts_with("hooks/") {
+            let manifest = tree.files.get_mut(&format!("{root}/program.ts")).unwrap();
+            *manifest = manifest.replace(
+                "version: 1,",
+                "version: 1, on: {kind: 'lifecycle', event: 'Stop'},",
+            );
         }
+        tree
     }
 }
 
@@ -184,6 +192,99 @@ async fn program_revision_pins_imports_and_entries_without_reading_siblings() ->
 }
 
 #[tokio::test]
+async fn hook_manifests_pin_source_selectors_and_refuse_invalid_or_cross_kind_sources() -> Result<()>
+{
+    let path = "hooks/count/program.ts";
+    let mut tree = Files::program("hooks/count");
+    let lifecycle = tree.files[path].clone();
+    tree.files.insert(
+        path.into(),
+        lifecycle.replace(
+            "{kind: 'lifecycle', event: 'Stop'}",
+            "{kind: 'file', volume: 'volume:///project', prefix: 'src', from: 'now'}",
+        ),
+    );
+    let file = load_program(&tree, "hooks/count").await?;
+    let shell = Arc::new(
+        crate::tools::defaults()?
+            .get("shell", None, None)?
+            .unwrap()
+            .clone(),
+    );
+    assert!(matches!(file.bind(shell), Err(Error::Invalid(_))));
+    tree.files.insert(
+        path.into(),
+        lifecycle.replace(
+            "{kind: 'lifecycle', event: 'Stop'}",
+            "{kind: 'stream', path: 'attention', from: 'start'}",
+        ),
+    );
+    let stream = load_program(&tree, "hooks/count").await?;
+    assert_ne!(
+        stream.definition.revision,
+        load_program(&Files::program("hooks/count"), "hooks/count")
+            .await?
+            .definition
+            .revision
+    );
+    for replacement in [
+        "{kind: 'lifecycle', event: 'FileChanged'}",
+        "{kind: 'lifecycle', event: 'StreamRecord'}",
+        "{kind: 'file', volume: 'volume:///project', prefix: '../src', from: 'now'}",
+        "{kind: 'file', volume: ' ', prefix: 'src', from: 'now'}",
+        "{kind: 'stream', path: '', from: 'start'}",
+    ] {
+        tree.files.insert(
+            path.into(),
+            lifecycle.replace("{kind: 'lifecycle', event: 'Stop'}", replacement),
+        );
+        assert!(
+            load_program(&tree, "hooks/count").await.is_err(),
+            "{replacement}"
+        );
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: 16 * 1024 * 1024,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let error = load_program(
+            &Metered {
+                files: &tree,
+                io: &io,
+            },
+            "hooks/count",
+        )
+        .await
+        .expect_err("bounded source validation must retain its original refusal boundary");
+        assert!(
+            matches!(
+                error,
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "{replacement}: {error:?}"
+        );
+    }
+    let mut tool = Files::program("tools/count");
+    let manifest = tool.files.get_mut("tools/count/program.ts").unwrap();
+    *manifest = manifest.replace(
+        "version: 1,",
+        "version: 1, on: {kind: 'lifecycle', event: 'Stop'},",
+    );
+    assert!(matches!(
+        load_program(&tool, "tools/count").await,
+        Err(Error::Invalid(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Result<()> {
     let files = Files::program("tools/count");
     let cancel = acyclic_fs::CancellationToken::new();
@@ -292,6 +393,82 @@ async fn authored_arguments_reach_the_canonical_shell_only_as_json_stdin() -> Re
     assert_eq!(error.code(), crate::wire::ErrorCode::Cancelled);
     drop(error);
     assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn hook_bindings_retain_source_and_executable_credit_through_canonical_admission()
+-> Result<()> {
+    let registry = crate::tools::defaults()?;
+    let shell = Arc::new(registry.get("shell", None, None)?.unwrap().clone());
+    let wrong = Arc::new(registry.get("read", None, None)?.unwrap().clone());
+    for source in [
+        "{kind: 'file', volume: 'volume:///project', prefix: 'src', from: 'now'}",
+        "{kind: 'stream', path: 'events/activity', from: 'start'}",
+    ] {
+        let mut files = Files::program("hooks/count");
+        let manifest = files.files.get_mut("hooks/count/program.ts").unwrap();
+        *manifest = manifest.replace("{kind: 'lifecycle', event: 'Stop'}", source);
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let tree = Metered {
+            files: &files,
+            io: &io,
+        };
+        let program = load_program(&tree, "hooks/count").await?;
+        let retained = program.custody.as_ref().unwrap().bytes();
+        let before = work.live_allocation_bytes();
+        assert!(matches!(
+            program.bind_hook(wrong.clone()),
+            Err(Error::Invalid(_))
+        ));
+        assert!(before - work.live_allocation_bytes() >= retained);
+
+        let program = load_program(&tree, "hooks/count").await?;
+        let retained = program.custody.as_ref().unwrap().bytes();
+        let hook = program.bind_hook(shell.clone())?;
+        assert!(
+            hook.selector
+                ._custody
+                .as_ref()
+                .unwrap()
+                .work()
+                .shares_ledger(&work)
+        );
+        let call = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "event".into(),
+            name: hook.binding().definition.name.clone(),
+            arguments: serde_json::json!({"text": "$(touch injected); 🦀"}),
+        };
+        let canonical = hook
+            .binding()
+            .executor
+            .canonical(&call, Some(&work))?
+            .unwrap();
+        assert_eq!(canonical.invocation.name, "shell");
+        let input: crate::tools::ShellInput =
+            serde_json::from_value(canonical.invocation.arguments)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let (_, argv, stdin) = input.command.prepare(&crate::tools::shell::PLATFORM)?;
+        assert!(
+            !argv
+                .iter()
+                .any(|argument| argument.contains("touch injected"))
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&stdin.unwrap())
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            call.arguments
+        );
+        let before = work.live_allocation_bytes();
+        drop(hook);
+        assert!(before - work.live_allocation_bytes() >= retained);
+    }
     Ok(())
 }
 

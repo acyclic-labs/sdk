@@ -1,21 +1,6 @@
-pub use crate::config::RequestMatch;
+pub use crate::config::{HookEvent, RequestMatch};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-
-/// Lifecycle points with command-hook support.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
-pub enum HookEvent {
-    /// A session was opened, resumed, forked, or compacted.
-    SessionStart,
-    /// A user prompt was admitted and is about to reach the model.
-    UserPromptSubmit,
-    /// A tool is about to execute.
-    PreToolUse,
-    /// A tool returned successfully.
-    PostToolUse,
-    /// The model is about to finish its turn.
-    Stop,
-}
 
 /// The single runtime boundary that fires an event. Every firing site
 /// dispatches exactly `HookEvent::at(site)`, so declaring an event without
@@ -31,16 +16,22 @@ pub(crate) enum HookSite {
     AfterTool,
     /// A model step finished without requesting a tool.
     TurnEnd,
+    /// A durable volume publication record.
+    File,
+    /// A durable followed stream record.
+    Stream,
 }
 
 impl HookEvent {
     /// Every event, in declaration order.
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::SessionStart,
         Self::UserPromptSubmit,
         Self::PreToolUse,
         Self::PostToolUse,
         Self::Stop,
+        Self::FileChanged,
+        Self::StreamRecord,
     ];
 
     pub(crate) const fn site(self) -> HookSite {
@@ -49,6 +40,8 @@ impl HookEvent {
             Self::PreToolUse => HookSite::BeforeTool,
             Self::PostToolUse => HookSite::AfterTool,
             Self::Stop => HookSite::TurnEnd,
+            Self::FileChanged => HookSite::File,
+            Self::StreamRecord => HookSite::Stream,
         }
     }
 
@@ -75,6 +68,8 @@ impl HookEvent {
             Self::PreToolUse => 2,
             Self::PostToolUse => 3,
             Self::Stop => 4,
+            Self::FileChanged => 5,
+            Self::StreamRecord => 6,
         }
     }
 
@@ -91,19 +86,23 @@ impl HookEvent {
             Self::PreToolUse => "PreToolUse",
             Self::PostToolUse => "PostToolUse",
             Self::Stop => "Stop",
+            Self::FileChanged => "FileChanged",
+            Self::StreamRecord => "StreamRecord",
         }
     }
 }
 
 // `ordinal` is exhaustive and injective, so `ALL` lists each event once.
 const _: () = {
-    let [first, second, third, fourth, fifth] = HookEvent::ALL;
+    let [first, second, third, fourth, fifth, sixth, seventh] = HookEvent::ALL;
     assert!(
         first.ordinal() == 0
             && second.ordinal() == 1
             && third.ordinal() == 2
             && fourth.ordinal() == 3
             && fifth.ordinal() == 4
+            && sixth.ordinal() == 5
+            && seventh.ordinal() == 6
     );
 };
 

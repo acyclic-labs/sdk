@@ -72,7 +72,11 @@ impl StockExecutor {
                     }),
                     turn,
                 ),
-                HookEvent::PreToolUse | HookEvent::PostToolUse | HookEvent::Stop => {
+                HookEvent::PreToolUse
+                | HookEvent::PostToolUse
+                | HookEvent::Stop
+                | HookEvent::FileChanged
+                | HookEvent::StreamRecord => {
                     return Err(Error::Invalid("prompt hook site fires a tool event".into()));
                 }
             };

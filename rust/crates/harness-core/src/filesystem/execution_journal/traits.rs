@@ -359,6 +359,27 @@ where
         )
     }
 
+    fn acquire_effect<'a>(
+        &'a self,
+        parent: OperationId,
+        effect: OperationId,
+        io: Option<&PreparationIo>,
+    ) -> Result<crate::executor::ExecutionAttempt<'a>> {
+        self.require_operation(parent, io)?;
+        let volume = crate::executor::with_history_io(io, |work| {
+            self.volume
+                .identity_digest(super::MAXIMUM_PAYLOAD_BYTES, work)
+        })?;
+        let mut namespace = blake3::Hasher::new_derive_key("acyclic.execution.effects/v1");
+        namespace.update(&volume);
+        crate::executor::execution_claim::acquire(
+            self.host.filesystem.operation_claims(),
+            *namespace.finalize().as_bytes(),
+            effect,
+            io,
+        )
+    }
+
     fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
         Box::pin(self.follow_cancellation())
     }
