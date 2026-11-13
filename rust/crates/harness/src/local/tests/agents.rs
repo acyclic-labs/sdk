@@ -5463,6 +5463,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         entering.await.map_err(agent)
     })
     .await?;
+    eprintln!("producer-loss wire={wire}: failed call admitted");
     // Same canonical agent, different original authenticated Session. Refusal
     // must precede even the reply query, without consuming the other follow.
     let other = conversation(&harness).await?;
@@ -5522,6 +5523,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
             futures::poll!(&mut advancing).is_pending(),
             "quiet live usage must wait at its retained frontier"
         );
+        eprintln!("producer-loss wire={wire}: dropping model producer");
         drop(producer);
         advancing.await
     };
@@ -5536,11 +5538,13 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
             }
         },
     };
+    eprintln!("producer-loss wire={wire}: usage terminal");
     assert!(
         matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "usage lost the runtime cause: {usage_result:?}"
     );
     let fenced = fenced.await;
+    eprintln!("producer-loss wire={wire}: input fence terminal");
     assert!(
         matches!(&fenced, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "input fence lost the runtime cause: {fenced:?}"
@@ -5557,6 +5561,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     );
     // Only the failed actor's live subscriptions report its original failure.
     let observed = waiting.await;
+    eprintln!("producer-loss wire={wire}: public settlement terminal");
     assert!(
         matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "public settlement retained its lost model producer: {observed:?}"
@@ -5579,6 +5584,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         }
     }
     let invalid = client.settle("lost-producer", inbox, &mut retired);
+    eprintln!("producer-loss wire={wire}: replay terminal");
     tokio::pin!(invalid);
     assert!(
         matches!(
@@ -5588,6 +5594,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         "settlement admitted a retired original follow or performed I/O before refusal"
     );
     let settled = settling.await;
+    eprintln!("producer-loss wire={wire}: direct settlement terminal");
     assert!(
         matches!(&settled, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "settlement bypassed the original runtime terminal event: {settled:?}"
@@ -5635,6 +5642,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     // Both admitted calls outlive the failed delivery. Only the warm-up completed;
     // losing the second producer must preserve its distinct unfinished call.
     let mut exported = Vec::new();
+    eprintln!("producer-loss wire={wire}: exporting saved usage");
     client
         .observation()
         .await?
@@ -5647,6 +5655,7 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
     assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
     assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
     assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
+    eprintln!("producer-loss wire={wire}: reading saved queries");
     // A later failed delivery cannot revoke the warm-up's committed results,
     // including queries whose caller permits waiting for new progress.
     hosted
@@ -5702,8 +5711,10 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         .map_err(agent)?;
     assert!(saved.try_next().await.map_err(agent)?.is_some());
     assert!(saved.try_next().await.map_err(agent)?.is_none());
+    eprintln!("producer-loss wire={wire}: bounded saved read complete");
     if let Some((stop, serving)) = transport {
         let _ = stop.send(());
+        eprintln!("producer-loss wire={wire}: stopping server");
         serving.await.map_err(agent)??;
     }
     Ok(())

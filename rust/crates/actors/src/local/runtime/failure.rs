@@ -2,13 +2,32 @@
 use super::{ActorReference, Arc, BoxProviderFuture, DeliveryFailure, HashMap, SyncMutex};
 use std::sync::Weak;
 
-#[derive(Default)]
-pub(super) struct Signals(SyncMutex<HashMap<ActorReference, Weak<Signal>>>);
+pub(super) struct Signals {
+    index: SyncMutex<HashMap<ActorReference, Weak<Signal>>>,
+    alive: tokio::sync::watch::Sender<()>,
+}
+
+impl Default for Signals {
+    fn default() -> Self {
+        Self {
+            index: SyncMutex::new(HashMap::new()),
+            alive: tokio::sync::watch::Sender::new(()),
+        }
+    }
+}
 
 impl Signals {
+    pub(super) fn existing(&self, actor: &ActorReference) -> Option<Arc<Signal>> {
+        self.index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(actor)
+            .and_then(Weak::upgrade)
+    }
+
     pub(super) fn signal(self: &Arc<Self>, actor: &ActorReference) -> Arc<Signal> {
         let mut signals = self
-            .0
+            .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(signal) = signals.get(actor).and_then(Weak::upgrade) {
@@ -18,6 +37,7 @@ impl Signals {
             actor: actor.clone(),
             signals: Arc::downgrade(self),
             state: tokio::sync::watch::Sender::new(State::default()),
+            lifetime: self.alive.subscribe(),
         });
         signals.insert(actor.clone(), Arc::downgrade(&signal));
         signal
@@ -34,6 +54,7 @@ pub(super) struct Signal {
     actor: ActorReference,
     signals: Weak<Signals>,
     state: tokio::sync::watch::Sender<State>,
+    lifetime: tokio::sync::watch::Receiver<()>,
 }
 
 impl Signal {
@@ -51,6 +72,7 @@ impl Signal {
 
     pub(super) fn observe(self: Arc<Self>) -> BoxProviderFuture<'static, DeliveryFailure> {
         let mut updates = self.state.subscribe();
+        let mut lifetime = self.lifetime.clone();
         let observed = updates.borrow_and_update().clone();
         Box::pin(async move {
             // Keep the sender and its weak index alive across slot release.
@@ -73,10 +95,13 @@ impl Signal {
                 {
                     return cause.as_ref().clone();
                 }
-                updates
-                    .changed()
-                    .await
-                    .expect("observer retains its sender");
+                tokio::select! {
+                    biased;
+                    changed = updates.changed() => { changed.expect("observer retains its sender"); },
+                    _ = lifetime.changed() => return DeliveryFailure {
+                        message: format!("actor {:?}: runtime released", _signal.actor),
+                    },
+                }
             }
         })
     }
@@ -86,7 +111,7 @@ impl Drop for Signal {
     fn drop(&mut self) {
         if let Some(signals) = self.signals.upgrade() {
             let mut index = signals
-                .0
+                .index
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if index

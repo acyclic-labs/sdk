@@ -369,10 +369,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
         let registration = self.ready.register(actor.clone())?;
         let waker = registration.waker();
+        let failure = self
+            .failures
+            .existing(&actor)
+            .map_or_else(OnceLock::new, OnceLock::from);
         actors.insert(
             actor,
             Arc::new(Slot {
-                failure: OnceLock::new(),
+                failure,
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
