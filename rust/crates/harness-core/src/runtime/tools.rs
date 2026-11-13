@@ -1403,6 +1403,9 @@ impl ToolContext {
                 }
             };
             if off_from_prefix(&bytes, selected.byte_length, io, &continuation).await? {
+                drop(bytes);
+                drop(selected);
+                drop(custody);
                 return Err(missing());
             }
             // Redundant authored seed skills do not shadow issuer configuration.
@@ -1415,6 +1418,7 @@ impl ToolContext {
                 None => false,
             };
             if inherits_seed {
+                drop(bytes);
                 drop(selected);
                 drop(custody);
                 crate::executor::stock_retire_text(concrete, io)?;
