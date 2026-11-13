@@ -126,6 +126,43 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                     .iter()
                     .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
             );
+            // Pending admission owns the original selection even before a
+            // ToolStarted exists. A changed program, input or event cannot
+            // replace it or create another approval for this call identity.
+            let mut replacement = binding.as_ref().clone();
+            replacement.definition.revision.push_str("-changed");
+            let mut changed_input = call.clone();
+            changed_input.arguments["content"] = "replacement".into();
+            let changed_metadata = json!({"replacement": true});
+            for (attempt, selected, metadata) in [
+                (call.clone(), Arc::new(replacement), &Value::Null),
+                (changed_input, binding.clone(), &Value::Null),
+                (call.clone(), binding.clone(), &changed_metadata),
+            ] {
+                assert!(matches!(
+                    executor
+                        .settle_invocation(
+                            journal.as_ref(),
+                            (parent, 0),
+                            (attempt, selected),
+                            metadata,
+                            &mut hooks,
+                            None,
+                        )?
+                        .await,
+                    Err(Error::Conflict(_))
+                ));
+            }
+            assert_eq!(
+                journal.replay(parent, 0, 64, None)?.await?.len(),
+                records.len()
+            );
+            assert!(
+                reader
+                    .read_tool_path("receipt.txt", None, None)
+                    .await
+                    .is_err()
+            );
             let ((approval, _), _hold) = tool_approval_request(
                 TaskId::from_bytes(parent.into_bytes()),
                 &policy.identity(),

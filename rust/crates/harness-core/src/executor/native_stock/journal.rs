@@ -71,6 +71,17 @@ pub(crate) async fn stage_json<T: Serialize>(
     value: &T,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
+    stage_json_keyed(journal, operation, key, value, true, io).await
+}
+
+pub(in crate::executor) async fn stage_json_keyed<T: Serialize>(
+    journal: &dyn ExecutionJournal,
+    operation: OperationId,
+    key: &str,
+    value: &T,
+    bind_content: bool,
+    io: Option<&PreparationIo>,
+) -> Result<FileRef> {
     validate_journal(journal, io)?;
     if let Some(io) = io {
         let hold;
@@ -81,7 +92,7 @@ pub(crate) async fn stage_json<T: Serialize>(
             operation,
             key,
             (&bytes, "application/json"),
-            true,
+            bind_content,
             Some(io),
         )
         .await;
@@ -95,7 +106,7 @@ pub(crate) async fn stage_json<T: Serialize>(
         operation,
         key,
         (&bytes, "application/json"),
-        true,
+        bind_content,
         None,
     )
     .await
