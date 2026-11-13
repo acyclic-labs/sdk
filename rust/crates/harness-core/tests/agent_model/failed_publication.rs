@@ -188,6 +188,7 @@ async fn interrupted_diagnostic_staging_preserves_the_original_driver_result() -
             ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         )?;
         let host = AgentHost::hosting(
+            acyclic_actors::guest::Requests::default(),
             provider.clone(),
             ActorReference::new(b"account", b"agents", b"owner")?,
             Arc::new(Rebinding {
