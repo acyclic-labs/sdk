@@ -58,7 +58,7 @@ async fn optional_planning_and_model_selection_do_not_enter_worker_context() -> 
     );
     assert_eq!(
         crate::seed::AGENT_PROMPT.len(),
-        1023,
+        1258,
         "update the reviewed prompt byte pin"
     );
     assert!(!crate::seed::AGENT_PROMPT.contains("GOAL.md"));
