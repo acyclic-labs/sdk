@@ -117,7 +117,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 "secrets",
                 acyclic_harness::filesystem::DirectoryOptions {
                     generation: generation.as_ref(),
-                    after: cursor.as_ref(),
+                    after: cursor.as_deref(),
                     maximum_entries: page_size,
                     ceiling: None,
                 },
@@ -128,19 +128,20 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
             assert_eq!(&selected, generation);
         }
         generation = Some(selected);
-        assert!(!page.has_more || !page.entries.is_empty());
+        assert_eq!(page.has_more, page.next.is_some());
+        assert!(page.examined <= page_size);
         assert!(page.entries.len() <= page_size as usize);
         assert!(page.next_residency.is_none());
-        for entry in page.entries {
+        for entry in &page.page.entries {
             let name = entry
                 .name
                 .unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())?
                 .value;
-            assert!(cursor.as_ref().is_none_or(|cursor| &entry.name > cursor));
+
             observed.push(name);
-            cursor = Some(entry.name);
         }
-        if !page.has_more {
+        cursor = page.next;
+        if !page.page.has_more {
             break;
         }
         assert!(
@@ -176,7 +177,7 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                 "secrets",
                 acyclic_harness::filesystem::DirectoryOptions {
                     generation: generation.as_ref(),
-                    after: cursor.as_ref(),
+                    after: cursor.as_deref(),
                     maximum_entries: page_size,
                     ceiling: None
                 }

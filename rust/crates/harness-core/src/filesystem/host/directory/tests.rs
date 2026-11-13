@@ -5,6 +5,93 @@ use acyclic_fs::access::{Capability, Generations, Grant, ResourcePattern};
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn hidden_directory_pages_advance_once_at_the_original_generation() -> Result<()> {
+    let (host, volume, grant, writer, _issuer) = fixture(
+        [false, false, false, false, false, false, false, true],
+        VolumeClass::AgentPrivate,
+    )
+    .await?;
+    let (generation, first) = host
+        .list_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: 1,
+                ceiling: None,
+            },
+        )
+        .await?
+        .ok_or_else(|| Error::NotFound("fixture directory".into()))?;
+    assert!(first.entries.is_empty());
+    assert_eq!(first.examined, 1);
+    let mut next = first.next;
+    let token = next
+        .as_deref()
+        .ok_or_else(|| Error::Invalid("missing physical progress".into()))?;
+    assert!(
+        host.list_private_directory(
+            &volume,
+            &grant,
+            "other",
+            DirectoryOptions {
+                generation: None,
+                after: Some(token),
+                maximum_entries: 1,
+                ceiling: None,
+            }
+        )
+        .await
+        .is_err()
+    );
+    host.put_content(
+        &volume,
+        &writer,
+        "rows/08",
+        b"later",
+        "text/plain",
+        "later",
+        4096,
+        &IdempotencyKey::new("later-directory-entry")?,
+        None,
+        crate::conversation::ContentAccess::default(),
+    )
+    .await?;
+    let mut examined = first.examined;
+    let mut visible = Vec::new();
+    while let Some(token) = next {
+        let (selected, page) = host
+            .list_private_directory(
+                &volume,
+                &grant,
+                "rows",
+                DirectoryOptions {
+                    generation: None,
+                    after: Some(&token),
+                    maximum_entries: 1,
+                    ceiling: None,
+                },
+            )
+            .await?
+            .ok_or_else(|| Error::NotFound("fixture directory".into()))?;
+        assert_eq!(selected, generation);
+        assert_eq!(page.examined, 1);
+        examined += page.examined;
+        visible.extend(
+            page.entries
+                .iter()
+                .map(|entry| entry.name.as_bytes().to_vec()),
+        );
+        next = page.next;
+    }
+    assert_eq!(examined, 8);
+    assert_eq!(visible, [b"07".to_vec()]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn inherited_directory_intersects_current_root_and_data_policy()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let (host, volume, grant, writer, _issuer) =
@@ -753,7 +840,8 @@ proptest! {
                 assert_eq!(result.is_ok(), refuse_at == 0, "guard {refuse_at}: {result:?}");
                 if let Ok(((generation, page), custody)) = result {
                     assert_eq!(custody.bytes(), owned_bytes(&page)? + generation.logical_owned_bytes()?);
-                    assert!(!page.entries.is_empty() || !page.has_more);
+                    assert_eq!(page.has_more, page.next.is_some());
+                    assert!(page.examined <= page_size);
                     assert!(page.entries.len() <= page_size as usize);
                     for entry in &page.entries {
                         let name = std::str::from_utf8(entry.name.as_bytes()).unwrap();

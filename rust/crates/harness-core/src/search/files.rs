@@ -118,7 +118,7 @@ impl FileCursor {
                     || directory
                         .after
                         .as_ref()
-                        .is_some_and(|name| name.contains('/') || name.is_empty())
+                        .is_some_and(|token| token.is_empty())
             })
             || self
                 .pending
@@ -185,7 +185,7 @@ impl FileCursor {
                 continue;
             };
             page.validate()?;
-            if page.entries.len() > 1 {
+            if page.examined > 1 || page.entries.len() > 1 {
                 return Err(Error::Storage(
                     "file search directory exceeded its page".into(),
                 ));
@@ -199,8 +199,8 @@ impl FileCursor {
             }
             cursor.generation = Some(page.generation);
             directory.done = !page.has_more;
+            directory.after = page.next;
             if let Some(entry) = page.entries.into_iter().next() {
-                directory.after = Some(entry.name.clone());
                 let path = if directory.path.is_empty() {
                     entry.name
                 } else {

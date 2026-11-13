@@ -248,6 +248,16 @@ impl ContentResidencyVerifier for BrowserReader {
                     generation,
                     entries,
                     has_more,
+                    examined: from_js(
+                        Reflect::get(&result, &JsValue::from_str("examined"))
+                            .map_err(platform_error)?,
+                    )
+                    .map_err(platform_error)?,
+                    next: from_js(
+                        Reflect::get(&result, &JsValue::from_str("next"))
+                            .map_err(platform_error)?,
+                    )
+                    .map_err(platform_error)?,
                 },
                 None,
             )))

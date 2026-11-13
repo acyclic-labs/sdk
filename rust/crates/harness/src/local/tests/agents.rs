@@ -1233,7 +1233,9 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             acyclic_harness_client::AgentPageRequest::new(128, credit, None).map_err(agent)?,
         )
         .await?;
-    assert_eq!(bounded, first);
+    assert_eq!(bounded.entries, first.entries);
+    assert_eq!(bounded.generation, first.generation);
+    assert_eq!(bounded.has_more, first.has_more);
     assert!(
         client
             .directory_page(
@@ -1247,7 +1249,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     let last = &first.entries[0].name;
     let second = client
-        .directory_page("", Some(&first.generation), page(Some(last.clone()))?)
+        .directory_page("", Some(&first.generation), page(first.next.clone())?)
         .await?;
     assert_eq!(second.generation, first.generation);
     assert_eq!(second.entries.len(), 1);
@@ -1270,7 +1272,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         path: String::new(),
         generation: Some(first.generation.clone()),
         after_generation: None,
-        page: page(Some(last.clone()))?,
+        page: page(first.next.clone())?,
     };
     assert!(
         acyclic_harness_client::encode_agent_reply(
@@ -1305,11 +1307,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .await
             .is_err()
     );
-    assert!(
+    assert_eq!(
         client
-            .directory_page("", None, page(Some(last.clone()))?)
-            .await
-            .is_err()
+            .directory_page("", None, page(first.next.clone())?)
+            .await?
+            .generation,
+        first.generation,
     );
     assert!(
         client

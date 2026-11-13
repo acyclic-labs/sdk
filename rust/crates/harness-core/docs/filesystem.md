@@ -58,3 +58,13 @@ projection; filesystem publication is serialized by that projection's owner.
 Commands writing the same paths have the host filesystem's ordinary concurrency
 semantics. Machine backends without a managed job owner refuse background mode
 before dispatch.
+
+Directory queries bound physical names examined, including names hidden by current policy.
+An empty visible page with `next` is progress, not exhaustion. Pass that opaque
+continuation to the same directory; it retains the full authenticated opening
+generation and never grants read authority. Every page checks current policy.
+`examined` reports physical name work so upstream queries charge sparse pages too.
+Continuations encrypt hidden progress through the shared Auth cursor primitive;
+they retain no server-side query state and expire when the process key retires.
+File entry versions remain immutable read addresses; directory continuation uses
+`next`, independently of which entries fit the caller's row and byte credit.

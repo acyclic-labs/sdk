@@ -333,22 +333,6 @@ where
                 )
             })?;
             let _grant_hold = ledger.guard_owned(grant.logical_owned_bytes()?)?;
-            let after = after
-                .map(|name| {
-                    let bytes = crate::executor::with_history_io(Some(ledger), |history| {
-                        let mut quota = crate::wire_codec::CodecQuota::new(history, 0)?;
-                        let bytes = crate::core::copy_copy_vector(name.as_bytes(), &mut quota)?;
-                        quota.transfer();
-                        Ok::<_, Error>(bytes)
-                    })?;
-                    LogicalName::new(NameEncoding::Utf8, bytes)
-                        .map_err(|_| ledger.invalid("directory cursor is not a child name"))
-                })
-                .transpose()?;
-            let _after_hold = after
-                .as_ref()
-                .map(|name| ledger.guard_owned(name.logical_owned_bytes()))
-                .transpose()?;
             let Some(((generation, page), page_hold)) = self
                 .host
                 .list_directory_page(
@@ -357,7 +341,7 @@ where
                         grant: &grant,
                         path,
                         generation: expected_generation,
-                        after: after.as_ref(),
+                        after,
                         maximum_entries,
                         ceiling,
                     },
@@ -769,7 +753,7 @@ where
         granted_prefix: &str,
         path: &str,
         options: crate::filesystem::DirectoryOptions<'_>,
-    ) -> Result<Option<(GenerationRef, DirectoryPage)>> {
+    ) -> Result<Option<(GenerationRef, AuthorizedDirectoryPage)>> {
         let crate::filesystem::DirectoryOptions {
             generation: expected_generation,
             after,
@@ -905,7 +889,10 @@ where
     ) -> Result<
         acyclic_fs::NativeFutureBundle<
             'a,
-            ((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation),
+            (
+                (GenerationRef, AuthorizedDirectoryPage),
+                acyclic_fs::NativeAllocation,
+            ),
             crate::Error,
         >,
     > {
@@ -928,50 +915,12 @@ where
                 .limits()
                 .path_bytes
                 .is_some_and(|maximum| path.len() > maximum.get())
-                || after.is_some_and(|name| {
-                    context
-                        .effective_scope()
-                        .limits()
-                        .path_bytes
-                        .is_some_and(|maximum| name.len() > maximum.get())
-                })
-                || (after.is_some() && expected_generation.is_none())
             {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "directory cursor or path exceeds its issued task boundary",
                 });
             }
-            let cursor_header = work
-                .claim(
-                    if after.is_some() {
-                        std::mem::size_of::<LogicalName>() as u64
-                    } else {
-                        0
-                    },
-                    0,
-                    acyclic_fs::WorkCounters::UNCHARGED,
-                )
-                .map_err(Error::from)?;
-            let cursor_custody;
-            let cursor = if let Some(name) = after {
-                work.charge(acyclic_fs::WorkCounters {
-                    items_examined: name.len() as u64 + 1,
-                    ..Default::default()
-                })
-                .map_err(Error::from)?;
-                let (bytes, custody) = work.copy_bytes(name.as_bytes()).map_err(Error::from)?;
-                cursor_custody = Some(custody);
-                Some(LogicalName::new(NameEncoding::Utf8, bytes).map_err(|_| {
-                    Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "private directory cursor is not a logical child name",
-                    }
-                })?)
-            } else {
-                cursor_custody = None;
-                None
-            };
             let result = self
                 .host
                 .list_private_directory_guarded_with_native_work(
@@ -980,7 +929,7 @@ where
                         grant: &grant,
                         path,
                         generation: expected_generation,
-                        after: cursor.as_ref(),
+                        after,
                         maximum_entries,
                         ceiling: Some(context.effective_scope().grants()),
                     },
@@ -1004,8 +953,7 @@ where
                 )
                 .await;
             drop(cursor);
-            drop(cursor_custody);
-            drop(cursor_header);
+
             drop(grant);
             drop(grant_custody);
             result
@@ -1051,7 +999,7 @@ impl PrivateDirectoryPage {
     /// while the same caller funds the Unicode projection.
     pub(crate) fn from_filesystem<'io>(
         generation: GenerationRef,
-        page: acyclic_fs::DirectoryPage,
+        page: AuthorizedDirectoryPage,
         mut source: crate::filesystem::DecodeReservation<'io>,
         ledger: &'io crate::filesystem::PreparationIo,
     ) -> Result<(Self, crate::filesystem::DecodeReservation<'io>)> {
@@ -1061,6 +1009,9 @@ impl PrivateDirectoryPage {
         crate::store::history::reserve(&mut entries, page.entries.len(), &mut history)?;
         held.adopt((entries.capacity() * std::mem::size_of::<PrivateDirectoryEntry>()) as u64)?;
         let has_more = page.has_more;
+        let examined = page.examined;
+        let next = page.next;
+        let page = page.page;
         for entry in page.entries {
             let name = ledger.sdk(entry.name.unicode_text(ledger, ledger.cancellation()))?;
             held.adopt(name.capacity() as u64)?;
@@ -1077,13 +1028,18 @@ impl PrivateDirectoryPage {
             };
             entries.push(PrivateDirectoryEntry { name, kind });
         }
-        source.substitute(generation.logical_owned_bytes()?)?;
+        source.substitute(
+            generation.logical_owned_bytes()?
+                + next.as_ref().map_or(0, |token| token.capacity() as u64),
+        )?;
         held.absorb(source)?;
         Ok((
             Self {
                 generation,
                 entries,
                 has_more,
+                next,
+                examined,
             },
             held,
         ))

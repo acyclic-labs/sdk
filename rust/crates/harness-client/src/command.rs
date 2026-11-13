@@ -559,7 +559,7 @@ pub enum AgentCommand {
             tsify(type = "WasmResourceRefWire & { kind: 'generation' } | undefined")
         )]
         after_generation: Option<GenerationRef>,
-        /// Shared row/byte credit; its cursor is the preceding page's last name.
+        /// Shared row/byte credit; its cursor is the preceding page's next.
         page: AgentPageRequest,
     },
     /// A bounded projection of an original input's committed call admissions and
@@ -800,9 +800,6 @@ impl AgentCommand {
                 if after_generation.is_some() && (generation.is_some() || page.cursor().is_some()) {
                     return Err(CommandError::Invalid);
                 }
-                if generation.is_none() && page.cursor().is_some() {
-                    return Err(CommandError::Invalid);
-                }
                 if !path.is_empty() {
                     validate_content_path(path, &mut None).map_err(|_| CommandError::Invalid)?;
                 }
@@ -811,12 +808,7 @@ impl AgentCommand {
                         .validate(&mut None)
                         .map_err(|_| CommandError::Invalid)?;
                 }
-                if let Some(after) = page.cursor() {
-                    validate_content_path(after, &mut None).map_err(|_| CommandError::Invalid)?;
-                    if after.contains('/') {
-                        return Err(CommandError::Invalid);
-                    }
-                }
+
                 Ok(())
             }
             Self::Stage { digest, text, .. } if !is_digest(digest) || text.is_empty() => {

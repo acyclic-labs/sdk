@@ -44,7 +44,7 @@ pub struct DirectoryRead<'a> {
     pub path: &'a str,
     /// Pinned generation, or current head for the first page.
     pub generation: Option<&'a GenerationRef>,
-    /// Exclusive child name from the previous page.
+    /// Confidential continuation from the previous page.
     pub after: Option<&'a str>,
     /// Page chunk size.
     pub maximum_entries: u32,
@@ -87,6 +87,10 @@ pub struct PrivateDirectoryPage {
     pub entries: Vec<PrivateDirectoryEntry>,
     /// Whether another page may be requested with the returned cursor.
     pub has_more: bool,
+    /// Continuation including physical progress through hidden names.
+    pub next: Option<String>,
+    /// Physical names examined, including omitted names.
+    pub examined: u32,
 }
 
 /// Maximum number of entries admitted in one private-directory page.
@@ -102,7 +106,10 @@ impl PrivateDirectoryPage {
         crate::executor::with_history_io(io, |history| {
             self.generation.validate(history)?;
             if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64
-                || (self.has_more && self.entries.is_empty())
+                || self.has_more != self.next.is_some()
+                || (self.has_more && self.examined == 0)
+                || self.entries.len() > self.examined as usize
+                || self.next.as_ref().is_some_and(|token| token.is_empty())
             {
                 return Err(crate::store::guarded_boundary(
                     history,
