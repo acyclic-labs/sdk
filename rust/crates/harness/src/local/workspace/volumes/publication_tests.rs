@@ -193,7 +193,8 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
                     ContentAccess::default(),
                 )?
                 .await
-                .unwrap_err()
+                .err()
+                .expect("publication must preserve a conflicting native edit")
                 .code(),
             crate::wire::ErrorCode::Conflict,
         );
@@ -262,7 +263,8 @@ async fn publications_keep_all_live_volume_projections_at_the_committed_head() -
                     ContentAccess::default(),
                 )?
                 .await
-                .unwrap_err()
+                .err()
+                .expect("read-only observer cannot publish")
                 .code(),
             crate::wire::ErrorCode::Unauthorized,
         );

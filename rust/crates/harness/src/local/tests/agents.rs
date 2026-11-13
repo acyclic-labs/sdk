@@ -2052,6 +2052,8 @@ async fn follow_tool_output(
 #[cfg(unix)]
 #[tokio::test]
 async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
+    use crate::conversation::ContentResidencyVerifier as _;
+
     let directory = tempfile::tempdir().map_err(agent)?;
     let home = directory.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
@@ -2647,7 +2649,7 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         .agents
         .get()
         .expect("hosted")
-        .server
+        .server()
         .bound()
         .input_publisher(&root, None)
         .await

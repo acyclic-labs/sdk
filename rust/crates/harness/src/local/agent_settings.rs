@@ -1054,6 +1054,10 @@ mod tests {
             journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            decisions: crate::config::SettingsAdmissions::new(
+                harness.agent_stream.clone().expect("fixture owner stream"),
+            ),
+
             maximum_bytes: None,
         };
         let layers = [Layer {
@@ -1149,6 +1153,10 @@ mod tests {
             journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            decisions: crate::config::SettingsAdmissions::new(
+                harness.agent_stream.clone().expect("fixture owner stream"),
+            ),
+
             maximum_bytes: None,
         };
         let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;

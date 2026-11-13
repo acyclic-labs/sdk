@@ -274,7 +274,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     {
         let host = crate::local::host_workspace::HostWorkspace::attach(
             Arc::clone(&second),
-            crate::agent::AgentPath::root(&selected_agent),
+            crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16])),
             &signed,
             &harness.verifier,
             second.held_task_mount_root()?,

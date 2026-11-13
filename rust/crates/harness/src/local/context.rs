@@ -494,11 +494,11 @@ impl LocalHarness {
             .agents
             .get()
             .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
-            .server
+            .server()
             .bound()
             .input_publisher(agent, None)
             .await
-            .map_err(|error| Error::Turn(Box::new(error)))?;
+            .map_err(Error::from)?;
         let operation = publication_operation(b"acyclic.local.mention-manifest/v2\0", key);
         if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
             return Ok(Some(manifest));

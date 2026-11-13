@@ -694,10 +694,8 @@ fn bound_volume_cwd_keeps_its_authority() {
                         }
                     }
                     prop_assert_eq!(prepared.cwd, native.join(&component));
-                    prop_assert_eq!(
-                        workspace_hints(&prepared.environment).get("data").unwrap(),
-                        native.to_str().unwrap()
-                    );
+                    let hints = workspace_hints(&prepared.environment);
+                    prop_assert_eq!(hints.get("data").unwrap(), native.to_str().unwrap());
                 }
                 Ok(())
             },
