@@ -95,8 +95,19 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 /// write to a reply its owner abandoned must not end the runner.
 fn prepare() -> Result<(), Errno> {
     sys::dup_onto(0, CONTROL, true)?;
-    sys::close_range(CONTROL.cast_unsigned() + 1, u32::MAX)?;
-    sys::dup_onto(1, 0, false)?;
+    if sys::is_listener(CONTROL).unwrap_or(false) {
+        // The host receives the independent admission lock and its close
+        // event queue through the two otherwise unused standard streams.
+        sys::dup_onto(1, 4, true)?;
+        sys::dup_onto(2, 5, true)?;
+        sys::close_range(6, u32::MAX)?;
+        for file in [0, 1, 2] {
+            sys::close(file);
+        }
+    } else {
+        sys::close_range(CONTROL.cast_unsigned() + 1, u32::MAX)?;
+        sys::dup_onto(1, 0, false)?;
+    }
     sys::set_signal(sys::SIGPIPE, true);
     Ok(())
 }

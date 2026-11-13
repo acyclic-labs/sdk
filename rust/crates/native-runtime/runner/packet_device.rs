@@ -585,9 +585,13 @@ fn accept(listener: Fd, queue: Fd, first: &mut *mut Session) -> Result<(), Errno
 }
 
 pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
+    const ADMISSION: Fd = 4;
+    const ADMISSION_EVENTS: Fd = 5;
+    const RELEASED: u64 = u64::MAX;
     sys::nonblocking(listener)?;
     let queue = sys::epoll()?;
     sys::interest(queue, listener, true, sys::EPOLL_IN, 0)?;
+    sys::interest(queue, ADMISSION_EVENTS, true, sys::EPOLL_IN, RELEASED)?;
     let mut first: *mut Session = ptr::null_mut();
     let mut events = [sys::EpollEvent {
         events: 0,
@@ -600,6 +604,13 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
             let token = event.token;
             if token == 0 {
                 accept(listener, queue, &mut first)?;
+                continue;
+            }
+            if token == RELEASED {
+                // Drain event bytes, never infer lock ownership from them.
+                // A coalesced or overflow event still prompts the same atomic
+                // lock/accept/close cut below; no contender is enumerated.
+                let _ = read(ADMISSION_EVENTS, &mut [0; 4096])?;
                 continue;
             }
             let session = ptr::with_exposed_provenance_mut::<Session>((token & !3) as usize);
@@ -647,6 +658,29 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 }
             }
         }
+        let mut retire_host = false;
+        if first.is_null() {
+            // Contenders hold this lock only through connect, never through
+            // a server reply. Do not block here: a full listen backlog must
+            // continue accepting while a connector owns the lock. Its close
+            // event also wakes us if it fails or dies before connecting.
+            match sys::try_lock(ADMISSION) {
+                Ok(()) => {
+                    let accepted = accept(listener, queue, &mut first);
+                    let retiring = accepted.is_ok() && first.is_null();
+                    if retiring {
+                        // Release the name while still excluding new binders.
+                        sys::close(listener);
+                    }
+                    let unlocked = sys::unlock(ADMISSION);
+                    accepted?;
+                    unlocked?;
+                    retire_host = retiring;
+                }
+                Err(Errno(sys::EAGAIN)) => {}
+                Err(error) => return Err(error),
+            }
+        }
         while !garbage.is_null() {
             // SAFETY: all event borrowers have retired; unlink and unmap exactly once.
             unsafe {
@@ -661,12 +695,8 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
                 garbage = next;
             }
         }
-        if first.is_null() {
-            // Drain admissions already queued before retiring the sole listener.
-            accept(listener, queue, &mut first)?;
-            if first.is_null() {
-                return Ok(());
-            }
+        if retire_host {
+            return Ok(());
         }
     }
 }

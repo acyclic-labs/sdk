@@ -352,6 +352,12 @@ pub fn try_lock(file: Fd) -> Result<(), Errno> {
     unsafe { call(number::FLOCK, [arg(file), LOCK_EX_NB, 0, 0, 0, 0]) }.map(drop)
 }
 
+/// Releases the shared open description before any inherited copy closes.
+pub fn unlock(file: Fd) -> Result<(), Errno> {
+    // SAFETY: LOCK_UN has no pointer arguments.
+    unsafe { call(number::FLOCK, [arg(file), 8, 0, 0, 0, 0]) }.map(drop)
+}
+
 /// Sets `signal`'s action to ignore it, or to its default.
 pub fn set_signal(signal: i32, ignore: bool) {
     let _ = set_signal_checked(signal, ignore);

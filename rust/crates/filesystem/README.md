@@ -44,7 +44,10 @@ The host watches a mount-free owner thread through a thread pidfd. Killing an
 owner therefore closes its devices even when another owner thread is blocked in
 a request to its own mount. Admission requires Linux thread-pidfd support and
 refuses unsupported kernels before mounting. Other owners keep their connections;
-the host exits after its last connection retires. Original reply payloads and
+the host exits after its last connection retires. A shared admission lock makes
+bind/listen/connect and final listener closure one ordered handoff; kernel
+filesystem events wake retirement when a contender releases the lock. There are
+no timed readiness checks or reconnect loops. Original reply payloads and
 allocation credit remain held until physical device publication, and retirement
 requires an explicit receipt after device closure. A missing receipt is an error,
 not evidence of successful cleanup.

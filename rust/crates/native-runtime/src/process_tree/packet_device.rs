@@ -6,11 +6,23 @@
 
 use super::runner;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+#[cfg(test)]
+#[path = "packet_device/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce(&File)>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_CONNECT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_LISTEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static WITHOUT_ADMISSION_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// A host-owned physical device and the consuming owner's stream endpoint.
 /// Closing it joins the host's actual device closure before returning.
@@ -314,18 +326,110 @@ fn socket() -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(file) })
 }
 
+fn admission_file() -> io::Result<File> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let namespace =
+        |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
+    // SAFETY: geteuid has no arguments or failure case.
+    let user = unsafe { libc::geteuid() };
+    let path = format!(
+        "/tmp/acyclic-mount-host-{user}-{}-{}.lock",
+        namespace("mnt")?,
+        namespace("net")?
+    );
+    // Never unlink this authority inode: replacing it would split the lock.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != user || metadata.mode() & 0o077 != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    Ok(file)
+}
+
+fn admission_events(file: &File) -> io::Result<OwnedFd> {
+    // Explicit unlock is followed by a one-byte modification event. Close
+    // also covers process death. Neither event is a timed readiness recheck.
+    // SAFETY: inotify_init1 has no pointer arguments and returns a fresh fd.
+    let descriptor = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: inotify_init1 returned this fresh owned descriptor.
+    let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
+    let path = std::ffi::CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+    // SAFETY: the path is NUL terminated and descriptor remains owned here.
+    if unsafe {
+        libc::inotify_add_watch(
+            descriptor.as_raw_fd(),
+            path.as_ptr(),
+            libc::IN_CLOSE_WRITE | libc::IN_MODIFY,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(descriptor)
+}
+
 fn connect() -> io::Result<UnixStream> {
+    let file = admission_file()?;
+    #[cfg(test)]
+    BEFORE_ADMISSION.with_borrow_mut(|probe| {
+        if let Some(probe) = probe.take() {
+            probe(&file);
+        }
+    });
+    #[cfg(test)]
+    if WITHOUT_ADMISSION_LOCK.get() {
+        return connect_locked();
+    }
+    let admission = crate::FileLock::new(file);
+    let connected = admission.with_lock(crate::FileLockMode::Exclusive, connect_locked);
+    // Signal after explicit unlock, not just last-close: an unrelated fork
+    // can temporarily retain a duplicate open description across its exec.
+    // No fsync buys a guarantee here; this write is only a kernel watch event.
+    let notified = (&*admission).write_all(&[0]);
+    match connected {
+        Ok(control) => notified.map(|()| control),
+        Err(error) => Err(error),
+    }
+}
+
+fn connect_locked() -> io::Result<UnixStream> {
+    #[cfg(test)]
+    BEFORE_CONNECT.with_borrow_mut(|probe| {
+        if let Some(probe) = probe.take() {
+            probe();
+        }
+    });
     let (address, length) = address()?;
     let listener = socket()?;
     // Binding is the single kernel election: only one host can own the name.
     // SAFETY: the initialized address remains live throughout bind.
     if unsafe { libc::bind(listener.as_raw_fd(), (&raw const address).cast(), length) } == 0 {
+        #[cfg(test)]
+        BEFORE_LISTEN.with_borrow_mut(|probe| {
+            if let Some(probe) = probe.take() {
+                probe();
+            }
+        });
         // The backlog is kernel backpressure, not a limit on admitted owners.
         // SAFETY: listener is the fresh bound socket.
         if unsafe { libc::listen(listener.as_raw_fd(), libc::SOMAXCONN) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        runner::start_packet_device_host(listener)?;
+        // This must be a separate open description, not a duplicate of the
+        // contender's held flock. The event watch precedes its first release.
+        let authority = admission_file()?;
+        let events = admission_events(&authority)?;
+        runner::start_packet_device_host(listener, authority, events)?;
     } else {
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::EADDRINUSE) {

@@ -723,7 +723,11 @@ pub(super) fn retire_runner() {
 
 /// Start the same sealed image in packet-device-host mode. The listening
 /// socket itself selects the role; no owner address space is forked.
-pub(super) fn start_packet_device_host(listener: OwnedFd) -> io::Result<()> {
+pub(super) fn start_packet_device_host(
+    listener: OwnedFd,
+    admission: File,
+    events: OwnedFd,
+) -> io::Result<()> {
     let executable = image()?;
     let (started, child) = std::sync::mpsc::sync_channel::<std::process::Child>(1);
     // Admit the reaper before spawning the external effect. A spawn failure
@@ -740,8 +744,8 @@ pub(super) fn start_packet_device_host(listener: OwnedFd) -> io::Result<()> {
     let mut child = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()))
         .env_clear()
         .stdin(listener)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(admission)
+        .stderr(events)
         .process_group(0)
         .spawn()?;
     if let Err(error) = started.send(child) {
