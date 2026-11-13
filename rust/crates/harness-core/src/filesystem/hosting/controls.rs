@@ -66,7 +66,7 @@ pub(super) struct Controls<P: AuthorityProvider + ?Sized + 'static, O: 'static> 
     admission: TurnAdmission,
     volumes: Arc<Host<P, O>>,
     store: Store<P>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     manifest: Manifest,
     external: Vec<String>,
     ordered: Vec<String>,
@@ -77,7 +77,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         issuer: RuntimeAuthority,
         admission: TurnAdmission,
         volumes: Arc<Host<P, O>>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         limits: ActorLimits,
     ) -> Result<Self, Error> {
         let external: Vec<String> = [
