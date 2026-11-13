@@ -4,6 +4,176 @@ use acyclic_stream::{AppendRecord, CommitMutation, CommitRequest, MemoryStream, 
 use std::sync::Arc;
 
 #[tokio::test]
+async fn home_apply_denies_before_publication_and_fences_every_original_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_fs::{PublicationPermit, access};
+    let stream = Arc::new(MemoryStream::default());
+    let fs = Fs::new(
+        StreamAuthorityStore::new(Arc::clone(&stream)),
+        acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory())),
+        acyclic_fs::EmbeddedCapabilities::MEMORY,
+    );
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = WorkBudget::UNBOUNDED;
+    let mut workspaces = Vec::new();
+    for name in super::super::ORDER {
+        workspaces.push(
+            fs.create_workspace(name, budget, &cancellation)
+                .await?
+                .value,
+        );
+    }
+    workspaces[5]
+        .write_text("/agent.ts", "export default {model: 'fixture/first'};")
+        .await?;
+    let open = crate::config::Policy::default();
+    let denied = crate::config::Policy {
+        only: None,
+        deny: Some(vec![crate::config::PolicyRule {
+            path: "agent.ts".into(),
+            actions: vec![crate::config::Action::Write],
+        }]),
+    };
+    let principal = access::Principal {
+        kind: access::PrincipalKind::Agent,
+        id: "subject".into(),
+        lineage: vec![],
+        groups: Default::default(),
+        roles: Default::default(),
+        tags: Default::default(),
+        attributes: Default::default(),
+    };
+    let permissions = |policy: &crate::config::Policy| {
+        crate::config::policy::Permissions::compile(
+            &crate::config::policy::meet([("issuer", policy)], 1)?,
+            Some(&open),
+            &principal,
+            access::Resource {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                lineage: &[],
+                volume: "home",
+                generation: 1,
+                head: 1,
+                path: "",
+            },
+            access::Context {
+                now: 0,
+                approvals: 0,
+            },
+            &access::Capability::whole_volume(None, &access::Action::ALL),
+        )
+    };
+    let destination = StreamPath::new("settings/applied")?;
+    // Denial, each original source racing after preparation, then success.
+    for scenario in 0_u8..8 {
+        let mut generations = Vec::new();
+        for workspace in &workspaces {
+            generations.push(workspace.head(budget, &cancellation).await?.value);
+        }
+        let manifest = Manifest::new(std::array::from_fn(|index| &generations[index]));
+        let mut transaction = workspaces[5]
+            .begin_transaction(acyclic_fs::IdempotencyKey::new(), budget, &cancellation)
+            .await?
+            .value;
+        transaction
+            .write_text("/agent.ts", "export default {model: 'fixture/second'};")
+            .await?;
+        // A subject's attempt to remove its own restrictions cannot replace
+        // the issuer permissions used to admit this same staged change.
+        transaction
+            .write_text("/policy.ts", "export default {};")
+            .await?;
+        let checkpoint = transaction
+            .checkout
+            .checkpoint(budget, &cancellation)
+            .await?
+            .value;
+        let candidate = workspaces[5]
+            .generation(checkpoint, budget, &cancellation)
+            .await?
+            .value;
+        assert!(matches!(
+            manifest.with_home(&generations[0]),
+            Err(WorkspaceError::ForeignGeneration)
+        ));
+        let candidate_manifest = manifest.with_home(&candidate)?;
+        assert_ne!(candidate_manifest.digest(), manifest.digest());
+        let policy = permissions(if scenario == 0 { &denied } else { &open })?;
+        let mut commit = FilesystemCommit::new(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![acyclic_stream::CommitEffect::hard(
+                vec![],
+                vec![CommitMutation::Append {
+                    path: destination.clone(),
+                    records: vec![AppendRecord::from(acyclic_stream::OwnedBytes::from_static(
+                        b"applied",
+                    ))],
+                }],
+            )],
+            idempotency_key: acyclic_stream::IdempotencyKey::new(vec![scenario])?,
+        });
+        let io = crate::filesystem::PreparationIo::for_unmeasured(&cancellation)?;
+        let prepared = manifest
+            .prepare_apply(
+                &fs,
+                HomeApply {
+                    candidate: &candidate,
+                    permissions: &policy,
+                    now: 0,
+                    operation: acyclic_fs::OperationId::from_bytes([scenario; 16]),
+                    permit: PublicationPermit::Unrestricted,
+                },
+                &mut commit,
+                &io,
+            )
+            .await;
+        assert_eq!(
+            workspaces[5].head(budget, &cancellation).await?.value.id(),
+            generations[5].id()
+        );
+        if scenario == 0 {
+            assert_eq!(
+                prepared.unwrap_err().code(),
+                crate::wire::ErrorCode::Unauthorized
+            );
+            assert_eq!(commit.request().conditions().count(), 0);
+            assert_eq!(commit.request().idempotency_key.as_bytes(), &[scenario]);
+            continue;
+        }
+        prepared?;
+        if scenario <= 6 {
+            let index = usize::from(scenario - 1);
+            workspaces[index]
+                .write_text("/changed.ts", "export default true;")
+                .await?;
+            assert!(matches!(
+                fs.submit_commit(commit, budget, &cancellation).await?.value,
+                acyclic_fs::FilesystemCommitOutcome::Rejected(_)
+            ));
+            assert_eq!(
+                workspaces[5]
+                    .read("/agent.ts", 1024, budget, &cancellation)
+                    .await?
+                    .value
+                    .as_ref(),
+                b"export default {model: 'fixture/first'};"
+            );
+        } else {
+            assert!(matches!(
+                fs.submit_commit(commit, budget, &cancellation).await?.value,
+                acyclic_fs::FilesystemCommitOutcome::Committed(_)
+            ));
+            assert_eq!(
+                workspaces[5].head(budget, &cancellation).await?.value.id(),
+                candidate.id()
+            );
+        }
+    }
+    assert_eq!(stream.tail(destination).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_imports_share_the_original_preparation_capacity()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::{config::Tree as _, filesystem::PreparationIo};
