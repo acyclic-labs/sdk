@@ -193,14 +193,18 @@ impl HostIo {
         {
             tracing::error!(%error, "FUSE device host stop request failed");
         }
-        if let Some((mut custody, _allocation)) = self
-            .custody
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            && let Err(error) = custody.retire()
-        {
-            tracing::error!(%error, "FUSE device host retirement failed");
+        let mut custody = self.custody.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some((owner, _)) = custody.as_mut() {
+            match owner.retire() {
+                Ok(()) => {
+                    custody.take();
+                }
+                Err(error) => {
+                    // Keep the original allocation and custody: a missing
+                    // receipt cannot certify physical device retirement.
+                    tracing::error!(%error, "FUSE device host retirement failed");
+                }
+            }
         }
     }
 
@@ -213,6 +217,15 @@ impl HostIo {
     }
 
     pub(super) fn wait_detached(&self, mount: &mut super::mount::Mount) -> io::Result<bool> {
+        if self.framed
+            && self
+                .custody
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_some()
+        {
+            return Err(io::Error::other("FUSE host retirement is unacknowledged"));
+        }
         self.with_device(|device| match device {
             Some(device) => mount.wait_device_detached(device, Some(&self.wake)),
             None => mount.observe_closed(),

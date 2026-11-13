@@ -231,18 +231,15 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::{fd::OwnedFd, unix::net::UnixStream};
     use std::process::{Command, Stdio};
     crate::initialize_native_mount_services()?;
-    for old in [false, true] {
-        let survivor_root = root.join(format!("survivor-{old}"));
-        let owner_root = root.join(format!("owner-{old}"));
+    for (case, (old, keep_survivor)) in [(false, false), (false, true), (true, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let survivor_root = root.join(format!("survivor-{case}"));
+        let owner_root = root.join(format!("owner-{case}"));
         std::fs::create_dir(&survivor_root)?;
         std::fs::create_dir(&owner_root)?;
-        let (source, _) = shared_sources(posix_config())?;
-        let volume_id = source.volume_id()?;
-        let mut survivor = mount(Arc::new(source), volume_id, &survivor_root)?;
-        let host_id = transport(&survivor)
-            .host_id()
-            .ok_or("shared external host absent")?;
-        let host_exit = process_event(host_id, false)?;
+
         let (mut control, input) = UnixStream::pair()?;
         // This deadline only fails a broken child protocol; no elapsed time
         // establishes the pending request or supplies a passing observation.
@@ -260,6 +257,23 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let mut bytes = [[0; 8]; 4];
         control.read_exact(bytes.as_flattened_mut())?;
         let info = bytes.map(u64::from_ne_bytes);
+        // The child creates the host. Exercise both its sole-owner death and
+        // its death while a later owner still relies on that same process.
+        let mut survivor = if keep_survivor {
+            let (source, _) = shared_sources(posix_config())?;
+            let volume_id = source.volume_id()?;
+            Some(mount(Arc::new(source), volume_id, &survivor_root)?)
+        } else {
+            None
+        };
+        let host_id = if let Some(session) = survivor.as_ref() {
+            transport(session)
+                .host_id()
+                .ok_or("shared external host absent")?
+        } else {
+            u32::try_from(info[0])?
+        };
+        let host_exit = process_event(host_id, false)?;
         if old {
             assert_eq!(info[0], 0);
         } else {
@@ -311,12 +325,14 @@ fn controller(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             !connection.try_exists()?,
             "dead owner's connection survived physical cleanup"
         );
-        std::fs::write(survivor_root.join("still-live"), b"independent owner")?;
-        assert_eq!(
-            std::fs::read(survivor_root.join("still-live"))?,
-            b"independent owner"
-        );
-        assert!(survivor.stop()?);
+        if let Some(survivor) = survivor.as_mut() {
+            std::fs::write(survivor_root.join("still-live"), b"independent owner")?;
+            assert_eq!(
+                std::fs::read(survivor_root.join("still-live"))?,
+                b"independent owner"
+            );
+            assert!(survivor.stop()?);
+        }
         wait_exit(&host_exit)?;
     }
     Ok(())

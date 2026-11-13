@@ -1,6 +1,6 @@
 //! Exclusive physical packet-device custody outside every consuming owner.
 //!
-//! The host is shared by this OS user in the host's network namespace. Its
+//! The host is shared by this OS user within its mount and network namespaces. Its
 //! readiness queue watches a mount-free thread's pidfd, rather than waiting
 //! for the entire owner process (which may contain a blocked device caller).
 
@@ -131,7 +131,7 @@ impl PacketDevice {
     }
 }
 
-/// Original host custody. Its EOF acknowledges actual device closure.
+/// Original host custody. A retirement receipt acknowledges actual device closure.
 pub struct PacketDeviceRetirement {
     control: UnixStream,
     retired: AtomicBool,
@@ -209,7 +209,7 @@ impl PacketDeviceRetirement {
         }
     }
 
-    /// Stop admission and wait for EOF, published only after device closure.
+    /// Stop admission and join the receipt published after device closure.
     pub fn retire(&mut self) -> io::Result<()> {
         if self.retired.load(Ordering::Acquire) {
             return Ok(());
