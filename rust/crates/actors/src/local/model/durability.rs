@@ -120,6 +120,7 @@ async fn acknowledged_cuts(
                 alarm: AlarmChange::Set {
                     deadline_unix_ms: 10,
                 },
+                pause: false,
                 effects: Vec::new(),
                 subscriptions: Vec::new(),
             },

@@ -676,6 +676,7 @@ async fn strict_wire_record_matches_typescript_guest() -> Result<(), Box<dyn std
         pause: false,
         checkpoint: activation.checkpoint().await?,
         alarm: AlarmChange::Keep,
+        pause: false,
         effects: Vec::new(),
         participant: None,
         subscriptions: Vec::new(),
