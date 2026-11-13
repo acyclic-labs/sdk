@@ -7,7 +7,6 @@ pub struct Mount<A: 'static, O: 'static> {
     pub(in crate::native_mount) session: Arc<CustomerSession>,
     pub(crate) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
-    pub(super) retiring: std::sync::atomic::AtomicBool,
 }
 
 impl<A, O> Mount<A, O> {
@@ -20,7 +19,9 @@ impl<A, O> Mount<A, O> {
     /// Retirement has started; the existing cleanup owner must finish before reuse.
     #[must_use]
     pub fn is_retiring(&self) -> bool {
-        self.retiring.load(std::sync::atomic::Ordering::Acquire)
+        self.session
+            .retiring
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -74,25 +75,70 @@ where
     /// Publishes one verified native command and optionally retires its projection.
     /// The filesystem owns both destination cleanup and namespace-fence release.
     pub async fn complete_command(&self, retire: bool) -> Result<(), MountLifecycleError> {
+        if self.source.is_private_command() {
+            return Err(MountLifecycleError::NativePolicy(
+                "a private command must transfer its fork through complete_private_command",
+            ));
+        }
         if self.is_retiring() {
-            return self.detach_async().await;
+            return self.detach_async(false).await;
         }
         self.sync().await?;
-        self.advance_to_head().await?;
         if retire {
-            self.prepare_command_cleanup().await?;
-            self.detach_async().await?;
+            self.detach_async(true).await?;
+        } else {
+            self.advance_to_head().await?;
         }
         Ok(())
+    }
+
+    /// Drains and retires a verified private command before publishing its
+    /// effects. Returns its one fork for an explicit atomic join, or None
+    /// when the command never mutated. Custody stays live through the join.
+    pub async fn complete_private_command(
+        &self,
+    ) -> Result<Option<(Workspace<A, O>, crate::EphemeralFork)>, MountLifecycleError> {
+        if !self.source.is_private_command() {
+            return Err(MountLifecycleError::NativePolicy(
+                "view is not a private command",
+            ));
+        }
+        let prepare_cleanup = !self.is_retiring();
+        if prepare_cleanup {
+            with_session_work_async(
+                &self.session,
+                &self.source,
+                NativeSessionControl::FlushCallbacks,
+            )
+            .await?;
+        }
+        self.detach_async(prepare_cleanup).await?;
+        self.source
+            .finish_retired_command()
+            .await
+            .map_err(MountLifecycleError::Source)
+    }
+
+    /// Applies a retired command's join while its original volume authority
+    /// remains valid at the target's atomic publication boundary.
+    pub async fn apply_private_command_join(
+        &self,
+        plan: &crate::JoinPlan<A, O>,
+        options: crate::ApplyOptions,
+        candidate: Option<&crate::UnpublishedMergeCandidate>,
+    ) -> Result<(crate::JoinOutcome<A, O>, crate::NativeAllocation), MountLifecycleError> {
+        self.source
+            .apply_command_join(plan, options, candidate)
+            .await
     }
 
     /// Publishes pending effects and detaches the native namespace exactly once.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         if self.is_retiring() {
-            return self.detach_async().await;
+            return self.detach_async(false).await;
         }
         self.sync().await?;
-        self.detach_async().await
+        self.detach_async(false).await
     }
 
     /// Detaches and cancels this mount without publishing pending callbacks.
@@ -102,18 +148,7 @@ where
 
     /// Retires a command projection without publishing unverified authored effects.
     pub async fn abandon_command(&self) -> Result<(), MountLifecycleError> {
-        if !self.is_retiring() {
-            self.prepare_command_cleanup().await?;
-        }
-        self.detach_async().await
-    }
-
-    async fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
-        let source = self.source.clone();
-        control_session(self.session.clone(), move |owner| {
-            prepare_destination_cleanup(owner, source.as_ref())
-        })
-        .await
+        self.detach_async(!self.is_retiring()).await
     }
 
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
@@ -132,18 +167,26 @@ where
             Ok(owner) => owner,
             Err(poisoned) => poisoned.into_inner(),
         };
-        self.retiring
+        self.session
+            .retiring
             .store(true, std::sync::atomic::Ordering::Release);
         Self::detach_owned(&mut owner, self.source.as_ref())
     }
 
-    async fn detach_async(&self) -> Result<(), MountLifecycleError> {
+    async fn detach_async(&self, prepare_cleanup: bool) -> Result<(), MountLifecycleError> {
         #[cfg(all(test, not(loom)))]
         super::command_tests::record("detach");
-        self.retiring
-            .store(true, std::sync::atomic::Ordering::Release);
         let source = self.source.clone();
+        let session = self.session.clone();
         control_session(self.session.clone(), move |owner| {
+            // Preparation and physical retirement share one accepted owner:
+            // losing the waiter cannot strand an armed destination cleanup.
+            if prepare_cleanup && !session.retiring.load(std::sync::atomic::Ordering::Acquire) {
+                prepare_destination_cleanup(owner, source.as_ref())?;
+            }
+            session
+                .retiring
+                .store(true, std::sync::atomic::Ordering::Release);
             Self::detach_owned(owner, source.as_ref())
         })
         .await
@@ -153,15 +196,14 @@ where
         owner: &mut Option<NativeMountSession>,
         source: &CheckoutMountSource<A, O>,
     ) -> Result<(), MountLifecycleError> {
-        let Some(session) = owner.as_mut() else {
-            return Ok(());
-        };
-        let wait = crate::CancellationToken::new();
-        let cleanup = super::super::session::NativeSessionStopWork::AcceptedWait(&wait);
-        #[cfg(windows)]
-        session.prepare_projection_cleanup()?;
-        session.stop_with_context(&cleanup)?;
-        owner.take();
+        if let Some(session) = owner.as_mut() {
+            let wait = crate::CancellationToken::new();
+            let cleanup = super::super::session::NativeSessionStopWork::AcceptedWait(&wait);
+            #[cfg(windows)]
+            session.prepare_projection_cleanup()?;
+            session.stop_with_context(&cleanup)?;
+            owner.take();
+        }
         source.cancel();
         Ok(())
     }
@@ -183,7 +225,7 @@ where
         if let Some(guard) = options.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
-        let mode = if options.writable {
+        let mode = if options.writable && !options.private_command {
             CheckoutMode::tracking_transaction()
         } else {
             CheckoutMode::read_only_pinned()
@@ -191,18 +233,21 @@ where
         let checkout = self
             .checkout(options.data_selector()?, mode, work, work.cancellation())
             .await?;
-        AdmittedRoot::admit(options, self, checkout.generation_id(), work)
+        let mut source = AdmittedRoot::admit(options, self, checkout.generation_id(), work)
             .await?
             .checkout_source(checkout, work)
-            .await
+            .await?;
+        if options.private_command {
+            CheckoutMountSource::configure_command(&mut source, self.clone(), options.writable)?;
+        }
+        Ok(source)
     }
 
     /// Mounts the workspace as a task view: the one public way to mount a
-    /// per-agent view. On Linux and Windows the view is a namespace of the
+    /// per-agent view. On Linux, macOS and Windows the view is a namespace of the
     /// process's one shared native instance, at a fresh path that no other
     /// view of the process has had or will have, so it costs no mount,
-    /// thread or descriptor of its own; [`Mount::path`] names it. macOS uses
-    /// the existing native mount backend until it supports shared instances.
+    /// thread or descriptor of its own; [`Mount::path`] names it.
     pub async fn mount_view(
         &self,
         options: MountOptions,
@@ -279,7 +324,6 @@ where
             session: owner,
             destination,
             _destination_custody: destination_custody,
-            retiring: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }

@@ -102,11 +102,12 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     if let Some(staged) = index.objects.get(&id)
                         && !index.drained.contains(&id)
                     {
-                        if count != 0 && bytes.saturating_add(staged.length()) > MAXIMUM_DRAIN_BYTES
+                        if count != 0
+                            && bytes.saturating_add(staged.stored_length()) > MAXIMUM_DRAIN_BYTES
                         {
                             break;
                         }
-                        bytes = bytes.saturating_add(staged.length());
+                        bytes = bytes.saturating_add(staged.stored_length());
                         count += 1;
                         spilled_count += usize::from(matches!(staged, Staged::Spilled { .. }));
                     }
@@ -124,6 +125,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 &mut work.accounting(),
             )
             .map_err(crate::async_storage::object_error)?;
+            let mut hashed = 0_u64;
             if work.original.is_none() {
                 let index = self.index();
                 for &id in &targets[position..end] {
@@ -131,9 +133,16 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         .charge_items(1)
                         .map_err(crate::async_storage::object_error)?;
                     if !index.drained.contains(&id)
-                        && let Some(&Staged::Spilled { offset, length }) = index.objects.get(&id)
+                        && let Some(&Staged::Spilled {
+                            offset,
+                            length,
+                            stored_length,
+                        }) = index.objects.get(&id)
                     {
-                        spilled.value.push((id, offset, length));
+                        spilled.value.push((id, offset, stored_length));
+                        hashed = hashed
+                            .saturating_add(stored_length)
+                            .saturating_add(if id.storage.is_some() { length } else { 0 });
                     }
                 }
             }
@@ -145,10 +154,15 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     .iter()
                     .fold(0_u64, |sum, &(_, _, length)| sum.saturating_add(length));
                 work.accounting()
+                    .admit(WorkCounters {
+                        bytes_hashed: hashed,
+                        ..WorkCounters::UNCHARGED
+                    })
+                    .map_err(crate::async_storage::object_error)?;
+                work.accounting()
                     .charge(WorkCounters {
                         backend_read_operations: 1,
                         object_bytes_read: bytes,
-                        bytes_hashed: bytes,
                         ..WorkCounters::UNCHARGED
                     })
                     .map_err(crate::async_storage::object_error)?;
@@ -175,14 +189,18 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     }
                     match index.objects.get(&id) {
                         Some(Staged::Resident { object, .. }) => Ok(object.clone()),
-                        Some(&Staged::Spilled { offset, length }) => Err((offset, length)),
+                        Some(&Staged::Spilled {
+                            offset,
+                            length,
+                            stored_length,
+                        }) => Err((offset, length, stored_length)),
                         None => continue,
                     }
                 };
                 let object = match staged {
                     Ok(object) => object,
-                    Err((offset, length)) => {
-                        if let Some(native) = work.original {
+                    Err((offset, length, stored_length)) => {
+                        let stored = if let Some(native) = work.original {
                             work.cancellation
                                 .check()
                                 .map_err(|_| ObjectStoreError::Cancelled)?;
@@ -190,20 +208,18 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                                 spill.as_ref().ok_or(ObjectStoreError::Corrupt)?,
                                 id,
                                 offset,
+                                stored_length,
                                 length,
                                 native,
                             )
                             .await?
                         } else {
-                            let object = recovered
+                            recovered
                                 .as_mut()
                                 .and_then(Iterator::next)
-                                .ok_or(ObjectStoreError::Corrupt)?;
-                            if object.object_id() != id {
-                                return Err(ObjectStoreError::Corrupt);
-                            }
-                            object
-                        }
+                                .ok_or(ObjectStoreError::Corrupt)?
+                        };
+                        self.inner.restore_hashed(id, stored, length, work)?
                     }
                 };
                 writes.value.push(object);
@@ -227,8 +243,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         let (empty, truncate) = {
             let index = self.index();
             (
-                index.spilled_objects == 0,
-                index.spilled_objects == 0 && index.spill_end != 0,
+                index.spilled.is_empty(),
+                index.spilled.is_empty() && index.spill_end != 0,
             )
         };
         if let Some(file) = spill.as_ref().filter(|_| truncate) {
@@ -242,7 +258,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     .expect("unmetered unit construction cannot fail")
                     .await?;
             }
-            self.index_mut().spill_end = 0;
+            self.index_mut().reset_spill();
         }
         if empty {
             // Nothing is spilled: the unlinked file closes, holding no

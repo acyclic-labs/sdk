@@ -71,7 +71,7 @@ mod session;
 pub use session::{WireSession, WireSessionError};
 
 mod stream_view;
-pub use stream_view::{StreamView, StreamViewPolicy};
+pub use stream_view::StreamView;
 
 #[cfg(test)]
 mod tests;

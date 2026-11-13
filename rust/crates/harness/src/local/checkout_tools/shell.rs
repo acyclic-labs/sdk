@@ -7,12 +7,11 @@ mod tail;
 impl CheckoutTools {
     pub(super) async fn shell(
         &self,
-        (input, operation, execution_grant, started, admitted, control): (
+        (input, operation, execution_grant, started, control): (
             crate::tools::ShellInput,
             crate::OperationId,
             Option<acyclic_native_runtime::execution::ExecutionGrant>,
             Option<tokio::sync::oneshot::Sender<ToolResult>>,
-            std::time::Instant,
             acyclic_native_runtime::ProcessControl,
         ),
         maximum_output: usize,
@@ -46,10 +45,9 @@ impl CheckoutTools {
         };
         let invocation = native_process::shell::prepare(
             input,
-            &workspace.mounts,
+            claims.mounts(),
             invocation,
             self.clock.now_unix_millis() / 1000,
-            admitted,
         )?;
         control.check().map_err(Error::process_io)?;
         // A dropped turn stops its command; the worker still reaps the tree.

@@ -211,10 +211,10 @@ pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLi
 pub use async_storage::NativeAuthorityGuard;
 pub use async_storage::{
     AppendGroupOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityAllocation, AuthorityError,
-    AuthorityGroupCost, AuthorityGuard, AuthorityWork, DynObjectStore, GenerationFork,
-    GenerationForkSource, OwnedAuthorityGroup, OwnedAuthorityGuard, OwnedAuthorityTask, PolicyCut,
-    PolicyOwner, PublicationScope, SharedObjectStore, WorkspaceForkCommit, WorkspaceForkOutcome,
-    shared_objects,
+    AuthorityGroupCost, AuthorityGuard, AuthorityWork, DynObjectStore, EphemeralForkCommit,
+    GenerationFork, GenerationForkSource, OwnedAuthorityGroup, OwnedAuthorityGuard,
+    OwnedAuthorityTask, PolicyCut, PolicyOwner, PublicationScope, SharedObjectStore,
+    WorkspaceForkCommit, WorkspaceForkOutcome, shared_objects,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
@@ -346,15 +346,15 @@ pub use native_mount::{
     NativeMountRequest, NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
-    NativeWorkingSet, SharedCheckout, SharedCheckoutState,
-    detach_native_mount_destination_after_crash, initialize_native_mount_services,
-    initialize_native_mount_services_async, materialize_checkout, materialize_checkout_paths,
-    mount_native, mount_native_over_existing, native_mount_control_paths,
-    prepare_native_mount_start, probe_native_mount, probe_native_storage_accelerations,
-    probe_native_storage_capabilities, reclaim_native_mount_destination_fence,
-    recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
-    seal_checkout_with_permit, shared_view_namespace_contains, shared_view_root,
-    shared_view_root_in,
+    NativeWorkingSet, SharedCheckout, SharedCheckoutState, SharedViewInstance,
+    detach_native_mount_destination_after_crash, hold_shared_view_instance,
+    initialize_native_mount_services, initialize_native_mount_services_async, materialize_checkout,
+    materialize_checkout_paths, mount_native, mount_native_over_existing,
+    native_mount_control_paths, prepare_native_mount_start, probe_native_mount,
+    probe_native_storage_accelerations, probe_native_storage_capabilities,
+    reclaim_native_mount_destination_fence, recover_native_mount_destination,
+    restore_checkout_host_path, seal_checkout, seal_checkout_with_permit,
+    shared_view_namespace_contains, shared_view_root, shared_view_root_in,
 };
 #[cfg(all(not(target_arch = "wasm32"), target_os = "macos"))]
 pub use native_mount::{DarwinRetirementFailure, DarwinTeardownFailure};
@@ -422,9 +422,9 @@ pub use windows_usn::{
 };
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, ChangedPathEntry, ChangedPaths, DrivenJoinError,
-    FileCondition, FileIdentityPaths, ForkOptions, Generation, IdempotencyKey, JoinApplication,
-    JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, OperationPublication, Transaction,
-    TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
+    EphemeralFork, FileCondition, FileIdentityPaths, ForkOptions, Generation, IdempotencyKey,
+    JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, OperationPublication,
+    Transaction, TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata,
     WorkspaceName, WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
     WorkspaceRestore, WorkspaceStat,

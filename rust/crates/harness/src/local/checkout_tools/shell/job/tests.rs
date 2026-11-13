@@ -101,8 +101,10 @@ fn shell_job_child() {
     let Ok(address) = std::fs::read_to_string("shell-job.addr") else {
         return;
     };
-    if let Ok(home) = std::fs::read_to_string("shell-job.timeout") {
+    if std::fs::exists("shell-job.timeout").unwrap() {
         std::fs::write("retained", b"before-stop").unwrap();
+        // The command's own view of the home volume, not the shared destination.
+        let home = crate::native_environment::variable("ACYCLIC_VOLUME_HOME").unwrap();
         std::fs::write(
             std::path::PathBuf::from(home).join("timeout-retained"),
             b"before-stop",
@@ -224,15 +226,7 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
     let physical = harness.workspace.as_ref().unwrap();
     let (_, home) = physical.mounts.named(Some("home"))?;
     let home_volume = home.view.volume.clone();
-    let home_root = physical
-        .mounts
-        .native_root_for(home)
-        .ok_or_else(|| Error::Invalid("home has no native root".into()))?;
-    std::fs::write(
-        directory.path().join("shell-job.timeout"),
-        home_root.to_str().unwrap(),
-    )
-    .map_err(storage)?;
+    std::fs::write(directory.path().join("shell-job.timeout"), b"").map_err(storage)?;
     let invocation = ToolInvocation {
         operation_id: context.operation_id(),
         call_id: "foreground-cancellation".into(),
@@ -296,78 +290,6 @@ async fn cancelled_foreground_call_retains_capture_and_publication_after_cleanup
     assert_eq!(retained.as_ref(), b"before-stop");
     assert_eq!(gate.read(&mut byte).await.map_err(storage)?, 0);
 
-    harness.disconnect().await
-}
-
-#[tokio::test]
-async fn background_startup_deadline_bounds_volume_admission() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(storage)?;
-    let model = crate::model::Model::new("scripted".into(), "test".into(), "1".into())?;
-    let harness = LocalHarness::open(crate::test_support::local_harness_config(
-        directory.path(),
-        (
-            model,
-            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
-        ),
-    )?)
-    .await?;
-    let writer = crate::filesystem::FilesystemContentPublisher::new(
-        harness.files.clone(),
-        &harness.scratch,
-        &harness.verifier,
-        &harness.signed,
-        1 << 20,
-        None,
-    )?;
-    let task = Arc::new(harness.harness.agent_context(
-        &crate::Capabilities::new(Vec::<String>::new()),
-        ContentBindings {
-            volume: harness.scratch.clone(),
-            reader: harness.client_reader()?,
-            writer: Some(writer),
-        },
-    )?);
-    let context = ToolContext::new(task, crate::OperationId::new(), "background-admission")?;
-    let output_directory = format!("tools/{}/{}", context.turn_id(), context.operation_id());
-    let physical = harness.workspace.as_ref().unwrap();
-    let (_, home) = physical.mounts.named(Some("home"))?;
-    let source = home.view.source.as_ref().unwrap();
-    let held = crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
-    let invocation = ToolInvocation {
-        operation_id: context.operation_id(),
-        call_id: "background-admission".into(),
-        name: "shell".into(),
-        arguments: serde_json::json!({
-            "command": [child_executable(&harness)?, "--exact", "local::checkout_tools::shell::job::tests::shell_job_child"],
-            "timeout_ms": 20,
-            "background": true,
-        }),
-    };
-    let (schedule, boundaries) = acyclic_native_runtime::testing::Schedule::seeded(83);
-    schedule.set_unix_millis(acyclic_stream::UnixMillisClock::now_unix_millis(
-        &acyclic_stream::SystemUnixMillisClock,
-    ));
-    crate::test_support::run_native_schedule(&schedule, boundaries, async {
-        tokio::time::pause();
-        let executor = &harness.harness.target(None)?.executor;
-        let result = executor.execute(invocation, Some(context)).await;
-        assert!(
-            matches!(
-                result,
-                Err(Error::Process(crate::ProcessError::Timeout { .. }))
-            ),
-            "{result:?}"
-        );
-        assert!(
-            StateArc::clone(&physical.state).try_lock_owned().is_err(),
-            "worker did not retain its admitted checkout"
-        );
-        drop(held);
-        let published = terminal(&harness, &output_directory).await?;
-        assert!(published.get("error").is_some(), "{published}");
-        Ok::<_, Error>(())
-    })
-    .await?;
     harness.disconnect().await
 }
 

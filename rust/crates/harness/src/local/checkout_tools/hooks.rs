@@ -74,14 +74,13 @@ impl CheckoutTools {
             let check = owner_check(Arc::clone(&workspace), control);
             let mounts = Arc::clone(&workspace.mounts);
             let (result, mut state) = workspace::volumes::native_scope(&mounts, async |claims| {
-                // Pin the active projections, after native_scope has mounted
-                // them. Binding the dormant backing directory would fence a
-                // different object and refuse every projected-volume hook.
+                // Grant this command's own volume views, mounted by
+                // native_scope; the dormant binding directory is never granted.
                 let mut environment = self.environment.clone();
                 let grant = match &self.execution_grant {
                     Some(grant) => Some(grant.clone()),
                     None => crate::filesystem::native_process::shell::workspace_grant(
-                        &mounts,
+                        claims.mounts(),
                         &mut environment,
                     )?,
                 };

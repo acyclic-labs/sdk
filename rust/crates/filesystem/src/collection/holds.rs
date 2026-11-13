@@ -138,7 +138,8 @@ impl Collection {
     pub(crate) async fn hold_generation_with_accounting<S: crate::AsyncObjectStore>(
         self: &Arc<Self>,
         objects: &S,
-        proof: &crate::kernel::GenerationProof,
+        root: ObjectId,
+        closure: &[ObjectId],
         config: crate::model::VolumeConfig,
         proven_at: u64,
         accounting: &mut KernelAccounting<'_>,
@@ -147,20 +148,14 @@ impl Collection {
             .admit(
                 objects,
                 crate::PublicationScope {
-                    objects: &proof.objects,
+                    objects: closure,
                     proven_at,
                 },
                 |_| false,
                 accounting,
             )
             .await?;
-        let hold = self.register_with_accounting(
-            Held::Generation {
-                root: proof.generation_id.object_id(),
-                config,
-            },
-            accounting,
-        )?;
+        let hold = self.register_with_accounting(Held::Generation { root, config }, accounting)?;
         drop(admitted);
         Ok(hold)
     }
@@ -210,6 +205,19 @@ impl GenerationHold {
 }
 
 impl Hold {
+    /// The same funded base registration follows this authority until lease settlement.
+    pub(crate) fn follow_ephemeral(
+        &self,
+        base: ObjectId,
+        volume: crate::VolumeId,
+        config: crate::VolumeConfig,
+    ) {
+        self.update(Held::Ephemeral {
+            base,
+            volume,
+            config,
+        });
+    }
     pub(crate) fn belongs_to(&self, epochs: Option<&Epochs>) -> bool {
         epochs.is_some_and(|epochs| std::ptr::eq(epochs, self.collection.epochs()))
     }

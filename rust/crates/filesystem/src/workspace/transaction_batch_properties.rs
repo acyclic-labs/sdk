@@ -245,10 +245,7 @@ async fn check_native(history: &[(u8, Vec<u8>)], fault: Fault) -> TestCaseResult
         .collect();
     let result = match fault {
         Fault::NoReset => {
-            let mut accounting = KernelAccounting::NativeOriginal {
-                work: &original,
-                cancellation: &cancellation,
-            };
+            let mut accounting = KernelAccounting::native(&original, &cancellation);
             transaction
                 .stage_file_batch::<false, ReplaceFiles>(
                     &["/out"],

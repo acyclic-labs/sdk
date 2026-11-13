@@ -272,6 +272,125 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
+    /// Forks one immutable generation as an ephemeral workspace: its
+    /// authority is created under a stream lease the returned custody owns,
+    /// with no retention authority and no object flush. The custody pins the
+    /// fork's initial generation, and so its base, against collection for
+    /// exactly as long as the fork lives.
+    pub(crate) async fn fork_ephemeral_workspace(
+        &self,
+        destination: crate::WorkspaceName,
+        source: &crate::Generation<A, O>,
+        idempotency_key: crate::IdempotencyKey,
+        paths: Owned<Option<Vec<String>>>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(crate::Workspace<A, O>, crate::EphemeralFork), WorkspaceError> {
+        let cancellation = accounting.cancellation();
+        let destination_id = self.workspace_id_for_name(&destination, accounting)?;
+        let volume_id = destination_id.volume_id();
+        let config = source.workspace.volume.config;
+        let (fork_root, source_root, pending, filtered) = self
+            .materialize_forked_generation_root(
+                source,
+                destination_id,
+                paths,
+                accounting,
+                cancellation,
+            )
+            .await?;
+        let base = match self.inner.objects.collection() {
+            Some(collection) => Some(
+                collection
+                    .hold_generation_with_accounting(
+                        &self.inner.objects,
+                        fork_root.generation_root,
+                        &fork_root.objects,
+                        config,
+                        fork_root.proven_at,
+                        accounting,
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
+        if let Some(base) = &base {
+            base.follow_ephemeral(fork_root.generation_root, volume_id, config);
+        }
+        let (lineage, creation, changes) = self
+            .prepare_fork_creation(
+                &ForkPublication {
+                    source,
+                    destination_id,
+                    fork_root: &fork_root,
+                    source_root,
+                    filtered,
+                    idempotency_key,
+                    permit: PublicationPermit::Unrestricted,
+                },
+                accounting,
+                cancellation,
+            )
+            .await?;
+        accounting.check()?;
+        let mut authority = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+        let lease = self
+            .inner
+            .authority
+            .fork_ephemeral(
+                crate::EphemeralForkCommit {
+                    lineage,
+                    destination: volume_authority_id(volume_id),
+                    creation,
+                },
+                &mut authority,
+            )
+            .await;
+        let recorded = finish_authority_work(authority);
+        if let Some(changes) = changes {
+            changes.retire(accounting)?;
+        }
+        recorded?;
+        let lease = lease.map_err(FsError::from)?;
+        drop(fork_root);
+        if let Some(pending) = pending {
+            pending.created();
+        }
+        // Retire disposable proof custody at the same terminal as authority,
+        // including when the caller drops its fork instead of awaiting settle.
+        // The base remains pinned until that terminal, not just until Drop
+        // schedules the stream release.
+        let fs = self.clone();
+        let lease = acyclic_stream::EphemeralLease::new(
+            lease.root().clone(),
+            Box::pin(async move {
+                let result = lease.settle().await;
+                fs.inner
+                    .publication_proof
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .retire(volume_id);
+                drop(base);
+                result
+            }),
+        );
+        Ok((
+            crate::Workspace {
+                name: destination,
+                id: destination_id,
+                volume: Volume {
+                    fs: self.clone(),
+                    id: volume_id,
+                    config,
+                },
+                #[cfg(not(target_arch = "wasm32"))]
+                source: None,
+                access: None,
+            },
+            crate::EphemeralFork { lease },
+        ))
+    }
+
     async fn publish_fork<G, E>(
         &self,
         publication: ForkPublication<'_, A, O>,
@@ -325,22 +444,77 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<PreparedForkCommit, WorkspaceError> {
+        let (lineage, creation, changes) = self
+            .prepare_fork_creation(publication, accounting, cancellation)
+            .await?;
+        let (retention, retained) = fork_retention_with_accounting(
+            &publication.source.workspace.volume,
+            publication.source_root,
+            publication.destination_id,
+            accounting,
+        )?;
+        let fork = crate::WorkspaceForkCommit {
+            lineage,
+            destination: volume_authority_id(publication.destination_id.volume_id()),
+            creation,
+            retention,
+            retained,
+        };
+        let hold = self
+            .flush_publication(
+                crate::PublicationScope {
+                    objects: &publication.fork_root.objects,
+                    proven_at: publication.fork_root.proven_at,
+                },
+                accounting,
+                cancellation,
+            )
+            .await?;
+        Ok(PreparedForkCommit {
+            fork,
+            changes,
+            hold,
+        })
+    }
+
+    /// One fork's creation record, with the source lineage it starts from
+    /// and the namespace changes its creation seals.
+    async fn prepare_fork_creation(
+        &self,
+        publication: &ForkPublication<'_, A, O>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<
+        (
+            Option<crate::GenerationForkSource>,
+            ProposedCommit,
+            Option<crate::PublicationChanges>,
+        ),
+        WorkspaceError,
+    > {
         let source = publication.source;
         let destination_id = publication.destination_id;
         let fork_root = publication.fork_root;
-        let source_root = publication.source_root;
-        let operation_id = publication.idempotency_key.operation_id();
         let source_volume = &source.workspace.volume;
         let volume_id = destination_id.volume_id();
         let lineage = self
             .fork_lineage_with_accounting(source, accounting, cancellation)
             .await?;
-        let (retention, retained, mut creation) = fork_records_with_accounting(
-            source_volume,
-            source_root,
-            destination_id,
-            fork_root.generation_root,
-            operation_id,
+        let encoded =
+            crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_volume_created(
+                    VolumeCreated {
+                        volume_id,
+                        config: source_volume.config,
+                        initial_generation_root: fork_root.generation_root,
+                    },
+                    observe,
+                    allocation_error,
+                )
+            })?;
+        let mut creation = creation_commit(
+            publication.idempotency_key.operation_id(),
+            encoded,
             accounting,
         )?;
         let created = VolumeCreated {
@@ -367,28 +541,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?
         });
         let changes = creation.publication.clone();
-        let fork = crate::WorkspaceForkCommit {
-            lineage,
-            destination: volume_authority_id(volume_id),
-            creation,
-            retention,
-            retained,
-        };
-        let hold = self
-            .flush_publication(
-                crate::PublicationScope {
-                    objects: &fork_root.objects,
-                    proven_at: fork_root.proven_at,
-                },
-                accounting,
-                cancellation,
-            )
-            .await?;
-        Ok(PreparedForkCommit {
-            fork,
-            changes,
-            hold,
-        })
+        Ok((lineage, creation, changes))
     }
 
     pub(super) async fn fork_lineage_with_accounting(
@@ -419,14 +572,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-pub(super) fn fork_records_with_accounting<A, O>(
+/// The retention authority holding a durable fork's base, and its record.
+fn fork_retention_with_accounting<A, O>(
     source: &Volume<A, O>,
     source_root: ObjectId,
     destination: crate::WorkspaceId,
-    fork_root: ObjectId,
-    operation_id: OperationId,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-) -> Result<(crate::AuthorityId, ProposedCommit, ProposedCommit), FsError> {
+) -> Result<(crate::AuthorityId, ProposedCommit), FsError> {
     let mut label = crate::kernel::Owned::<Vec<u8>>::allocate(32, accounting)?;
     let encoding = WorkCounters {
         bytes_encoded: 32,
@@ -470,17 +622,5 @@ pub(super) fn fork_records_with_accounting<A, O>(
         accounting,
     )?;
     fact.retire(accounting)?;
-    let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
-        crate::kernel::encode_volume_created(
-            VolumeCreated {
-                volume_id: destination.volume_id(),
-                config: source.config,
-                initial_generation_root: fork_root,
-            },
-            observe,
-            allocation_error,
-        )
-    })?;
-    let creation = creation_commit(operation_id, encoded, accounting)?;
-    Ok((retention, retained, creation))
+    Ok((retention, retained))
 }
