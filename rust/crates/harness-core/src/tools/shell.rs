@@ -141,6 +141,26 @@ pub(super) fn presentation(
             return Err(Error::Invalid("shell output has no valid original omitted range; bind the shared OutputWindow collector".into()));
         }
     }
+    if omitted > 0
+        && let Some(query) = fields.get("output_page_query")
+    {
+        if query
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+            || query["selection"]["kind"].as_str() != Some("directory")
+            || query["selection"]["after"]
+                .as_str()
+                .is_none_or(str::is_empty)
+            || query["selection"]["limit"]
+                .as_u64()
+                .is_none_or(|limit| limit == 0 || limit > u32::MAX as u64)
+        {
+            return Err(Error::Invalid(
+                "shell output has no valid original page query".into(),
+            ));
+        }
+    }
     for (index, channel) in ["stdout", "stderr"].into_iter().enumerate() {
         let text = fields
             .get(channel)
@@ -208,6 +228,14 @@ impl std::fmt::Display for Presentation<'_> {
                 f.write_str("; read this byte range from")?;
                 if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
                     write!(f, " {spill}")?;
+                } else if let Some(query) = fields.get("output_page_query") {
+                    write!(
+                        f,
+                        " pages: read {} directory after {} (limit {}); names END-START-pipe; file offsets=source-START, version=entry.version",
+                        query["path"].as_str().unwrap_or_default(),
+                        query["selection"]["after"].as_str().unwrap_or_default(),
+                        query["selection"]["limit"].as_u64().unwrap_or_default()
+                    )?;
                 } else if let (Some(volume), Some(directory)) = (
                     fields.get("output_volume"),
                     fields

@@ -1,10 +1,14 @@
 //! Exact output pages are ordinary immutable files in the caller's volume.
 use crate::{
-    Error, OperationId, Result, conversation::VolumeRef, runtime::ToolContext, tool::ToolResult,
+    Error, OperationId, Result,
+    conversation::{ContentChange, VolumeRef},
+    resources::GenerationRef,
+    runtime::ToolContext,
+    tool::ToolResult,
 };
 
 pub(super) fn directory(operation: OperationId) -> String {
-    format!("tools/{operation}/device")
+    format!("tools/{operation}/device/capture-v1")
 }
 
 /// A model preview is bounded by the original render allowance. The complete
@@ -13,7 +17,7 @@ pub(super) struct Output {
     operation: OperationId,
     window: crate::tool::OutputWindow,
     maximum: u64,
-    destination: Option<(VolumeRef, String)>,
+    destination: Option<(VolumeRef, String, GenerationRef)>,
 }
 
 impl Output {
@@ -49,10 +53,23 @@ impl Output {
             .map_or(data.len(), |maximum| maximum.min(data.len()));
         let channel = if stderr { "stderr" } else { "stdout" };
         let directory = directory(self.operation);
+        if maximum == 0 {
+            return Err(Error::tool_rejected(
+                "device output has no admitted file capacity",
+            ));
+        }
+        let begin = self.window.total();
+        begin
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| Error::Invalid("device output byte offset overflow".into()))?;
         for (index, piece) in data.chunks(maximum).enumerate() {
             let offset = (index * maximum) as u64;
-            let path = format!("{directory}/{sequence:020}-{offset:020}-{channel}.bin");
-            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.devices.output-file.v1");
+            let start = begin + offset;
+            let end = start + piece.len() as u64;
+            // End-first names make a namespace cursor after `offset~` select
+            // the first file containing that byte, without earlier pages.
+            let path = format!("{directory}/{end:020}-{start:020}-{channel}.bin");
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.devices.output-page.v1");
             hash.update(&self.operation.into_bytes());
             hash.update(&sequence.to_le_bytes());
             hash.update(&offset.to_le_bytes());
@@ -61,27 +78,38 @@ impl Output {
             // The original task's file limit partitions this immutable stream
             // position. Each byte offset retains its own publication identity
             // across partial publication and lost-reply recovery.
-            let (file, _) = context
-                .stage_tool_file_once(
+            let (volume, selected_path) = context.tool_write_path_selection(&path, None)?;
+            let (published, _) = context
+                .stage_tool_changes(
                     OperationId::from_bytes(identity),
-                    &path,
-                    piece,
-                    "application/octet-stream",
-                    channel,
+                    volume,
+                    &[ContentChange::CreateAbsent {
+                        path: &selected_path,
+                        bytes: piece,
+                        media_type: "application/octet-stream",
+                        display_name: channel,
+                    }],
                     None,
                 )
                 .await?;
+            let file = published
+                .files()
+                .next()
+                .ok_or_else(|| Error::Storage("device output publication has no file".into()))?;
             let parent = file
                 .path()
                 .rsplit_once('/')
                 .map_or("", |(parent, _)| parent);
-            if let Some((volume, path)) = &self.destination {
+            if let Some((volume, path, _)) = &self.destination {
                 if volume != file.volume() || path != parent {
                     return Err(Error::Storage("device output destination changed".into()));
                 }
-            } else {
-                self.destination = Some((file.volume().clone(), parent.to_owned()));
             }
+            self.destination = Some((
+                file.volume().clone(),
+                parent.to_owned(),
+                published.generation.clone(),
+            ));
         }
         self.window
             .observe(data, stderr)
@@ -94,15 +122,54 @@ impl Output {
             .value
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("device terminal result is not an object".into()))?;
-        if let Some((volume, path)) = &self.destination {
+        if let Some((volume, path, _)) = &self.destination {
             fields.insert("output_directory".into(), path.clone().into());
             fields.insert(
                 "output_volume".into(),
                 serde_json::to_value(volume).map_err(|error| Error::Invalid(error.to_string()))?,
             );
         }
-        self.window.render(result, self.maximum)
+        let mut result = self.window.render(result, self.maximum)?;
+        if result.value["omitted_bytes"].as_u64().unwrap_or_default() > 0
+            && let Some((volume, path, generation)) = &self.destination
+        {
+            // The original namespace cut is supplied by the same protected
+            // publication receipt, never by a later head or a directory scan.
+            // Fixed-width decimal boundaries have identical encoded length.
+            result.value["output_page_query"] =
+                page_query(volume, path, generation, self.operation, 0)?;
+            result = self.window.render(result, self.maximum)?;
+            let start = result.value["omitted_range"]["start"]
+                .as_u64()
+                .ok_or_else(|| Error::Storage("device output lost its source range".into()))?;
+            result.value["output_page_query"] =
+                page_query(volume, path, generation, self.operation, start)?;
+        }
+        Ok(result)
     }
+}
+
+fn page_query(
+    volume: &VolumeRef,
+    path: &str,
+    generation: &GenerationRef,
+    operation: OperationId,
+    offset: u64,
+) -> Result<serde_json::Value> {
+    use crate::tool::files::{ReadFileInput, ReadSelection, encode_path_version};
+    let boundary = format!("{path}/{offset:020}~");
+    let (after, _) = encode_path_version(volume, &boundary, generation, None)?;
+    serde_json::to_value(ReadFileInput {
+        path: directory(operation),
+        wait: false,
+        version: None,
+        range: None,
+        selection: Some(ReadSelection::Directory {
+            after: Some(after),
+            limit: 1,
+        }),
+    })
+    .map_err(|error| Error::Invalid(error.to_string()))
 }
 
 #[cfg(test)]
@@ -141,7 +208,7 @@ mod tests {
         first.window = crate::tool::OutputWindow::new(4);
         first.append(&context, 1, false, b"out").await?;
         let path = format!(
-            "{}/00000000000000000001-00000000000000000000-stdout.bin",
+            "{}/00000000000000000002-00000000000000000000-stdout.bin",
             directory(operation)
         );
         // A file is readable before any terminal event arrives.
@@ -164,7 +231,7 @@ mod tests {
                 storage.volume(),
                 "",
                 &format!(
-                    "{}/00000000000000000001-00000000000000000002-stdout.bin",
+                    "{}/00000000000000000003-00000000000000000002-stdout.bin",
                     directory(operation)
                 ),
                 None,
