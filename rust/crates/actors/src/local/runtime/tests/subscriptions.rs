@@ -481,7 +481,7 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
 
 use std::sync::atomic::AtomicUsize;
 
-struct ApprovalPause(Package, AtomicUsize);
+struct ApprovalPause(Package, AtomicUsize, bool);
 impl Handler for ApprovalPause {
     fn manifest(&self) -> &Manifest {
         self.0.manifest()
@@ -512,7 +512,7 @@ impl Handler for ApprovalPause {
                 ),
                 ("approval", Some(b"pending")) => (
                     b"approved".as_slice(),
-                    Some(SubscriptionChange::Resume {
+                    (!self.2).then(|| SubscriptionChange::Resume {
                         id: "source".into(),
                     }),
                     "pause/approvals",
@@ -547,7 +547,10 @@ impl Handler for ApprovalPause {
     }
 }
 
-async fn pause_retains_input<P: StreamProvider + 'static>(provider: P) -> TestResult {
+async fn pause_retains_input<P: StreamProvider + 'static>(
+    provider: P,
+    external_resume: bool,
+) -> TestResult {
     let provider = Arc::new(provider);
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = actor("paused-source")?;
@@ -589,7 +592,11 @@ async fn pause_retains_input<P: StreamProvider + 'static>(provider: P) -> TestRe
         }],
     ))?;
     store.submit(create).await?;
-    let handler = Arc::new(ApprovalPause(Package::new()?, AtomicUsize::new(0)));
+    let handler = Arc::new(ApprovalPause(
+        Package::new()?,
+        AtomicUsize::new(0),
+        external_resume,
+    ));
     let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
     runtime.track(address.clone())?;
     runtime.drain_actor(&address).await?;
@@ -644,6 +651,26 @@ async fn pause_retains_input<P: StreamProvider + 'static>(provider: P) -> TestRe
         })
         .await?;
     runtime.drain_actor(&address).await?;
+    if external_resume {
+        let awaiting = runtime.store().load(&address).await?;
+        let state = awaiting.state().ok_or("missing approved state")?;
+        assert_eq!(state.cursor("source"), Some(0));
+        assert!(state.subscriptions()["source"].paused);
+        assert_eq!(state.checkpoint().unwrap().bytes.as_ref(), b"approved");
+        assert!(records(&*provider, "pause/effects").await?.is_empty());
+        let resume = crate::wire::ResumeSubscriptionRequest {
+            namespace: Some(address.namespace().as_str().into()),
+            account_id: address.account().as_bytes().to_vec(),
+            actor_id: address.id().into(),
+            subscription_id: "source".into(),
+            idempotency_key: "resume-approved".into(),
+        };
+        runtime.store().resume_subscription(&[], &resume).await?;
+        runtime.drain_actor(&address).await?;
+        let completed = runtime.store().load(&address).await?;
+        runtime.store().resume_subscription(&[], &resume).await?;
+        assert_eq!(runtime.store().load(&address).await?.tail, completed.tail);
+    }
     let settled = runtime.store().load(&address).await?;
     let state = settled.state().ok_or("missing resumed state")?;
     assert_eq!(
@@ -665,7 +692,14 @@ async fn pause_retains_input<P: StreamProvider + 'static>(provider: P) -> TestRe
 #[tokio::test]
 async fn paused_inputs_keep_their_cursor_across_restart_and_resume_from_another_input() -> TestResult
 {
-    pause_retains_input(MemoryStream::default()).await?;
-    let directory = tempfile::tempdir()?;
-    pause_retains_input(LocalStream::open(directory.path(), Default::default()).await?).await
+    for external in [false, true] {
+        pause_retains_input(MemoryStream::default(), external).await?;
+        let directory = tempfile::tempdir()?;
+        pause_retains_input(
+            LocalStream::open(directory.path(), Default::default()).await?,
+            external,
+        )
+        .await?;
+    }
+    Ok(())
 }
