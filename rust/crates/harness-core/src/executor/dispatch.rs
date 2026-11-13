@@ -334,19 +334,15 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let preparation = || {
+        let request = crate::conversation::BoundedContentFuture::new(self.io, || {
             self.resolve_model_request(
                 journal,
                 input,
                 (step, prior_messages, scope, prepared),
                 request,
             )
-        };
-        let request = if started {
-            crate::conversation::BoundedContentFuture::new(self.io, preparation)?.await?
-        } else {
-            super::phase::run(journal, self.io, preparation).await?
-        };
+        })?
+        .await?;
         Ok(PreparedDispatchStep {
             #[cfg(feature = "research")]
             journal_cut,
