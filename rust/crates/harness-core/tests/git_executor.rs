@@ -2744,3 +2744,58 @@ async fn recovery_authenticates_pending_sources_outside_the_branch_catalog() -> 
     run(&fs, store, &main, root, &["status"]).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn nested_repository_reads_and_diffs_its_own_child_without_merging() -> Result<()> {
+    use acyclic_fs::GitFilesystemResult;
+    let (_temp, _root, fs, store, root) = fixture().await?;
+    let (_, parent) = run(
+        &fs,
+        &store,
+        &root,
+        root.workspace().id(),
+        &["checkout", "-b", "agents/parent"],
+    )
+    .await?;
+    let parent = parent.ok_or("missing parent fork")?;
+    let repository = parent.workspace().id();
+    let (_, reviewer) = run(
+        &fs,
+        &store,
+        &parent,
+        repository,
+        &["checkout", "-b", "agents/reviewer"],
+    )
+    .await?;
+    let reviewer = reviewer.ok_or("missing reviewer fork")?;
+    write_text(&reviewer, "/review.md", b"Reviewed changes\n").await?;
+    // Branch creation selects the child; return this repository to its parent.
+    run(&fs, &store, &reviewer, repository, &["checkout", "main"]).await?;
+    let (shown, _) = run(
+        &fs,
+        &store,
+        &parent,
+        repository,
+        &["show", "agents/reviewer:review.md"],
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = shown else {
+        return Err("expected reviewer file".into());
+    };
+    assert_eq!(value["text"], "Reviewed changes\n");
+    let (diff, _) = run(
+        &fs,
+        &store,
+        &parent,
+        repository,
+        &["diff", "agents/reviewer", "--stat"],
+    )
+    .await?;
+    let GitCommandOutput::Filesystem(GitFilesystemResult::Data { value, .. }) = diff else {
+        return Err("expected nested child diff".into());
+    };
+    assert_eq!(value["fileChanges"], 1);
+    assert_eq!(read_text(&parent, "/review.md").await?, None);
+    assert_eq!(read_text(&root, "/review.md").await?, None);
+    Ok(())
+}

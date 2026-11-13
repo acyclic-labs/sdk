@@ -168,7 +168,7 @@ pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
     TurnEffect::child(parent, &intent).map_err(Error::from)
 }
 
-/// Resolves the child operand of diff, merge or discard exactly once. File
+/// Resolves the child operand of diff, merge, discard or show exactly once. File
 /// operands (including `add agents/file`) retain their ordinary path meaning.
 /// The driver supplies its existing child derivation; the repository key is
 /// always the complete canonical address, including the owning ancestry.
@@ -186,7 +186,7 @@ pub fn resolve_child_branch(
     } else if branch.starts_with("harness/agents/") {
         AgentPath::try_from(branch.to_owned()).map_err(Error::from)?
     } else {
-        return Ok(None);
+        resolve(parent, branch)?
     };
     if !child.is_child_of(parent) {
         return Err(Error::Invalid(
@@ -528,7 +528,9 @@ impl AgentTool {
             TurnEffect::Send { to, id, .. } => {
                 json!({"sent": to.as_str(), "id": id, "status": "queued"})
             }
-            TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
+            TurnEffect::Archive { target, .. } => {
+                json!({"archived": target.as_str(), "branch": target.as_str()})
+            }
         };
         Ok(ToolResult { value })
     }
@@ -1131,7 +1133,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "archive",
             definition::<ArchiveAgentInput>(
                 "archive",
-                "Archive an open child (by name or path) and its descendants; wait on it to see it archived",
+                "Archive an open child (by name or path) and its descendants; wait on it to see it archived. The returned branch retains its unmerged files: read fs show <branch>:PATH without merging after archive",
             )?,
         ),
         (
@@ -1284,7 +1286,9 @@ mod tests {
                 assert!(matches!(error, Error::Agent(_)));
                 assert_eq!(effects.0.load(Ordering::SeqCst), 0);
             } else {
-                assert_eq!(result?.value["archived"], child.as_str());
+                let result = result?;
+                assert_eq!(result.value["archived"], child.as_str());
+                assert_eq!(result.value["branch"], child.as_str());
                 assert_eq!(effects.0.load(Ordering::SeqCst), 1);
             }
             // A genuine bad reference is still ordinary feedback, even when

@@ -987,6 +987,21 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         outcome,
     };
     fixture.session("settled", complete).await?;
+    let turn = fixture.session("archived", SessionAction::Next {}).await?;
+    native_write(&cwd(&turn)?.join("archived-report.md"), b"review complete")?;
+    fixture
+        .session(
+            "archived",
+            SessionAction::Complete {
+                claim: claim(&turn)?,
+                outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput::new(
+                    "review complete".into(),
+                    Value::Null,
+                    1,
+                )),
+            },
+        )
+        .await?;
     let archive = SessionAction::Control {
         control: Control::Archive,
     };
@@ -996,6 +1011,27 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
         1,
         "idle children retired"
     );
+    let archived = agents::child(&fixture.parent, "archived")?;
+    let shown = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Fs {
+                task: fixture.parent.clone(),
+                command: format!("show {archived}:archived-report.md"),
+            },
+        )
+        .await?;
+    let shown: acyclic_fs::GitCommandOutput = serde_json::from_value(shown).map_err(storage)?;
+    let acyclic_fs::GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data {
+        value,
+        ..
+    }) = shown
+    else {
+        return Err(Error::Invalid("archived child file result missing".into()));
+    };
+    assert_eq!(value["text"], "review complete");
+    assert!(!fixture.checkout.path().join("archived-report.md").exists());
     let missing = fixture
         .owner
         .dispatch(
