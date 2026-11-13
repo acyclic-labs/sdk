@@ -61,6 +61,8 @@ pub mod hooks;
 #[doc(hidden)]
 pub mod identity;
 pub mod interaction;
+#[cfg(not(target_arch = "wasm32"))]
+mod javascript_allocator;
 mod json_literal;
 pub mod layers;
 pub mod live;
