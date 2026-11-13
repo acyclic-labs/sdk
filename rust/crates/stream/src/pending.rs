@@ -81,7 +81,8 @@ impl AppendPending {
         )
     }
 
-    pub(crate) fn submit_task(
+    /// Retains the exact append identity while a supplied producer settles it.
+    pub fn submit_task(
         request: AppendRequest,
         work: impl std::future::Future<Output = Result<AppendOutcome, StreamError>>
         + crate::ProviderTask
@@ -93,6 +94,11 @@ impl AppendPending {
             producer.publish(work.await);
         }));
         pending
+    }
+
+    /// Observes the original portable receipt without repeating the append.
+    pub async fn wait(&self) -> Result<AppendOutcome, StreamError> {
+        self.result().await?.clone()
     }
 }
 impl Pending {
@@ -113,49 +119,6 @@ impl Pending {
     /// Waits for the retained portable receipt. Native callers borrow the same
     /// completion with [`Self::result`] to preserve its original allocation.
     pub async fn wait(&self) -> Result<CommitOutcome, StreamError> {
-        self.result().await?.clone()
-    }
-}
-
-/// One exact append and its retained terminal result, sharing commit custody.
-pub type AppendPending =
-    Pending<Result<crate::AppendOutcome, StreamError>, (), crate::AppendRequest>;
-
-impl AppendPending {
-    /// Transfers the original append to an independent producer exactly once.
-    pub fn submit_append<P: StreamProvider + ?Sized>(
-        provider: Arc<P>,
-        request: crate::AppendRequest,
-        executor: &dyn crate::runtime::Executor,
-    ) -> Self {
-        let command = request.clone();
-        Self::submit_task(
-            request,
-            async move { provider.append(command).await },
-            executor,
-        )
-    }
-
-    /// Retains the exact append identity while a supplied producer settles it.
-    pub fn submit_task<F>(
-        request: crate::AppendRequest,
-        future: F,
-        executor: &dyn crate::runtime::Executor,
-    ) -> Self
-    where
-        F: std::future::Future<Output = Result<crate::AppendOutcome, StreamError>>
-            + crate::ProviderTask
-            + 'static,
-    {
-        let (pending, producer) = Self::prepare(request, ());
-        executor.spawn(Box::pin(async move {
-            producer.publish(future.await);
-        }));
-        pending
-    }
-
-    /// Observes the original portable receipt without repeating the append.
-    pub async fn wait(&self) -> Result<crate::AppendOutcome, StreamError> {
         self.result().await?.clone()
     }
 }
