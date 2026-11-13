@@ -112,6 +112,91 @@ async fn journal_on<
 }
 
 #[tokio::test]
+async fn live_reply_flush_drains_inside_a_deferred_model_phase() -> Result<()> {
+    use acyclic_native_runtime::testing::Schedule;
+    use acyclic_stream::StreamProviderExt as _;
+
+    let storage = |cause: &dyn std::fmt::Display| Error::Storage(cause.to_string());
+    acyclic_native_runtime::initialize_native_io_services().map_err(|cause| storage(&cause))?;
+    let directory = tempfile::tempdir().map_err(|cause| storage(&cause))?;
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(directory.path().join("journal"), Default::default())
+            .await
+            .map_err(|cause| storage(&cause))?,
+    );
+    let append = || acyclic_stream::AppendRequest {
+        path: acyclic_stream::StreamPath::new("control").unwrap(),
+        records: vec!["control".into()],
+        if_tail: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+    };
+    stream
+        .append(append())
+        .await
+        .map_err(|cause| storage(&cause))?;
+    let filesystem = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await?;
+    let (journal, _issuer) = journal_on(stream.clone(), filesystem).await?;
+    let reply = journal.live_reply(OperationId::new())?.unwrap();
+    let (schedule, mut boundaries) = Schedule::new();
+    let drains = || {
+        schedule
+            .durable_writes()
+            .iter()
+            .filter(|write| {
+                matches!(
+                    write.operation,
+                    "file:sync"
+                        | "file:sync_data"
+                        | "file:sync_all"
+                        | "file:sync_parent"
+                        | "file:sync_filesystem"
+                        | "file:sync_checkpoint_batch"
+                )
+            })
+            .count()
+    };
+    let mut publication = Box::pin(schedule.scope(acyclic_stream::deferring_durability(async {
+        let before = drains();
+        stream
+            .append(append())
+            .await
+            .map_err(|cause| storage(&cause))?;
+        assert_eq!(drains(), before, "negative control did not defer its drain");
+        let mut text = reply.dispatch();
+        for delta in ["first", "second"] {
+            text.observe(&ModelEvent::Content {
+                delta: delta.into(),
+            });
+            let before = drains();
+            text.flush().await?;
+            assert!(
+                drains() > before,
+                "live text became visible without a device drain"
+            );
+        }
+        Ok::<_, Error>(())
+    })));
+    let result = loop {
+        tokio::select! {
+            result = &mut publication => break result,
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
+    };
+    drop(publication);
+    let mut drained = Box::pin(schedule.drained());
+    loop {
+        tokio::select! {
+            () = &mut drained => break,
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
+    }
+    result
+}
+
+#[tokio::test]
 async fn cancellation_retires_provider_before_pending_completion_durability() -> Result<()> {
     use acyclic_native_runtime::testing::Schedule;
     use futures::{FutureExt as _, StreamExt as _, channel::oneshot};

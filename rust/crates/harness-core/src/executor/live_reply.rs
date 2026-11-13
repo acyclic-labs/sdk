@@ -76,16 +76,20 @@ impl Staged {
             .directory
             .rsplit_once('/')
             .map_or(self.directory.as_str(), |(_, label)| label);
-        publisher
-            .stage_once(
-                OperationId::from_bytes(operation),
-                &path,
-                self.pending.as_bytes(),
-                "text/plain",
-                label,
-                ContentAccess::default(),
-            )?
-            .await?;
+        let publication = publisher.stage_once(
+            OperationId::from_bytes(operation),
+            &path,
+            self.pending.as_bytes(),
+            "text/plain",
+            label,
+            ContentAccess::default(),
+        )?;
+        // This file wakes live observers before the model phase completes.
+        // Its publication cannot inherit that phase's deferred durability.
+        #[cfg(not(target_arch = "wasm32"))]
+        acyclic_stream::requiring_durability(publication).await?;
+        #[cfg(target_arch = "wasm32")]
+        publication.await?;
         self.pending.clear();
         self.announce = false;
         self.sequence += 1;
