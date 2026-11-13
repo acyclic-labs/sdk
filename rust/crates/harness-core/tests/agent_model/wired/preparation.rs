@@ -522,7 +522,7 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running" }])
     );
     control.advance_to(129)?;
     host.drain(parent).await?;
@@ -535,7 +535,7 @@ async fn deadlines(
     assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running" }])
     );
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 4);
     host.drain(child).await?;
