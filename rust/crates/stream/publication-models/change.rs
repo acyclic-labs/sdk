@@ -175,6 +175,20 @@ proptest::proptest! {
 /// not a parallel model. No wall-clock timeout or retry can hide a lost wake.
 #[test]
 fn producer_loss_terminates_detached_subscriptions() {
+    fn assert_retired(observed: Poll<Result<(), StreamError>>) {
+        use std::error::Error as _;
+        let Poll::Ready(Err(error)) = observed else {
+            panic!("detached subscription retained a vanished change producer");
+        };
+        assert_eq!(error.category(), StreamError::Unavailable);
+        let cause = error
+            .source()
+            .and_then(std::error::Error::source)
+            .and_then(|source| source.downcast_ref::<acyclic_auth::refusal::Cause>())
+            .expect("original typed producer retirement cause");
+        assert_eq!(cause.component, "stream.change");
+        assert_eq!(cause.reason, "producer_retired");
+    }
     for before_poll in [false, true] {
         loom::model(move || {
             let producer = Change::new();
@@ -201,19 +215,11 @@ fn producer_loss_terminates_detached_subscriptions() {
                     count.count.load(Ordering::SeqCst) > 0,
                     "final change producer dropped without waking its subscription"
                 );
-                assert_eq!(
-                    wait.as_mut().poll(&mut context),
-                    Poll::Ready(Err(StreamError::Unavailable)),
-                    "detached subscription retained a vanished change producer"
-                );
+                assert_retired(wait.as_mut().poll(&mut context));
             } else {
-                assert_eq!(observed, Poll::Ready(Err(StreamError::Unavailable)));
+                assert_retired(observed);
             }
-            assert_eq!(
-                Box::pin(late.changed()).as_mut().poll(&mut context),
-                Poll::Ready(Err(StreamError::Unavailable)),
-                "unpolled subscription retained a vanished change producer"
-            );
+            assert_retired(Box::pin(late.changed()).as_mut().poll(&mut context));
         });
     }
 }
