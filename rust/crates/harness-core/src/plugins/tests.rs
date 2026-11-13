@@ -1,5 +1,6 @@
 use super::*;
 use futures::future::BoxFuture;
+use std::collections::BTreeMap;
 
 /// An effective tree held in memory.
 struct Files(BTreeMap<&'static str, &'static str>);
@@ -317,5 +318,44 @@ async fn native_after_hook_refusals_retain_the_original_decision() -> Result<()>
         }
         original = Some(identity);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<()> {
+    struct Script(acyclic_stream::OwnedBytes);
+    impl Tree for Script {
+        fn read<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+            Box::pin(std::future::ready(Ok(Some(self.0.clone()))))
+        }
+    }
+    let tree = Script(acyclic_stream::OwnedBytes::from(vec![b'x'; 65536]));
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                + 4096,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    assert!(matches!(
+        read_hook(
+            &tree,
+            None,
+            "plugins/helper/hooks/before-tool.sh".into(),
+            Some(&io)
+        )
+        .await,
+        Err(LoadFailure::Operational(Error::NativeWork { .. }))
+    ));
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(tree.0.len(), 65536, "refusal preserves the original source");
     Ok(())
 }
