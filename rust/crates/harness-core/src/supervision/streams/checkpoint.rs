@@ -75,7 +75,7 @@ impl Projection {
                 _ => None,
             })
             .ok_or_else(|| invalid("lifecycle event has no captured signal append"))?;
-        records.push(serde_json::to_vec(event).map_err(invalid)?.into());
+        records.push(lifecycle_record(event)?);
         Ok(())
     }
 }

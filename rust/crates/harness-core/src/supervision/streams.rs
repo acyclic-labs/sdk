@@ -47,6 +47,48 @@ pub async fn active_run<P: StreamProvider + ?Sized>(
     Ok((decode_run(record, agent)?, condition))
 }
 
+const PAUSED_RUN_KEY: &[u8] = b"paused-run";
+
+/// Retain the run whose original lifecycle publication closed admission.
+/// Owner file events have no run and never replace this source identity.
+pub(crate) fn lifecycle_record(event: &Event) -> Result<AppendRecord> {
+    let bytes = serde_json::to_vec(event).map_err(invalid)?;
+    if event.run.is_some() && matches!(event.event, Lifecycle::Paused { .. }) {
+        AppendRecord::latest(bytes, PAUSED_RUN_KEY, false).map_err(Error::from)
+    } else {
+        Ok(bytes.into())
+    }
+}
+
+/// Point-select the run owning the latest pause, with its atomic action fence.
+pub(crate) async fn paused_run<P: StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &AgentPath,
+) -> Result<(Option<OperationId>, CommitCondition)> {
+    let (record, fence) = provider
+        .latest_fenced(
+            path(agent)?,
+            Some(Bytes::from_static(PAUSED_RUN_KEY).into()),
+            Default::default(),
+        )
+        .await?;
+    let run = record
+        .map(|record| -> Result<_> {
+            let event: Event = serde_json::from_slice(&record.value).map_err(invalid)?;
+            if event.version != 1
+                || event.agent != *agent
+                || !matches!(event.event, Lifecycle::Paused { .. })
+            {
+                return Err(invalid("invalid indexed pause owner"));
+            }
+            event
+                .run
+                .ok_or_else(|| invalid("indexed pause has no run identity"))
+        })
+        .transpose()?;
+    Ok((run, fence))
+}
+
 fn decode_run(
     record: Option<acyclic_stream::Record>,
     agent: &AgentPath,

@@ -296,7 +296,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 let mut lifecycle_fence = None;
                 if stopping || paused != state.paused {
                     if !stopping && !paused {
-                        let (run, fence) = crate::supervision::streams::active_run(
+                        let (run, fence) = crate::supervision::streams::paused_run(
                             self.store.provider().as_ref(),
                             &state.agent,
                         )
