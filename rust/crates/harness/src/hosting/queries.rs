@@ -39,7 +39,9 @@ where
             .map_err(|_| StreamError::AccessDenied)?;
         let minimum = match projection {
             QueryProjection::Input(crate::agent::InputSelection::Latest) => 8,
-            QueryProjection::Input(crate::agent::InputSelection::Pending) => 28,
+            QueryProjection::Input(
+                crate::agent::InputSelection::Pending | crate::agent::InputSelection::History,
+            ) => 28,
             QueryProjection::Diff(_) => 0,
         };
         if page.bytes() < minimum {
@@ -96,7 +98,7 @@ where
                 QueryProjection::Input(selection) => self.server.platform.input_preview_source(
                     &authorization, agent, u64::from(page.bytes() - match selection {
                         crate::agent::InputSelection::Latest => 8,
-                        crate::agent::InputSelection::Pending => 24,
+                        crate::agent::InputSelection::Pending | crate::agent::InputSelection::History => 24,
                     }), selection,
                 ).await.map(|source| input_frames(source, page.clone())),
             };
@@ -144,7 +146,7 @@ fn input_frames(
                     body.extend_from_slice(preview.text.as_bytes());
                     yield diff::frame(6, body, &page)?;
                 }
-                crate::agent::InputPreviewStep::Pending { inbox, offset, preview } => {
+                crate::agent::InputPreviewStep::MessageRange { inbox, offset, preview } => {
                     let mut body = Vec::with_capacity(24 + preview.text.len());
                     body.extend_from_slice(&inbox.to_le_bytes());
                     body.extend_from_slice(&offset.to_le_bytes());

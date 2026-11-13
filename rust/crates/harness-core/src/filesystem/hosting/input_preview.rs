@@ -37,10 +37,10 @@ where
             let mut selected = inbox;
             let mut end = tail;
             let mut lower = floor;
+            if selection != InputSelection::Latest && maximum < 4 {
+                Err(Error::Record("input credit cannot hold a UTF-8 scalar"))?;
+            }
             if selection == InputSelection::Pending {
-                if maximum < 4 {
-                    Err(Error::Record("pending input credit cannot hold a UTF-8 scalar"))?;
-                }
                 if state.closed {
                     yield InputPreviewStep::Selected(None);
                     return;
@@ -84,6 +84,8 @@ where
                             _ => None,
                         },
                     };
+                    let message = message.filter(|message| selection != InputSelection::History
+                        || matches!(message.from, crate::agent::Sender::User { .. }));
                     match message {
                         Some(message) => {
                             let reader = bound.input_reader(&state, &message.body).await?;
@@ -99,7 +101,7 @@ where
                                 if !complete && next == offset {
                                     Err(Error::Record("pending input range made no progress"))?;
                                 }
-                                yield InputPreviewStep::Pending { inbox: end, offset, preview };
+                                yield InputPreviewStep::MessageRange { inbox: end, offset, preview };
                                 if complete { break; }
                                 offset = next;
                             }
@@ -110,14 +112,14 @@ where
                             // turn. Keep its one original record until that
                             // entry's proof arrives; do not replay overlapping
                             // inbox ranges or silently discard the candidate.
-                            if matches!(&input, InboxRecord::Message(_)) {
+                            if selection != InputSelection::History && matches!(&input, InboxRecord::Message(_)) {
                                 deferred = Some((end, input));
                             }
                             yield InputPreviewStep::Progress;
                         }
                     }
                 }
-                if selection == InputSelection::Pending {
+                if selection != InputSelection::Latest {
                     yield InputPreviewStep::Selected(None);
                     return;
                 }

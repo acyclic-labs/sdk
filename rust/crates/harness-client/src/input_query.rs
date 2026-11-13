@@ -85,7 +85,11 @@ impl InputQuery {
                     bytes,
                 }))
             }
-            8 if self.selection == InputSelection::Pending && body.len() >= 24 => {
+            8 if matches!(
+                self.selection,
+                InputSelection::Pending | InputSelection::History
+            ) && body.len() >= 24 =>
+            {
                 let inbox =
                     u64::from_le_bytes(body[..8].try_into().map_err(|_| CommandError::Invalid)?);
                 let offset =
@@ -96,7 +100,7 @@ impl InputQuery {
                 if offset > bytes || text.len() as u64 > bytes - offset {
                     return Err(CommandError::Invalid.into());
                 }
-                InputPreviewStep::Pending {
+                InputPreviewStep::MessageRange {
                     inbox,
                     offset,
                     preview: InputPreview {
