@@ -44,7 +44,7 @@ fn hour(provider: &ResolvedModel) -> bool {
 }
 
 /// The one `cache_control` value of a request.
-pub(crate) fn control(provider: &ResolvedModel) -> serde_json::Value {
+fn control(provider: &ResolvedModel) -> serde_json::Value {
     let ttl = if hour(provider) { "1h" } else { "5m" };
     serde_json::json!({"type":"ephemeral","ttl":ttl})
 }
@@ -97,7 +97,16 @@ pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
         return;
     }
     match provider.config.adapter {
-        Family::Anthropic => fields.insert(Field::CacheControl, control(provider)),
+        Family::Anthropic => {
+            fields.update(Field::System, |system| {
+                if let Some(serde_json::Value::Object(block)) =
+                    system.as_array_mut().and_then(|blocks| blocks.last_mut())
+                {
+                    block.insert("cache_control".into(), control(provider));
+                }
+            });
+            fields.insert(Field::CacheControl, control(provider));
+        }
         Family::Responses | Family::Chat => {
             fields.insert(
                 Field::PromptCacheKey,
@@ -283,6 +292,82 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn implicit_anthropic_requests_omit_system_and_automatic_cache_markers() -> Result<()> {
+        use acyclic_harness_core::{
+            approvals::ApprovalPolicy,
+            model::{ModelDispatch, ModelProvider, ModelRole, PreparedModelRequest},
+            profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve},
+        };
+        use futures::TryStreamExt as _;
+
+        let approvals = ApprovalPolicy::default().bind()?;
+        let agent = AgentOverride::parse("---\nversion: 1\n---\n", &approvals)?;
+        let project = ProjectLayer::parse("---\nversion: 1\n---\n")?;
+        let role = RoleFile::parse(
+            "---\nversion: 1\nname: worker\nmodel: fixture/model\ncontext: fork\nmay_spawn: []\n---\n",
+        )?;
+        for (strategy, ttl) in [("automatic", "5m"), ("hour", "1h")] {
+            let (provider, transport) = crate::tests::provider(Family::Anthropic, 200);
+            let model = ModelProfile::parse(
+                &format!(
+                    "---\nversion: 1\ntools: []\nreasoning: {{mode: disabled}}\ncache: {strategy}\nbudget_tokens: 4096\nwatermark_tokens: 2000\n---\n"
+                ),
+                "---\nversion: 1\nkey: fixture/model\n---\n",
+                provider.capacity,
+                "renderer-v1",
+            )?;
+            let mut provider = provider.with_profile(&resolve(&model, &role, &project, &agent)?)?;
+            for with_system in [false, true] {
+                let (prepared, dispatch) = crate::tests::request(&provider)?;
+                let mut request = prepared.request().clone();
+                if !with_system {
+                    request
+                        .messages
+                        .retain(|message| message.role != ModelRole::System);
+                }
+                let prepared = PreparedModelRequest::prepare(request, Default::default(), None)?;
+                for policy in [crate::PromptCache::Native, crate::PromptCache::Implicit] {
+                    std::sync::Arc::make_mut(&mut provider.config).prompt_cache = policy;
+                    provider
+                        .generate(
+                            &prepared,
+                            ModelDispatch {
+                                request_digest: prepared.request_digest(),
+                                ..dispatch
+                            },
+                        )
+                        .try_collect::<Vec<_>>()
+                        .await?;
+                }
+                let sent = transport.sent.lock().unwrap();
+                let mut native: serde_json::Value =
+                    serde_json::from_slice(&sent[sent.len() - 2].body).unwrap();
+                let implicit: serde_json::Value =
+                    serde_json::from_slice(&sent[sent.len() - 1].body).unwrap();
+                let marker = json!({"type":"ephemeral","ttl":ttl});
+                assert_eq!(
+                    native.as_object_mut().unwrap().remove("cache_control"),
+                    Some(marker.clone())
+                );
+                assert_eq!(native.get("system").is_some(), with_system);
+                if let Some(blocks) = native
+                    .get_mut("system")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    for block in blocks {
+                        assert_eq!(
+                            block.as_object_mut().unwrap().remove("cache_control"),
+                            Some(marker.clone())
+                        );
+                    }
+                }
+                assert_eq!(implicit, native, "only generated cache markers may differ");
+            }
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn chat_conversations_keep_distinct_affinity_across_turns_and_credential_refresh() {
