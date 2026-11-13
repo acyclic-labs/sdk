@@ -621,6 +621,9 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
         ._binding
         .as_ref()
         .ok_or_else(|| Error::NotFound("original binding owner".into()))?
+        .clone()
+        .downcast::<bindings::Binding>()
+        .ok_or_else(|| Error::Conflict("original binding has another owner type".into()))?
         .key;
     let (ready, duplicate) = bindings::Bindings::select(
         &workspace.bindings,

@@ -9,7 +9,7 @@ pub(in crate::local) struct Native {
     binding: Option<(PathBuf, PathBuf)>,
     // Owned native guards can outlive the logical MountedVolume. Keep the
     // original key occupied until this projection's physical fields retire.
-    _binding_owner: Option<acyclic_fs::kernel::allocation::RetainedArc<super::bindings::Binding>>,
+    _binding_owner: Option<acyclic_fs::kernel::allocation::ErasedRetainedArc>,
 }
 
 impl std::ops::Deref for Native {
