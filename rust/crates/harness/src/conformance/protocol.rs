@@ -276,20 +276,28 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         if output.get("text").and_then(serde_json::Value::as_str) != Some(REPLY) {
             return Err("the guest's immutable reply differs".into());
         }
-        if call(
-            endpoint,
-            &AgentCommand::Read {
-                agent: root.clone(),
-                target: ReadTarget::File {
-                    file: entry.output.clone(),
-                },
-                offset: 0,
+        let uncommitted_output = AgentCommand::Read {
+            agent: root.clone(),
+            target: ReadTarget::Conversation {
+                sequence: conversation[0]
+                    .sequence
+                    .checked_add(1)
+                    .ok_or("conversation cursor overflow")?,
+                file: entry.output.clone(),
             },
-        )
-        .await?
-        .is_ok()
-        {
-            return Err("an ordinary file read acquired hidden journal authority".into());
+            offset: 0,
+        };
+        let expected_refusal = acyclic_harness_core::agent::Error::Record(
+            "conversation file proof is outside the committed prefix",
+        );
+        if !matches!(
+            call(endpoint, &uncommitted_output).await?,
+            Err(AgentControlFailure::Refused { code, reason })
+                if code == expected_refusal.code() && reason == expected_refusal.to_string()
+        ) {
+            return Err(
+                "an uncommitted conversation did not report its committed-prefix refusal".into(),
+            );
         }
         observations::verify(endpoint, &root, entry.inbox).await?;
         let AgentReply::Approvals { items, next } = call(endpoint, &approvals).await?? else {
