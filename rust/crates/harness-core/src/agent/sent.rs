@@ -86,8 +86,9 @@ pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
     };
     let actor = super::handler::Agents::<P>::actor(within, &message.to.id())?;
     let agents = super::handler::Agents::new(super::actor_store(provider)?);
-    let (mut state, cursor) = agents.state(&actor, &message.to).await?;
-    let reply = super::reply(provider.as_ref(), &mut state, cursor, id, inbox).await?;
+    let (mut head, cursor) = agents.head(&actor, &message.to).await?;
+    let state = &mut head.state;
+    let reply = super::reply(provider.as_ref(), state, cursor, id, inbox).await?;
     let (status, watch) = match reply {
         super::Reply::Answered { sequence, .. } => (SentReplyStatus::Answered { sequence }, None),
         super::Reply::Dropped => (SentReplyStatus::Dropped, None),

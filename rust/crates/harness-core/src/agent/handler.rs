@@ -315,6 +315,16 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         actor: &ActorReference,
         agent: &AgentPath,
     ) -> Result<(AgentState, u64), Error> {
+        let (head, cursor) = self.head(actor, agent).await?;
+        Ok((head.load(self.store.provider().as_ref()).await?, cursor))
+    }
+
+    /// Checkpoint metadata without loading the immutable workspace table.
+    pub(super) async fn head(
+        &self,
+        actor: &ActorReference,
+        agent: &AgentPath,
+    ) -> Result<(super::checkpoint::Head, u64), Error> {
         let snapshot = self
             .store
             .load(actor)
@@ -329,7 +339,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .ok_or(Error::Record("agent inbox subscription differs"))?
             .cursor;
         let mut observed = if let Some(checkpoint) = state.checkpoint() {
-            checkpoint_state(self.store.provider().as_ref(), checkpoint).await?
+            super::checkpoint::checkpoint_head(checkpoint)?
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
             // Its own adoption is at the cursor installed by the spawn commit.
@@ -347,22 +357,29 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             {
                 return Err(Error::Record("agent adoption cursor differs"));
             }
-            AgentState::adopted(agent.clone(), adopted)?
+            super::checkpoint::Head::initial(AgentState::adopted(agent.clone(), adopted)?)?
         };
-        if &observed.path != agent || !agent.parent_is(observed.parent.as_ref()) {
+        if &observed.state.path != agent || !agent.parent_is(observed.state.parent.as_ref()) {
             return Err(Error::Record("agent state binding differs"));
         }
         observed
+            .state
             .open_children
             .bind(Arc::clone(self.store.provider()));
         observed
+            .state
             .archive_pending
             .bind(Arc::clone(self.store.provider()));
-        observed.awaiting.bind(Arc::clone(self.store.provider()));
         observed
+            .state
+            .awaiting
+            .bind(Arc::clone(self.store.provider()));
+        observed
+            .state
             .topology_refusals
             .bind(Arc::clone(self.store.provider()));
         observed
+            .state
             .spawned_children
             .bind(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
@@ -445,11 +462,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 }
                 super::StatusRecord::decode(&record.value)?;
                 let actor = Agents::<P>::actor(&delivery.actor, &watch.to.id())?;
-                let (mut state, cursor) = self.agents.state(&actor, &watch.to).await?;
+                let (mut head, cursor) = self.agents.head(&actor, &watch.to).await?;
+                let state = &mut head.state;
                 let settled = matches!(
                     super::reply(
                         self.agents.store.provider().as_ref(),
-                        &mut state,
+                        state,
                         cursor,
                         &watch.id,
                         watch.inbox

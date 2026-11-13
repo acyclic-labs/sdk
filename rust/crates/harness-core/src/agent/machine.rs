@@ -631,9 +631,15 @@ pub enum WaitReason {
     /// The original actor deadline fired.
     Deadline,
     /// The selected inbox arm received this input.
-    Input { inbox: u64 },
+    Input {
+        /// Sequence of the accepted input in this agent's inbox.
+        inbox: u64,
+    },
     /// This child completed the original settlement quorum.
-    Settlement { child: AgentPath },
+    Settlement {
+        /// Original child whose completion satisfied the wait.
+        child: AgentPath,
+    },
 }
 
 /// The result of one turn step.

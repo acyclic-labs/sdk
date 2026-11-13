@@ -35,6 +35,16 @@ pub(crate) struct Head {
 }
 
 impl Head {
+    pub(crate) fn initial(mut state: AgentState) -> Result<Self, Error> {
+        let table = TableRef::of(&state.volumes)?;
+        let initial = Some(std::mem::take(&mut state.volumes));
+        Ok(Self {
+            state,
+            table,
+            initial,
+        })
+    }
+
     pub(crate) fn restore(
         mut self,
         entries: Vec<super::WorkspaceEntry>,
@@ -94,14 +104,7 @@ pub(crate) fn committed_head(
         Some(parent) => parent.child(&adopted.agent)?,
         None => super::AgentPath::root(&adopted.agent),
     };
-    let mut state = AgentState::adopted(path, &adopted)?;
-    let table = TableRef::of(&state.volumes)?;
-    let initial = Some(std::mem::take(&mut state.volumes));
-    Ok(Head {
-        state,
-        table,
-        initial,
-    })
+    Head::initial(AgentState::adopted(path, &adopted)?)
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
