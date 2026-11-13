@@ -102,13 +102,23 @@ pub(crate) async fn authenticate<'a>(
             .await?;
         return Ok((Some(Cow::Owned(key)), account));
     }
-    if provider.key.is_none()
-        && provider.credential_scope.is_none()
-        && provider.config.authentication != crate::Authentication::Optional
-    {
+    if !authenticated(provider) {
         return Err(invalid("model provider API key is unavailable"));
     }
     Ok((provider.key.as_deref().map(Cow::Borrowed), None))
+}
+
+/// Whether `provider` carries the credential its catalog policy requires.
+/// Resolution never requires one; every dispatch refuses before sending
+/// without it.
+pub(crate) fn authenticated(provider: &ResolvedModel) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if provider.codex_login.is_some() {
+        return true;
+    }
+    provider.key.is_some()
+        || provider.credential_scope.is_some()
+        || provider.config.authentication == crate::Authentication::Optional
 }
 
 pub(crate) fn send<'a>(
