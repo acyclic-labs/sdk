@@ -66,9 +66,9 @@ pub trait ToolSource: acyclic_stream::ProviderPlatform {
     }
     /// Load just one authored alias from its original producer. The caller must
     /// validate its input and retain its canonical invocation before dispatch.
-    /// Future allocation, source reads and retained program data use the supplied original ledger;
-    /// a source must not reopen an unmeasured operation. This observation grants
-    /// no execution authority.
+    /// Future allocation, source reads and retained program data use the supplied
+    /// original ledger; a source must not reopen an unmeasured operation. This
+    /// observation grants no execution authority.
     fn load<'a>(
         &'a self,
         _name: &'a str,
