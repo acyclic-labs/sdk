@@ -85,7 +85,7 @@ impl CheckoutTools {
                 let (execution, (state, claims)) =
                     crate::filesystem::native_process::prepare_with_custody(
                         (state, claims),
-                        move || {
+                        move |_| {
                             preparation_check().map_err(Error::process_io)?;
                             let grant = match grant {
                                 Some(grant) => {

@@ -30,32 +30,42 @@ impl CheckoutTools {
             |(_, workspace)| workspace.clone(),
         );
         let background = input.background;
-        let invocation = Invocation {
-            executable: executable()?.to_path_buf(),
-            argv: Vec::new(),
-            cwd: workspace.path.clone(),
-            environment: self.environment.clone(),
-            inherit_environment: false,
-            execution_grant,
-            schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
-            // Presentation is bounded below; streaming output is not a reason to stop a command.
-            maximum_output_bytes: None,
-            standard_input: None,
-            process_custody: workspace.processes.clone(),
-        };
-        let preparation_mounts = Arc::clone(&workspace.mounts);
+        let spill_root = workspace
+            .mounts
+            .scratch_root
+            .clone()
+            .ok_or_else(|| Error::Invalid("shell requires host scratch".into()))?;
+        let preparation_workspace = Arc::clone(&workspace);
+        let preparation_spill = spill_root.clone();
         let preparation_control = control.clone();
+        let environment = self.environment.clone();
         let clock = Arc::clone(&self.clock);
-        let (invocation, (state, files, claims)) =
-            native_process::prepare_with_custody((state, files, claims), move || {
+        let ((invocation, cancellation), (state, files, claims)) =
+            native_process::prepare_with_custody((state, files, claims), move |_| {
                 preparation_control.check().map_err(Error::process_io)?;
-                native_process::shell::prepare(
+                let cancellation = background
+                    .then(|| job::Cancellation::open(&preparation_spill, operation))
+                    .transpose()?;
+                let invocation = Invocation {
+                    executable: executable()?.to_path_buf(),
+                    argv: Vec::new(),
+                    cwd: preparation_workspace.path.clone(),
+                    environment,
+                    inherit_environment: false,
+                    execution_grant,
+                    schedule: acyclic_native_runtime::CaptureSchedule::Unbounded,
+                    maximum_output_bytes: None,
+                    standard_input: None,
+                    process_custody: preparation_workspace.processes.clone(),
+                };
+                let invocation = native_process::shell::prepare(
                     input,
-                    &preparation_mounts,
+                    &preparation_workspace.mounts,
                     invocation,
                     clock.now_unix_millis() / 1000,
                     std::time::Instant::now(),
-                )
+                )?;
+                Ok((invocation, cancellation))
             })
             .await?;
         control.check().map_err(Error::process_io)?;
@@ -70,11 +80,6 @@ impl CheckoutTools {
         let capture_control = control.clone();
         let shutdown = workspace.shutdown.clone();
         let spill_name = format!("shell-{operation}.log");
-        let spill_root = workspace
-            .mounts
-            .scratch_root
-            .clone()
-            .ok_or_else(|| Error::Invalid("shell requires host scratch".into()))?;
         let native_spill = spill_root
             .join(&spill_name)
             .to_str()
@@ -83,9 +88,6 @@ impl CheckoutTools {
         let spill_file = format!("tools/{}/{operation}/spill.log", context.turn_id());
         let spill_path = format!("{}{spill_file}", crate::layers::OUTPUT_PATH);
         let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output);
-        let cancellation = background
-            .then(|| job::Cancellation::open(&spill_root, operation))
-            .transpose()?;
         // Background ownership retains the selected workspace and volume claims,
         // while the command guard is available to later turns and file controls.
         let state = if background {
