@@ -500,7 +500,7 @@ pub fn actor_seeds()
                     escrow: None,
                 },
             )?,
-            store.activation(&actor),
+            store.activation(&actor)?,
         ] {
             create.join(effect)?;
         }
@@ -598,7 +598,7 @@ pub fn actor_seeds()
                 escrow: None,
             },
         )?,
-        store.activation(&actor),
+        store.activation(&actor)?,
     ];
     let CommitMutation::Append { records, .. } = &effects[0].mutations[0] else {
         return Err("actor creation did not append state".into());
@@ -615,6 +615,7 @@ pub fn actor_seeds()
     assert_eq!(state.encode(), bytes);
     seeds.push(("state-v2", bytes, "local::Store::create state encoder"));
     let delivery = guest::Delivery {
+        request: guest::RequestId::new(1),
         actor,
         epoch: 1,
         trigger: guest::Trigger::Alarm {
@@ -1099,7 +1100,7 @@ async fn actor_alarm_seeds()
                 escrow: None,
             },
         )?,
-        store.activation(&actor),
+        store.activation(&actor)?,
     ] {
         create.join(effect)?;
     }

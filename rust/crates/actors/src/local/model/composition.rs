@@ -13,6 +13,8 @@ struct Counts {
     rejected: AtomicUsize,
     refused: AtomicUsize,
     dropped: AtomicUsize,
+    /// The delivered input bytes each opened participant was handed.
+    delivered: std::sync::Mutex<Vec<Option<Vec<u8>>>>,
 }
 
 struct Participant {
@@ -208,15 +210,112 @@ async fn a_retry_refusal_cannot_settle_an_earlier_lost_ack() -> Result<(), Failu
 /// Opens each test participant request with the test's counters.
 struct Participants(Arc<Counts>);
 
-impl Composer for Participants {
+/// Interrupt successive real custody settlements before permitting completion.
+struct InterruptedRecovery(Arc<AtomicUsize>);
+
+impl Composer for InterruptedRecovery {
     fn open(
         &self,
         _: &ActorReference,
         _: Option<&Checkpoint>,
         _: Option<&acyclic_stream::Record>,
         _: &Checkpoint,
+        _: &crate::guest::Participant,
+    ) -> Result<Box<dyn Composition>, GuestError> {
+        Ok(Box::new(RecoveryAttempt(
+            self.0.fetch_add(1, Ordering::SeqCst),
+        )))
+    }
+}
+
+struct RecoveryAttempt(usize);
+
+impl Composition for RecoveryAttempt {
+    fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
+        Box::pin(async move { Ok(request) })
+    }
+
+    fn settle<'a>(
+        self: Box<Self>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
+        Box::pin(async move {
+            assert!(matches!(outcome, Ok(CommitOutcome::Committed(_))));
+            match self.0 {
+                0 => Err(GuestError::Handler("interrupted custody recovery".into())),
+                1 => futures::future::pending().await,
+                _ => Ok(()),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn placement_finishes_failed_and_cancelled_custody_recovery() -> Result<(), Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+        calls: AtomicUsize::new(0),
+    });
+    let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+    let result = store
+        .publish(
+            &store.load(&actor).await?,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: 0,
+            },
+            None,
+            transition(false)?,
+            key("interrupted-owner")?,
+        )
+        .await;
+    let Err(Error::Unknown { publication, .. }) = result else {
+        return Err("publication must commit without settling custody".into());
+    };
+    drop(publication);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let runtime = super::super::runtime::Runtime::new(
+        store.with_composer(Arc::new(InterruptedRecovery(attempts.clone()))),
+        Arc::new(crate::conformance::Package::new()?),
+        Arc::new(super::super::runtime::SystemClock),
+    )
+    .with_external_placement();
+    assert!(matches!(
+        runtime.place(actor.clone(), 1).await,
+        Err(Error::Handler(GuestError::Handler(message))) if message == "interrupted custody recovery"
+    ));
+    // Custody settles before the claim can replace its cut.
+    let unclaimed = runtime.store().load(&actor).await?;
+    assert_eq!(unclaimed.state().map(State::epoch), Some(1));
+    let mut retry = Box::pin(runtime.place(actor.clone(), 1));
+    assert!(futures::poll!(retry.as_mut()).is_pending());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    drop(retry);
+    runtime.place(actor.clone(), 1).await?;
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    let admitted = runtime.store().load(&actor).await?;
+    assert_eq!(admitted.state().map(State::epoch), Some(2));
+    Ok(())
+}
+
+impl Composer for Participants {
+    fn open(
+        &self,
+        _: &ActorReference,
+        _: Option<&Checkpoint>,
+        delivered: Option<&acyclic_stream::Record>,
+        _: &Checkpoint,
         participant: &crate::guest::Participant,
     ) -> Result<Box<dyn Composition>, GuestError> {
+        self.0
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(delivered.map(|record| record.value.to_vec()));
         Ok(Box::new(Participant {
             counts: self.0.clone(),
             remove_actor_fence: participant.plan.as_ref() == [1],
@@ -241,7 +340,7 @@ async fn placed(
                 subscriptions: BTreeMap::from([(
                     "inbox".to_owned(),
                     Subscription {
-                        path: path("participant/inbox")?,
+                        path: path("mail/inbox")?,
                         cursor: 0,
                     },
                 )]),
@@ -249,7 +348,7 @@ async fn placed(
                 escrow: None,
             },
         )?,
-        store.activation(&actor),
+        store.activation(&actor)?,
     ] {
         create.join(effect)?;
     }
@@ -349,7 +448,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
             .await?
             .ok_or("accepted input lost its retry identity")?;
         assert_eq!(accepted.idempotency_key, operation);
-        let activation = reopened.activation(&actor);
+        let activation = reopened.activation(&actor)?;
         let mut mutations = vec![CommitMutation::Append {
             path: input,
             records: vec![invocation.record(&reopened.path(&actor)?)?],
@@ -411,7 +510,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
         assert_eq!(committed.response().as_ref(), b"original-response");
         assert_eq!(reopened.invoke(&invocation).await?, committed);
         assert_eq!(reopened.enqueue_invoke(&invocation).await?, ticket);
-        assert_eq!(provider.inner.tail(path("participant/inbox")?).await?, 1);
+        assert_eq!(provider.inner.tail(path("mail/inbox")?).await?, 1);
         assert_eq!(provider.inner.tail(path("participant/child")?).await?, 1);
         assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
         assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
@@ -466,7 +565,7 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
     let Err(Error::Unknown { publication, .. }) = result else {
         return Err("lost invocation acknowledgement did not retain custody".into());
     };
-    let original = publication.request().clone();
+    let original = publication.request.clone();
     assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
     assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
@@ -478,7 +577,7 @@ async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_
         return Err("retry refusal settled an uncertain invocation".into());
     };
     assert_eq!(source, StreamError::AccessDenied);
-    assert_eq!(publication.request(), &original);
+    assert_eq!(publication.request, original);
     assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
     assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
     store.submit(*publication).await?;
@@ -634,6 +733,87 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
     Ok(())
 }
 
+/// The owner dies after its composed publication applied but before it learned
+/// so: the intent the publication itself carried lets the next owner settle
+/// the participant exactly once, and a later plain publication clears it.
+#[tokio::test]
+async fn a_new_owner_settles_the_participant_a_dead_owner_left_unsettled() -> Result<(), Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+        calls: AtomicUsize::new(0),
+    });
+    let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+    let record = |sequence| Trigger::Record {
+        subscription: "inbox".into(),
+        sequence,
+    };
+    let result = store
+        .publish(
+            &store.load(&actor).await?,
+            1,
+            &record(0),
+            None,
+            transition(false)?,
+            key("dead-owner")?,
+        )
+        .await;
+    let Err(Error::Unknown { publication, .. }) = result else {
+        return Err("lost acknowledgement did not retain the publication".into());
+    };
+    drop(publication);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+    let custody = StreamPath::new(format!("{}/custody", store.path(&actor)?))?;
+    let claimed = store
+        .claim(&store.load(&actor).await?, 2, key("new-owner")?)
+        .await?;
+    store.recover_custody(&claimed).await?;
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        claimed.state().and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
+    store
+        .publish(
+            &claimed,
+            2,
+            &record(1),
+            None,
+            Transition {
+                participant: None,
+                effects: Vec::new(),
+                ..transition(false)?
+            },
+            key("plain")?,
+        )
+        .await?;
+    let plain = store
+        .claim(&store.load(&actor).await?, 3, key("third-owner")?)
+        .await?;
+    store.recover_custody(&plain).await?;
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.inner.tail(custody).await?, 1);
+    let actors = std::slice::from_ref(&actor);
+    assert!(
+        super::super::tests::orphans(&store, actors)
+            .await?
+            .is_empty()
+    );
+    // Negative control: a window entry whose actor never existed.
+    let ghost = ActorReference::new(b"account", b"agents", b"ghost")?;
+    let mut orphaned = PreparedPublish::foreign(key("ghost")?);
+    orphaned.join(store.deadline(&ghost, 60_000)?)?;
+    PreparedPublish::settle(&provider.inner.commit(orphaned.into_request()?).await?)?;
+    assert_eq!(
+        super::super::tests::orphans(&store, actors).await?.len(),
+        1,
+        "the oracle must report an entry without a live owner"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn participant_cannot_remove_the_actor_fence_before_submission() -> Result<(), Failure> {
     let provider = Arc::new(Faulty {
@@ -727,5 +907,394 @@ async fn rejected_companion_settles_without_consuming_the_actor_input() -> Resul
             .and_then(|state| state.cursor("inbox")),
         Some(0)
     );
+    Ok(())
+}
+
+/// Proof that custody recovery reading by (path, seq) is exact: the owner
+/// dies after its composed publication applied, every way to replace the
+/// delivered input is attempted and refused by the stream primitive, and
+/// recovery hands the composer the original bytes.
+#[tokio::test]
+async fn custody_recovery_never_reads_a_replaced_input() -> Result<(), Failure> {
+    for replaced in [false, true] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let append = |stream: &str, value: &'static [u8], name: &str| {
+            let mut input = PreparedPublish::foreign(key(name)?);
+            input.join(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: path(stream)?,
+                    records: vec![bytes::Bytes::from_static(value).into()],
+                }],
+            ))?;
+            Ok::<_, Failure>(input.into_request()?)
+        };
+        PreparedPublish::settle(
+            &provider
+                .inner
+                .commit(append("mail/inbox", b"original", "input")?)
+                .await?,
+        )?;
+        let delivered = {
+            use futures::StreamExt as _;
+            provider
+                .inner
+                .read(acyclic_stream::ReadRequest {
+                    key: None,
+                    path: path("mail/inbox")?,
+                    from: 0,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await?
+                .next()
+                .await
+                .ok_or("the input was not committed")??
+        };
+        let result = store
+            .publish(
+                &store.load(&actor).await?,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                Some(&delivered),
+                transition(false)?,
+                key("delivered")?,
+            )
+            .await;
+        let Err(Error::Unknown { publication, .. }) = result else {
+            return Err("publication must commit without settling custody".into());
+        };
+        drop(publication);
+        let opened = counts
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        if replaced {
+            // Try to replace the input: fork other bytes over the stream
+            // itself and over its namespace parent. The primitive refuses
+            // both, since a fork destination must be absent.
+            for (stream, value) in [("forged", &b"seed"[..]), ("forged/inbox", &b"forged"[..])] {
+                PreparedPublish::settle(
+                    &provider
+                        .inner
+                        .commit(append(stream, value, stream)?)
+                        .await?,
+                )?;
+            }
+            for (source, destination) in [("forged/inbox", "mail/inbox"), ("forged", "mail")] {
+                let mut fork = PreparedPublish::foreign(key(destination)?);
+                fork.join(CommitEffect::hard(
+                    vec![CommitCondition::Absent {
+                        path: path(destination)?,
+                    }],
+                    vec![CommitMutation::Fork {
+                        exclude: Vec::new(),
+                        source: path(source)?,
+                        destination: path(destination)?,
+                        at_tail: 1,
+                        records: Vec::new(),
+                    }],
+                ))?;
+                let applied = match provider.inner.commit(fork.into_request()?).await {
+                    Ok(outcome) => PreparedPublish::settle(&outcome).is_ok(),
+                    Err(_) => false,
+                };
+                assert!(!applied, "the input at {destination} was replaced");
+            }
+        }
+        let claimed = store
+            .claim(&store.load(&actor).await?, 2, key("next-owner")?)
+            .await?;
+        let recovered = store.recover_custody(&claimed).await;
+        let seen = counts
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .split_off(opened);
+        recovered?;
+        assert_eq!(seen, [Some(b"original".to_vec())]);
+    }
+    Ok(())
+}
+
+/// Crash before settlement, then an activation replay with nothing to
+/// deliver: the dead owner's publication consumed the final input, so the
+/// replacement finds no input or alarm (or a paused actor) and never admits
+/// placement. Its replay still settles the committed participant.
+#[tokio::test]
+async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() -> Result<(), Failure>
+{
+    for paused in [false, true] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let result = store
+            .publish(
+                &store.load(&actor).await?,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                None,
+                transition(false)?,
+                key("final-input")?,
+            )
+            .await;
+        let Err(Error::Unknown { publication, .. }) = result else {
+            return Err("publication must commit without settling custody".into());
+        };
+        // The owner dies before settlement.
+        drop(publication);
+        if paused {
+            store
+                .set_paused(&store.load(&actor).await?, 1, true, key("paused")?)
+                .await?;
+        }
+        // The pause publication finishes the custody it fences first.
+        let settled = usize::from(paused);
+        assert_eq!(counts.committed.load(Ordering::SeqCst), settled);
+        let runtime = super::super::runtime::Runtime::new(
+            store.clone(),
+            Arc::new(crate::conformance::Package::new()?),
+            Arc::new(super::super::runtime::SystemClock),
+        );
+        runtime.track(actor.clone())?;
+        runtime.drain_actor(&actor).await?;
+        // A read cut cannot know its custody settled, so the replay settles
+        // it unless a later write already did: that write clears the marker,
+        // so the custody settles exactly once either way.
+        assert_eq!(
+            counts.committed.load(Ordering::SeqCst),
+            1,
+            "paused: {paused}"
+        );
+        assert_eq!(
+            runtime
+                .store()
+                .load(&actor)
+                .await?
+                .state()
+                .map(State::epoch),
+            Some(1),
+            "the replay admitted no placement"
+        );
+    }
+    Ok(())
+}
+
+/// Settles each participant by its plan byte, failing the attempts the
+/// schedule marks, and records which committed participants ever settled.
+#[derive(Default)]
+struct Ledger {
+    attempts: AtomicUsize,
+    failing: usize,
+    committed: std::sync::Mutex<std::collections::BTreeSet<u8>>,
+    settled: std::sync::Mutex<std::collections::BTreeSet<u8>>,
+}
+
+struct Scheduled(Arc<Ledger>);
+
+impl Composer for Scheduled {
+    fn open(
+        &self,
+        _: &ActorReference,
+        _: Option<&Checkpoint>,
+        _: Option<&acyclic_stream::Record>,
+        _: &Checkpoint,
+        participant: &crate::guest::Participant,
+    ) -> Result<Box<dyn Composition>, GuestError> {
+        Ok(Box::new(ScheduledSettlement(
+            self.0.clone(),
+            participant.plan[0],
+        )))
+    }
+}
+
+struct ScheduledSettlement(Arc<Ledger>, u8);
+
+impl Composition for ScheduledSettlement {
+    fn seal<'a>(&'a mut self, request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
+        Box::pin(async move { Ok(request) })
+    }
+
+    fn settle<'a>(
+        self: Box<Self>,
+        outcome: Result<&'a CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
+        Box::pin(async move {
+            let Ok(CommitOutcome::Committed(_)) = outcome else {
+                return Ok(());
+            };
+            let lock = |set: &std::sync::Mutex<std::collections::BTreeSet<u8>>| {
+                set.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(self.1)
+            };
+            lock(&self.0.committed);
+            let attempt = self.0.attempts.fetch_add(1, Ordering::SeqCst);
+            if (self.0.failing >> attempt) & 1 == 1 {
+                return Err(GuestError::Handler("scheduled settlement failure".into()));
+            }
+            lock(&self.0.settled);
+            Ok(())
+        })
+    }
+}
+
+/// How the owner publishes: directly from the cut, through a state binding's
+/// `prepare_publish`, through a binding that first `flush`es a write, or
+/// directly and then deleting the actor through a raw provider commit of
+/// the deletion's request. Each binding takes the cut's state first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Via {
+    Direct,
+    Binding,
+    Flush,
+    Delete,
+}
+
+/// One owner publishes `kinds` (bit set: composed) `via` one path, reloading
+/// its cut on every failure as the runtime does, with the settlement
+/// attempts in `failing` refused. Returns whether every committed participant
+/// settled before the final plain publication cleared custody. `forget`
+/// drops each cut's unsettled marker before it is used: the negative control.
+async fn one_owner(failing: usize, kinds: usize, via: Via, forget: bool) -> Result<bool, Failure> {
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: Vec::new(),
+        calls: AtomicUsize::new(0),
+    });
+    let (store, actor) = placed(provider, Arc::new(Counts::default())).await?;
+    let ledger = Arc::new(Ledger {
+        failing,
+        ..Ledger::default()
+    });
+    let store = store.with_composer(Arc::new(Scheduled(ledger.clone())));
+    let mut previous = store.load(&actor).await?;
+    for step in 0..=STEPS {
+        let composed = step < STEPS && (kinds >> step) & 1 == 1;
+        let plan = u8::try_from(step)?;
+        // The final plain publication retries until it commits.
+        loop {
+            let sequence = previous
+                .state()
+                .and_then(|state| state.cursor("inbox"))
+                .ok_or("placed actor has no inbox cursor")?;
+            let trigger = Trigger::Record {
+                subscription: "inbox".into(),
+                sequence,
+            };
+            let transition = Transition {
+                effects: Vec::new(),
+                participant: composed.then(|| crate::guest::Participant {
+                    kind: "test".into(),
+                    plan: Bytes::from(vec![plan]),
+                }),
+                ..transition(false)?
+            };
+            let publish = key(&format!("owner/{sequence}/{}", previous.tail))?;
+            let flush = key(&format!("flush/{sequence}/{}", previous.tail))?;
+            let mut cut = previous;
+            if forget {
+                cut.unsettled = false;
+            }
+            let outcome = async {
+                if via == Via::Delete && step == STEPS {
+                    // A raw commit is refused while custody is unsettled;
+                    // the deletion then goes through the one settling path.
+                    return match store.delete(&cut, publish.clone())?.into_request() {
+                        Ok(request) => {
+                            PreparedPublish::settle(&store.provider().commit(request).await?)?;
+                            Ok(None)
+                        }
+                        Err(Error::Invalid(_)) => {
+                            store.submit_retained(store.delete(&cut, publish)?).await
+                        }
+                        Err(error) => Err(error),
+                    };
+                }
+                let publication = match via {
+                    Via::Direct | Via::Delete => {
+                        store.prepare_publish(&cut, 1, &trigger, None, transition, publish)?
+                    }
+                    Via::Binding | Via::Flush => {
+                        let mut binding = store.bind_state(cut, 1)?;
+                        if via == Via::Flush {
+                            binding.transaction(|state| {
+                                state.put("step".into(), Bytes::from(vec![plan]));
+                                Ok(())
+                            })?;
+                            binding.flush(flush).await?;
+                        }
+                        binding.prepare_publish(&trigger, None, transition, publish)?
+                    }
+                };
+                store.submit_retained(publication).await
+            }
+            .await;
+            match outcome {
+                Ok(retained) => {
+                    previous = match retained {
+                        Some(retained) => retained,
+                        None => store.load(&actor).await?,
+                    };
+                    break;
+                }
+                Err(Error::Settlement { .. } | Error::Handler(_)) => {
+                    previous = store.load(&actor).await?;
+                    if step < STEPS {
+                        break;
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    assert!(previous.state().is_some_and(|state| !state.custody));
+    let committed = ledger.committed.lock().map_err(|_| "poisoned")?.clone();
+    let settled = ledger.settled.lock().map_err(|_| "poisoned")?.clone();
+    Ok(committed.is_subset(&settled))
+}
+
+const STEPS: usize = 3;
+
+/// Exhaustive over which settlement attempts fail, which publications
+/// compose, and the publication path (direct, through a state binding, or a
+/// final deletion committed raw): a failed settlement stays committed
+/// custody, and the same owner's next publication, plain or composed,
+/// finishes it first.
+#[tokio::test]
+async fn a_failed_settlement_is_finished_by_the_next_publication() -> Result<(), Failure> {
+    for via in [Via::Direct, Via::Binding, Via::Flush, Via::Delete] {
+        let mut caught = 0;
+        for failing in 0..1 << (2 * STEPS) {
+            for kinds in 0..1 << STEPS {
+                assert!(
+                    one_owner(failing, kinds, via, false).await?,
+                    "{via:?}, failing {failing:b}, composed {kinds:b}: a committed participant never settled"
+                );
+                caught += usize::from(!one_owner(failing, kinds, via, true).await?);
+            }
+        }
+        assert!(
+            caught > 0,
+            "{via:?}: the negative control must forget a settlement"
+        );
+    }
     Ok(())
 }

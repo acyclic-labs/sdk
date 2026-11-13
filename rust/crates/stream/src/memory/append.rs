@@ -49,6 +49,9 @@ impl MemoryStream {
             let result = AppendOutcome::TailConflict { actual_tail: start };
             return Ok(Decision::Returned((result, Default::default())));
         }
+        // The write's own authority time; the installed rule decides with it
+        // before any reservation.
+        let time = self.admitted_time(state, &request.records)?;
         admit_replay(state, self.limits)?;
         reserve_append(state, &request.path, &request.records, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
@@ -62,10 +65,6 @@ impl MemoryStream {
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        let time = crate::preparation::committed_time(
-            state.last_committed_at_micros,
-            self.commit_clock.now_unix_millis(),
-        );
         let (records, mut allocation) =
             self.records(&request.path, &request.records, start, commit_id, time)?;
         let fact = crate::preparation::append_fact(request.path.clone(), start, records)?;

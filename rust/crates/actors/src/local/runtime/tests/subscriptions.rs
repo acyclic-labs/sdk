@@ -4,11 +4,19 @@ async fn observers<P: StreamProvider>(
     provider: &Arc<P>,
     count: usize,
 ) -> Result<(Store<P>, Vec<ActorReference>, StreamPath), Box<dyn std::error::Error>> {
-    let store = Store::new(Arc::clone(provider), root()?);
-    let observed = StreamPath::new("shared/observed")?;
     let actors = (0..count)
         .map(|index| actor(&format!("observer-{index}")))
         .collect::<Result<Vec<_>, _>>()?;
+    observing(provider, actors).await
+}
+
+/// Create each of `actors` observing one shared stream it did not declare.
+async fn observing<P: StreamProvider>(
+    provider: &Arc<P>,
+    actors: Vec<ActorReference>,
+) -> Result<(Store<P>, Vec<ActorReference>, StreamPath), Box<dyn std::error::Error>> {
+    let store = Store::new(Arc::clone(provider), root()?);
+    let observed = StreamPath::new("shared/observed")?;
     for (index, address) in actors.iter().enumerate() {
         let mut publication = PreparedPublish::foreign(key(&format!("create-observer-{index}"))?);
         publication.join(store.create(
@@ -26,7 +34,7 @@ async fn observers<P: StreamProvider>(
                 escrow: None,
             },
         )?)?;
-        publication.join(store.activation(address))?;
+        publication.join(store.activation(address)?)?;
         store.submit(publication).await?;
     }
     Ok((store, actors, observed))
@@ -115,6 +123,7 @@ async fn shared_dynamic_interests<P: StreamProvider>(provider: P) -> TestResult 
     );
     let mut serving = Box::pin(runtime.run(|_, error| panic!("restored delivery failed: {error}")));
     observe_while_running(serving.as_mut(), async {
+        runtime.restored().await?;
         runtime.complete().await?;
         Ok(())
     })
@@ -139,6 +148,79 @@ async fn dynamic_interests_share_events_and_restore_original_cursors() -> TestRe
     shared_dynamic_interests(MemoryStream::default()).await?;
     let directory = tempfile::tempdir()?;
     shared_dynamic_interests(LocalStream::open(directory.path(), Default::default()).await?).await
+}
+
+#[tokio::test]
+async fn idle_creation_with_interests_is_restored_after_its_activation_checkpoints() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let (store, actors, observed) = observers(&provider, 1).await?;
+    let shard = store.scheduling_shard(&actors[0]);
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("idle delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    // No publication ran: the idle pass alone made the interests restorable.
+    assert_eq!(
+        runtime.store().interest_holders(shard, None).await?.0,
+        actors
+    );
+    drop(serving);
+    drop(runtime);
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("restored delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.restored().await?;
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    // No activation entry: only the restored interest can wake the actor.
+    provider
+        .append(AppendRequest {
+            path: observed,
+            records: vec![Bytes::from_static(b"emit").into()],
+            if_tail: None,
+            idempotency_key: key("observed-after-restart")?,
+        })
+        .await?;
+    observe_while_running(serving.as_mut(), async {
+        state_after(runtime.store(), &actors[0], |state| {
+            state.cursor("observed") == Some(1)
+        })
+        .await?;
+        Ok(())
+    })
+    .await?;
+    Ok(())
+}
+
+/// The idle marker write has a bounded key, so the longest valid address
+/// (128-byte namespace and id) still becomes restorable.
+#[tokio::test]
+async fn idle_marker_of_the_longest_valid_address_is_written() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let long = ActorReference::new(b"account", &[b'n'; 128], &[b'i'; 128])?;
+    let (store, actors, _) = observing(&provider, vec![long]).await?;
+    let shard = store.scheduling_shard(&actors[0]);
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("idle delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    assert_eq!(
+        runtime.store().interest_holders(shard, None).await?.0,
+        actors
+    );
+    Ok(())
 }
 
 #[tokio::test]

@@ -80,7 +80,7 @@ async fn race() -> Result {
         vec![invocation.record(&store.path(&target.actor)?)?],
         Vec::new(),
     ));
-    effects.push(store.activation(&target.actor));
+    effects.push(store.activation(&target.actor)?);
     assert!(commit(&store, &PlatformExecutor, layout.key(&[b"open"])?, effects,).await?);
     let inbox = records(&provider, &target.inbox).await?;
     assert_eq!(inbox.len(), 1);

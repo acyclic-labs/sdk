@@ -113,6 +113,10 @@ struct Ledger {
     published: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reservations: Option<crate::reservation::Book>,
+    /// How every alarm delivery answers: `keep` (default), `clear` or
+    /// `set <ms>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    answer: Option<String>,
 }
 
 /// Reference package. Inbox commands: `emit` appends `r<seq>`; `set <ms>`
@@ -201,9 +205,22 @@ impl Handler for Package {
             }
             let mut subscriptions = Vec::new();
             let (alarm, output) = match (&delivery.trigger, &delivery.record) {
-                (Trigger::Alarm { generation, .. }, _) => {
-                    (AlarmChange::Keep, Some(format!("a{generation}")))
-                }
+                (Trigger::Alarm { generation, .. }, _) => (
+                    match ledger.answer.as_deref() {
+                        None | Some("keep") => AlarmChange::Keep,
+                        Some("clear") => AlarmChange::Clear,
+                        Some(answer) => AlarmChange::Set {
+                            deadline_unix_ms: delivery.now_unix_ms.saturating_add(
+                                answer
+                                    .strip_prefix("set ")
+                                    .ok_or_else(|| guest("unknown alarm answer"))?
+                                    .parse::<u64>()
+                                    .map_err(guest)?,
+                            ),
+                        },
+                    },
+                    Some(format!("a{generation}")),
+                ),
                 (Trigger::Record { sequence, .. }, Some(record)) => {
                     let command = std::str::from_utf8(
                         invocation
@@ -241,6 +258,10 @@ impl Handler for Package {
                             },
                             None,
                         ),
+                        Some(("answer", answer)) => {
+                            ledger.answer = Some(answer.to_owned());
+                            (AlarmChange::Keep, None)
+                        }
                         Some(("pool", capacity)) => {
                             ledger.reservations = Some(crate::reservation::Book::new(
                                 capacity.parse::<u64>().map_err(guest)?,
@@ -379,6 +400,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
             outbox: outbox.clone(),
             published: 0,
             reservations: None,
+            answer: None,
         };
         let creation = [
             target.store().create(
@@ -401,7 +423,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     escrow: None,
                 },
             )?,
-            target.store().activation(&actor),
+            target.store().activation(&actor)?,
         ];
         Ok(Self {
             target,
@@ -436,7 +458,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
                     prepared.join(effect)?;
                 }
             }
-            None => prepared.join(store.activation(&self.actor))?,
+            None => prepared.join(store.activation(&self.actor)?)?,
         }
         prepared.join(acyclic_stream::CommitEffect::hard(
             vec![condition],
@@ -630,6 +652,18 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
         StreamPath::new(format!("{}/fork-uniform", target.store().root())).map_err(Error::from)?,
     )
     .await?;
+    let provider = target.store().provider();
+    let root = target.store().root();
+    placement(
+        provider.clone(),
+        StreamPath::new(format!("{root}/placement")).map_err(Error::from)?,
+    )
+    .await?;
+    early_alarm(
+        provider.clone(),
+        StreamPath::new(format!("{root}/early-alarm")).map_err(Error::from)?,
+    )
+    .await?;
     let run = target.namespace();
     ordered(target, run).await?;
     applied(target, run).await?;
@@ -681,7 +715,7 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
                     escrow: None,
                 },
             )?,
-            store.activation(target),
+            store.activation(target)?,
         ] {
             publication.join(effect)?;
         }
@@ -699,7 +733,7 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
         &forked,
         crate::local::Branch::unfunded(BTreeMap::new()),
     )?)?;
-    publication.join(store.activation(&forked))?;
+    publication.join(store.activation(&forked)?)?;
     store.submit(publication).await?;
 
     let created_cut = store.load(&created).await?;
@@ -799,6 +833,356 @@ pub async fn fork_uniform<P: StreamProvider + ?Sized>(
                 && accepted.provenance() == initial.provenance(),
             "the child's original placement did not publish independently",
         )?;
+    }
+    Ok(())
+}
+
+/// One namespace of the provider under test that only the suite's own nodes
+/// serve: the target's host never discovers its actors, so the cases that
+/// drive nodes directly cannot race it.
+struct Isolated<P: StreamProvider + ?Sized> {
+    store: Store<P>,
+    root: StreamPath,
+    case: &'static str,
+}
+
+impl<P: StreamProvider + ?Sized> Isolated<P> {
+    fn new(
+        provider: std::sync::Arc<P>,
+        root: StreamPath,
+        case: &'static str,
+    ) -> Result<Self, Failure> {
+        Ok(Self {
+            store: Store::new(provider, under(&root, "state")?),
+            root,
+            case,
+        })
+    }
+
+    fn key(&self, label: &str) -> Result<IdempotencyKey, Error> {
+        use sha2::Digest as _;
+        Ok(IdempotencyKey::new(
+            sha2::Sha256::digest(format!("{}/{label}", self.root).as_bytes()).to_vec(),
+        )?)
+    }
+
+    /// Actor ids are unique per isolated root, within the id alphabet.
+    fn actor(&self, name: &str) -> Result<ActorReference, Error> {
+        use sha2::Digest as _;
+        let root = sha2::Sha256::digest(self.root.as_str().as_bytes());
+        ActorReference::new(
+            b"conformance",
+            b"isolated",
+            format!(
+                "{}-{name}",
+                root[..8]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            )
+            .as_bytes(),
+        )
+        .map_err(|_| Error::Invalid("conformance actor id"))
+    }
+
+    fn creation(
+        &self,
+        name: &str,
+        subscriptions: BTreeMap<String, Subscription>,
+    ) -> Result<crate::local::Creation, Error> {
+        Ok(crate::local::Creation {
+            subscriptions,
+            checkpoint: Some(Checkpoint {
+                codec: codec(),
+                bytes: serde_json::to_vec(&Ledger {
+                    outbox: under(&self.root, &format!("out/{name}"))?,
+                    published: 0,
+                    reservations: None,
+                    answer: None,
+                })
+                .map_err(|_| Error::Invalid("conformance ledger does not encode"))?
+                .into(),
+            }),
+            escrow: None,
+        })
+    }
+
+    /// Create `name` with its inbox holding `commands`, in one commit.
+    async fn spawn(&self, name: &str, commands: &[&str]) -> Result<ActorReference, Failure> {
+        let actor = self.actor(name)?;
+        let inbox = under(&self.root, &format!("inbox/{name}"))?;
+        let mut publication = PreparedPublish::foreign(self.key(&format!("{name}/spawn"))?);
+        publication.join(self.store.create(
+            None,
+            &actor,
+            self.creation(
+                name,
+                BTreeMap::from([(
+                    "inbox".into(),
+                    Subscription {
+                        path: inbox.clone(),
+                        cursor: 0,
+                    },
+                )]),
+            )?,
+        )?)?;
+        publication.join(self.store.activation(&actor)?)?;
+        publication.join(CommitEffect::hard(
+            vec![CommitCondition::Absent {
+                path: inbox.clone(),
+            }],
+            vec![CommitMutation::Append {
+                path: inbox,
+                records: commands
+                    .iter()
+                    .map(|command| AppendRecord::from(Bytes::from(command.to_string())))
+                    .collect(),
+            }],
+        ))?;
+        self.store.submit(publication).await?;
+        Ok(actor)
+    }
+
+    /// Append `command` to `name`'s inbox with its durable activation.
+    async fn deliver(&self, name: &str, command: &str) -> Result<(), Failure> {
+        let actor = self.actor(name)?;
+        let mut publication = PreparedPublish::foreign(self.key(&format!("{name}/{command}"))?);
+        publication.join(self.store.activation(&actor)?)?;
+        publication.join(CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: under(&self.root, &format!("inbox/{name}"))?,
+                records: vec![AppendRecord::from(Bytes::from(command.to_owned()))],
+            }],
+        ))?;
+        self.store.submit(publication).await?;
+        Ok(())
+    }
+
+    /// A node of this namespace running [`Package`] on `clock`.
+    fn node(&self, clock: std::sync::Arc<dyn Clock>) -> Result<crate::local::Runtime<P>, Failure> {
+        Ok(crate::local::Runtime::new(
+            Store::new(self.store.provider().clone(), self.store.root().clone()),
+            std::sync::Arc::new(Package::new().map_err(|_| Error::Invalid("conformance package"))?),
+            clock,
+        ))
+    }
+
+    /// Records `name` has published to its outbox.
+    async fn published(&self, name: &str) -> Result<u64, Failure> {
+        match self
+            .store
+            .provider()
+            .tail(under(&self.root, &format!("out/{name}"))?)
+            .await
+        {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(error) => Err(Error::from(error).into()),
+        }
+    }
+
+    async fn state(&self, actor: &ActorReference) -> Result<crate::local::State, Failure> {
+        Ok(self
+            .store
+            .load(actor)
+            .await?
+            .state()
+            .cloned()
+            .ok_or(Error::Invalid("isolated actor state is missing"))?)
+    }
+
+    fn require(&self, valid: bool, detail: &str) -> Result<(), Failure> {
+        if valid {
+            Ok(())
+        } else {
+            Err(Failure::Violation {
+                case: self.case,
+                detail: detail.into(),
+            })
+        }
+    }
+}
+
+fn under(root: &StreamPath, leaf: &str) -> Result<StreamPath, Error> {
+    Ok(StreamPath::new(format!("{root}/{leaf}"))?)
+}
+
+/// Two nodes of one namespace under external placement, over the provider
+/// under test. Seeing the same durable input never authorizes a claim: only
+/// an explicit per-actor placement command moves an actor's fence, a deposed
+/// node never claims back, and a fork child gets its own first command.
+pub async fn placement<P: StreamProvider + ?Sized>(
+    provider: std::sync::Arc<P>,
+    root: StreamPath,
+) -> Result<(), Failure> {
+    let lab = Isolated::new(provider, root, "placement")?;
+    let store = &lab.store;
+    let first = lab.spawn("first", &["emit"]).await?;
+    let second = lab.spawn("second", &["emit"]).await?;
+    let (clock, _time) = crate::local::ControlledClock::new(0);
+    let clock: std::sync::Arc<dyn Clock> = std::sync::Arc::new(clock);
+    let owner = lab
+        .node(std::sync::Arc::clone(&clock))?
+        .with_external_placement();
+    let other = lab.node(clock)?.with_external_placement();
+    other.track(first.clone())?;
+    lab.require(
+        matches!(other.drain_actor(&first).await, Err(Error::Conflict)),
+        "a node served an actor without a placement command",
+    )?;
+    lab.require(
+        lab.state(&first).await?.epoch() == 0,
+        "a node claimed an actor without a placement command",
+    )?;
+
+    owner.place(first.clone(), 1).await?;
+    other.place(second.clone(), 1).await?;
+    let cut = store.load(&first).await?;
+    let forged = Transition {
+        response: None,
+        checkpoint: lab
+            .creation("first", BTreeMap::new())?
+            .checkpoint
+            .ok_or(Error::Invalid("conformance ledger is missing"))?,
+        alarm: AlarmChange::Keep,
+        effects: vec![CommitEffect::hard(
+            Vec::new(),
+            vec![CommitMutation::Append {
+                path: under(cut.path(), "placement")?,
+                records: vec![Bytes::from_static(b"forged placement").into()],
+            }],
+        )],
+        participant: None,
+        subscriptions: Vec::new(),
+    };
+    lab.require(
+        matches!(
+            store.prepare_publish(
+                &cut,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                None,
+                forged,
+                lab.key("forged-placement")?,
+            ),
+            Err(Error::Invalid("effect changes the host's control records"))
+        ),
+        "an actor effect wrote a placement command",
+    )?;
+    lab.require(
+        matches!(other.place(first.clone(), 1).await, Err(Error::Conflict)),
+        "a second node took an index another node holds",
+    )?;
+    owner.drain_actor(&first).await?;
+    other.drain_actor(&second).await?;
+    lab.require(owner.release(&first), "a placed actor was not resident")?;
+    owner.track(first.clone())?;
+    owner.drain_actor(&first).await?;
+    owner.place(first.clone(), 1).await?;
+    let replayed = lab.state(&first).await?;
+    lab.require(
+        replayed.epoch() == 1 && replayed.cursor("inbox") == Some(1),
+        "replaying the node's own command moved its fence",
+    )?;
+
+    other.place(first.clone(), 2).await?;
+    lab.require(
+        matches!(owner.place(first.clone(), 1).await, Err(Error::Conflict)),
+        "a deposed node reused its old command",
+    )?;
+    // The deposed node may observe new work, but it never claims back or
+    // consumes it without a command.
+    lab.deliver("first", "emit").await?;
+    lab.require(
+        matches!(
+            owner.drain_actor(&first).await,
+            Ok(()) | Err(Error::Conflict)
+        ),
+        "a deposed node failed other than by its fence",
+    )?;
+    let deposed = lab.state(&first).await?;
+    lab.require(
+        deposed.epoch() == 2 && deposed.cursor("inbox") == Some(1),
+        "a deposed node claimed back",
+    )?;
+    other.drain_actor(&first).await?;
+    lab.require(
+        lab.published("first").await? == 2 && lab.published("second").await? == 1,
+        "fenced nodes did not publish each input exactly once",
+    )?;
+
+    let child = lab.actor("child")?;
+    let parent = store.load(&first).await?;
+    let mut fork = PreparedPublish::foreign(lab.key("child/fork")?);
+    fork.join(store.create(
+        Some(&parent),
+        &child,
+        lab.creation("child", BTreeMap::new())?,
+    )?)?;
+    store.submit(fork).await?;
+    // Forking data never copies the parent's placement authority or command
+    // index: the new actor receives its own first explicit command.
+    owner.place(child.clone(), 1).await?;
+    let commands = store
+        .provider()
+        .tail(under(&store.path(&child)?, "placement")?)
+        .await
+        .map_err(Error::from)?;
+    lab.require(commands == 1, "a fork child inherited placement commands")
+}
+
+/// A node whose clock runs ahead of the authority never consumes an alarm
+/// early, whatever its handler answers: the delivery commit carries the
+/// consumed alarm's own deadline, so keep, clear and set are each refused at
+/// the provider's authority time and nothing is published. The same answers
+/// for an alarm the authority holds due are consumed (the positive control).
+pub async fn early_alarm<P: StreamProvider + ?Sized>(
+    provider: std::sync::Arc<P>,
+    root: StreamPath,
+) -> Result<(), Failure> {
+    // The node starts at the Unix epoch, behind any authority, then jumps
+    // past a deadline no authority has reached.
+    const AHEAD: u64 = u64::MAX / 4;
+    let lab = Isolated::new(provider, root, "early-alarm")?;
+    let answers = [
+        ("keep", "answer keep"),
+        ("clear", "answer clear"),
+        ("set", "answer set 1000"),
+    ];
+    let mut actors = Vec::new();
+    for (name, answer) in answers {
+        for (when, delay) in [("due", 1), ("early", AHEAD)] {
+            let name = format!("{when}-{name}");
+            let actor = lab.spawn(&name, &[answer, &format!("set {delay}")]).await?;
+            actors.push((name, when, actor));
+        }
+    }
+    let (clock, mut time) = crate::local::ControlledClock::new(0);
+    let node = lab.node(std::sync::Arc::new(clock))?;
+    for (_, _, actor) in &actors {
+        node.track(actor.clone())?;
+        node.drain_actor(actor).await?;
+    }
+    time.advance_to(AHEAD).map_err(Error::from)?;
+    for (name, when, actor) in &actors {
+        node.drain_actor(actor).await?;
+        let state = lab.state(actor).await?;
+        let published = lab.published(name).await?;
+        if *when == "early" {
+            lab.require(
+                state.alarm().pending() == Some(AHEAD) && published == 0,
+                &format!("the authority accepted {name} before its own time reached it"),
+            )?;
+        } else {
+            lab.require(
+                state.alarm().pending() != Some(AHEAD) && published == 1,
+                &format!("a node did not consume {name}, which the authority holds due"),
+            )?;
+        }
     }
     Ok(())
 }
@@ -1270,6 +1654,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
                         outbox: observer.outbox.clone(),
                         published: 0,
                         reservations: None,
+                        answer: None,
                     })
                     .map_err(|_| Error::Invalid("shared ledger does not encode"))?
                     .into(),
@@ -1277,7 +1662,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
                 escrow: None,
             },
         )?,
-        store.activation(&observer.actor),
+        store.activation(&observer.actor)?,
     ] {
         prepared.join(effect)?;
     }
@@ -1312,7 +1697,7 @@ async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result
         }],
     ))?;
     for actor in [&owner.actor, &observer.actor] {
-        send.join(store.activation(actor))?;
+        send.join(store.activation(actor)?)?;
     }
     store.submit(send).await?;
     owner.expect(&["r1", "r2"]).await?;
@@ -1703,7 +2088,7 @@ async fn produce<T: Backend + ?Sized>(
     sent: u64,
 ) -> Result<(), Failure> {
     let mut prepared = PreparedPublish::foreign(idempotency(&format!("{source}/produce/{sent}"))?);
-    prepared.join(target.store().activation(actor))?;
+    prepared.join(target.store().activation(actor)?)?;
     prepared.join(acyclic_stream::CommitEffect::hard(
         vec![if sent == 0 {
             CommitCondition::Absent {

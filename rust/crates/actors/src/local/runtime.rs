@@ -1,14 +1,14 @@
 //! `local::Runtime`: the single-node Actors host over any Stream provider.
 //!
-//! One dispatcher owns one follow of the state root's activation log, one
-//! ready index and one timer. A dormant actor owns no task, timer, follow or
+//! Each assigned scheduling shard owns one activation follow and checkpoint.
+//! The host owns one ready index and timer. A dormant actor owns no task, timer, follow or
 //! socket for its manifest inputs: only its registration and one bounded state cut. Guest-added
 //! interests share one follow per distinct stream and create no task or timer. The activation log
 //! is also the wake set: a producer that writes an actor's subscription appends
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
-//! one follow wakes it. A delivery reads its inputs with bounded finite reads.
-use super::ready::{ReadySet, Registration, Work};
-use super::{Error, PreparedPublish, Snapshot, State, Store};
+//! assigned shard follow wakes it. A delivery reads its inputs with bounded finite reads.
+use super::ready::{Flight, ReadySet, Registration, Work};
+use super::{Error, PreparedPublish, Snapshot, State, Store, scheduling};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
@@ -16,6 +16,7 @@ mod dispatcher;
 mod interrupt;
 mod limits;
 mod pause;
+mod placement;
 mod subscriptions;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Transition, Trigger};
@@ -34,13 +35,13 @@ use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, hash_map::RandomState},
+    collections::{BTreeMap, BTreeSet, HashMap, hash_map::RandomState},
     convert::Infallible,
     future::poll_fn,
     hash::BuildHasher,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -50,6 +51,9 @@ struct Slot {
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
     refresh: AtomicBool,
+    /// Just past its latest activation entry this dispatcher observed or
+    /// carried; zero for none. A failed delivery's checkpoint bound.
+    entry: AtomicU64,
     event_deliveries: AtomicUsize,
     /// Control requests serialize separately from the delivery they stop.
     control: tokio::sync::Mutex<()>,
@@ -72,16 +76,32 @@ impl Drop for EventDelivery {
     }
 }
 
-/// Invalidate cancelled delivery or control publication without taking its lock.
-/// Control changes also wake the dispatcher after publication finishes.
-struct RefreshOnDrop(Option<Arc<Slot>>, bool);
-impl Drop for RefreshOnDrop {
+/// One delivery's single settlement, on every way out, and the only place
+/// any input settles as delivered: only a delivery that owns its slot and
+/// ran to an outcome clears `failed`. An error, a panic, a cancelled await
+/// or a released slot settles it failed. A failed delivery invalidates its
+/// slot's state without taking its lock (a cancelled publication may have
+/// committed), and its carried wake, not a resident token, retains the
+/// alarm; its flight then keeps the actor's failure mark. The work it was
+/// taken for settles with it.
+struct Settlement<'a> {
+    slot: &'a Slot,
+    flight: Option<Flight<ActorReference>>,
+    work: Option<Work<ActorReference>>,
+    failed: bool,
+}
+impl Drop for Settlement<'_> {
     fn drop(&mut self) {
-        if let Some(slot) = &self.0 {
-            slot.refresh.store(true, Ordering::Release);
-            if self.1 {
-                slot.waker.wake_by_ref();
-            }
+        let Some(flight) = self.flight.take() else {
+            return;
+        };
+        if self.failed {
+            self.slot.refresh.store(true, Ordering::Release);
+            self.slot.registration.suspend_alarm();
+        }
+        flight.finish(self.failed);
+        if let Some(work) = self.work.take() {
+            work.settle();
         }
     }
 }
@@ -90,7 +110,7 @@ impl Drop for RefreshOnDrop {
 struct Inner {
     /// A removed slot must not begin another publication through an older Arc.
     released: bool,
-    /// Placement this runtime owns; zero until the first claim.
+    /// Epoch admitted by an explicit placement command, never by delivery.
     epoch: u64,
     /// One receipt-backed cut per resident actor; never advances speculatively.
     observed: Option<Arc<Snapshot>>,
@@ -101,6 +121,8 @@ struct Inner {
     pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
     /// Conflicts of the last composed-guard refusal since a publication.
     refused: Option<Vec<acyclic_stream::CommitConflict>>,
+    /// This resident actor's interest marker is durable (or not needed).
+    interests_marked: bool,
 }
 
 impl Inner {
@@ -134,12 +156,18 @@ fn terminal(error: &Error) -> bool {
 }
 
 enum Event {
-    Created(Record),
-    Dispatched(Result<Snapshot, Error>),
+    Created(u16, Record),
+    Dispatched(u16, Result<Snapshot, Error>),
     Work(Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
     Due(Result<(), ClockError>),
+    Armed(Vec<(u64, ActorReference)>),
+    /// Every consumer's deliveries settled while a checkpoint waited.
+    Quiet,
+    Opened(Result<Opened, Error>),
+    /// One page of a shard's interest holders, and where the next starts.
+    Restored(Result<(u16, Vec<ActorReference>, Option<StreamPath>), Error>),
     Failed(StreamError),
     Completion(Completion),
     CompletionCancelled,
@@ -147,45 +175,92 @@ enum Event {
     Subscription(Result<(), (Vec<ActorReference>, StreamError)>),
 }
 
+/// One page of a due deadline window's actors, read off the dispatcher's
+/// event loop so in-flight deliveries keep progressing while it is read.
+struct Opened {
+    shard: u16,
+    window: u64,
+    actors: Vec<ActorReference>,
+    next: Next,
+}
+
+/// What follows an [`Opened`] page.
+enum Next {
+    /// The window's next entry.
+    Page(u64),
+    /// The page was the window's last: the shard's next deadline window.
+    Window(Option<u64>),
+}
+
 /// Executes one handler package for every actor whose state lives under the
 /// store's root and that it claims, including actors created by other
 /// parties' commits.
 pub struct Runtime<P: StreamProvider + ?Sized> {
     store: Store<P>,
-    /// The one account and namespace whose actors this runtime claims, when
-    /// several hosts share the root; `None` claims every actor.
-    claims: Option<(AccountId, NamespaceId)>,
+    /// Discovery scope only. Per-actor placement, not this filter, grants
+    /// ownership when several hosts share the same state root.
+    scope: Option<(AccountId, NamespaceId)>,
+    scheduling_shards: BTreeSet<u16>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
     ready: ReadySet<ActorReference>,
     actors: [SyncMutex<HashMap<ActorReference, Arc<Slot>>>; 64],
     shards: RandomState,
-    /// Identity of this runtime's placement attempts: two hosts claiming the
-    /// same cut never share an idempotency key, so only one claim commits.
+    /// Host node incarnation retained in explicit placement commands.
     instance: uuid::Uuid,
+    /// Whether this runtime is its store's local placement owner.
+    places: bool,
     limits: RuntimeLimits,
     admission: Option<tokio::sync::Semaphore>,
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
     subscriptions: SyncMutex<subscriptions::Subscriptions>,
+    requests: crate::guest::Requests,
+    /// Set once this host has paged every interest marker of its shards.
+    restored: tokio::sync::watch::Sender<bool>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// One runtime per state root and handler package.
     pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
+        let shards = store.scheduling_shards;
         Self {
+            scheduling_shards: (0..store.scheduling_shards()).collect(),
+            // Each shard's deadline watermark is held only by its own alarms.
+            ready: ReadySet::grouped(move |actor| scheduling::shard(shards, actor)),
             store,
-            claims: None,
+            scope: None,
             handler,
             clock,
-            ready: ReadySet::default(),
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
+            places: true,
             limits: RuntimeLimits::default(),
             admission: None,
             completions: OnceLock::new(),
             subscriptions: SyncMutex::new(subscriptions::Subscriptions::default()),
+            requests: crate::guest::Requests::default(),
+            restored: tokio::sync::watch::Sender::new(false),
         }
+    }
+
+    /// Wait until the running host has woken every dormant interest holder
+    /// of its shards. Serving never waits on this: restoration pages in the
+    /// background through ordinary admission, and its woken deliveries are
+    /// queued work that [`Self::complete`] then covers.
+    pub async fn restored(&self) -> Result<(), Error> {
+        self.restored
+            .subscribe()
+            .wait_for(|restored| *restored)
+            .await
+            .map(|_| ())
+            .map_err(|_| Error::CompletionStopped)
+    }
+
+    /// The live `request -> (actor, epoch)` bindings of this runtime's handler
+    /// attempts: the sole authority of a host capability call.
+    pub const fn requests(&self) -> &crate::guest::Requests {
+        &self.requests
     }
 
     /// Configure admission before sharing or running this host. Event-owned
@@ -197,20 +272,50 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self
     }
 
-    /// Claim only the actors of `within`'s account and namespace: discovery
-    /// skips every other actor and [`Self::track`] refuses it, so hosts that
-    /// share one state root never claim each other's actors.
+    /// Restrict discovery to an account and namespace. This grants no ownership:
+    /// only an explicit per-actor placement command admits execution.
     #[must_use]
-    pub fn claiming(mut self, within: &ActorReference) -> Self {
-        self.claims = Some((within.account().clone(), within.namespace().clone()));
+    pub fn within(mut self, within: &ActorReference) -> Self {
+        self.scope = Some((within.account().clone(), within.namespace().clone()));
         self
     }
 
-    /// Whether this runtime claims `actor`.
-    pub fn claims(&self, actor: &ActorReference) -> bool {
-        self.claims.as_ref().is_none_or(|(account, namespace)| {
-            actor.account() == account && actor.namespace() == namespace
-        })
+    /// Accept ownership only from explicit [Self::place] commands, as a node
+    /// among several sharing one state root. By default a runtime is the
+    /// single local placement owner of its store, which holds the store's
+    /// exclusive claim, and issues each resident actor's next command itself.
+    #[must_use]
+    pub const fn with_external_placement(mut self) -> Self {
+        self.places = false;
+        self
+    }
+
+    /// Select the stable scheduling partitions assigned by placement before
+    /// starting this host. Local single-node hosts own all partitions by
+    /// default. This routing assignment never grants a per-actor epoch. A
+    /// partition outside the store's count would follow a log no producer
+    /// writes, so it is refused before the dispatcher starts.
+    pub fn with_scheduling_shards(
+        mut self,
+        shards: impl IntoIterator<Item = u16>,
+    ) -> Result<Self, Error> {
+        let count = self.store.scheduling_shards();
+        self.scheduling_shards = shards.into_iter().collect();
+        if self.scheduling_shards.iter().any(|&shard| shard >= count) {
+            return Err(Error::Invalid(
+                "scheduling shard outside the store's partitions",
+            ));
+        }
+        Ok(self)
+    }
+
+    /// Whether an actor belongs to this runtime's discovery scope.
+    pub fn includes(&self, actor: &ActorReference) -> bool {
+        self.scheduling_shards
+            .contains(&self.store.scheduling_shard(actor))
+            && self.scope.as_ref().is_none_or(|(account, namespace)| {
+                actor.account() == account && actor.namespace() == namespace
+            })
     }
 
     /// The shared store.
@@ -223,21 +328,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         self.ready.counts()
     }
 
-    /// Start tracking an actor. Idempotent; the first delivery claims a new
-    /// epoch. An actor this runtime does not [claim](Self::claims) is refused.
+    /// Register a dormant slot. Registration queues no work and grants no ownership.
+    /// Unassigned actors cannot claim themselves when input arrives.
     pub fn track(&self, actor: ActorReference) -> Result<(), Error> {
-        if !self.claims(&actor) {
-            return Err(Error::Invalid("actor is outside this runtime's claims"));
+        if !self.includes(&actor) {
+            return Err(Error::Invalid("actor is outside this runtime's scope"));
         }
         let mut actors = self
             .shard(&actor)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(slot) = actors.get(&actor) {
-            // An activation may follow another producer's state commit. Wake
-            // against that new cut even if the resident had no input or alarm.
-            slot.refresh.store(true, Ordering::Release);
-            slot.waker.wake_by_ref();
+        if actors.contains_key(&actor) {
             return Ok(());
         }
         let registration = self.ready.register(actor.clone())?;
@@ -249,11 +350,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
                 refresh: AtomicBool::new(false),
+                entry: AtomicU64::new(0),
                 event_deliveries: AtomicUsize::new(0),
                 control: tokio::sync::Mutex::new(()),
                 delivery_control: SyncMutex::new(DeliveryControl::default()),
             }),
         );
+        Ok(())
+    }
+
+    /// Register an actor and request its first delivery attempt, as after
+    /// reopening a store whose committed input this host must now serve.
+    pub fn host(&self, actor: ActorReference) -> Result<(), Error> {
+        self.track(actor.clone())?;
+        self.wake(&actor);
         Ok(())
     }
 
@@ -297,6 +407,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Request a delivery attempt, for example after a transient failure.
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
+            slot.refresh.store(true, Ordering::Release);
             slot.waker.wake_by_ref();
         }
     }
@@ -335,9 +446,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     "actor placement retired during pause admission",
                 ))?;
                 pause::start(
-                    Store::new(Arc::clone(self.store.provider()), self.store.root().clone()),
+                    self.store.clone(),
                     actor.clone(),
                     placement,
+                    self.places.then_some(placement::Owner {
+                        node: self.instance,
+                        places: true,
+                    }),
                     paused,
                     transition,
                 )
@@ -437,7 +552,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .pin(actor)?
                     .ok_or(Error::Invalid("actor is not tracked"))?;
                 let result = loop {
-                    match self.deliver(actor, &delivery.0).await {
+                    match self.deliver(actor, &delivery.0, None).await {
                         Ok(true) => break Ok(()),
                         Ok(false) => {
                             // Drop both locks before queueing the next finite batch.
@@ -506,7 +621,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .map_err(Error::CompletionFailed)
     }
 
-    /// Host forever: follow the root's activation log to discover actors
+    /// Host forever: follow assigned scheduling shards to wake admitted actors
     /// created by any commit, deliver concurrently across actors, and fire
     /// alarms from one timer. Per-actor failures go to `report`; the input
     /// stays queued. Creating this future claims its completion producer;
@@ -536,34 +651,89 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<Infallible, Error> {
         let mut completions = completions?;
         let mut completing = Completions::default();
-        let mut completion_tail = 0;
+        let mut completion_tail = BTreeMap::new();
         let mut failure = None;
-        let root = self.store.root().clone();
         let provider = self.store.provider();
-        let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
-        let dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
-        // A cursor alone would forget all previously discovered subscriptions
-        // and alarms. Rebuild residents from current state names, without
-        // replaying their creation history. New creations race safely with the
-        // enumeration: the follow starts at the checkpoint read BEFORE it.
-        self.restore().await?;
-        let from = dispatcher
-            .state()
-            .and_then(|state| state.cursor("activation"))
-            .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-        let mut created = acyclic_stream::records_only(
-            provider
-                .follow(acyclic_stream::FollowRequest::new(root, from))
-                .await?,
-        );
-        let mut dispatcher = Some(dispatcher);
-        let mut dispatching: Option<BoxProviderFuture<'_, std::result::Result<Snapshot, Error>>> =
-            None;
+        // Placement admits resident work explicitly. Never rebuild ownership
+        // by enumerating every dormant actor under the state root.
+        if self.scheduling_shards.is_empty() {
+            return Err(Error::Invalid(
+                "dispatcher has no assigned scheduling shards",
+            ));
+        }
+        let mut seen = BTreeMap::new();
+        let mut stores = BTreeMap::new();
+        let mut dispatchers = BTreeMap::new();
+        let mut created = futures::stream::SelectAll::new();
+        // Every shard checkpoint loads in one snapshot request.
+        let mut assigned = Vec::with_capacity(self.scheduling_shards.len());
+        for &shard in &self.scheduling_shards {
+            assigned.push(self.dispatcher_store(shard)?);
+        }
+        let actors: Vec<_> = assigned.iter().map(|(_, actor)| actor.clone()).collect();
+        let loaded = assigned[0].0.load_all(&actors).await?;
+        // Each shard's earliest pending deadline window past its consumed
+        // watermark: one bounded children page per assigned shard.
+        let mut consumed = BTreeMap::new();
+        let mut windows = BTreeSet::new();
+        // From here on a hibernating resident parks its alarm token in the
+        // ready index, which holds the deadline watermark at its window.
+        self.ready.dispatch();
+        let earliest =
+            futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
+                |(&shard, dispatcher)| {
+                    self.store
+                        .next_window(shard, dispatcher::deadline_cursor(dispatcher))
+                },
+            ))
+            .await?;
+        for ((&shard, dispatcher), next) in self.scheduling_shards.iter().zip(&loaded).zip(earliest)
+        {
+            consumed.insert(shard, dispatcher::deadline_cursor(dispatcher));
+            windows.extend(next.map(|window| (window, shard)));
+        }
+        for ((&shard, (store, _)), dispatcher) in
+            self.scheduling_shards.iter().zip(assigned).zip(loaded)
+        {
+            let from = dispatcher::activation_cursor(&dispatcher);
+            stores.insert(shard, store);
+            dispatchers.insert(shard, Some(dispatcher));
+            seen.insert(shard, from);
+            completion_tail.insert(shard, from);
+            let mut request =
+                acyclic_stream::FollowRequest::new(self.store.scheduling_path(shard)?, from);
+            request.when_absent = acyclic_stream::WhenAbsent::Wait;
+            let records = acyclic_stream::records_only(provider.follow(request).await?);
+            created.push(records.map(move |record| (shard, record)));
+        }
+        let mut dispatching: FuturesUnordered<
+            BoxProviderFuture<'_, (u16, Result<Snapshot, Error>)>,
+        > = FuturesUnordered::new();
+        let mut opening: FuturesUnordered<BoxProviderFuture<'_, Result<Opened, Error>>> =
+            FuturesUnordered::new();
+        // A placing host restores dormant interest holders, one page at a
+        // time: the next page is read only after this page's wakes settle,
+        // through the same ready index and admission as every delivery.
+        let mut restoring: Option<
+            BoxProviderFuture<'_, Result<(u16, Vec<ActorReference>, Option<StreamPath>), Error>>,
+        > = None;
+        let mut restore: Vec<(u16, Option<StreamPath>)> = if self.places {
+            self.scheduling_shards
+                .iter()
+                .map(|&shard| (shard, None))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Windows whose reads are in flight, as `(shard, window)`: a shard's
+        // watermark never passes one of its windows still being read.
+        let mut reading = BTreeSet::new();
         // The activation log is also every producer's wake entry: the cursor
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
-        let mut seen = from;
         let mut running = FuturesUnordered::new();
+        // A checkpoint is waiting for deliveries to settle.
+        let mut held = false;
         let mut timer: Option<(u64, BoxProviderFuture<'static, Result<(), ClockError>>)> = None;
         let mut next_class = 0;
         let mut steps = 0;
@@ -572,10 +742,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 limits::yield_now().await;
                 steps = 0;
             }
+            if restoring.is_none() {
+                if restore.is_empty() {
+                    // The last page's wakes are already queued work.
+                    self.restored
+                        .send_if_modified(|restored| !std::mem::replace(restored, true));
+                } else if !self.ready.busy()
+                    && let Some((shard, after)) = restore.pop()
+                {
+                    restoring = Some(Box::pin(async move {
+                        let (actors, next) = self.store.interest_holders(shard, after).await?;
+                        Ok((shard, actors, next))
+                    }));
+                }
+            }
             let event = poll_fn(|context: &mut Context<'_>| {
                 // Alarm changes must wake us even when active admission is
                 // full and the ready queue cannot currently be consumed.
                 self.ready.listen(context);
+                // The last delivery to settle, whichever consumer took it,
+                // wakes this listener so a held checkpoint is retried.
+                if held && !self.ready.busy() {
+                    return Poll::Ready(Event::Quiet);
+                }
                 for _ in 0..6 {
                     let class = next_class;
                     next_class = (next_class + 1) % 6;
@@ -588,16 +777,25 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                         }
                         1 => {
-                            if let Some(checkpoint) = dispatching.as_mut()
-                                && let Poll::Ready(result) = checkpoint.poll_unpin(context)
+                            if let Poll::Ready(Some((shard, result))) =
+                                dispatching.poll_next_unpin(context)
                             {
-                                return Poll::Ready(Event::Dispatched(result));
+                                return Poll::Ready(Event::Dispatched(shard, result));
+                            }
+                            if let Poll::Ready(Some(opened)) = opening.poll_next_unpin(context) {
+                                return Poll::Ready(Event::Opened(opened));
+                            }
+                            if let Some(page) = restoring.as_mut()
+                                && let Poll::Ready(page) = page.poll_unpin(context)
+                            {
+                                restoring = None;
+                                return Poll::Ready(Event::Restored(page));
                             }
                             match created.poll_next_unpin(context) {
-                                Poll::Ready(Some(Ok(record))) => {
-                                    return Poll::Ready(Event::Created(record));
+                                Poll::Ready(Some((shard, Ok(record)))) => {
+                                    return Poll::Ready(Event::Created(shard, record));
                                 }
-                                Poll::Ready(Some(Err(error))) => {
+                                Poll::Ready(Some((_, Err(error)))) => {
                                     return Poll::Ready(Event::Failed(error));
                                 }
                                 Poll::Ready(None) => {
@@ -619,7 +817,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         3 => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
-                            let next = self.ready.next_deadline();
+                            let armed = self.ready.take_armed();
+                            if !armed.is_empty() {
+                                return Poll::Ready(Event::Armed(armed));
+                            }
+                            // Only a placing host can host a parked actor again.
+                            let opens = windows
+                                .first()
+                                .map(|&(window, _)| scheduling::window_start(window))
+                                .into_iter()
+                                .chain(self.ready.next_parked_wake().filter(|_| self.places))
+                                .min();
+                            let next = match (self.ready.next_deadline(), opens) {
+                                (Some(resident), Some(opens)) => Some(resident.min(opens)),
+                                (resident, opens) => resident.or(opens),
+                            };
                             if next != timer.as_ref().map(|(deadline, _)| *deadline) {
                                 return Poll::Ready(Event::Rearm(next));
                             }
@@ -645,9 +857,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
                 if !completing.is_empty()
-                    && running.is_empty()
-                    && dispatching.is_none()
-                    && seen >= completion_tail
+                    && !self.ready.busy()
+                    && dispatching.is_empty()
+                    && opening.is_empty()
+                    && completion_tail
+                        .iter()
+                        .all(|(shard, tail)| seen.get(shard).is_some_and(|cursor| cursor >= tail))
                 {
                     return Poll::Ready(Event::Idle);
                 }
@@ -656,22 +871,30 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await;
             steps += 1;
             match event {
-                Event::Created(record) => {
-                    // Another host's actors are not discovered here. Tracking wakes an
-                    // already resident actor: this is its producer's wake.
-                    if let Ok(actor) = ActorReference::decode(record.value.as_ref())
-                        && self.claims(&actor)
-                    {
-                        self.track(actor)?;
-                    }
-                    seen = record
+                Event::Created(shard, record) => {
+                    // Activation is a wake hint, not a placement command. The
+                    // local placement owner hosts its shard's actors on demand;
+                    // under external placement only admitted residents wake.
+                    let cursor = record
                         .sequence
                         .checked_add(1)
                         .ok_or(Error::Invalid("activation cursor overflow"))?;
+                    if let Ok(actor) = ActorReference::decode(record.value.as_ref())
+                        && self.store.scheduling_shard(&actor) == shard
+                        && self.includes(&actor)
+                    {
+                        if self.places {
+                            self.track(actor.clone())?;
+                        }
+                        if let Some(slot) = self.slot(&actor) {
+                            slot.entry.fetch_max(cursor, Ordering::AcqRel);
+                        }
+                        self.wake(&actor);
+                    }
+                    seen.insert(shard, cursor);
                 }
-                Event::Dispatched(result) => {
-                    dispatching = None;
-                    dispatcher = Some(result?);
+                Event::Dispatched(shard, result) => {
+                    dispatchers.insert(shard, Some(result?));
                 }
                 Event::Work(work) => {
                     let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
@@ -681,15 +904,95 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     report(&actor, &error);
                     failure.get_or_insert_with(|| Arc::new(error));
                 }
-                Event::Done(Ok(())) => {}
+                Event::Done(Ok(())) | Event::Quiet => {}
+                Event::Armed(armed) => {
+                    // A newly armed alarm's window is learned as it is armed,
+                    // so its opening advances the watermark even when startup
+                    // found no window.
+                    for (deadline, actor) in armed {
+                        let shard = self.store.scheduling_shard(&actor);
+                        if let Some(&from) = consumed.get(&shard) {
+                            scheduling::learn(
+                                &mut windows,
+                                from,
+                                shard,
+                                scheduling::window(deadline),
+                            );
+                        }
+                    }
+                }
                 Event::Rearm(next) => {
                     timer = next.map(|deadline| (deadline, self.clock.sleep_until(deadline)));
                 }
                 Event::Due(result) => {
                     result?;
                     timer = None;
-                    self.ready
-                        .wake_due(self.clock.now_unix_ms(), self.limits.work);
+                    let now = self.clock.now_unix_ms();
+                    // Hosting a parked actor again moves its token into its
+                    // registration, which this same pass then wakes.
+                    if self.places {
+                        for actor in self.ready.parked_due(now, self.limits.work) {
+                            self.track(actor.clone())?;
+                            if let Some(slot) = self.slot(&actor) {
+                                slot.registration.adopt_parked();
+                            }
+                            self.wake(&actor);
+                        }
+                    }
+                    self.ready.wake_due(now, self.limits.work);
+                    // An opened window wakes its dormant actors, page by page;
+                    // each delivery installs its exact committed deadline.
+                    for (shard, window) in
+                        scheduling::open(&mut windows, &mut reading, &consumed, now)
+                    {
+                        opening.push(Box::pin(self.open_window(shard, window, 0)));
+                    }
+                }
+                Event::Opened(opened) => {
+                    let Opened {
+                        shard,
+                        window,
+                        actors,
+                        next,
+                    } = opened?;
+                    for actor in actors {
+                        if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
+                            if self.places {
+                                self.track(actor.clone())?;
+                            }
+                            // The resident takes the filed alarm over before
+                            // the window can be passed.
+                            if let Some(slot) = self.slot(&actor) {
+                                slot.registration
+                                    .claim_alarm(scheduling::window_start(window));
+                            }
+                            self.wake(&actor);
+                        }
+                    }
+                    match next {
+                        Next::Page(from) => {
+                            opening.push(Box::pin(self.open_window(shard, window, from)))
+                        }
+                        Next::Window(next) => scheduling::read(
+                            &mut reading,
+                            &mut consumed,
+                            &mut windows,
+                            (shard, window),
+                            next,
+                        )?,
+                    }
+                }
+                Event::Restored(page) => {
+                    let (shard, actors, next) = page?;
+                    for actor in actors {
+                        if self.store.scheduling_shard(&actor) == shard && self.includes(&actor) {
+                            self.track(actor.clone())?;
+                            self.wake(&actor);
+                        }
+                    }
+                    if next.is_some() {
+                        restore.push((shard, next));
+                    }
                 }
                 Event::Failed(error) => return Err(error.into()),
                 Event::Completion(completion) => completing.insert(completion),
@@ -705,12 +1008,30 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.
                     // A newly observed prefix resumes the SAME activation follow.
-                    completion_tail = match provider.tail(self.store.root().clone()).await {
-                        Ok(tail) => tail,
-                        Err(error) if error.category() == StreamError::NotFound => 0,
-                        Err(error) => return Err(error.into()),
+                    // One snapshot of every assigned shard log: a single
+                    // control request regardless of the shard count.
+                    let request = acyclic_stream::HeadsRequest {
+                        retained: Default::default(),
+                        durable_through: None,
+                        projection: acyclic_stream::HeadProjection::Tail,
+                        paths: self
+                            .scheduling_shards
+                            .iter()
+                            .map(|&shard| self.store.scheduling_path(shard))
+                            .collect::<Result<_, _>>()?,
+                        children: None,
+                        limit: u32::try_from(self.scheduling_shards.len())
+                            .map_err(|_| Error::Invalid("too many scheduling shards"))?,
+                        at_least: Default::default(),
                     };
-                    if seen >= completion_tail
+                    let view = provider.heads(request.clone()).await?;
+                    view.validate_for(&request)?;
+                    for (&shard, head) in self.scheduling_shards.iter().zip(view.heads) {
+                        completion_tail.insert(shard, head.map_or(0, |head| head.tail));
+                    }
+                    if completion_tail
+                        .iter()
+                        .all(|(shard, tail)| seen.get(shard).is_some_and(|cursor| cursor >= tail))
                         && self.ready.counts().1 == 0
                         && timer
                             .as_ref()
@@ -721,18 +1042,72 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
             }
-            if dispatching.is_none()
-                && let Some(previous) = dispatcher.take_if(|previous| {
-                    previous
-                        .state()
-                        .and_then(|state| state.cursor("activation"))
-                        .is_some_and(|cursor| cursor < seen)
-                })
-            {
-                let store = &dispatch_store;
-                dispatching = Some(Box::pin(async move {
-                    self.advance_dispatcher(store, previous, seen).await
-                }));
+            // A checkpoint may pass an activation entry only after its wake
+            // finished: every seen entry was delivered to quiescence, so a
+            // restart replays exactly the entries that may still own work.
+            // A failed actor keeps its own latest entry, or the checkpoint
+            // commits a fresh one for it (`scheduling::checkpoint`); either
+            // way only that actor's wake is retained, never its whole shard.
+            // A pending alarm lives in its deadline window, so the activation
+            // cursor never waits for it. The window watermark passes only
+            // windows whose wakes were delivered, never the current window
+            // (an alarm armed now with a future deadline lands at or after
+            // it), and never the original window of a resident alarm still
+            // unconsumed, however late an authority deferred its wake; it
+            // moves back only for a resident alarm armed already past due.
+            // Every alarm token, resident or parked, holds it at its window.
+            // In-flight and failed deliveries are counted once, in the shared
+            // ready index, for every consumer (this loop, `drain`, direct
+            // deliveries), so no local view can let a checkpoint pass one.
+            held = self.ready.busy();
+            if held {
+                continue;
+            }
+            let now = self.clock.now_unix_ms();
+            for (&shard, previous) in &mut dispatchers {
+                let Some(checkpoint) = previous.as_ref() else {
+                    continue;
+                };
+                let from = dispatcher::activation_cursor(checkpoint);
+                let failed = self.ready.failed(shard);
+                let holds: Vec<_> = failed
+                    .iter()
+                    .map(|actor| {
+                        self.slot(actor)
+                            .map(|slot| slot.entry.load(Ordering::Acquire))
+                            .filter(|&entry| entry > from)
+                            .map(|entry| entry - 1)
+                    })
+                    .collect();
+                let (cursor, carry) = scheduling::checkpoint(seen[&shard], &holds);
+                let deadline = consumed[&shard].min(self.ready.watermark(shard, now));
+                if let Some(previous) = previous.take_if(|previous| {
+                    from < cursor || dispatcher::deadline_cursor(previous) != deadline
+                }) {
+                    let carried = if carry { failed } else { Vec::new() };
+                    for actor in &carried {
+                        // Its fresh entry lands at or past the cursor.
+                        match self.slot(actor) {
+                            Some(slot) => {
+                                slot.entry
+                                    .fetch_max(cursor.saturating_add(1), Ordering::AcqRel);
+                            }
+                            // Released: this one entry is its handoff, which
+                            // the next placer's wake owns; the mark ends here.
+                            None => self.ready.forget(actor),
+                        }
+                    }
+                    let store = &stores[&shard];
+                    dispatching.push(Box::pin(async move {
+                        (
+                            shard,
+                            self.advance_dispatcher(
+                                store, previous, shard, cursor, deadline, carried,
+                            )
+                            .await,
+                        )
+                    }));
+                }
             }
         }
     }
@@ -749,55 +1124,132 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self.actors[(self.shards.hash_one(actor) as usize) % self.actors.len()]
     }
 
+    /// Read one page of a due window from entry `from`; after its last page,
+    /// the shard's next window past it.
+    async fn open_window(&self, shard: u16, window: u64, from: u64) -> Result<Opened, Error> {
+        let (actors, entry) = self.store.window_actors(shard, window, from).await?;
+        let next = match entry {
+            Some(entry) => Next::Page(entry),
+            None => Next::Window(
+                self.store
+                    .next_window(
+                        shard,
+                        window
+                            .checked_add(1)
+                            .ok_or(Error::Invalid("alarm window overflow"))?,
+                    )
+                    .await?,
+            ),
+        };
+        Ok(Opened {
+            shard,
+            window,
+            actors,
+            next,
+        })
+    }
+
     async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
+        // Released before it ran: the work drops unsettled, so its input
+        // keeps the failure mark and the one carried entry it hands off.
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot).await;
+        let result = self.deliver(&actor, &slot, Some(work)).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);
         }
-        drop(work);
         result.map(|_| ()).map_err(|error| (actor, error))
     }
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
-    async fn deliver(&self, actor: &ActorReference, slot: &Arc<Slot>) -> Result<bool, Error> {
+    async fn deliver(
+        &self,
+        actor: &ActorReference,
+        slot: &Arc<Slot>,
+        work: Option<Work<ActorReference>>,
+    ) -> Result<bool, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.deliver",
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                self.handler.manifest().validate_interrupts()?;
                 // Duplicate events for one actor wait outside global admission. Only
                 // an actor that can make progress may occupy an active delivery slot.
-                let inner = slot.inner.lock().await;
-                let _admission = match &self.admission {
-                    Some(admission) => Some(
-                        admission
-                            .acquire()
-                            .await
-                            .map_err(|_| Error::Invalid("runtime admission is closed"))?,
-                    ),
-                    None => None,
+                let mut inner = slot.inner.lock().await;
+                // The delivery starts once it owns the actor: a waiter owns
+                // nothing and settles nothing. From here it counts in flight
+                // in the shared ready index, whichever consumer started it,
+                // until it settles; a failed or unfinished one keeps its
+                // actor's wake past every later checkpoint.
+                let mut settlement = Settlement {
+                    slot,
+                    flight: Some(self.ready.flight(actor)),
+                    work,
+                    failed: true,
                 };
-                let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
-                let result = self.deliver_retained(actor, slot, inner).await;
-                // Cancellation can interrupt a committed publication before its receipt
-                // is retained. A completed attempt handles its outcome in the loop.
-                refresh.0 = None;
+                let result = match &self.admission {
+                    Some(admission) => admission
+                        .acquire()
+                        .await
+                        .map(Some)
+                        .map_err(|_| Error::Invalid("runtime admission is closed")),
+                    None => Ok(None),
+                };
+                let result = match result.and_then(|admission| {
+                    self.handler.manifest().validate_interrupts()?;
+                    Ok(admission)
+                }) {
+                    Ok(_admission) => self.deliver_retained(actor, slot, &mut inner).await,
+                    Err(error) => Err(error),
+                };
+                // Every failure keeps a wake, a conflict's included: one that
+                // releases the actor leaves its single carried entry behind.
+                // Settled under the actor's delivery lock, so an earlier
+                // delivery's success never clears a later one's failure.
+                // A released slot delivered nothing: its input belongs to
+                // the next placer.
+                settlement.failed = result.is_err() || inner.released;
+                drop(settlement);
+                drop(inner);
                 result
             }
         )
     }
 
+    /// The one entry point of every delivery, activation replays included.
+    /// An incarnation that has not admitted placement settles custody on
+    /// every way out: admission recovers it after its claim, and a replay
+    /// that returns without admission (no input, no due alarm, paused)
+    /// recovers the cut it read. A dead owner's participant whose
+    /// publication consumed the final input therefore always settles.
     async fn deliver_retained(
         &self,
         actor: &ActorReference,
         slot: &Slot,
-        mut inner: tokio::sync::MutexGuard<'_, Inner>,
+        inner: &mut Inner,
+    ) -> Result<bool, Error> {
+        let mut replayed = None;
+        let done = self
+            .deliver_admitted(actor, slot, inner, &mut replayed)
+            .await?;
+        if done
+            && inner.epoch == 0
+            && let Some(snapshot) = replayed
+        {
+            self.store.recover_custody(&snapshot).await?;
+        }
+        Ok(done)
+    }
+
+    async fn deliver_admitted(
+        &self,
+        actor: &ActorReference,
+        slot: &Slot,
+        inner: &mut Inner,
+        replayed: &mut Option<Arc<Snapshot>>,
     ) -> Result<bool, Error> {
         if inner.released {
             return Ok(true);
@@ -813,7 +1265,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(false);
             }
             steps += 1;
-            if settle_pending(&self.store, &mut inner).await? {
+            if settle_pending(&self.store, inner).await? {
                 continue;
             }
             if slot.refresh.swap(false, Ordering::AcqRel) {
@@ -827,15 +1279,32 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     observed
                 }
             };
+            if inner.epoch == 0 {
+                *replayed = Some(Arc::clone(&snapshot));
+            }
             let Some(state) = snapshot.state() else {
+                // No actor: nothing is left to deliver or wake.
                 inner.observed = None;
                 self.subscriptions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .release(actor);
+                slot.registration.suspend_alarm();
                 return Ok(true);
             };
+            if state.deleted() {
+                // Deletion is terminal: nothing is left to deliver or wake.
+                inner.observed = None;
+                self.subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .release(actor);
+                slot.registration.suspend_alarm();
+                return Ok(true);
+            }
             if inner.epoch != 0 && state.epoch() != inner.epoch {
+                // Another placement owns the actor, and with it the alarm.
+                slot.registration.suspend_alarm();
                 return Err(Error::Conflict);
             }
             if state.paused() {
@@ -861,10 +1330,32 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .release(actor);
                 return Ok(true);
             }
+            let unwatched = self
+                .subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwatched(self.handler.manifest(), state);
+            let mut tails = BTreeMap::new();
+            for path in unwatched {
+                // Read before this delivery looks for input: it owns every
+                // earlier record, so the new follow reports only later ones.
+                let tail = match self.store.provider().tail(path.clone()).await {
+                    Ok(tail) => tail,
+                    Err(error) if error.category() == StreamError::NotFound => 0,
+                    Err(error) => return Err(error.into()),
+                };
+                tails.insert(path, tail);
+            }
             self.subscriptions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .bind(self.store.provider(), self.handler.manifest(), actor, state)?;
+                .bind(
+                    self.store.provider(),
+                    self.handler.manifest(),
+                    actor,
+                    state,
+                    &tails,
+                )?;
             let now = self.clock.now_unix_ms();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
             let (trigger, record) = match state.alarm().pending() {
@@ -883,57 +1374,40 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         },
                         Some(record),
                     ),
-                    None => return Ok(true),
+                    None => {
+                        // An idle actor's activation is checkpointed without a
+                        // publication: its interests must be restorable first.
+                        if !inner.interests_marked {
+                            self.store
+                                .persist_interests(actor, state, self.handler.manifest())
+                                .await?;
+                            inner.interests_marked = true;
+                        }
+                        return Ok(true);
+                    }
                 },
             };
-            // Claim only for an actual delivery. Idle events must not publish a
-            // new epoch and wake themselves through their own state path.
-            // Its durable fence precedes external handler work, so a recovered
-            // runtime cannot race effects from the previous placement epoch.
-            // The claim changes only the epoch; its receipt retains the exact
-            // subscriptions and alarm that selected this immutable input.
-            let snapshot = if inner.epoch == 0 {
-                let epoch = state
-                    .epoch()
-                    .checked_add(1)
-                    .ok_or(Error::Invalid("epoch overflow"))?;
-                match self
-                    .store
-                    .claim(
-                        &snapshot,
-                        epoch,
-                        key(&snapshot, &format!("claim-{epoch}-{}", self.instance))?,
-                    )
-                    .await
-                {
-                    Ok(claimed) => {
-                        inner.epoch = epoch;
-                        let claimed = Arc::new(claimed);
-                        inner.observed = Some(Arc::clone(&claimed));
-                        claimed
-                    }
-                    Err(error) => {
-                        inner.observed = None;
-                        return Err(error);
-                    }
-                }
-            } else {
-                snapshot
-            };
-            let state = snapshot
-                .state()
-                .ok_or(Error::Invalid("claim receipt has no state"))?;
+            if inner.epoch == 0 {
+                // Only work admits placement: one command per node incarnation,
+                // never per delivery. The next pass delivers at the admitted
+                // cut; admission is not a delivery step of the work budget.
+                self.admit(actor, inner).await?;
+                steps -= 1;
+                continue;
+            }
             // A retained publication cut cannot admit external handler work:
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the
             // real provider before every handler attempt, including alarms.
             if self.store.observe(&snapshot).await?.is_some() {
+                // Decide from the new cut: a moved epoch is a conflict above,
+                // a deletion or pause is finished work.
                 inner.observed = None;
-                return Err(Error::Conflict);
+                continue;
             }
             let epoch = inner.epoch;
             let cancellation = crate::guest::CancellationToken::new();
-            self.interrupt_follows(&mut inner, state, &trigger).await?;
+            self.interrupt_follows(inner, state, &trigger).await?;
             {
                 let control = slot
                     .delivery_control
@@ -946,30 +1420,35 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
-            let delivery = Delivery {
+            let subscriptions = crate::guest::SubscriptionCuts::new(
+                snapshot.path.clone(),
+                snapshot
+                    .anchor
+                    .ok_or(Error::Invalid("actor state has no committed anchor"))?,
+                state.subscriptions().clone(),
+            );
+            let delivery = |request| Delivery {
+                request,
                 actor: actor.clone(),
                 epoch,
                 trigger: trigger.clone(),
                 now_unix_ms: now,
                 record: record.clone(),
-                subscriptions: crate::guest::SubscriptionCuts::new(
-                    snapshot.path.clone(),
-                    snapshot
-                        .anchor
-                        .ok_or(Error::Invalid("actor state has no committed anchor"))?,
-                    state.subscriptions().clone(),
-                ),
+                subscriptions: subscriptions.clone(),
             };
-            let handled =
+            let invoked = |delivery| {
                 self.handler
-                    .on_record(delivery.clone(), state.checkpoint(), cancellation.clone());
+                    .on_record(delivery, state.checkpoint(), cancellation.clone())
+            };
             let result = match self
                 .handled(
-                    &mut inner,
+                    inner,
+                    actor,
+                    epoch,
                     cancellation.clone(),
-                    &delivery,
+                    delivery,
                     state.checkpoint(),
-                    handled,
+                    invoked,
                 )
                 .await
             {
@@ -1014,7 +1493,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                     Err(error) => return Err(error),
                 };
-                publication.require(self.handler.publication_conditions())?;
+                self.finish_publication(&mut publication, actor)?;
                 Ok(publication)
             })();
             let subscription = match &trigger {
@@ -1025,7 +1504,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Ok(publication) => {
                     inner.pending =
                         Some((Arc::clone(&snapshot), publication, subscription.clone()));
-                    settle_pending(&self.store, &mut inner).await
+                    settle_pending(&self.store, inner).await
                 }
                 Err(Error::PreconditionChanged(conflicts)) => {
                     inner.refused(conflicts).map(|()| true)
@@ -1034,33 +1513,30 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             if let Err(error) = &result {
                 if inner.pending.is_none() && terminal(error) && !cancellation.is_cancelled() {
-                    let delivery = Delivery {
+                    self.interrupt_follows(inner, state, &trigger).await?;
+                    let failure = error.to_string();
+                    let delivery = |request| Delivery {
+                        request,
                         actor: actor.clone(),
                         epoch,
                         trigger: trigger.clone(),
                         now_unix_ms: now,
                         record: record.clone(),
-                        subscriptions: crate::guest::SubscriptionCuts::new(
-                            snapshot.path.clone(),
-                            snapshot
-                                .anchor
-                                .ok_or(Error::Invalid("actor state has no committed anchor"))?,
-                            state.subscriptions().clone(),
-                        ),
+                        subscriptions,
                     };
-                    self.interrupt_follows(&mut inner, state, &trigger).await?;
-                    let handled = self.handler.on_failure(
-                        delivery.clone(),
-                        state.checkpoint(),
-                        error.to_string(),
-                    );
+                    let invoked = |delivery| {
+                        self.handler
+                            .on_failure(delivery, state.checkpoint(), failure)
+                    };
                     let failure = match self
                         .handled(
-                            &mut inner,
+                            inner,
+                            actor,
+                            epoch,
                             cancellation.clone(),
-                            &delivery,
+                            delivery,
                             state.checkpoint(),
-                            handled,
+                            invoked,
                         )
                         .await
                     {
@@ -1083,7 +1559,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     transition,
                                     key(&snapshot, "failure")?,
                                 )?;
-                                publication.require(self.handler.publication_conditions())?;
+                                self.finish_publication(&mut publication, actor)?;
                                 Ok(publication)
                             })
                             .transpose()
@@ -1092,12 +1568,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         Ok(Some(publication)) => {
                             inner.pending =
                                 Some((Arc::clone(&snapshot), publication, subscription.clone()));
-                            result = settle_pending(&self.store, &mut inner).await;
+                            result = settle_pending(&self.store, inner).await;
                         }
                         Ok(None) => {}
                         Err(error) => result = Err(error),
                     }
                 }
+            }
+            if let (Err(Error::AlarmNotDue { authority_unix_ms }), Some(deadline)) =
+                (&result, state.alarm().pending())
+            {
+                // The authority decides alarm time. Wait out its remaining
+                // time on this host's clock; nothing was published.
+                let remaining = deadline.saturating_sub(*authority_unix_ms).max(1);
+                slot.registration
+                    .defer_alarm(state.alarm(), now.saturating_add(remaining))?;
+                inner.observed = None;
+                return Ok(true);
             }
             if let Err(error) = result {
                 if inner.pending.is_none() {
@@ -1112,15 +1599,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Every handler entry uses the same manifest deadline and control fence,
-    /// including recovery from a definitive publication refusal.
-    async fn handled<T>(
+    /// including recovery from a definitive publication refusal. Each
+    /// invocation gets its own capability binding, revoked when it returns,
+    /// times out or is cancelled, so a task it leaves behind holds nothing.
+    async fn handled<'f, T>(
         &self,
         inner: &mut Inner,
+        actor: &ActorReference,
+        epoch: u64,
         cancellation: crate::guest::CancellationToken,
-        delivery: &Delivery,
+        delivery: impl FnOnce(crate::guest::RequestId) -> Delivery,
         checkpoint: Option<&crate::guest::Checkpoint>,
-        handled: crate::guest::GuestFuture<'_, T>,
+        invoke: impl FnOnce(Delivery) -> crate::guest::GuestFuture<'f, T>,
     ) -> Result<T, Error> {
+        let request = self.requests.open(actor, epoch);
+        let delivery = delivery(request.id());
+        let handled = invoke(delivery.clone());
+        let delivery = &delivery;
         let interrupted = self.interrupt(inner, cancellation, |subscription, record| {
             Box::pin(async move {
                 self.handler
@@ -1145,6 +1640,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(error)
             }
         }
+    }
+
+    /// Every handler publication (a transition, a failed input, an
+    /// `on_failure` transition) carries the handler's conditions and, when its
+    /// state holds guest-added interests, the marker that restores them.
+    fn finish_publication(
+        &self,
+        publication: &mut PreparedPublish,
+        actor: &ActorReference,
+    ) -> Result<(), Error> {
+        publication.require(self.handler.publication_conditions())?;
+        self.store
+            .mark_interests(publication, actor, self.handler.manifest())
     }
 
     fn prepare_transition(

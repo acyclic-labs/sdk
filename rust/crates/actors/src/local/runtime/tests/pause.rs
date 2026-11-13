@@ -32,6 +32,7 @@ async fn pause_active_delivery(producer_lost: bool) -> TestResult {
         &runtime.store,
         &address,
         &slot,
+        None,
         true,
         async {
             parked.fetch_add(1, Ordering::SeqCst);
@@ -384,6 +385,7 @@ async fn completed_unread_failure() -> TestResult {
         Store::new(Arc::clone(&provider), root()?),
         address.clone(),
         runtime.pin(&address)?.ok_or("missing original placement")?,
+        None,
         true,
         std::future::ready(()),
     );
@@ -622,7 +624,7 @@ async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> Te
             // a lost reply leaves that same keyed request already committed.
             // Submit the retained original in either case, then require an
             // exact second replay without a new durable decision.
-            let replay = publication.request().clone();
+            let replay = publication.request.clone();
             runtime.store.submit(*publication).await?;
             let settled = runtime.store.load(&address).await?;
             assert_eq!(settled.state().map(State::paused), Some(true));

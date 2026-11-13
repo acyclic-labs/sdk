@@ -571,6 +571,16 @@ impl MemoryStream {
             self.vector(crate::preparation::applied_len(request, &skipped))?;
         let applied = crate::preparation::applied(request, &skipped, applied)?;
         crate::preparation::authority(&applied, |path| Ok(state.tail(path)))?;
+        // The commit's own authority time, monotonic across this ledger. An
+        // installed acceptance rule decides with it before any reservation.
+        let time = self.admitted_time(
+            state,
+            applied.iter().flat_map(|mutation| match mutation {
+                CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
+                    records
+                }
+            }),
+        )?;
         admit_replay(state, self.limits)?;
         reserve_coordinated(state, &applied, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
@@ -585,10 +595,6 @@ impl MemoryStream {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
         let retained = self.reserve_retained(state)?;
-        let time = crate::preparation::committed_time(
-            state.last_committed_at_micros,
-            self.commit_clock.now_unix_millis(),
-        );
         let mut plan = self.plan_commit(state, &applied, commit_id, time)?;
         drop((applied, applied_claim));
         self.absorb(&mut plan.output_claim, skipped_claim)?;

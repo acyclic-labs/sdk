@@ -126,6 +126,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             paused,
             metadata: BTreeMap::new(),
             journal_tail: 0,
+            custody: false,
+            consumed: None,
         };
         match template {
             None => Ok(CommitEffect {
@@ -167,6 +169,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             subscriptions: branch.subscriptions,
             escrow: Some(branch.escrow),
             paused: true,
+            custody: false,
+            consumed: None,
             ..state.clone()
         };
         fork(cut, path, Vec::new(), &overlay)

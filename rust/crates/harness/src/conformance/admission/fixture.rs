@@ -19,6 +19,9 @@ pub(crate) struct Fixture {
     filesystem: Arc<
         FilesystemHost<acyclic_fs::StreamAuthorityStore<Observed>, crate::conformance::ObjectStore>,
     >,
+    /// The creating binding's composer: the agent's committed custody
+    /// settles only through it.
+    composer: Arc<dyn acyclic_actors::guest::Composer>,
     _storage: Box<dyn crate::conformance::Storage>,
 }
 
@@ -127,6 +130,7 @@ impl Fixture {
             );
         }
         let filesystem = bound.volumes().clone();
+        let composer = bound.composer();
         drop(bound);
         Ok(Self {
             path,
@@ -134,6 +138,7 @@ impl Fixture {
             provider,
             scheduler,
             filesystem,
+            composer,
             _storage: storage,
         })
     }
@@ -171,7 +176,7 @@ impl Fixture {
             driver,
             vectors::limits()?,
         )?))?;
-        let host = vectors::hosting(self.scheduler.clone(), handler, None)?;
+        let host = vectors::hosting(self.scheduler.clone(), handler, Some(self.composer.clone()))?;
         host.host(&self.path)?;
         host.send(
             &self.path,

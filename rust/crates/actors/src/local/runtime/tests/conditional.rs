@@ -17,7 +17,6 @@ struct Interleaved {
     source: MemoryStream,
     writes: AtomicU64,
     before_write: Mutex<Option<Competing>>,
-    after_page: Mutex<Option<CommitRequest>>,
 }
 
 impl Interleaved {
@@ -44,14 +43,7 @@ impl ExplicitStreamProvider for Interleaved {
     }
 
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
-        let is_page = request.children.is_some();
         let result = self.source.heads(request).await?;
-        let competing = is_page
-            .then(|| self.after_page.lock().unwrap().take())
-            .flatten();
-        if let Some(request) = competing {
-            self.publish(request).await?;
-        }
         Ok(result)
     }
 
@@ -120,24 +112,34 @@ fn runtime_with(
 async fn dispatcher_creation_returns_the_competing_owners_actual_result() -> TestResult {
     let runtime = runtime()?;
     let provider = runtime.store().provider();
-    let (store, address) = runtime.dispatcher_store()?;
+    let (store, address) = runtime.dispatcher_store(0)?;
+    let writes = provider.inner().writes.load(Ordering::SeqCst);
+    let absent = store.load(&address).await?;
+    assert!(absent.state().is_none());
+    assert_eq!(
+        provider.inner().writes.load(Ordering::SeqCst),
+        writes,
+        "opening an idle shard never writes"
+    );
     *provider.inner().before_write.lock().unwrap() = Some(Competing::SameProposal);
     let before = provider.requests();
     assert!(matches!(
-        runtime.dispatcher(&store, &address).await,
+        runtime
+            .advance_dispatcher(&store, absent, 0, 1, 0, Vec::new())
+            .await,
         Err(Error::Conflict)
     ));
     let original = provider.requests().since(before);
-    assert_eq!(original.control(), 1);
+    assert_eq!(original.control(), 0);
     assert_eq!(original.data(), 1);
     // The competitor committed. A second invocation observes that state once,
     // without creating another checkpoint or replaying the losing proposal.
     let before = provider.requests();
-    let opened = runtime.dispatcher(&store, &address).await?;
+    let opened = store.load(&address).await?;
     assert_eq!(opened.tail, 1);
     assert_eq!(
         opened.state().and_then(|state| state.cursor("activation")),
-        Some(0)
+        Some(1)
     );
     let observed = provider.requests().since(before);
     assert_eq!(observed.control(), 1);
@@ -155,7 +157,7 @@ async fn pause_returns_a_lost_cut_before_an_explicit_new_request() -> TestResult
     let mut claimed = cut.state().ok_or("missing state")?.clone();
     claimed.epoch = 1;
     let claim = store
-        .prepare(&cut, claimed, Vec::new(), key("competing-claim")?)?
+        .prepare(&cut, claimed, Vec::new(), key("competing-claim")?, false)?
         .into_request()?;
     *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(claim));
     let before = provider.requests();
@@ -192,7 +194,7 @@ async fn a_lost_delivery_claim_returns_without_claiming_a_new_epoch() -> TestRes
         let store = runtime.store();
         let provider = store.provider();
         let address = spawn_with(store, "claim-conflict", &[b"emit"]).await?;
-        runtime.track(address.clone())?;
+        runtime.host(address.clone())?;
         *provider.inner().before_write.lock().unwrap() = Some(Competing::SameProposal);
         let before = provider.inner().writes.load(Ordering::SeqCst);
         let failures = if event_owned {
@@ -216,13 +218,14 @@ async fn a_lost_delivery_claim_returns_without_claiming_a_new_epoch() -> TestRes
         let claimed = store.load(&address).await?;
         assert_eq!(claimed.state().map(State::epoch), Some(1));
         assert!(records(&**provider, "out/claim-conflict").await?.is_empty());
-        // Explicit placement is a new owner action; only it may claim epoch 2.
-        runtime.track(address.clone())?;
+        // The committed command is this node's own (same proposal). Hosting
+        // again admits it once without issuing another command.
+        runtime.host(address.clone())?;
         assert!(runtime.drain().await.is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             store.load(&address).await?.state().map(State::epoch),
-            Some(2)
+            Some(1)
         );
         assert_eq!(
             records(&**provider, "out/claim-conflict").await?,
@@ -243,12 +246,12 @@ async fn explicit_resume_restores_delivery_after_a_competing_pause() -> TestResu
         let store = runtime.store();
         let provider = store.provider();
         let address = spawn_with(store, "resume-conflict", &[b"emit"]).await?;
-        runtime.track(address.clone())?;
+        runtime.host(address.clone())?;
         let cut = store.load(&address).await?;
         let mut paused = cut.state().ok_or("missing state")?.clone();
         paused.paused = true;
         let competing = store
-            .prepare(&cut, paused, Vec::new(), key("competing-pause")?)?
+            .prepare(&cut, paused, Vec::new(), key("competing-pause")?, false)?
             .into_request()?;
         *provider.inner().before_write.lock().unwrap() = Some(Competing::Publication(competing));
         let failure = if event_owned {
@@ -295,7 +298,7 @@ async fn a_lost_delivery_publication_returns_without_reinvoking_the_handler() ->
     let store = runtime.store();
     let provider = store.provider();
     let address = spawn_with(store, "publish-conflict", &[b"emit"]).await?;
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let cut = store.load(&address).await?;
@@ -304,7 +307,13 @@ async fn a_lost_delivery_publication_returns_without_reinvoking_the_handler() ->
         .metadata
         .insert("foreign".into(), Bytes::from_static(b"committed"));
     let competing = store
-        .prepare(&cut, changed, Vec::new(), key("competing-checkpoint")?)?
+        .prepare(
+            &cut,
+            changed,
+            Vec::new(),
+            key("competing-checkpoint")?,
+            false,
+        )?
         .into_request()?;
     provider
         .append(AppendRequest {
@@ -343,71 +352,12 @@ async fn a_lost_delivery_publication_returns_without_reinvoking_the_handler() ->
     );
     // Place explicitly. The unconsumed record is delivered once;
     // no effect from the refused handler was committed.
-    runtime.track(address.clone())?;
+    runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert_eq!(
         records(&**provider, "out/publish-conflict").await?,
         vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn restoration_returns_a_changed_page_cut_without_restarting() -> TestResult {
-    let runtime = runtime()?;
-    let store = runtime.store();
-    let provider = store.provider();
-    let mut initial = PreparedPublish::foreign(key("restore/initial")?);
-    // The first page has 256 children. A real new child between the captured
-    // first page and the second must invalidate the original traversal.
-    for index in 0..257 {
-        for effect in [
-            store.create(
-                None,
-                &actor(&format!("restore-{index}"))?,
-                crate::local::Creation {
-                    subscriptions: BTreeMap::new(),
-                    checkpoint: None,
-                    escrow: None,
-                },
-            )?,
-            store.activation(&actor(&format!("restore-{index}"))?),
-        ] {
-            initial.join(effect)?;
-        }
-    }
-    store.submit(initial).await?;
-    let mut competing = PreparedPublish::foreign(key("restore/competing")?);
-    for effect in [
-        store.create(
-            None,
-            &actor("restore-new")?,
-            crate::local::Creation {
-                subscriptions: BTreeMap::new(),
-                checkpoint: None,
-                escrow: None,
-            },
-        )?,
-        store.activation(&actor("restore-new")?),
-    ] {
-        competing.join(effect)?;
-    }
-    *provider.inner().after_page.lock().unwrap() = Some(competing.into_request()?);
-    let before = provider.requests();
-    assert!(matches!(
-        runtime.restore().await,
-        Err(Error::Stream(StreamError::HierarchyChanged))
-    ));
-    let original = provider.requests().since(before);
-    assert_eq!(original.control(), 2);
-    assert_eq!(original.data(), 0);
-    assert_eq!(runtime.counts().0, 256);
-    // Explicit restart restores the entire current set. Names from the first
-    // partial traversal retain one registration apiece.
-    let before = provider.requests();
-    runtime.restore().await?;
-    assert_eq!(provider.requests().since(before).control(), 2);
-    assert_eq!(runtime.counts().0, 258);
     Ok(())
 }

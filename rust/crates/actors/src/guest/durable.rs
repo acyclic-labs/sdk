@@ -119,6 +119,86 @@ pub trait SocketHost: acyclic_stream::ProviderPlatform {
         socket: &WebSocketId,
     ) -> Result<Vec<String>, GuestError>;
 }
+/// One host attempt's opaque request handle. It names a live binding in the
+/// host's [`Requests`]; by itself it grants nothing.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub struct RequestId(u64);
+impl RequestId {
+    /// The handle with this wire value.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+    /// Its wire value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// The host-side capability binding `request -> (actor, epoch)`, local to one
+/// host process: the only authority a host capability call carries. The host
+/// opens one binding per handler invocation (`on_record`, then `on_failure`,
+/// each its own) and the binding closes when that invocation returns, is
+/// cancelled, times out or is abandoned, so a late call from it is refused
+/// as [`GuestError::Revoked`] without any provider read. Co-resident actors of one process
+/// are one principal; distinct principals need distinct processes. It does not
+/// stop a partitioned old owner's in-flight or already issued external call;
+/// that needs resource-side fencing.
+#[derive(Clone, Debug, Default)]
+pub struct Requests(Arc<std::sync::Mutex<Bindings>>);
+#[derive(Debug, Default)]
+struct Bindings {
+    next: u64,
+    live: std::collections::HashMap<u64, (ActorReference, u64)>,
+}
+/// One open binding; dropping it closes the request.
+#[derive(Debug)]
+pub struct Request {
+    id: RequestId,
+    requests: Requests,
+}
+impl Request {
+    /// The handle the attempt's guest receives.
+    #[must_use]
+    pub const fn id(&self) -> RequestId {
+        self.id
+    }
+}
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.requests.bindings().live.remove(&self.id.0);
+    }
+}
+impl Requests {
+    fn bindings(&self) -> std::sync::MutexGuard<'_, Bindings> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// Bind a new request to `actor` at placement `epoch`.
+    #[must_use]
+    pub fn open(&self, actor: &ActorReference, epoch: u64) -> Request {
+        let mut bindings = self.bindings();
+        bindings.next = bindings.next.wrapping_add(1);
+        let id = bindings.next;
+        bindings.live.insert(id, (actor.clone(), epoch));
+        Request {
+            id: RequestId(id),
+            requests: self.clone(),
+        }
+    }
+    /// The actor and epoch a live request is bound to; a closed or unknown
+    /// request is refused.
+    pub fn admit(&self, request: RequestId) -> Result<(ActorReference, u64), GuestError> {
+        self.bindings()
+            .live
+            .get(&request.0)
+            .cloned()
+            .ok_or(GuestError::Revoked)
+    }
+}
+
 /// Scoped runtime effects; implementations must check the actor reference on every call.
 pub trait DurableHost: SocketHost {
     /// Atomically clear actor storage and alarm; the address remains usable.
@@ -127,25 +207,32 @@ pub trait DurableHost: SocketHost {
         actor: &ActorReference,
     ) -> impl Future<Output = Result<(), GuestError>> + Send;
 }
-/// Scoped state supplied by the host at activation; the reference is never authority.
+/// Scoped state for one host request. Every call resolves the actor through
+/// the host's live binding, so it acts only while that request is live.
 pub struct DurableObjectState<H> {
-    reference: ActorReference,
+    request: RequestId,
+    requests: Requests,
     host: Arc<H>,
 }
 impl<H: DurableHost> DurableObjectState<H> {
     /// Clear state and alarm without deleting its address or namespace deployment.
     pub async fn delete_all(&self) -> Result<(), GuestError> {
-        self.host.delete_all(&self.reference).await
+        let actor = self.id()?;
+        self.host.delete_all(&actor).await
     }
 }
 impl<H: SocketHost> DurableObjectState<H> {
-    /// Materialize only after host admission of the namespace binding.
-    pub const fn new(reference: ActorReference, host: Arc<H>) -> Self {
-        Self { reference, host }
+    /// Bind to one delivered request of the host's `requests`.
+    pub const fn new(request: RequestId, requests: Requests, host: Arc<H>) -> Self {
+        Self {
+            request,
+            requests,
+            host,
+        }
     }
-    /// Transferable address without the host adapter.
-    pub const fn id(&self) -> &ActorReference {
-        &self.reference
+    /// The actor this live request is bound to.
+    pub fn id(&self) -> Result<ActorReference, GuestError> {
+        self.requests.admit(self.request).map(|(actor, _)| actor)
     }
     /// Retain a socket and its tags across hibernation.
     pub fn accept_web_socket(
@@ -153,11 +240,11 @@ impl<H: SocketHost> DurableObjectState<H> {
         socket: &WebSocketId,
         tags: &[String],
     ) -> Result<(), GuestError> {
-        self.host.accept_web_socket(&self.reference, socket, tags)
+        self.host.accept_web_socket(&self.id()?, socket, tags)
     }
     /// Query retained sockets, optionally by exact tag.
     pub fn get_web_sockets(&self, tag: Option<&str>) -> Result<Vec<WebSocketId>, GuestError> {
-        self.host.get_web_sockets(&self.reference, tag)
+        self.host.get_web_sockets(&self.id()?, tag)
     }
     /// Send on a retained socket.
     pub fn web_socket_send(
@@ -165,7 +252,7 @@ impl<H: SocketHost> DurableObjectState<H> {
         socket: &WebSocketId,
         payload: SocketPayload,
     ) -> Result<(), GuestError> {
-        self.host.web_socket_send(&self.reference, socket, payload)
+        self.host.web_socket_send(&self.id()?, socket, payload)
     }
     /// Close a retained socket.
     pub fn web_socket_close(
@@ -175,7 +262,7 @@ impl<H: SocketHost> DurableObjectState<H> {
         reason: &str,
     ) -> Result<(), GuestError> {
         self.host
-            .web_socket_close(&self.reference, socket, code, reason)
+            .web_socket_close(&self.id()?, socket, code, reason)
     }
     /// Persist a socket attachment.
     pub fn serialize_attachment(
@@ -183,29 +270,27 @@ impl<H: SocketHost> DurableObjectState<H> {
         socket: &WebSocketId,
         value: Bytes,
     ) -> Result<(), GuestError> {
-        self.host
-            .serialize_attachment(&self.reference, socket, value)
+        self.host.serialize_attachment(&self.id()?, socket, value)
     }
     /// Recover a retained socket attachment.
     pub fn deserialize_attachment(
         &self,
         socket: &WebSocketId,
     ) -> Result<Option<Bytes>, GuestError> {
-        self.host.deserialize_attachment(&self.reference, socket)
+        self.host.deserialize_attachment(&self.id()?, socket)
     }
     /// Replace or disable the auto-response pair.
     pub fn set_web_socket_auto_response(
         &self,
         value: Option<WebSocketAutoResponse>,
     ) -> Result<(), GuestError> {
-        self.host
-            .set_web_socket_auto_response(&self.reference, value)
+        self.host.set_web_socket_auto_response(&self.id()?, value)
     }
     /// Query the active auto-response pair.
     pub fn get_web_socket_auto_response(
         &self,
     ) -> Result<Option<WebSocketAutoResponse>, GuestError> {
-        self.host.get_web_socket_auto_response(&self.reference)
+        self.host.get_web_socket_auto_response(&self.id()?)
     }
     /// Query the latest automatic response time.
     pub fn get_web_socket_auto_response_timestamp(
@@ -213,11 +298,11 @@ impl<H: SocketHost> DurableObjectState<H> {
         socket: &WebSocketId,
     ) -> Result<Option<u64>, GuestError> {
         self.host
-            .get_web_socket_auto_response_timestamp(&self.reference, socket)
+            .get_web_socket_auto_response_timestamp(&self.id()?, socket)
     }
     /// Query a socket's retained tags.
     pub fn get_tags(&self, socket: &WebSocketId) -> Result<Vec<String>, GuestError> {
-        self.host.get_tags(&self.reference, socket)
+        self.host.get_tags(&self.id()?, socket)
     }
 }
 

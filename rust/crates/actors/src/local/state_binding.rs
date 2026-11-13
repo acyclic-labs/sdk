@@ -356,7 +356,12 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         self.fenced = true;
         let effects = self.effects(AlarmChange::Keep, None)?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
-        let prepared = self.store.prepare(&self.snapshot, state, effects, key)?;
+        let mut prepared = self
+            .store
+            .prepare(&self.snapshot, state, Vec::new(), key, false)?;
+        for effect in effects {
+            prepared.join_host(effect)?;
+        }
         self.snapshot = self
             .store
             .submit_retained(prepared)
@@ -377,7 +382,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         mut self,
         trigger: &crate::guest::Trigger,
         delivered: Option<&acyclic_stream::Record>,
-        mut transition: crate::guest::Transition,
+        transition: crate::guest::Transition,
         key: IdempotencyKey,
     ) -> Result<super::PreparedPublish, Error> {
         if self.fenced {
@@ -394,9 +399,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 "guest effect targets the host's actor journal",
             ));
         }
-        transition
-            .effects
-            .extend(self.effects(transition.alarm, Some(&journal))?);
+        let effects = self.effects(transition.alarm, Some(&journal))?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
         let mut prepared = self.store.prepare_publication(
             &self.snapshot,
@@ -409,6 +412,10 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 key,
             },
         )?;
+        // The binding's journal and activation are host records.
+        for effect in effects {
+            prepared.join_host(effect)?;
+        }
         prepared.journal = Some(journal);
         Ok(prepared)
     }
@@ -448,7 +455,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
             // transition. Both changes share one activation entry and commit.
             effects.push(
                 self.store
-                    .activation(&self.store.actor(self.snapshot.path())?),
+                    .activation(&self.store.actor(self.snapshot.path())?)?,
             );
         }
         Ok(effects)

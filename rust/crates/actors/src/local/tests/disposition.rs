@@ -124,7 +124,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         &cause,
         key("failure/competing-skip")?,
     )?;
-    let original_request = prepared.request().clone();
+    let original_request = prepared.request.clone();
     let work = provider.requests().since(before);
     assert_eq!(
         (work.data(), work.control()),
@@ -219,11 +219,24 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             records: vec![Bytes::from_static(b"corrupt").into()],
         },
     ];
+    // Every runtime namespace of the state root, a deadline window among
+    // them; only the activation log itself takes producers' wake entries.
+    for path in [
+        format!("{}/{:020}", store.scheduling_path(0)?, 0),
+        format!("{}/_dispatcher/runtime", state_root()?),
+        format!("{}/_sockets/v1", state_root()?),
+    ] {
+        mutations.push(CommitMutation::Append {
+            path: StreamPath::new(path)?,
+            records: vec![Bytes::from_static(b"junk").into()],
+        });
+    }
     for destination in [
         failures,
         child.path.clone(),
         snapshot.path.clone(),
         state_root()?,
+        store.scheduling_path(0)?,
     ] {
         mutations.push(CommitMutation::Fork {
             source: source.clone(),
@@ -260,7 +273,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
                     result,
                     key("failure/guest-write")?
                 ),
-                Err(Error::Invalid("effect changes the host's failures"))
+                Err(Error::Invalid("effect changes the host's control records"))
             ));
             let mut publication = store.prepare_failed_input(
                 &snapshot,
@@ -270,14 +283,13 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
                 &cause,
                 key("failure/join-write")?,
             )?;
-            let original = publication.request().clone();
+            let original = publication.request.clone();
             assert!(matches!(
                 publication.join(effect.clone()),
-                Err(Error::Invalid("effect changes the host's failures"))
+                Err(Error::Invalid("effect changes the host's control records"))
             ));
             assert_eq!(
-                publication.request(),
-                &original,
+                publication.request, original,
                 "refusal cannot add conditions"
             );
             publication.composition = Some(Box::new(FailureWriter(effect)));
@@ -351,11 +363,11 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     let work = provider.requests().since(before);
     assert_eq!((work.data(), work.control()), (0, 0));
     assert_eq!(
-        replay.request().mutations().count(),
+        replay.request.mutations().count(),
         3,
         "terminal, exact input and original owner wake"
     );
-    let replay_request = replay.request().clone();
+    let replay_request = replay.request.clone();
     store.submit(replay).await?;
     assert!(matches!(store.submit(purge).await, Err(Error::Conflict)));
     let replayed = selected(provider.as_ref(), &source, 2).await?;
@@ -435,7 +447,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
         0,
         "purge does not fetch input bytes"
     );
-    assert_eq!(purge.request().mutations().count(), 1);
+    assert_eq!(purge.request.mutations().count(), 1);
     store.submit(purge).await?;
     assert_eq!(
         FailureEntry::decode(
@@ -462,7 +474,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             &child_owner,
             Branch::unfunded(inbox(&child_owner)?),
         )?,
-        store.activation(&child_owner),
+        store.activation(&child_owner)?,
     ] {
         fork.join(effect)?;
     }
@@ -530,7 +542,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     // Finite negative: restoring the old public preparation fails here before
     // waiting for a terminal that the mutation would never publish.
     for path in [call.log(), call.settled()] {
-        assert!(publication.request().mutations().any(|mutation| {
+        assert!(publication.request.mutations().any(|mutation| {
             matches!(mutation, CommitMutation::Append { path: selected, .. } if selected == path)
         }), "missing original invocation terminal/settlement");
     }

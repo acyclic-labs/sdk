@@ -76,18 +76,6 @@ async fn clock_schedule(
         assert_eq!(state.alarm().deadline_unix_ms, Some(deadline));
         assert_eq!(state.alarm().delivered_generation, None);
     }
-    let activation_tail = provider.tail(root()?).await?;
-    let (dispatch_store, dispatch_actor) = runtime.dispatcher_store()?;
-    observe_while_running(
-        serving.as_mut(),
-        state_after(&dispatch_store, &dispatch_actor, |state| {
-            state
-                .cursor("activation")
-                .is_some_and(|cursor| cursor >= activation_tail)
-        }),
-    )
-    .await?;
-
     let mut early = clock.sleep_until(110);
     assert!(early.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
@@ -108,7 +96,6 @@ async fn clock_schedule(
     } else {
         None
     };
-
     // Both an installed waiter and a not-yet-observed future retain the same
     // original advance. Neither owns the clock producer.
     let mut reached = clock.sleep_until(110);
@@ -139,7 +126,7 @@ async fn clock_schedule(
         assert_eq!(state.alarm().delivered_generation, None);
         // Only this explicit placement may claim epoch 3 and deliver the
         // still-committed alarm; the stale dispatcher may not publish it.
-        runtime.track(first.clone())?;
+        runtime.place(first.clone(), 2).await?;
     } else {
         assert_eq!(conflicts.load(Ordering::SeqCst), 0);
     }
@@ -163,7 +150,6 @@ async fn clock_schedule(
             .and_then(|state| state.alarm().pending()),
         Some(120)
     );
-
     let mut retained = clock.sleep_until(130);
     assert!(retained.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
@@ -394,17 +380,6 @@ fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
                     assert!(state.alarm().pending().is_some());
                     assert_eq!(state.alarm().delivered_generation, None);
                 }
-                let tail = provider.tail(root()?).await?;
-                let (dispatcher_store, dispatcher_actor) = runtime.dispatcher_store()?;
-                observe_while_running(
-                    serving.as_mut(),
-                    state_after(&dispatcher_store, &dispatcher_actor, |state| {
-                        state
-                            .cursor("activation")
-                            .is_some_and(|cursor| cursor >= tail)
-                    }),
-                )
-                .await?;
                 let mut context = Context::from_waker(&waker);
                 assert!(serving.as_mut().poll(&mut context).is_pending());
                 Ok::<_, Box<dyn std::error::Error>>((first, second))
@@ -437,5 +412,279 @@ fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
+    Ok(())
+}
+
+/// A checkpoint past an alarm's activation must not lose it: the replacement
+/// host finds the pending deadline in its shard's window, not by replaying
+/// activations or reading actor states.
+#[tokio::test]
+async fn a_replacement_host_fires_alarms_armed_before_the_checkpoint() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let armed = spawn_with(&store, "bucket-armed", &[b"set 50"]).await?;
+    let shard = store.scheduling_shard(&armed);
+    let host = |now| {
+        let (clock, control) = ControlledClock::new(now);
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            Arc::new(clock) as Arc<dyn Clock>,
+        )
+        .with_scheduling_shards([shard])?;
+        Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+    };
+    let (first, _control) = host(100)?;
+    let tail = provider.tail(store.scheduling_path(shard)?).await?;
+    let (checkpoint, dispatcher) = first.dispatcher_store(shard)?;
+    {
+        let mut serving = Box::pin(first.run(|_, error| panic!("delivery failed: {error}")));
+        observe_while_running(
+            serving.as_mut(),
+            state_after(&checkpoint, &dispatcher, |state| {
+                state.cursor("activation") == Some(tail)
+            }),
+        )
+        .await?;
+    }
+    let pending = store.load(&armed).await?;
+    assert_eq!(
+        pending.state().and_then(|state| state.alarm().pending()),
+        Some(150)
+    );
+    assert!(records(&*provider, "out/bucket-armed").await?.is_empty());
+
+    // The replacement starts a window later, so the watermark may pass it.
+    let (replacement, _control) = host(60_000)?;
+    let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &armed, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/bucket-armed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    // The delivered, closed window moves the watermark, so a later restart
+    // pages past it instead of waking the actor again.
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&checkpoint, &dispatcher, |state| {
+            state.cursor("deadline") == Some(1)
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+struct Authority(AtomicU64);
+
+impl acyclic_stream::UnixMillisClock for Authority {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Reports each alarm consumption the authority decides, with its time.
+struct Decisions(
+    futures::channel::mpsc::UnboundedSender<(u64, u64)>,
+    Arc<Authority>,
+);
+
+impl acyclic_stream::CommitAdmission for Decisions {
+    fn not_before(&self, value: &[u8]) -> Option<u64> {
+        let deadline = crate::local::alarm_admission().not_before(value)?;
+        let _ = self
+            .0
+            .unbounded_send((deadline, self.1.0.load(Ordering::SeqCst)));
+        Some(deadline)
+    }
+}
+
+/// A host clock ahead of the authority cannot consume an alarm early: the
+/// authority refuses at its own commit time, and the host waits out exactly
+/// the remaining authority time on its own clock before the next attempt.
+#[tokio::test]
+async fn the_authority_refuses_early_alarm_consumption_and_the_host_rearms() -> TestResult {
+    let authority = Arc::new(Authority(AtomicU64::new(100)));
+    let provider = Arc::new(MemoryStream::new_with_clock(
+        Default::default(),
+        Arc::clone(&authority) as _,
+    ));
+    let (decided, mut decisions) = futures::channel::mpsc::unbounded();
+    provider.install_commit_admission(Arc::new(Decisions(decided, Arc::clone(&authority))))?;
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let early = spawn_with(&store, "authority-early", &[b"set 50"]).await?;
+    let (clock, mut control) = ControlledClock::new(100);
+    let clock = Arc::new(clock);
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::clone(&clock) as Arc<dyn Clock>,
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
+    let armed = observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &early, |state| state.cursor("inbox") == Some(1)),
+    )
+    .await?;
+    assert_eq!(armed.alarm().pending(), Some(150));
+    // The host clock passes the deadline; the authority's is 30 ms short.
+    authority.0.store(120, Ordering::SeqCst);
+    control.advance_to(160)?;
+    let refused = observe_while_running(serving.as_mut(), async {
+        decisions.next().await.ok_or_else(|| "no decision".into())
+    })
+    .await?;
+    assert_eq!(refused, (150, 120));
+    assert!(records(&*provider, "out/authority-early").await?.is_empty());
+    // The authority's time now suffices, but the host waits its own 30 ms.
+    authority.0.store(150, Ordering::SeqCst);
+    control.advance_to(190)?;
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &early, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    // No attempt between the refusal and the host's re-armed time.
+    assert_eq!(decisions.try_recv()?, (150, 150));
+    assert_eq!(
+        records(&*provider, "out/authority-early").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}
+
+/// A deferred wake never moves the deadline watermark past the alarm's own
+/// window. Window two holds a deadline at 150000; a replacement host at
+/// 240000 opens it, the authority at 120000 refuses, and the wake is deferred
+/// to 270000. The checkpoint stays at window two, so a host started after a
+/// crash still finds and fires the alarm.
+#[tokio::test]
+async fn a_deferred_alarm_survives_a_crash_after_the_checkpoint() -> TestResult {
+    let authority = Arc::new(Authority(AtomicU64::new(100_000)));
+    let provider = Arc::new(MemoryStream::new_with_clock(
+        Default::default(),
+        Arc::clone(&authority) as _,
+    ));
+    let (decided, mut decisions) = futures::channel::mpsc::unbounded();
+    provider.install_commit_admission(Arc::new(Decisions(decided, Arc::clone(&authority))))?;
+    let store = Store::new(Arc::clone(&provider), root()?)
+        .with_scheduling_shards(std::num::NonZeroU16::MIN);
+    let actor = spawn_with(&store, "deferred", &[b"set 50000"]).await?;
+    let host = |now| {
+        let (clock, control) = ControlledClock::new(now);
+        let runtime = Runtime::new(
+            store.clone(),
+            Arc::new(Package::new()?),
+            Arc::new(clock) as Arc<dyn Clock>,
+        );
+        Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+    };
+    let (earlier, _control) = host(100_000)?;
+    earlier.track(actor.clone())?;
+    earlier.drain_actor(&actor).await?;
+    let armed = store.load(&actor).await?;
+    assert_eq!(
+        armed.state().and_then(|state| state.alarm().pending()),
+        Some(150_000)
+    );
+    authority.0.store(120_000, Ordering::SeqCst);
+    let tail = provider.tail(store.scheduling_path(0)?).await?;
+    let (replacement, _control) = host(240_000)?;
+    let (checkpoint, dispatcher) = replacement.dispatcher_store(0)?;
+    {
+        let mut serving = Box::pin(replacement.run(|_, error| panic!("delivery failed: {error}")));
+        // Only a quiescent host past window two's consumption checkpoints a
+        // deadline cursor of two or more, so this is the refusal's checkpoint.
+        let checkpointed = observe_while_running(
+            serving.as_mut(),
+            state_after(&checkpoint, &dispatcher, |state| {
+                state.cursor("activation") == Some(tail) && state.cursor("deadline") >= Some(2)
+            }),
+        )
+        .await?;
+        assert_eq!(decisions.try_recv()?, (150_000, 120_000));
+        assert_eq!(checkpointed.cursor("deadline"), Some(2));
+    }
+    // The crash: the deferred wake dies with the host.
+    assert!(records(&*provider, "out/deferred").await?.is_empty());
+    authority.0.store(150_000, Ordering::SeqCst);
+    let (restarted, _control) = host(240_000)?;
+    let mut serving = Box::pin(restarted.run(|_, error| panic!("delivery failed: {error}")));
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &actor, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/deferred").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
+    Ok(())
+}
+
+/// A malformed record or child in a runtime deadline stream refuses only
+/// itself: a restarted host still wakes the window's actor and keeps serving,
+/// rather than terminating on retained bytes.
+#[tokio::test]
+async fn a_malformed_window_record_refuses_only_itself() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?)
+        .with_scheduling_shards(std::num::NonZeroU16::MIN);
+    let actor = spawn_with(&store, "malformed", &[b"set 50000"]).await?;
+    let host = |now| {
+        let (clock, control) = ControlledClock::new(now);
+        let runtime = Runtime::new(
+            store.clone(),
+            Arc::new(Package::new()?),
+            Arc::new(clock) as Arc<dyn Clock>,
+        );
+        Ok::<_, Box<dyn std::error::Error>>((runtime, control))
+    };
+    let (earlier, _control) = host(100_000)?;
+    earlier.track(actor.clone())?;
+    earlier.drain_actor(&actor).await?;
+    // Window one holds only junk, window two the actor's 150000 alarm plus
+    // junk, and a non-window child sorts after both.
+    let shard = store.scheduling_path(0)?;
+    let mut corrupt = PreparedPublish::foreign(key("corrupt")?);
+    corrupt.join(CommitEffect::hard(
+        Vec::new(),
+        [
+            format!("{shard}/{:020}", 1),
+            format!("{shard}/{:020}", 2),
+            format!("{shard}/zz"),
+        ]
+        .into_iter()
+        .map(|path| {
+            Ok(CommitMutation::Append {
+                path: StreamPath::new(path)?,
+                records: vec![Bytes::from_static(b"junk").into()],
+            })
+        })
+        .collect::<Result<_, StreamError>>()?,
+    ))?;
+    store.submit(corrupt).await?;
+    let (restarted, _control) = host(240_000)?;
+    let mut serving = Box::pin(restarted.run(|_, error| panic!("delivery failed: {error}")));
+    observe_while_running(
+        serving.as_mut(),
+        state_after(&store, &actor, |state| {
+            state.alarm().delivered_generation == Some(1)
+        }),
+    )
+    .await?;
+    assert_eq!(
+        records(&*provider, "out/malformed").await?,
+        vec![Bytes::from_static(b"a1")]
+    );
     Ok(())
 }

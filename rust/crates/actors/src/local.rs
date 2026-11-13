@@ -12,12 +12,16 @@ pub mod ready;
 pub use overlay::{Branch, Creation};
 mod record;
 pub use applied::{Applied, AppliedCut};
-pub use record::{METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
+pub use record::{
+    METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD, alarm_admission,
+};
 mod runtime;
+mod scheduling;
 pub use crate::guest::Subscription;
 pub use runtime::{
     Clock, ClockControl, ClockError, ControlledClock, Runtime, RuntimeLimits, SystemClock,
 };
+pub use scheduling::DEFAULT_SCHEDULING_SHARDS;
 mod sockets;
 pub use sockets::Sockets;
 #[cfg(feature = "test-support")]
@@ -120,6 +124,17 @@ pub enum Error {
         /// Original co-committed state and failure reply.
         receipt: Box<InvocationReceipt>,
     },
+    /// The authority refused an alarm consumption before its deadline: its
+    /// own commit time was `authority_unix_ms`. Nothing was published.
+    #[error("alarm not yet due at authority time {authority_unix_ms}")]
+    AlarmNotDue {
+        /// The authority's commit time at the refusal.
+        authority_unix_ms: u64,
+    },
+    /// The actor is deleted. Its terminal state admits no claim, publication,
+    /// control write or second deletion.
+    #[error("actor is deleted")]
+    Deleted,
     /// A request contradicts the durable state machine.
     #[error("invalid actor transition: {0}")]
     Invalid(&'static str),
@@ -145,6 +160,8 @@ impl Error {
             Self::Paused => "paused",
             Self::Handler(_) => "handler",
             Self::InvocationFailed { .. } => "invocation_failed",
+            Self::AlarmNotDue { .. } => "alarm_not_due",
+            Self::Deleted => "deleted",
             Self::Invalid(_) => "invalid",
         }
     }
@@ -186,6 +203,13 @@ pub struct State {
     paused: bool,
     metadata: BTreeMap<String, bytes::Bytes>,
     journal_tail: u64,
+    /// Whether this state's publication appended a participant custody
+    /// intent whose settlement a new owner must recover.
+    custody: bool,
+    /// The alarm this state's own delivery consumed, as `(generation,
+    /// deadline)`, independent of the handler's new alarm: the authority's
+    /// alarm rule decides the commit from it. Only an alarm delivery sets it.
+    consumed: Option<(u64, u64)>,
 }
 impl State {
     /// Durable guest metadata, from this same checkpoint/epoch/commit cut.
@@ -230,7 +254,15 @@ impl State {
     pub const fn paused(&self) -> bool {
         self.paused
     }
+    /// Whether this is an actor's terminal deleted state.
+    pub const fn deleted(&self) -> bool {
+        self.epoch == DELETED
+    }
 }
+
+/// The deleted state's epoch. No claim can raise an epoch to it or past it,
+/// and no fence admits it, so nothing can follow a deletion.
+const DELETED: u64 = u64::MAX;
 
 /// Immutable exact-cut token. Publication compares both tail and commit anchor.
 pub struct Snapshot {
@@ -239,6 +271,11 @@ pub struct Snapshot {
     anchor: Option<CommitId>,
     state: Option<State>,
     provenance: Option<Provenance<StreamPath, ForkCut>>,
+    /// The cut's committed custody is not known settled. Fixed when the cut
+    /// is read or retained, independent of `state`, so a caller that takes
+    /// the state cannot drop it: a read cut with custody never knows, and the
+    /// receipt of a publication whose composition settled always knows.
+    unsettled: bool,
 }
 
 struct Publication<'a> {
@@ -264,9 +301,17 @@ impl Snapshot {
             .is_some_and(|origin| self.anchor == Some(origin.inherited.commit_id))
     }
 
+    /// The state stream and record whose committed custody this cut has not
+    /// seen settled.
+    fn unsettled(&self) -> Option<(StreamPath, Option<CommitId>)> {
+        self.unsettled.then(|| (self.path.clone(), self.anchor))
+    }
+
     fn owns_epoch(&self, epoch: u64) -> bool {
         self.state.as_ref().is_some_and(|state| {
-            state.epoch == epoch && state.placement_branch == self.placement_branch()
+            state.epoch == epoch
+                && !state.deleted()
+                && state.placement_branch == self.placement_branch()
         })
     }
 
@@ -303,6 +348,7 @@ impl Snapshot {
                 anchor: None,
                 state: None,
                 provenance,
+                unsettled: false,
             });
         }
         let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
@@ -314,6 +360,7 @@ impl Snapshot {
             path,
             tail,
             anchor: Some(record.commit_id),
+            unsettled: state.custody,
             state: Some(state),
             provenance,
         })
@@ -331,6 +378,9 @@ pub struct PreparedPublish {
     failure_owner: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
+    /// The previous cut's committed, unfinished custody, settled before this
+    /// publication can replace it.
+    unsettled: Option<(StreamPath, Option<CommitId>)>,
     sealed: bool,
     acknowledgement_unknown: bool,
     provenance: Option<Provenance<StreamPath, ForkCut>>,
@@ -345,7 +395,28 @@ impl std::fmt::Debug for PreparedPublish {
             .finish_non_exhaustive()
     }
 }
+/// A read-only view of a prepared publication's request. It neither clones
+/// into nor dereferences to a [`CommitRequest`], so no caller can commit it:
+/// a prepared publication commits only through [`Store::submit_retained`],
+/// which settles first, or through the guarded [`PreparedPublish::into_request`].
+#[derive(Debug)]
+pub struct RequestView<'a>(&'a CommitRequest);
+impl<'a> RequestView<'a> {
+    /// Every mutation, in effect order.
+    pub fn mutations(&self) -> impl Iterator<Item = &'a CommitMutation> + 'a {
+        self.0.mutations()
+    }
+}
+impl PartialEq<CommitRequest> for RequestView<'_> {
+    fn eq(&self, other: &CommitRequest) -> bool {
+        self.0 == other
+    }
+}
 impl PreparedPublish {
+    /// The request, including the actor's own Head/Absent condition.
+    pub const fn request(&self) -> RequestView<'_> {
+        RequestView(&self.request)
+    }
     /// Join the sealed authored state with its confirmed publication range.
     fn retained(&mut self, receipt: &CommitReceipt) -> Result<Option<Snapshot>, Error> {
         let Some(path) = &self.own else {
@@ -400,6 +471,7 @@ impl PreparedPublish {
                     .ok_or(Error::Invalid("publication omitted its authored state"))?,
             ),
             provenance: self.provenance.clone(),
+            unsettled: false,
         }))
     }
 
@@ -413,6 +485,7 @@ impl PreparedPublish {
             journal: None,
             failure_owner: None,
             composition: None,
+            unsettled: None,
             sealed: false,
             acknowledgement_unknown: false,
             provenance: None,
@@ -422,10 +495,6 @@ impl PreparedPublish {
                 idempotency_key: key,
             },
         }
-    }
-    /// The request, including the actor's own Head/Absent condition.
-    pub const fn request(&self) -> &CommitRequest {
-        &self.request
     }
     /// Join admission fences without manufacturing a companion mutation. The
     /// original state fence cannot be weakened, and disagreeing cuts are refused.
@@ -454,7 +523,9 @@ impl PreparedPublish {
     }
     /// Add one effect. Hard effects join the canonical hard publication;
     /// soft effects apply or skip their entire mutation group together.
-    /// Guest effects cannot mutate the host's failure subtree.
+    /// Guest effects cannot mutate any runtime-owned stream: the actor's
+    /// failure, custody and placement records, or its root's runtime
+    /// namespaces (scheduling, dispatcher, sockets).
     pub fn join(&mut self, effect: CommitEffect) -> Result<(), Error> {
         if self
             .own
@@ -464,10 +535,10 @@ impl PreparedPublish {
                 effect
                     .mutations
                     .iter()
-                    .any(|mutation| disposition::targets_failures(mutation, owner))
+                    .any(|mutation| disposition::targets_host_records(mutation, owner))
             })
         {
-            return Err(Error::Invalid("effect changes the host's failures"));
+            return Err(Error::Invalid("effect changes the host's control records"));
         }
         self.join_host(effect)
     }
@@ -539,11 +610,18 @@ impl PreparedPublish {
         }
         Ok(())
     }
-    /// Take the request to submit it through another commit owner.
+    /// Take the request to submit it through another commit owner. Only
+    /// [`Store::submit_retained`] settles a participant or the previous cut's
+    /// committed custody, so a publication carrying either never leaves.
     pub fn into_request(self) -> Result<CommitRequest, Error> {
         if self.composition.is_some() {
             return Err(Error::Invalid(
                 "composed publication must retain participant custody",
+            ));
+        }
+        if self.unsettled.is_some() {
+            return Err(Error::Invalid(
+                "publication must first settle the committed custody it replaces",
             ));
         }
         Ok(self.request)
@@ -558,8 +636,9 @@ impl PreparedPublish {
 }
 
 /// Bind the original caller intent and current fork format before resolving
-/// mutable parent/input cuts. Version 3 binds the paused, independently funded overlay and host failure exclusion;
-/// older acceptance envelopes are outside this data generation.
+/// mutable parent/input cuts. It binds the paused, independently funded
+/// overlay and the host custody and failure exclusions; the retired
+/// `acyclic.actors.fork` acceptances are outside this data generation.
 fn fork_key(
     child: &StreamPath,
     request: &crate::wire::ForkActorRequest,
@@ -567,7 +646,7 @@ fn fork_key(
     use prost::Message as _;
     use sha2::Digest as _;
     let mut hash = sha2::Sha256::new();
-    hash.update(b"acyclic.actors.fork.v3\0");
+    hash.update(b"acyclic.actor.fork.v1\0");
     hash.update(child.as_str().as_bytes());
     hash.update([0]);
     hash.update(request.encode_to_vec());
@@ -579,6 +658,31 @@ pub struct Store<P: StreamProvider + ?Sized> {
     provider: Arc<P>,
     root: StreamPath,
     composer: Option<Arc<dyn Composer>>,
+    scheduling_shards: std::num::NonZeroU16,
+    /// Each actor state stream whose latest committed custody this owner
+    /// process settled, by that state record's commit. Hot-path accounting:
+    /// settlement is idempotent by contract (`Composition::settle`, in
+    /// `guest/handler.rs`), so re-settling buys no guarantee, yet a cut read
+    /// later cannot know it settled and would pay a head read, an idempotency
+    /// inspection and a participant settle on its next write. This memo
+    /// removes those round trips within one owner; across owners settlement
+    /// stays at least once. At most one entry per actor whose tail is a
+    /// composed record.
+    settled: Arc<std::sync::Mutex<std::collections::HashMap<StreamPath, CommitId>>>,
+}
+
+/// The same store with its whole configuration, so a copy cannot disagree
+/// with the original on its scheduling partitions or composer.
+impl<P: StreamProvider + ?Sized> Clone for Store<P> {
+    fn clone(&self) -> Self {
+        Self {
+            provider: Arc::clone(&self.provider),
+            root: self.root.clone(),
+            composer: self.composer.clone(),
+            scheduling_shards: self.scheduling_shards,
+            settled: Arc::clone(&self.settled),
+        }
+    }
 }
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Retain the caller's admitted provider session. Actor state lives at
@@ -588,6 +692,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             provider,
             root,
             composer: None,
+            scheduling_shards: DEFAULT_SCHEDULING_SHARDS,
+            settled: Arc::default(),
         }
     }
 
@@ -604,32 +710,48 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self.provider
     }
 
-    /// The state root. Its own stream is the activation log: every commit that
-    /// creates actor state appends that actor's address to it.
+    /// The state root. Actor records and stable scheduling shards are children
+    /// of this root; producers never broadcast wake records on its own stream.
     pub const fn root(&self) -> &StreamPath {
         &self.root
     }
 
-    /// The activation-log append that rides in every state-creating commit.
-    /// It is unconditioned, so concurrent creations never contend on it.
-    pub fn activation(&self, actor: &ActorReference) -> CommitEffect {
-        let (path, record) = self.activation_record(actor);
-        acyclic_stream::CommitEffect::hard(
+    /// The activation-log append that rides in every state-creating commit,
+    /// every resume, and every commit that appends an actor's input. It is
+    /// unconditioned, so concurrent creations never contend on it.
+    ///
+    /// Delivery rests on two invariants. First, every input append commits
+    /// with this entry, so a dispatcher replaying its shard from a checkpoint
+    /// finds all input. This pairing is NOT enforced: each producer joins the
+    /// entry itself, and the stream primitive has no subscription trigger
+    /// that would add it. Moving it into the primitive is a tracked
+    /// follow-up. Second, an unpaused actor's undelivered work keeps a
+    /// carried wake through each later checkpoint, so a claim or crash never
+    /// strands it. Only a paused actor's entries pass as finished work, which
+    /// is why [`Self::set_paused`] (and any resume) appends this entry again.
+    pub fn activation(&self, actor: &ActorReference) -> Result<CommitEffect, Error> {
+        let (path, record) = self.activation_record(actor)?;
+        Ok(acyclic_stream::CommitEffect::hard(
             Vec::new(),
             vec![CommitMutation::Append {
                 path,
                 records: vec![record.into()],
             }],
-        )
+        ))
     }
 
     /// Original wake record for composition with a producer's delivery commit.
-    /// Appending input without this record cannot wake a dormant actor.
+    /// Every input append must commit with this record (see
+    /// [`Self::activation`]): input appended without it cannot wake a dormant
+    /// actor. Nothing enforces the pairing yet; each producer joins it.
     pub fn activation_record(
         &self,
         actor: &ActorReference,
-    ) -> (StreamPath, acyclic_stream::OwnedBytes) {
-        (self.root.clone(), actor.encode().into())
+    ) -> Result<(StreamPath, acyclic_stream::OwnedBytes), Error> {
+        Ok((
+            self.scheduling_path(self.scheduling_shard(actor))?,
+            actor.encode().into(),
+        ))
     }
 
     /// The actor's state stream.
@@ -705,7 +827,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let cut = self.load(&parent).await?;
         let mut commit = PreparedPublish::foreign(key.clone());
         commit.join(self.branch(&cut, &child, Branch::unfunded(subscriptions))?)?;
-        commit.join(self.activation(&child))?;
+        commit.join(self.activation(&child)?)?;
         match self.submit(commit).await {
             Ok(()) => {}
             Err(
@@ -756,6 +878,33 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             acyclic_native_runtime::obs::OperationSpan::new,
             async { self.load_path(self.path(actor)?).await }
         )
+    }
+
+    /// Load several actors at one authority snapshot: one request for any count.
+    pub async fn load_all(&self, actors: &[ActorReference]) -> Result<Vec<Snapshot>, Error> {
+        let paths = actors
+            .iter()
+            .map(|actor| self.path(actor))
+            .collect::<Result<acyclic_stream::HeadSet<_>, _>>()?;
+        let request = acyclic_stream::HeadsRequest {
+            retained: Default::default(),
+            durable_through: None,
+            projection: acyclic_stream::HeadProjection::History,
+            limit: u32::try_from(paths.len())
+                .map_err(|_| Error::Invalid("too many actors in one load"))?
+                .max(1),
+            paths,
+            children: None,
+            at_least: Default::default(),
+        };
+        let view = self.provider.heads(request.clone()).await?;
+        view.validate_for(&request)?;
+        request
+            .paths
+            .into_iter()
+            .zip(view.heads)
+            .map(|(path, head)| Snapshot::from_head(path, head))
+            .collect()
     }
 
     async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
@@ -810,6 +959,159 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         paused: Option<bool>,
         key: IdempotencyKey,
     ) -> Result<Snapshot, Error> {
+        self.claim_control(previous, epoch, paused, Vec::new(), key)
+            .await
+    }
+
+    /// Settle the participant of the claimed state's composed publication
+    /// again. Its old owner may have died between that publication and its
+    /// settlement; the new owner's claim fenced the old owner's publications.
+    /// Settlement is therefore at least once across owners and exactly once
+    /// within one, so every composer settles idempotently. A state without
+    /// custody, or one this process settled, costs nothing here.
+    pub(crate) async fn recover_custody(&self, snapshot: &Snapshot) -> Result<(), Error> {
+        match snapshot.unsettled() {
+            Some((path, record)) => self.settle_custody(&path, record).await,
+            None => Ok(()),
+        }
+    }
+
+    /// The settled-custody memory, shared by every clone of this store.
+    fn settled(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<StreamPath, CommitId>> {
+        self.settled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Settle the custody committed by `record` on `path`, unless this owner
+    /// already settled it.
+    async fn settle_custody(
+        &self,
+        path: &StreamPath,
+        record: Option<CommitId>,
+    ) -> Result<(), Error> {
+        if record.is_some() && self.settled().get(path).copied() == record {
+            return Ok(());
+        }
+        self.recover_settlement(path).await?;
+        if let Some(record) = record {
+            self.settled().insert(path.clone(), record);
+        }
+        Ok(())
+    }
+
+    async fn recover_settlement(&self, path: &StreamPath) -> Result<(), Error> {
+        let composer = self
+            .composer
+            .as_ref()
+            .ok_or(Error::Invalid("actor custody has no composer"))?;
+        let intent = record::Intent::decode(
+            &self
+                .provider
+                .head(custody_path(path)?)
+                .await?
+                .last
+                .ok_or(Error::Invalid("actor custody intent is missing"))?
+                .value,
+        )?;
+        let observation = self
+            .provider
+            .inspect_idempotency(intent.key.clone())
+            .await?
+            .ok_or(Error::Invalid(
+                "composed publication outcome is not retained",
+            ))?;
+        let (acyclic_stream::IdempotencyOutcome::Commit(envelope), Some(revision)) =
+            (observation.outcome, observation.revision)
+        else {
+            return Err(Error::Invalid(
+                "composed publication outcome is not a commit",
+            ));
+        };
+        let own = envelope
+            .mutations
+            .iter()
+            .find_map(|mutation| match mutation {
+                acyclic_stream::CommittedMutation::Append(append) if &append.path == path => {
+                    Some(append)
+                }
+                _ => None,
+            })
+            .ok_or(Error::Invalid("composed publication omits actor state"))?;
+        let next = match own.records.as_slice() {
+            [record] => State::decode(&record.value)?
+                .checkpoint
+                .ok_or(Error::Invalid("composed publication has no checkpoint"))?,
+            _ => {
+                return Err(Error::Invalid(
+                    "composed publication changes state record count",
+                ));
+            }
+        };
+        // (path, seq) is immutable; proof: custody_recovery_never_reads_a_replaced_input.
+        let previous = match own.start.checked_sub(1) {
+            Some(sequence) => State::decode(&self.record(path, sequence).await?.value)?.checkpoint,
+            None => None,
+        };
+        let delivered = match &intent.delivered {
+            Some((path, sequence)) => Some(self.record(path, *sequence).await?),
+            None => None,
+        };
+        let appends = envelope
+            .mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, acyclic_stream::CommittedMutation::Append(_)))
+            .count();
+        let receipt = CommitReceipt::project(
+            &envelope,
+            revision,
+            Vec::with_capacity(appends),
+            Vec::with_capacity(envelope.mutations.len() - appends),
+            |_, _| Ok::<(), StreamError>(()),
+        )?;
+        composer
+            .open(
+                &self.actor(path)?,
+                previous.as_ref(),
+                delivered.as_ref(),
+                &next,
+                &intent.participant,
+            )
+            .map_err(Error::Handler)?
+            .settle(Ok(&CommitOutcome::Committed(receipt)))
+            .await
+            .map_err(Error::Handler)
+    }
+
+    /// The one record at `sequence` of `path`.
+    async fn record(&self, path: &StreamPath, sequence: u64) -> Result<Record, Error> {
+        use futures::StreamExt as _;
+        self.provider
+            .read(acyclic_stream::ReadRequest {
+                key: None,
+                path: path.clone(),
+                from: sequence,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await?
+            .next()
+            .await
+            .transpose()?
+            .filter(|record| record.sequence == sequence)
+            .ok_or(Error::Invalid("custody names a missing record"))
+    }
+
+    async fn claim_control(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        paused: Option<bool>,
+        effects: Vec<CommitEffect>,
+        key: IdempotencyKey,
+    ) -> Result<Snapshot, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.claim",
             Error::kind,
@@ -832,7 +1134,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 if let Some(paused) = paused {
                     state.paused = paused;
                 }
-                self.submit_retained(self.prepare(previous, state, Vec::new(), key)?)
+                let mut prepared = self.prepare(previous, state, Vec::new(), key, false)?;
+                for effect in effects {
+                    prepared.join_host(effect)?;
+                }
+                self.submit_retained(prepared)
                     .await?
                     .ok_or(Error::Invalid("claim receipt has no state"))
             }
@@ -860,10 +1166,53 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     .ok_or(Error::Conflict)?
                     .clone();
                 state.paused = paused;
-                self.submit(self.prepare(previous, state, Vec::new(), key)?)
+                self.submit(self.prepare(previous, state, Vec::new(), key, false)?)
                     .await
             }
         )
+    }
+
+    /// Delete the actor at `previous`'s exact cut: one terminal state record
+    /// at its own path, which callers may compose with their own effects
+    /// before submitting. It fences every in-flight claim and publication of
+    /// that cut, keeps the path occupied so the actor is never re-created,
+    /// and carries no input, alarm, checkpoint or funds, so scheduling entries
+    /// that still name it resolve to a no-op. A pending participant's custody
+    /// is settled first, as before every publication.
+    pub fn delete(
+        &self,
+        previous: &Snapshot,
+        key: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        let state = previous
+            .state
+            .as_ref()
+            .ok_or(Error::Invalid("actor state was never created"))?;
+        if state.deleted() {
+            return Err(Error::Deleted);
+        }
+        let deleted = State {
+            epoch: DELETED,
+            placement_branch: state.placement_branch,
+            escrow: None,
+            checkpoint: None,
+            subscriptions: BTreeMap::new(),
+            alarm: Alarm {
+                generation: state
+                    .alarm
+                    .generation
+                    .checked_add(1)
+                    .ok_or(Error::Invalid("alarm generation overflow"))?,
+                deadline_unix_ms: None,
+                delivered_generation: None,
+            },
+            paused: true,
+            metadata: BTreeMap::new(),
+            journal_tail: state.journal_tail,
+            custody: false,
+            consumed: None,
+        };
+        self.prepare(previous, deleted, Vec::new(), key, false)
     }
 
     /// Atomically publish the checkpoint, consumed cursor, alarm and effects.
@@ -944,7 +1293,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let Publication {
             trigger,
             delivered,
-            mut transition,
+            transition,
             key,
         } = publication;
         let named = match trigger {
@@ -956,19 +1305,38 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         {
             return Err(Error::Invalid("delivered record differs from its trigger"));
         }
-        let call = if let Some((path, completion)) = self.invocation_completion(
+        // The call's completion is a host record, joined past the guest check.
+        let (call, completion) = match self.invocation_completion(
             previous,
             trigger,
             delivered,
             transition.response.as_ref().map(Ok),
             &transition.effects,
         )? {
-            transition.effects.extend(completion);
-            Some(path)
-        } else {
-            None
+            Some((path, completion)) => (Some(path), completion),
+            None => (None, Vec::new()),
         };
         let previous_checkpoint = state.checkpoint.take();
+        // A participant's custody intent rides in the publication itself.
+        let intent = match &transition.participant {
+            None => None,
+            Some(participant) => Some(record::Intent {
+                participant: participant.clone(),
+                key: key.clone(),
+                delivered: match (trigger, delivered) {
+                    (Trigger::Record { subscription, .. }, Some(record)) => Some((
+                        state
+                            .subscriptions
+                            .get(subscription)
+                            .ok_or(Error::Invalid("trigger names no subscription"))?
+                            .path
+                            .clone(),
+                        record.sequence,
+                    )),
+                    _ => None,
+                },
+            }),
+        };
         let state = next(state, &previous.path, original_alarm, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
@@ -989,7 +1357,20 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     )?,
             ),
         };
-        let mut prepared = self.prepare(previous, state, transition.effects, key)?;
+        let mut prepared =
+            self.prepare(previous, state, transition.effects, key, intent.is_some())?;
+        for effect in completion {
+            prepared.join_host(effect)?;
+        }
+        if let Some(intent) = intent {
+            prepared.join_host(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Append {
+                    path: custody_path(&previous.path)?,
+                    records: vec![intent.encode().into()],
+                }],
+            ))?;
+        }
         prepared.call = call.map(|call| (call, trigger.clone()));
         prepared.composition = composition;
         Ok(prepared)
@@ -1013,6 +1394,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             Error::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
+                // Committed custody is durable state: every publication from
+                // its cut, a retry by the same owner included, finishes it
+                // first, and a failure leaves it committed for the next one.
+                if let Some((path, record)) = &prepared.unsettled {
+                    self.settle_custody(path, *record).await?;
+                    prepared.unsettled = None;
+                }
                 if !prepared.sealed {
                     if let Some(composition) = &mut prepared.composition {
                         // Compare canonical requests: a participant's own
@@ -1050,12 +1438,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                                 .is_some_and(|owner| {
                                     request.mutations()
                                         .filter(|mutation| {
-                                            disposition::targets_failures(mutation, owner)
+                                            disposition::targets_host_records(mutation, owner)
                                         })
                                         .count()
                                         != original.mutations()
                                             .filter(|mutation| {
-                                                disposition::targets_failures(mutation, owner)
+                                                disposition::targets_host_records(mutation, owner)
                                             })
                                             .count()
                                 })
@@ -1110,9 +1498,19 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     Ok(CommitOutcome::Conflict(conflicts)) if !conflicts.is_empty()
                         && conflicts.iter().all(|conflict| matches!(conflict,
                             acyclic_stream::CommitConflict::Exists { path } if path == call.settled()))));
+                let composed = prepared.composition.is_some();
                 if let Some(composition) = prepared.composition {
                     if let Err(source) = composition.settle(outcome.as_ref()).await {
                         return Err(Error::Settlement { outcome, source });
+                    }
+                }
+                if let (Ok(CommitOutcome::Committed(receipt)), Some(own)) =
+                    (&outcome, &prepared.own)
+                {
+                    if composed {
+                        self.settled().insert(own.clone(), receipt.commit_id);
+                    } else {
+                        self.settled().remove(own);
                     }
                 }
                 if let Some((call, trigger)) = settled {
@@ -1124,19 +1522,30 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         _ => Vec::new(),
                     }));
                 }
+                if let Err(source) = &outcome
+                    && let Some(authority_unix_ms) = source.not_before_authority()
+                {
+                    return Err(Error::AlarmNotDue { authority_unix_ms });
+                }
                 PreparedPublish::settle(&outcome?)?;
                 retained
             }
         )
     }
 
+    /// The one constructor of every state write. Committed custody is
+    /// settled before the write commits (see [`Self::submit_retained`]), so the
+    /// new state holds custody only when this write composes a participant:
+    /// `composed`, never a copy of the previous state's marker.
     fn prepare(
         &self,
         previous: &Snapshot,
-        state: State,
+        mut state: State,
         effects: Vec<CommitEffect>,
         key: IdempotencyKey,
+        composed: bool,
     ) -> Result<PreparedPublish, Error> {
+        state.custody = composed;
         let (own, created) = match previous.anchor {
             Some(commit_id) => (
                 CommitCondition::Head {
@@ -1150,9 +1559,33 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 CommitCondition::Absent {
                     path: previous.path.clone(),
                 },
-                Some(self.activation(&self.actor(&previous.path)?)),
+                Some(self.activation(&self.actor(&previous.path)?)?),
             ),
         };
+        // Arming (or inheriting into an own write) a deadline files the actor
+        // in its shard's deadline window in this same commit, so a restarted host
+        // finds every pending alarm without reading actor states.
+        let armed = state
+            .alarm
+            .pending()
+            .filter(|deadline| {
+                previous.overlaid()
+                    || previous.state().and_then(|state| state.alarm.pending()) != Some(*deadline)
+            })
+            .map(|deadline| self.deadline(&self.actor(&previous.path)?, deadline))
+            .transpose()?;
+        // A resume is the one transition that makes committed input
+        // deliverable after the dispatcher finished it: a paused actor's
+        // activation entries and alarm window pass without a carried wake.
+        // So every resume appends the actor's activation in the same commit;
+        // its in-memory wake dies with the host, and a restart replays this
+        // entry until delivery holds the input. (A claim needs none: an
+        // unpaused actor's undelivered input keeps a carried wake.)
+        let deliverable = (created.is_none()
+            && !state.paused
+            && previous.state().is_some_and(|before| before.paused))
+        .then(|| self.activation(&self.actor(&previous.path)?))
+        .transpose()?;
         let encoded = state.encode();
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
@@ -1161,6 +1594,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             journal: None,
             failure_owner: None,
             composition: None,
+            unsettled: previous.unsettled(),
             sealed: false,
             acknowledgement_unknown: false,
             provenance: previous.provenance.clone(),
@@ -1176,11 +1610,21 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 idempotency_key: key,
             },
         };
-        for effect in created.into_iter().chain(effects) {
+        for effect in created.into_iter().chain(armed).chain(deliverable) {
+            prepared.join_host(effect)?;
+        }
+        for effect in effects {
             prepared.join(effect)?;
         }
         Ok(prepared)
     }
+}
+
+fn custody_path(state: &StreamPath) -> Result<StreamPath, Error> {
+    Ok(StreamPath::new(format!(
+        "{state}/{}",
+        disposition::CUSTODY
+    ))?)
 }
 
 fn covers(ancestor: &StreamPath, path: &StreamPath) -> bool {
@@ -1302,18 +1746,21 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
             *cursor = cursor
                 .checked_add(1)
                 .ok_or(Error::Invalid("subscription cursor overflow"))?;
+            state.consumed = None;
         }
         Trigger::Alarm {
             generation,
             now_unix_ms,
         } => {
-            if original_alarm.generation != *generation
-                || !original_alarm
-                    .pending()
-                    .is_some_and(|deadline| deadline <= *now_unix_ms)
-            {
-                return Err(Error::Conflict);
-            }
+            let deadline = original_alarm
+                .pending()
+                .filter(|deadline| {
+                    original_alarm.generation == *generation && *deadline <= *now_unix_ms
+                })
+                .ok_or(Error::Conflict)?;
+            // The authority decides this commit from the consumed alarm
+            // itself, whatever the handler answers.
+            state.consumed = Some((*generation, deadline));
             // Delivery consumption is distinct from the desired alarm.
             // Keep preserves its generation/deadline without permitting a
             // second successful firing to publish another transition.

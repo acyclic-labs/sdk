@@ -382,7 +382,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         )?),
         Arc::new(SystemClock),
     )
-    .claiming(&actor);
+    .within(&actor);
     let (failures, mut failed) = tokio::sync::mpsc::unbounded_channel();
     let runtime_failures = failures.clone();
     let _runtime = Task(tokio::spawn(async move {
@@ -677,7 +677,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                         }],
                     ),
                     Store::new(provider.clone(), StreamPath::new("harness/actors")?)
-                        .activation(&actor),
+                        .activation(&actor)?,
                 ],
                 idempotency_key: IdempotencyKey::new(key.to_vec())?,
             })
@@ -694,7 +694,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 },
             ),
             activation: Store::new(provider.clone(), StreamPath::new("harness/actors")?)
-                .activation_record(&actor),
+                .activation_record(&actor)?,
         };
         let journal = storage.journal();
         journal

@@ -85,6 +85,9 @@ impl<'de> serde::Deserialize<'de> for StreamError {
     }
 }
 
+/// Status message of [`StreamError::not_before`].
+const NOT_BEFORE: &str = "not_before";
+
 impl StreamError {
     /// Every failure, in canonical code order.
     pub const ALL: [Self; 16] = [
@@ -111,6 +114,45 @@ impl StreamError {
     #[must_use]
     pub fn uncertain(&self) -> bool {
         matches!(self.category(), Self::Unavailable | Self::DeadlineElapsed)
+    }
+
+    /// A definitive `OutOfRange` refusal: the authority's commit-time rule
+    /// had not yet been reached at `authority_unix_millis`, which it carries.
+    #[must_use]
+    pub fn not_before(authority_unix_millis: u64) -> Self {
+        acyclic_auth::refusal::Refusal::capture(
+            11,
+            NOT_BEFORE,
+            &authority_unix_millis.to_be_bytes(),
+            &::http::HeaderMap::new(),
+            acyclic_auth::refusal::Canonical {
+                code: 11,
+                message: "stream sequence out of range",
+                details: b"",
+                owned: &[],
+            },
+            None,
+        )
+        .map_or(Self::OutOfRange, Self::Refused)
+    }
+
+    /// The authority time a [`Self::not_before`] refusal carries.
+    #[must_use]
+    pub fn not_before_authority(&self) -> Option<u64> {
+        let Self::Refused(refusal) = self else {
+            return None;
+        };
+        let parts = refusal.original()?;
+        (parts.code == 11 && parts.message == NOT_BEFORE)
+            .then(|| {
+                parts
+                    .details
+                    .as_ref()
+                    .try_into()
+                    .ok()
+                    .map(u64::from_be_bytes)
+            })
+            .flatten()
     }
 
     /// The typed failure independently of a member's retained diagnostics.

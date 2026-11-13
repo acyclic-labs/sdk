@@ -140,7 +140,7 @@ pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamFailure, LocalStreamLimits,
     deferring_durability, deferring_provider_durability, requiring_durability,
 };
-pub use memory::{MemoryLimits, MemoryStream};
+pub use memory::{CommitAdmission, MemoryLimits, MemoryStream, admit_commit};
 
 /// Maximum opaque record body.
 pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;

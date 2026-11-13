@@ -124,6 +124,10 @@ impl SubscriptionCuts {
 /// Invocation-scoped host input; it contains no deployment credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
+    /// This attempt's host-issued request handle. Host capability calls name
+    /// it, never an actor: only the host's live binding (see `Requests`)
+    /// grants authority, and it closes when the attempt ends.
+    pub request: super::RequestId,
     /// Complete account/namespace/id address.
     pub actor: ActorReference,
     /// Placement fence admitted by the host.
@@ -253,6 +257,10 @@ pub trait Composition: acyclic_stream::ProviderPlatform + 'static {
 
     /// Release or adopt custody from the exact terminal provider outcome or
     /// definite refusal. Uncertain acknowledgements never reach settlement.
+    /// A committed publication's participant is settled at least once: after
+    /// an ownership change the new owner opens the same committed inputs again
+    /// and settles them with the receipt projected from the retained envelope
+    /// (its `skipped` is empty), so settlement must be idempotent.
     fn settle<'a>(
         self: Box<Self>,
         outcome: Result<&'a CommitOutcome, &'a StreamError>,

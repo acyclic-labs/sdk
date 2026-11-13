@@ -127,6 +127,7 @@ async fn alarm_opening_from_overflow_accepts_only_its_selected_input_interrupt()
     assert_eq!(current.phase, crate::agent::Phase::Running);
     assert!(!current.settled);
     let delivery = Delivery {
+        request: acyclic_actors::guest::RequestId::new(1),
         actor: actor.clone(),
         epoch: 1,
         now_unix_ms: 100,

@@ -371,12 +371,14 @@ The journal is opaque persistence: the existing Stream journal engine retains
 all command interpretation. Actor alarms use the existing generation fence and
 are delivered as `GuestEvent.alarm`, without a guest timer.
 
-The local state record is explicitly `AST` version 2, with an invalid-protobuf
-prefix that makes older unversioned decoders refuse it. Its reader rejects
-version 1 and unversioned records rather than interpreting guest metadata as
-host funding. Invocation records likewise require version 2, which binds the
-original caller-owned call journal; version 1 is refused before decoding its
-payload. Fork acceptance identities likewise use version 2: new forks exclude
+The local state record is explicitly `ACS` version 1, with an invalid-protobuf
+prefix that makes older unversioned decoders refuse it. Funding has its own
+host-owned field, so guest metadata is never interpreted as host funding.
+Invocation records are `acyclic.actor.invoke` version 1, which binds the
+original caller-owned call journal; any other version is refused before
+decoding its payload. Stores written with the retired `AST` state and
+`acyclic.actors.invoke` formats are refused whole by the local owner
+generation. Fork acceptance identities likewise use version 2: new forks exclude
 host failure records, and recovery selects only that version's original
 acceptance envelope. Version-1 acceptance identities are not reinterpreted with
 version-2 exclusion rules. There is no migration or old-writer fallback. Adoption

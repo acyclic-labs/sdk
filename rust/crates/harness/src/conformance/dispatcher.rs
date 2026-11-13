@@ -1,7 +1,7 @@
 //! G40: drive the actual discovery loop twice, preserving only backend storage.
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_actors::local::{Error, State};
-use acyclic_harness_core::agent::{ACTORS, AgentHost, AgentPath};
+use acyclic_harness_core::agent::{AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{CommitMutation, StreamError, StreamPath, StreamProvider};
 use futures::TryFutureExt as _;
@@ -62,25 +62,36 @@ pub(super) async fn until(
     }
 }
 
-async fn checkpoint(provider: &Observed, cut: u64) -> Result {
-    // Locate the original dispatcher publication, rather than reconstructing
+async fn checkpoint(provider: &Observed, schedule: &StreamPath, cut: u64) -> Result {
+    // Await the shard's own dispatcher publication, rather than reconstructing
     // its private address or manufacturing its durable state.
     let path = provider
-        .take_commits()
-        .iter()
-        .find_map(cursor_publication)
-        .map(|(path, _)| path.clone())
-        .ok_or("dispatcher state was not published")?;
+        .committed(|request| {
+            request.mutations().find_map(|mutation| match mutation {
+                CommitMutation::Append { path, records } => records
+                    .iter()
+                    .any(|record| {
+                        State::decode(record.value.as_ref()).is_ok_and(|state| {
+                            state
+                                .subscriptions()
+                                .get("activation")
+                                .is_some_and(|activation| &activation.path == schedule)
+                        })
+                    })
+                    .then(|| path.clone()),
+                _ => None,
+            })
+        })
+        .await;
     saved_cursor(provider, path, cut).await
 }
 
 async fn saved_cursor(provider: &Observed, path: StreamPath, cut: u64) -> Result {
     use futures::TryStreamExt as _;
-    let mut changes = acyclic_stream::records_only(
-        provider
-            .follow(acyclic_stream::FollowRequest::new(path, 0))
-            .await?,
-    );
+    // A captured publication may still be in flight to the backend.
+    let mut request = acyclic_stream::FollowRequest::new(path, 0);
+    request.when_absent = acyclic_stream::WhenAbsent::Wait;
+    let mut changes = acyclic_stream::records_only(provider.follow(request).await?);
     while let Some(record) = changes.try_next().await? {
         if State::decode(record.value.as_ref())?
             .cursor("activation")
@@ -102,12 +113,15 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     // No explicit track after restart: only the dispatcher can rediscover it.
     host.send(&agent, &fixtures::sender(), &fixtures::request("before")?)
         .await?;
-    let root = StreamPath::new(ACTORS)?;
+    // The agent's wakes land in its stable scheduling shard, which its
+    // dispatcher checkpoints.
+    let store = host.runtime().store();
+    let schedule = store.scheduling_path(store.scheduling_shard(&host.actor(&agent)?))?;
     let mut cut = 0;
     until(&host, async {
         output(&host, &agent, 0, b"before").await?;
-        cut = provider.tail(root.clone()).await?;
-        checkpoint(&provider, cut).await
+        cut = provider.tail(schedule.clone()).await?;
+        checkpoint(&provider, &schedule, cut).await
     })
     .await?;
     drop(host);
@@ -120,11 +134,11 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
     let follows: Vec<_> = reopened
         .take_follows()
         .into_iter()
-        .filter(|(path, _)| path == &root)
+        .filter(|(path, _)| path == &schedule)
         .collect();
     // Checkpoints coalesce, so the restart cursor may trail the cut, but it
-    // never replays from the log's opening record.
-    if !matches!(follows.as_slice(), [(path, from)] if *path == root && (1..=cut).contains(from)) {
+    // never replays from the shard's opening record.
+    if !matches!(follows.as_slice(), [(_, from)] if (1..=cut).contains(from)) {
         return Err(format!(
             "restart replayed activation history instead of its checkpoint: {follows:?}"
         )
@@ -157,8 +171,7 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
         else {
             return Err(format!("cursor crash lost its original publication: {error}").into());
         };
-        let failed = publication.request().clone();
-        let (path, cut) = cursor_publication(&failed)
+        let (path, cut) = cursor_publication(publication.request().mutations())
             .ok_or("cursor crash did not retain its original dispatcher publication")?;
         drop(host);
         drop(provider);
@@ -169,15 +182,9 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
             saved_cursor(&reopened, path.clone(), cut).await
         })
         .await?;
-        if matches!(fault, Fault::Before)
-            && reopened
-                .take_commits()
-                .iter()
-                .find(|request| cursor_advance(request))
-                != Some(&failed)
-        {
-            return Err("uncommitted cursor did not retry its exact request/key".into());
-        }
+        // A restarted owner recomputes its shard checkpoint, which coalesces
+        // at its own idle points. Each candidate is conditioned on the same
+        // dispatcher head and keyed by its cursor, so at most one lands.
         if vectors::outputs(&*reopened, &agent).await? != [b"once".to_vec()] {
             return Err("cursor crash duplicated delivery".into());
         }
@@ -186,11 +193,13 @@ async fn cursor_crashes(backend: &dyn Backend) -> Result {
 }
 
 fn cursor_advance(request: &acyclic_stream::CommitRequest) -> bool {
-    cursor_publication(request).is_some_and(|(_, cursor)| cursor > 0)
+    cursor_publication(request.mutations()).is_some_and(|(_, cursor)| cursor > 0)
 }
 
-fn cursor_publication(request: &acyclic_stream::CommitRequest) -> Option<(&StreamPath, u64)> {
-    request.mutations().find_map(|mutation| match mutation {
+fn cursor_publication<'a>(
+    mut mutations: impl Iterator<Item = &'a CommitMutation>,
+) -> Option<(&'a StreamPath, u64)> {
+    mutations.find_map(|mutation| match mutation {
         CommitMutation::Append { path, records } => records.iter().find_map(|record| {
             State::decode(record.value.as_ref())
                 .ok()?

@@ -87,6 +87,8 @@ struct DeliveryWire {
     state_commit: Bytes,
     #[prost(string, tag = "10")]
     state_path: String,
+    #[prost(uint64, tag = "11")]
+    request: u64,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -359,6 +361,7 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
 pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> Vec<u8> {
     encode(
         &DeliveryWire {
+            request: delivery.request.get(),
             actor: delivery.actor.encode().into(),
             epoch: delivery.epoch,
             now_unix_ms: delivery.now_unix_ms,
@@ -440,6 +443,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
         },
     };
     let delivery = Delivery {
+        request: super::RequestId::new(wire.request),
         actor: ActorReference::decode(&wire.actor).map_err(|_| invalid("actor"))?,
         epoch: wire.epoch,
         trigger,
@@ -748,6 +752,7 @@ mod tests {
     #[test]
     fn delivery_round_trips_and_refuses_unknown_fields() -> Result<(), Box<dyn std::error::Error>> {
         let delivery = Delivery {
+            request: crate::guest::RequestId::new(1),
             actor: ActorReference::new(b"account", b"namespace", b"actor")?,
             epoch: 2,
             trigger: Trigger::Alarm {
@@ -789,6 +794,7 @@ mod tests {
     #[test]
     fn delivery_refuses_ambiguous_subscription_cuts() -> Result<(), Box<dyn std::error::Error>> {
         let delivery = Delivery {
+            request: crate::guest::RequestId::new(1),
             actor: ActorReference::new(b"account", b"namespace", b"actor")?,
             epoch: 2,
             trigger: Trigger::Alarm {

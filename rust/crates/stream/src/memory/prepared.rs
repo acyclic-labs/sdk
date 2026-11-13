@@ -445,10 +445,7 @@ impl PreparedCommit {
             }
             let bytes = body.payload_bytes();
             let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-            let time = crate::preparation::committed_time(
-                state.last_committed_at_micros,
-                self.provider.commit_clock.now_unix_millis(),
-            );
+            let time = self.provider.admitted_time(&state, [&body])?;
             let id = commit_identity(decision, digest);
             bind_body(&mut self.plan, body)?;
             for history in &mut self.plan.histories {

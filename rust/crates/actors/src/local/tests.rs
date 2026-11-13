@@ -54,7 +54,11 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
     {
         use prost::Message as _;
         use sha2::Digest as _;
-        for format in [b"acyclic.actors.fork.v1\0", b"acyclic.actors.fork.v2\0"] {
+        for format in [
+            &b"acyclic.actors.fork.v1\0"[..],
+            b"acyclic.actors.fork.v2\0",
+            b"acyclic.actors.fork.v3\0",
+        ] {
             let mut old = sha2::Sha256::new();
             old.update(format);
             old.update(store.path(&child)?.as_str().as_bytes());
@@ -136,7 +140,7 @@ async fn forked_prepared_publication_retains_original_provenance() -> TestResult
     let parent_cut = store.load(&parent).await?;
     let mut publication = PreparedPublish::foreign(key("fork")?);
     publication.join(store.branch(&parent_cut, &child, Branch::unfunded(inbox(&child)?))?)?;
-    publication.join(store.activation(&child))?;
+    publication.join(store.activation(&child)?)?;
     store.submit(publication).await?;
     let forked = store.load(&child).await?;
     let original = forked.provenance().cloned().ok_or("missing fork origin")?;
@@ -253,12 +257,12 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
     result.response = Some(Bytes::new());
     // Mutate the original accepted record's version. Unsupported formats must
     // fail before either success or failure can consume input or mint a caller.
-    for version in [b"0", b"1", b"3"] {
+    for version in [b"0", b"2", b"3"] {
         let mut obsolete = ticket.record().clone();
         obsolete.headers = acyclic_stream::RecordHeaders::new(
             obsolete.headers.keys().to_vec(),
             vec![acyclic_stream::Attribute {
-                name: "acyclic.actors.invoke".into(),
+                name: "acyclic.actor.invoke".into(),
                 value: Bytes::copy_from_slice(version).into(),
             }],
         )?;
@@ -376,12 +380,12 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
         result.clone(),
         key("invoked/publish")?,
     )?;
-    let original_request = publication.request().clone();
+    let original_request = publication.request.clone();
     assert!(matches!(
         publication.join(reply_fork),
         Err(Error::Invalid("effect changes the host's invocation reply"))
     ));
-    assert_eq!(publication.request(), &original_request);
+    assert_eq!(publication.request, original_request);
     store.submit(publication).await?;
     // Lost reply and acknowledgement: replay the same original publication,
     // then reopen the Store and retry the public operation identity.
@@ -837,7 +841,7 @@ async fn place<P: StreamProvider + ?Sized>(
                 escrow: None,
             },
         )?,
-        store.activation(address),
+        store.activation(address)?,
     ] {
         prepared.join(effect)?;
     }
@@ -1223,7 +1227,8 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let initial = store.load(&address).await?;
         let journal = StreamPath::new(format!("{}/journal", initial.path()))?;
         let initial_tail = initial.tail;
-        let wake_from = provider.tail(store.root().clone()).await?;
+        let wakes_path = store.activation_record(&address)?.0;
+        let wake_from = provider.tail(wakes_path.clone()).await?;
         let mut binding = store.bind_state(initial, 1)?;
         assert_eq!(binding.seed()?.journal_tail, "0");
         binding.transaction(|state| {
@@ -1282,10 +1287,10 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let confirmed = binding.finish()?;
         assert_eq!(confirmed.tail, initial_tail + 1);
         assert_eq!(confirmed.state().ok_or("missing state")?.journal_tail(), 2);
-        assert_eq!(provider.tail(store.root().clone()).await?, wake_from + 1);
+        assert_eq!(provider.tail(wakes_path.clone()).await?, wake_from + 1);
         let mut wakes = provider
             .read(ReadRequest {
-                path: store.root().clone(),
+                path: wakes_path,
                 from: wake_from,
                 limit: 1,
                 key: None,
@@ -1412,6 +1417,8 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
         paused: false,
         metadata: BTreeMap::new(),
         journal_tail: 0,
+        custody: false,
+        consumed: None,
     };
     let add = |id: &str, path: &StreamPath, from| SubscriptionChange::Add {
         id: id.into(),
@@ -1454,4 +1461,95 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
         assert!(matches!(turn(vec![refused]), Err(Error::Invalid(_))));
     }
     Ok(())
+}
+
+/// The composed orphan-free oracle. Every scheduling entry (an activation or a
+/// deadline-window record) and every participant custody intent names its
+/// owner by itself, and that owner is a live actor; each intent's publication
+/// is reachable by its own key. Resolving an owner never scans the state
+/// root. Returns the orphaned entries.
+pub(super) async fn orphans<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    custodians: &[ActorReference],
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let provider = store.provider();
+    let mut scheduled = Vec::new();
+    for shard in 0..store.scheduling_shards() {
+        let log = store.scheduling_path(shard)?;
+        scheduled.push(log.clone());
+        let mut after = None;
+        loop {
+            let page = match provider
+                .children_page(acyclic_stream::ChildrenPageRequest {
+                    tail_stream: None,
+                    parent: Some(log.clone()),
+                    after,
+                    hierarchy_version: None,
+                    limit: 64,
+                })
+                .await
+            {
+                Ok(page) => page,
+                Err(error) if error.category() == StreamError::NotFound => break,
+                Err(error) => return Err(error.into()),
+            };
+            scheduled.extend(page.children.into_iter().map(|child| child.path));
+            after = page.next_after;
+            if after.is_none() {
+                break;
+            }
+        }
+    }
+    let mut orphans = Vec::new();
+    for path in scheduled {
+        for (sequence, value) in values(&**provider, &path).await?.into_iter().enumerate() {
+            let live = match ActorReference::decode(&value) {
+                Ok(actor) => store.load(&actor).await?.state().is_some(),
+                Err(_) => false,
+            };
+            if !live {
+                orphans.push(format!("{path}@{sequence}"));
+            }
+        }
+    }
+    for actor in custodians {
+        let path = custody_path(&store.path(actor)?)?;
+        let live = store.load(actor).await?.state().is_some();
+        for (sequence, value) in values(&**provider, &path).await?.into_iter().enumerate() {
+            let applied = matches!(
+                provider
+                    .inspect_idempotency(record::Intent::decode(&value)?.key)
+                    .await?
+                    .map(|inspection| inspection.outcome),
+                Some(acyclic_stream::IdempotencyOutcome::Commit(_))
+            );
+            if !(live && applied) {
+                orphans.push(format!("{path}@{sequence}"));
+            }
+        }
+    }
+    Ok(orphans)
+}
+
+async fn values<P: StreamProvider + ?Sized>(
+    provider: &P,
+    path: &StreamPath,
+) -> Result<Vec<Bytes>, Box<dyn std::error::Error>> {
+    let tail = match provider.tail(path.clone()).await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(provider
+        .read(ReadRequest {
+            key: None,
+            path: path.clone(),
+            from: 0,
+            limit: u32::try_from(tail)?.max(1),
+            at_least: Default::default(),
+        })
+        .await?
+        .map_ok(|record| Bytes::copy_from_slice(record.value.as_ref()))
+        .try_collect()
+        .await?)
 }

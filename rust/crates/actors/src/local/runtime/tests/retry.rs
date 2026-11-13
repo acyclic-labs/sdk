@@ -279,7 +279,7 @@ async fn guarded_store() -> Result<(Store<MemoryStream>, ActorReference), Box<dy
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         held.join(effect)?;
     }
@@ -372,6 +372,115 @@ async fn guard_refusals_distinguish_unchanged_observations_from_source_changes()
     Ok(())
 }
 
+type Admission = Result<(ActorReference, u64), crate::guest::GuestError>;
+
+/// Records each `on_record` handle, and from `on_failure` calls through both
+/// that earlier handle, as a task the handler left running would, and its own.
+struct Rebinds {
+    joined: Joined,
+    requests: OnceLock<crate::guest::Requests>,
+    handled: std::sync::Mutex<Option<crate::guest::RequestId>>,
+    failures: std::sync::Mutex<Vec<(Option<Admission>, Admission)>>,
+}
+
+impl Handler for Rebinds {
+    fn manifest(&self) -> &Manifest {
+        self.joined.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        *self
+            .handled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(delivery.request);
+        self.joined.on_record(delivery, checkpoint, cancellation)
+    }
+
+    fn on_failure<'a>(
+        &'a self,
+        delivery: Delivery,
+        _checkpoint: Option<&'a Checkpoint>,
+        _failure: String,
+    ) -> GuestFuture<'a, Option<Transition>> {
+        Box::pin(async move {
+            let requests = self
+                .requests
+                .get()
+                .ok_or_else(|| crate::guest::GuestError::Handler("unbound".into()))?;
+            let escaped = *self
+                .handled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((
+                    escaped.map(|request| requests.admit(request)),
+                    requests.admit(delivery.request),
+                ));
+            Ok(None)
+        })
+    }
+}
+
+/// A capability binding lives for exactly one handler invocation. After
+/// `on_record` ends, a task still holding its handle is refused as revoked
+/// through failure handling, while `on_failure` calls on its own binding.
+/// Negative control: reusing the `on_record` binding for `on_failure` left
+/// the escaped handle live.
+#[tokio::test]
+async fn each_handler_invocation_gets_its_own_capability_binding() -> TestResult {
+    let (store, address) = guarded_store().await?;
+    let provider = store.provider();
+    let handler = Arc::new(Rebinds {
+        joined: Joined(Package::new()?),
+        requests: OnceLock::new(),
+        handled: std::sync::Mutex::new(None),
+        failures: std::sync::Mutex::new(Vec::new()),
+    });
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(provider), root()?).with_composer(Arc::new(Guard {
+            refusal: Refusal::StaleGuard,
+            seals: Arc::new(AtomicUsize::new(0)),
+            path: StreamPath::new("guard")?,
+            provider: Arc::clone(provider),
+        })),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    handler
+        .requests
+        .set(runtime.requests().clone())
+        .map_err(|_| "requests were already bound")?;
+    let mut serving = Box::pin(runtime.run(|_, _| {}));
+    let completed = observe_while_running(serving.as_mut(), async {
+        Ok::<_, Box<dyn std::error::Error>>(runtime.complete().await)
+    })
+    .await?;
+    assert!(completed.is_err(), "{completed:?}");
+    let failures = handler
+        .failures
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(!failures.is_empty());
+    for (escaped, own) in failures.iter() {
+        assert!(
+            matches!(escaped, Some(Err(crate::guest::GuestError::Revoked))),
+            "{escaped:?}"
+        );
+        assert!(
+            matches!(own, Ok((actor, _)) if actor == &address),
+            "{own:?}"
+        );
+    }
+    Ok(())
+}
+
 /// An ordinary failed record stays unconsumed, while the next explicit attempt
 /// gives another ready subscription its turn through the same public runtime.
 #[tokio::test]
@@ -411,7 +520,7 @@ async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResu
                 escrow: None,
             },
         )?,
-        store.activation(&address),
+        store.activation(&address)?,
     ] {
         create.join(effect)?;
     }

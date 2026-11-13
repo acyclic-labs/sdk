@@ -14,6 +14,9 @@ pub struct MemoryStream {
     clock: Arc<dyn UnixMillisClock>,
     /// Clock whose sampled commit time is recorded in each new record.
     commit_clock: Arc<dyn UnixMillisClock>,
+    /// Optional authority-side acceptance rule, decided at every write's time.
+    /// Shared by every clone of this ledger, so a wrapper installs it once.
+    admission: Arc<std::sync::OnceLock<Arc<dyn CommitAdmission>>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) work: Option<Arc<Work>>,
     #[cfg(loom)]
@@ -60,11 +63,52 @@ impl MemoryStream {
             limits,
             clock,
             commit_clock,
+            admission: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
             #[cfg(loom)]
             retain_pending_read: false,
         }
+    }
+    /// Installs this ledger's authority-side time rule. Every new write, an
+    /// append, commit or prepared publication alike, is decided by
+    /// [`admit_commit`] with its own authority time before anything is
+    /// reserved. Replays never re-run it. A ledger has at
+    /// most one rule: installing that same rule again, as every opener of a
+    /// shared ledger does, is a no-op; a different rule is `AlreadyExists`.
+    pub fn install_commit_admission(
+        &self,
+        admission: Arc<dyn CommitAdmission>,
+    ) -> Result<(), StreamError> {
+        self.admission
+            .set(admission)
+            .or_else(|admission| match self.admission.get() {
+                Some(installed) if Arc::ptr_eq(installed, &admission) => Ok(()),
+                _ => Err(StreamError::AlreadyExists),
+            })
+    }
+
+    /// The time of this ledger's next commit, in micros, writing `records`:
+    /// monotonic across the ledger and decided by the installed rule. It is
+    /// the only source of a new commit's time, so no write path can stamp a
+    /// record the rule has not admitted.
+    fn admitted_time<'a>(
+        &self,
+        state: &State,
+        records: impl IntoIterator<Item = &'a AppendRecord>,
+    ) -> Result<u64, StreamError> {
+        let time = crate::preparation::committed_time(
+            state.last_committed_at_micros,
+            self.commit_clock.now_unix_millis(),
+        );
+        if let Some(rule) = self.admission.get() {
+            admit_commit(
+                rule.as_ref(),
+                records.into_iter().map(|record| record.value.as_ref()),
+                time / 1_000,
+            )?;
+        }
+        Ok(time)
     }
     /// Rebinds to an externally owned authority: replicas replaying one shared
     /// journal in one order, or a store whose incarnation outlives a process,
@@ -100,5 +144,34 @@ impl MemoryStream {
 impl MemoryStream {
     pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
         self.state.write().await
+    }
+}
+
+/// An authority-side time rule over written records: the earliest authority
+/// time, in Unix milliseconds, at which a record value may be committed. It
+/// reads only the value, so it holds on every write path alike; writes carry
+/// no time field for it.
+pub trait CommitAdmission: Send + Sync + 'static {
+    /// The earliest acceptance time of a record `value`, or `None` for any time.
+    fn not_before(&self, value: &[u8]) -> Option<u64>;
+}
+
+/// The one acceptance comparison of a [`CommitAdmission`] rule: a write of
+/// `values` is accepted only once the authority's own time reaches every
+/// value's not-before time, else it is refused with [`StreamError::not_before`]
+/// carrying that authority time. Every provider write path and every external
+/// authority decides with this function.
+pub fn admit_commit<'a>(
+    rule: &dyn CommitAdmission,
+    values: impl IntoIterator<Item = &'a [u8]>,
+    authority_unix_millis: u64,
+) -> Result<(), StreamError> {
+    if values.into_iter().any(|value| {
+        rule.not_before(value)
+            .is_some_and(|due| authority_unix_millis < due)
+    }) {
+        Err(StreamError::not_before(authority_unix_millis))
+    } else {
+        Ok(())
     }
 }

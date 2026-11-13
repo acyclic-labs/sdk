@@ -10,27 +10,63 @@ use prost::Message as _;
 // A forbidden protobuf wire type prevents an unversioned decoder accepting it.
 const FORMAT_V1: &[u8] = b"\xffAFD\x01";
 const DIRECTORY: &str = ".failures";
+/// The leading character of every runtime namespace under a state root.
+pub(super) const RUNTIME: char = '_';
+/// The actor's participant custody stream: one intent per composed publication.
+pub(super) const CUSTODY: &str = "custody";
 
+/// The one reservation check at the effect boundary: whether `mutation`
+/// writes a runtime-owned stream, either the actor `owner`'s control records
+/// or any runtime namespace of its state root (every root child named with a
+/// leading `_`: deadline windows, dispatcher checkpoints, sockets). No actor
+/// path can be one, since an encoded actor component starts with `%`. The
+/// sole exception is an append to a shard's activation log itself: every
+/// producer's wake entry, a hint the dispatcher ignores when malformed.
 /// A fork replaces its destination subtree; appends write one exact stream.
 /// Compare borrowed components so admission adds no allocation or provider IO.
-pub(super) fn targets_failures(mutation: &CommitMutation, owner: &StreamPath) -> bool {
+pub(super) fn targets_host_records(mutation: &CommitMutation, owner: &StreamPath) -> bool {
     let path = mutation.path();
     if matches!(mutation, CommitMutation::Fork { .. }) && super::covers(path, owner) {
         return true;
     }
-    path.as_str()
+    if let Some((root, _)) = owner.as_str().rsplit_once('/')
+        && path
+            .as_str()
+            .strip_prefix(root)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .is_some_and(|name| {
+                name.starts_with(RUNTIME)
+                    && !(matches!(mutation, CommitMutation::Append { .. })
+                        && super::scheduling::wake_log(name))
+            })
+    {
+        return true;
+    }
+    let relative = path
+        .as_str()
         .strip_prefix(owner.as_str())
-        .and_then(|suffix| suffix.strip_prefix('/'))
-        .and_then(|suffix| suffix.strip_prefix(DIRECTORY))
-        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+        .and_then(|suffix| suffix.strip_prefix('/'));
+    [DIRECTORY, CUSTODY, "placement"]
+        .into_iter()
+        .any(|reserved| {
+            relative
+                .and_then(|suffix| suffix.strip_prefix(reserved))
+                .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+        })
 }
 
 pub(super) fn fork_exclusions() -> Result<Vec<acyclic_stream::RelativePath>, Error> {
-    Ok(vec![acyclic_stream::RelativePath::new(DIRECTORY)?])
+    Ok(vec![
+        acyclic_stream::RelativePath::new(DIRECTORY)?,
+        acyclic_stream::RelativePath::new(CUSTODY)?,
+        acyclic_stream::RelativePath::new("placement")?,
+    ])
 }
 
 pub(super) fn is_fork_exclusion(exclude: &[acyclic_stream::RelativePath]) -> bool {
-    matches!(exclude, [path] if path.as_str() == DIRECTORY)
+    matches!(exclude, [failure, custody, placement]
+        if failure.as_str() == DIRECTORY && custody.as_str() == CUSTODY
+            && placement.as_str() == "placement")
 }
 
 fn status_path(path: &StreamPath) -> Result<StreamPath, Error> {
@@ -305,7 +341,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             }),
             resolution: 0,
         });
-        let mut prepared = self.prepare(previous, state, Vec::new(), key)?;
+        let mut prepared = self.prepare(previous, state, Vec::new(), key, false)?;
         for effect in [
             acyclic_stream::CommitEffect::hard(
                 vec![CommitCondition::Absent {
@@ -402,7 +438,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     }],
                 }],
             ))?;
-            prepared.join(self.activation(actor))?;
+            prepared.join_host(self.activation(actor)?)?;
         }
         Ok(prepared)
     }

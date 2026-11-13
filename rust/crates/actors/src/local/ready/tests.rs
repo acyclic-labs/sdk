@@ -1,4 +1,12 @@
 use super::*;
+#[cfg(not(loom))]
+mod consumers;
+#[cfg(not(loom))]
+mod ownership;
+#[cfg(not(loom))]
+mod reads;
+#[cfg(not(loom))]
+mod scaling;
 
 fn alarm(
     generation: u64,
@@ -20,9 +28,6 @@ fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
     let first = set.register(1)?;
     let second = set.register(2)?;
     let third = set.register(3)?;
-    while let Some(work) = set.take() {
-        drop(work);
-    }
     first.update_alarm(&alarm(1, Some(20), None))?;
     second.update_alarm(&alarm(1, Some(30), None))?;
     third.update_alarm(&alarm(1, Some(40), None))?;
@@ -108,7 +113,6 @@ fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), su
     }
     let set = ReadySet::default();
     let registration = set.register(7_u64)?;
-    drop(set.take());
     let signal = Arc::new(Signal {
         core: Arc::clone(&set.core),
         wakes: AtomicUsize::new(0),
@@ -192,7 +196,6 @@ fn unchanged_alarm_keeps_the_waiter_but_popped_or_suspended_alarm_reinstalls()
     }
     let set = ReadySet::default();
     let registration = set.register(7_u64)?;
-    drop(set.take());
     let committed = alarm(1, Some(100), None);
     registration.update_alarm(&committed)?;
     let signal = Arc::new(Signal(AtomicUsize::new(0)));
@@ -242,10 +245,6 @@ fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries()
     for id in 0..100_000 {
         registrations.push(set.register(id)?);
     }
-    assert_eq!(set.counts(), (100_000, 100_000));
-    while let Some(work) = set.take() {
-        drop(work);
-    }
     assert_eq!(set.counts(), (100_000, 0));
     for registration in &registrations {
         registration.waker().wake();
@@ -271,7 +270,7 @@ mod schedules {
             let set = ReadySet::default();
             let registration = set.register(7).unwrap();
             let wake = registration.waker();
-            assert_eq!(set.counts(), (1, 1));
+            assert_eq!(set.counts(), (1, 0));
             wake.wake_by_ref();
             wake.wake_by_ref();
             assert_eq!(set.counts(), (1, 1), "queued wakes must coalesce");
@@ -294,9 +293,9 @@ mod schedules {
         loom::model(|| {
             let set = ReadySet::default();
             let old = set.register(1).unwrap();
-            drop(set.take());
             let stale = old.waker();
             let current = set.register(2).unwrap();
+            current.waker().wake();
             let wake = stale.clone();
             let writer = thread::spawn(move || wake.wake());
             let cancel = thread::spawn(move || drop(old));
@@ -321,6 +320,7 @@ mod schedules {
         loom::model(|| {
             let set = Arc::new(ReadySet::default());
             let registration = set.register(7).unwrap();
+            registration.waker().wake();
             let work = set.take().unwrap();
             registration
                 .update_alarm(&alarm(1, Some(10), None))
@@ -397,7 +397,6 @@ mod schedules {
         loom::model(|| {
             let set = ReadySet::default();
             let registration = set.register(7).unwrap();
-            drop(set.take());
             registration
                 .update_alarm(&alarm(1, Some(100), None))
                 .unwrap();
@@ -439,7 +438,6 @@ mod schedules {
         loom::model(|| {
             let set = ReadySet::default();
             let registration = set.register(1).unwrap();
-            drop(set.take());
             let wake = registration.waker();
             let counter = Arc::new(Counter(AtomicUsize::new(0)));
             let consumer_counter = Arc::clone(&counter);
@@ -460,4 +458,24 @@ mod schedules {
             drop(registration);
         });
     }
+}
+
+/// A parked alarm holds only its own group's watermark: one shard's alarm
+/// that this host never hosts again cannot hold another shard's checkpoint.
+#[cfg(not(loom))]
+#[test]
+fn a_parked_alarm_holds_only_its_own_groups_watermark() -> Result<(), super::super::Error> {
+    let set = ReadySet::grouped(|key: &u64| u16::try_from(*key % 2).unwrap_or(0));
+    set.dispatch();
+    let held = set.register(1)?;
+    held.update_alarm(&alarm(1, Some(70_000), None))?;
+    drop(held);
+    let now = 250_000;
+    assert_eq!(
+        set.watermark(1, now),
+        1,
+        "the parked alarm holds its window"
+    );
+    assert_eq!(set.watermark(0, now), 4, "another group passes it");
+    Ok(())
 }

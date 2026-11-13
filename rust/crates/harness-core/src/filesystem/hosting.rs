@@ -446,6 +446,13 @@ where
         self.handler.clone()
     }
 
+    /// The composer this binding's agents commit custody with. Any later host
+    /// of those agents needs it to settle that custody.
+    #[must_use]
+    pub fn composer(&self) -> Arc<dyn acyclic_actors::guest::Composer> {
+        self.composer.clone()
+    }
+
     /// The admission every agent of this binding derives its scope from, for
     /// its turns ([`super::FilesystemTurnHost`]) and spawns
     /// ([`super::FilesystemSpawnVolumes`]).

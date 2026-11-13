@@ -42,6 +42,14 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         }
     }
 
+    /// Serve under an external placement owner: this host never issues its
+    /// own placement command, and admits only through [`Self::place`].
+    #[must_use]
+    pub fn with_external_placement(mut self) -> Self {
+        self.runtime = self.runtime.with_external_placement();
+        self
+    }
+
     /// The exact actor admitted by the platform that opened this host.
     pub const fn actor(&self) -> &ActorReference {
         &self.actor
@@ -55,6 +63,13 @@ impl<P: StreamProvider + ?Sized> Host<P> {
     /// The original host clock, also used for alarm delivery.
     pub fn clock(&self) -> &dyn Clock {
         &*self.clock
+    }
+
+    /// Admit this event host through the actor's explicit placement command.
+    /// Wakes never claim ownership on their own. The placement owner supplies
+    /// the actor-local command index and retains it through retries.
+    pub async fn place(&self, index: u64) -> Result<(), Error> {
+        self.runtime.place(self.actor.clone(), index).await
     }
 
     /// Commit a pause/resume fence without waiting for an active event.
