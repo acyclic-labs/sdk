@@ -22,6 +22,19 @@ impl<
             return Err(LazyWorkspaceError::NotDirectory);
         }
         let cut = self.snapshot(ctx).await?;
+        // A completed source subtree is already represented by the authored
+        // generation. Its later authored edits are there too; walking it again
+        // cannot discover another visible source entry in this epoch.
+        if self
+            .saved_source_subtree(cut.overlay, cut.source, root, ctx)
+            .await?
+        {
+            return accounted!(ctx, |work, cancel| self.workspace.generation(
+                cut.authored_generation,
+                work,
+                cancel
+            ));
+        }
         let observation = match self.overlay_fact(cut.overlay, root, ctx).await? {
             Some(LazyOverlayChange::Observe { source, node, .. }) if source == cut.source => {
                 Some((source, node))
