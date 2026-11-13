@@ -5,6 +5,86 @@ mod headers;
 mod heads;
 mod reads;
 
+/// A release outside the guard's footprint must be harmless; recreating a
+/// declared read with the same tail must still invalidate its observation.
+#[tokio::test]
+async fn guarded_commits_observe_only_their_own_lease_incarnations()
+-> Result<(), Box<dyn std::error::Error>> {
+    for local in [false, true] {
+        for observed in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let provider: Arc<dyn crate::NativeStreamProvider> = if local {
+                Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
+            } else {
+                Arc::new(MemoryStream::default())
+            };
+            provider
+                .commit(plain_append(StreamPath::new("lease-cut")?))
+                .await?;
+            let root = StreamPath::new("lease-cut/private")?;
+            let lease = provider.lease_ephemeral(root.clone()).await?;
+            provider.commit(plain_append(root.clone())).await?;
+            let held = Arc::new(std::sync::Mutex::new(Some(lease)));
+            let request = plain_append(StreamPath::new("lease-cut/target")?);
+            let key = request.idempotency_key.clone();
+            let reads = if observed {
+                vec![root.clone()]
+            } else {
+                Vec::new()
+            };
+            let meter = Arc::new(Meter::local());
+            let result = provider
+                .native_commit_reading_with_guard(request, reads, None, meter.original(), {
+                    let provider = Arc::clone(&provider);
+                    let held = Arc::clone(&held);
+                    move || {
+                        let provider = Arc::clone(&provider);
+                        let held = Arc::clone(&held);
+                        let root = root.clone();
+                        async move {
+                            let lease = held.lock().unwrap().take().unwrap();
+                            lease.settle().await.map_err(NativeGuardFailure::Provider)?;
+                            let replacement = provider
+                                .lease_ephemeral(root.clone())
+                                .await
+                                .map_err(NativeGuardFailure::Provider)?;
+                            provider
+                                .commit(plain_append(root.clone()))
+                                .await
+                                .map_err(NativeGuardFailure::Provider)?;
+                            assert_eq!(
+                                provider
+                                    .tail(root)
+                                    .await
+                                    .map_err(NativeGuardFailure::Provider)?,
+                                1
+                            );
+                            *held.lock().unwrap() = Some(replacement);
+                            Ok::<(), NativeGuardFailure>(())
+                        }
+                    }
+                })
+                .await?;
+            if observed {
+                // Negative control: unchanged tails do not imply the same lease.
+                assert!(matches!(
+                    result,
+                    Err(NativeGuardFailure::Provider(StreamError::PrefixNotRetained))
+                ));
+                assert!(provider.inspect_idempotency(key).await?.is_none());
+            } else {
+                assert!(matches!(result?.value(), CommitOutcome::Committed(_)));
+            }
+            let lease = held.lock().unwrap().take().unwrap();
+            lease.settle().await?;
+            drop(provider);
+            meter.assert_refunded();
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_work()
 -> Result<(), Box<dyn std::error::Error>> {

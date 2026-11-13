@@ -21,8 +21,6 @@ struct Ephemeral {
     owned: std::collections::BTreeMap<StreamPath, StreamPath>,
     /// Lease and ephemeral commit identities issued by this incarnation.
     issued: u64,
-    /// Releases so far: a guard cut moves whenever a subtree may have vanished.
-    released: u64,
 }
 
 struct EphemeralRoot {
@@ -382,7 +380,6 @@ impl MemoryStream {
             .roots
             .remove(root)
             .ok_or(StreamError::Unavailable)?;
-        state.ephemeral.released = state.ephemeral.released.wrapping_add(1);
         state.record_count = state.record_count.saturating_sub(held.records);
         state.payload_bytes = state.payload_bytes.saturating_sub(held.payload_bytes);
         let mut next = state.paths.clone();
