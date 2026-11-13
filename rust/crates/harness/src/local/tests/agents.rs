@@ -1319,22 +1319,35 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         )
         .is_err()
     );
-    // A path cannot bypass the original private grant or its internal boundary.
+    // Internal storage is a separate workspace and cannot be selected through
+    // an authored-directory projection, regardless of its path names.
+    let internal = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Internal)
+        .ok_or_else(|| Error::NotFound("internal workspace".into()))?;
     assert!(
-        client
-            .directory_page(".system", None, page(None)?)
+        connection
+            .execute(&AgentCommand::Directory {
+                agent: root.clone(),
+                target: crate::conversation::DirectoryTarget::Workspace { id: internal.id },
+                path: String::new(),
+                generation: None,
+                after_generation: None,
+                page: page(None)?,
+            })
             .await
-            .is_err()
+            .is_err(),
+        "an internal workspace was exposed by an authored-directory selector"
     );
+    // An authorized directory that has not been authored is an empty page at
+    // the selected cut; its name does not grant access to another workspace.
+    let absent = client.directory_page(".system", None, page(None)?).await?;
+    assert!(absent.entries.is_empty());
+    assert!(!absent.has_more);
     assert!(
         client
             .directory_page("", None, page(Some(last.clone()))?)
-            .await
-            .is_err()
-    );
-    assert!(
-        client
-            .read_private_range(".system/record", &first.generation, 0)
             .await
             .is_err()
     );
