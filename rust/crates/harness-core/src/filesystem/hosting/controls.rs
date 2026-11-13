@@ -611,6 +611,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                     Subscription {
                         path: source.clone(),
                         cursor: 0,
+                        paused: false,
                     },
                 )
             })
@@ -620,6 +621,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                     Subscription {
                         path: agent.closed()?,
                         cursor: 0,
+                        paused: false,
                     },
                 ),
                 (
@@ -627,6 +629,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
                     Subscription {
                         path: crate::supervision::tool_jobs::path(agent).map_err(turn)?,
                         cursor: 0,
+                        paused: false,
                     },
                 ),
             ])

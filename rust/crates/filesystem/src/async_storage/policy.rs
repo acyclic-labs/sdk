@@ -266,7 +266,9 @@ mod grouped_tests {
             let first = PolicyCut::new([3; 16], AuthorityId::from_bytes([4; 16]), Head::genesis(Epoch::GENESIS), 1);
             let second = PolicyCut::new([3; 16], AuthorityId::from_bytes([5; 16]), Head::genesis(Epoch::GENESIS), 1);
             let expected = if empty { vec![first] } else { vec![first, second] };
-            let group = PolicyGroup::new(&[if empty { &[] } else { &[first, second] }], WorkBudget::UNBOUNDED, &token).unwrap().value;
+            let additional = [first, second];
+            let selected = if empty { &[][..] } else { &additional[..] };
+            let group = PolicyGroup::new(&[selected], WorkBudget::UNBOUNDED, &token).unwrap().value;
             let mut future = Box::pin(first.scope(group.scope(futures::future::poll_fn(move |_| {
                 assert!(PolicyCut::current().is_some_and(|current| current.as_slice() == expected));
                 if complete { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }

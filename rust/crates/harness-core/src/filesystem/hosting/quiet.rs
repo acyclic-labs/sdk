@@ -141,6 +141,7 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
             Subscription {
                 path: output.clone(),
                 cursor: 0,
+                paused: false,
             },
         ),
         (
@@ -148,6 +149,7 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
             Subscription {
                 path: output,
                 cursor: 0,
+                paused: false,
             },
         ),
         (
@@ -155,6 +157,7 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
             Subscription {
                 path: lifecycle,
                 cursor: record.sequence,
+                paused: false,
             },
         ),
         (
@@ -162,6 +165,7 @@ pub(super) fn create<P: AuthorityProvider + ?Sized>(
             Subscription {
                 path: agent.closed()?,
                 cursor: 0,
+                paused: false,
             },
         ),
     ]

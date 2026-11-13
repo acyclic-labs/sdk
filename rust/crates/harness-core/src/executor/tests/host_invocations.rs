@@ -297,7 +297,7 @@ async fn host_invocations_share_canonical_admission_approval_and_receipts() -> R
                 .decide_approval(
                     approval,
                     crate::approvals::ApprovalResponder::Human("human"),
-                    crate::interaction::ApprovalVerdict::Allow,
+                    crate::interaction::ApprovalVerdict::Approve,
                     None,
                 )
                 .await?;
