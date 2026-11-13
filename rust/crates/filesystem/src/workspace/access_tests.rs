@@ -128,6 +128,15 @@ async fn retained_content_comparisons_recheck_current_read_authority()
         })
     ));
     fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "entry")).await?;
+    assert!(matches!(
+        original
+            .common_ancestor(&changed, None, WorkBudget::UNBOUNDED, &cancel)
+            .await,
+        Err(crate::OperationFailure {
+            error: WorkspaceError::AccessDenied,
+            ..
+        })
+    ));
     for key in [publication_key, IdempotencyKey::new()] {
         assert!(matches!(
             bound

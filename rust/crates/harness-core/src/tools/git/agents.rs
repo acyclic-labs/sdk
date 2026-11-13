@@ -28,17 +28,15 @@ where
         let child = self.generation(target_tree).await?;
         let parent = self.generation(parent_tree).await?;
         let cancellation = CancellationToken::new();
-        let plan = child
-            .workspace()
-            .join_into(&parent.workspace())
-            .plan_at(&child, &parent, WorkBudget::UNBOUNDED, &cancellation)
+        let (ancestor_workspace, ancestor) = child
+            .common_ancestor(&parent, None, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
         let mut base = self
-            .workspace(plan.common_ancestor_workspace_id())
+            .workspace(ancestor_workspace)
             .await?
-            .generation(plan.common_ancestor(), WorkBudget::UNBOUNDED, &cancellation)
+            .generation(ancestor, WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
@@ -50,7 +48,7 @@ where
                 .await
                 .map_err(super::errors::inspection_error)?
                 .fork_origin
-                && origin.snapshot.authored_generation == plan.common_ancestor()
+                && origin.snapshot.authored_generation == ancestor
             {
                 let owner = self
                     .lazy_current

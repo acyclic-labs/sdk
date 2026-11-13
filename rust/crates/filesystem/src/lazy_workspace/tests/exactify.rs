@@ -154,6 +154,29 @@ async fn inspection_needs_only_read_access_and_preserves_the_original_writer() {
             .as_slice(),
         b"source"
     );
+    let authored = owner.head(accounting!()).await.unwrap();
+    assert_ne!(exact.id(), authored.id());
+    // Publication planning correctly refuses the unpublished target. Ancestry
+    // inspection must still work, without relaxing that publication fence.
+    assert!(matches!(
+        authored
+            .workspace()
+            .join_into(&exact.workspace())
+            .plan_at(&authored, &exact, WorkBudget::UNBOUNDED, &cancellation)
+            .await,
+        Err(crate::OperationFailure {
+            error: WorkspaceError::StaleTarget,
+            ..
+        })
+    ));
+    assert_eq!(
+        exact
+            .common_ancestor(&authored, None, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value,
+        (owner.workspace().id(), cut.authored_generation),
+    );
     // A writable inspection would fence this original ExclusiveWriter even
     // without publishing content. The retained transaction must still commit.
     let committed = writer

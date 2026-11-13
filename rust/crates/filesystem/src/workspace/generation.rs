@@ -35,6 +35,50 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation<A, O> {
+    /// Finds the common ancestor of two immutable generations, including
+    /// unpublished checkpoints. Returns its owning workspace and generation.
+    /// Both endpoints require current read authority. This is an ancestry read:
+    /// it neither acquires a writer fence nor requires either head to stay still.
+    /// `None` traverses without a generation-count bound.
+    pub async fn common_ancestor<W: crate::facade::FsWork>(
+        &self,
+        other: &Self,
+        maximum_generations: impl Into<Option<u32>>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(WorkspaceId, GenerationId), WorkspaceError> {
+        let maximum_generations = maximum_generations.into();
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            let source = self
+                .workspace
+                .observed_generation_accounted(GenerationSelector::Exact(self.id), &mut accounting)
+                .await?;
+            let target = other
+                .workspace
+                .observed_generation_accounted(GenerationSelector::Exact(other.id), &mut accounting)
+                .await?;
+            let ancestor = self
+                .workspace
+                .volume
+                .fs
+                .workspace_common_ancestor_with_accounting(
+                    &source,
+                    &target,
+                    maximum_generations,
+                    &mut accounting,
+                    cancellation,
+                )
+                .await?;
+            Ok((
+                WorkspaceId::from_bytes(ancestor.volume_id.into_bytes()),
+                ancestor.id,
+            ))
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+
     /// Keeps the exact observed proof and original collection registration.
     pub(crate) fn observed(
         workspace: &Workspace<A, O>,
