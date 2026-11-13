@@ -53,4 +53,4 @@ policy. Unsupported wire-kind aliases are rejected.
 This v1 contract is available in the generated source. It is
 not yet published or evidence of Cloud service support.
 
-[API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/inference/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/inference)
+[API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/inference/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/inference/proto/inference)

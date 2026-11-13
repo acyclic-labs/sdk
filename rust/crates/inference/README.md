@@ -35,7 +35,7 @@ rejects unknown request fields and trailing JSON, and emits one JSON value per
 admission, caller-bound validation and stream lifecycle checks. This codec does
 not establish that any deployed service mounts the canonical HTTP routes.
 
-See the [Rust API](https://docs.rs/acyclic-inference/latest/acyclic_inference/), [repository example](https://github.com/acyclic-labs/sdk/blob/main/README.md), and [customer protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/inference). Provider availability, model access, and billing are deployment-specific.
+See the [Rust API](https://docs.rs/acyclic-inference/latest/acyclic_inference/), [repository example](https://github.com/acyclic-labs/sdk/blob/main/README.md), and [customer protocol](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/inference/proto/inference). Provider availability, model access, and billing are deployment-specific.
 
 Warm admission and renewal use the same v1 typed request/response contract for
 latency and idle KV retention. Responses bind the requested Context or commitment
