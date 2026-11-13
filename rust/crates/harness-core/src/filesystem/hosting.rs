@@ -21,10 +21,10 @@ use crate::{
         IntentId, Sender, Spawn, WorkspaceEntry,
     },
     approvals::ApprovalResponder,
-    conversation::{ContentAccess, ContentPublisher, FileRef},
+    conversation::{ContentAccess, ContentPublisher, FileRef, VolumeRef},
     core::{Authority, AuthorityRoot, RuntimeAuthority, Scope},
     interaction::{ApprovalBinding, Interaction},
-    resources::{ProviderRef, VolumeRef},
+    resources::ProviderRef,
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
 use acyclic_fs::{
