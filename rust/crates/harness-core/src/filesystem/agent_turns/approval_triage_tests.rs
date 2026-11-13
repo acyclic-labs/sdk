@@ -56,8 +56,15 @@ async fn family(
         (Limits::default(), None::<crate::context::CompactionPolicy>),
         Arc::new(NoWorkerContext),
     );
+    let (bound, parent, children) = family_with(Arc::new(executors)).await?;
+    Ok((bound, parent, children, reviewer))
+}
+
+async fn family_with(
+    executors: Arc<dyn TurnExecutors>,
+) -> TestResult<(Binding, AgentPath, Vec<AgentState>)> {
     let (bound, parent) = crate::filesystem::hosting::binding_with(
-        Arc::new(executors),
+        executors,
         ApprovalPolicy {
             approvers: vec![Approver::Parent],
         },
@@ -92,7 +99,7 @@ async fn family(
         bound.agents().drain(&child).await?;
         children.push(bound.agents().state(&child).await?);
     }
-    Ok((bound, parent, children, reviewer))
+    Ok((bound, parent, children))
 }
 
 #[tokio::test]
@@ -495,5 +502,239 @@ async fn reopening_after_parent_decisions_commits_original_wakes_once() -> TestR
     for (child, original) in children.iter().zip(&child_tails) {
         assert_eq!(turns.stream.tail(child.path.inbox()?).await?, original + 1);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn child_approval_pauses_and_resumes_its_original_operation_after_parent_review() -> TestResult
+{
+    use crate::executor::{ExecutionJournal, ExecutionProgress, Executor, TurnInput, TurnOutput};
+    use std::sync::Mutex;
+    type Calls = Arc<Mutex<Vec<(AgentPath, OperationId, Option<InteractionOutcome>)>>>;
+    struct Worker {
+        child: AgentPath,
+        calls: Calls,
+    }
+    impl Executor for Worker {
+        fn execute<'a>(
+            &'a self,
+            input: TurnInput,
+            journal: &'a dyn ExecutionJournal,
+        ) -> BoxFuture<'a, crate::Result<TurnOutput>> {
+            Box::pin(async move { self.execute_progress(input, journal).await?.into_output() })
+        }
+        fn execute_progress<'a>(
+            &'a self,
+            input: TurnInput,
+            journal: &'a dyn ExecutionJournal,
+        ) -> BoxFuture<'a, crate::Result<ExecutionProgress<TurnOutput>>> {
+            Box::pin(async move {
+                let id = crate::InteractionId::from_bytes([91; 16]);
+                journal
+                    .open_interaction(
+                        id,
+                        &Interaction::Approval {
+                            prompt: format!("execute for {}", self.child),
+                            operation_id: input.operation_id,
+                            action_digest: *blake3::hash(&input.operation_id.into_bytes())
+                                .as_bytes(),
+                            subject: ApprovalSubject::Opaque {},
+                        },
+                        None,
+                    )?
+                    .await?;
+                let outcome = journal.interaction_outcome(id, None)?.await?;
+                self.calls.lock().unwrap().push((
+                    self.child.clone(),
+                    input.operation_id,
+                    outcome.clone(),
+                ));
+                Ok(match outcome {
+                    None => ExecutionProgress::Pending(input.operation_id),
+                    Some(outcome) => ExecutionProgress::Ready(TurnOutput::new(
+                        "action settled".into(),
+                        serde_json::to_value(outcome)
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        1,
+                    )),
+                })
+            })
+        }
+    }
+    struct Executors {
+        review: StockExecutors,
+        calls: Calls,
+    }
+    impl TurnExecutors for Executors {
+        fn review<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            execution: (
+                &'a dyn ExecutionJournal,
+                Option<&'a crate::executor::PreparationIo>,
+            ),
+            request: (&'a AgentPath, &'a crate::approvals::ApprovalRequest<'a>),
+            principal: &'a str,
+            policy: &'a str,
+        ) -> BoxFuture<'a, crate::Result<(RuleVerdict, Option<String>)>> {
+            self.review
+                .review(agent, execution, request, principal, policy)
+        }
+        fn executor<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            _: OperationId,
+            _: &'a ModelContent,
+            _: &'a TurnAuthority,
+        ) -> BoxFuture<'a, crate::Result<Arc<dyn Executor>>> {
+            Box::pin(async move {
+                if agent.parent.is_none() {
+                    return Err(Error::Invalid(
+                        "resolved asks opened parent worker context".into(),
+                    ));
+                }
+                Ok(Arc::new(Worker {
+                    child: agent.path.clone(),
+                    calls: self.calls.clone(),
+                }) as Arc<dyn Executor>)
+            })
+        }
+    }
+    let reviewer = Arc::new(ScriptedModelProvider::new(["allow", "deny"].map(
+        |verdict| ScriptedTurn::Text(format!(r#"{{"verdict":"{verdict}","reason":null}}"#)),
+    )));
+    let calls: Calls = Default::default();
+    let review = StockExecutors::new(
+        (
+            Model::new("test".into(), "reviewer".into(), "1".into())?,
+            reviewer.clone(),
+        ),
+        ToolRegistry::default(),
+        (Limits::default(), None::<crate::context::CompactionPolicy>),
+        Arc::new(NoWorkerContext),
+    );
+    let (bound, parent, children) = family_with(Arc::new(Executors {
+        review,
+        calls: calls.clone(),
+    }))
+    .await?;
+    let parent_before = bound.agents().state(&parent).await?;
+    let sender = Sender::User {
+        principal: "human".into(),
+    };
+    let mut original_turns = Vec::new();
+    for child in &children {
+        let id = crate::agent::IntentId::try_from("work")?;
+        let body = bound
+            .stage_text(
+                &child.path,
+                "message",
+                &sender,
+                &id,
+                ("work", "execute action"),
+            )
+            .await?;
+        bound
+            .agents()
+            .send(
+                &child.path,
+                &sender,
+                &InboxRecord::Message(crate::agent::Message {
+                    from: sender.clone(),
+                    id,
+                    body: Box::new(body),
+                    re: None,
+                    attachments: None,
+                }),
+            )
+            .await?;
+        bound.agents().drain(&child.path).await?;
+        let paused = bound.agents().state(&child.path).await?;
+        assert!(matches!(
+            paused.phase,
+            crate::agent::Phase::WaitingApproval {
+                binding: Some(_),
+                ..
+            }
+        ));
+        original_turns.push(
+            paused
+                .turn
+                .ok_or("approval did not retain its worker invocation")?
+                .inbox,
+        );
+        assert_eq!(paused.conversation_tail, child.conversation_tail);
+    }
+    assert_eq!(
+        reviewer.request_count(),
+        0,
+        "child dispatched a parent review in its own context"
+    );
+    assert!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, _, outcome)| outcome.is_none())
+    );
+    // A new runtime processes the original delegated requests and paused children.
+    let turns = bound.turns();
+    let handler = crate::agent::AgentHandler::new(
+        crate::agent::actor_store(&turns.stream)?,
+        crate::agent::ExecutorDriver::new(turns.clone()),
+        acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+    )?
+    .with_close();
+    let reopened = bound.agents().rehosted(
+        Arc::new(handler),
+        Arc::new(acyclic_actors::local::SystemClock),
+        None,
+    )?;
+    reopened.drain(&parent).await?;
+    let parent_after = reopened.state(&parent).await?;
+    assert_eq!(
+        parent_after.conversation_tail,
+        parent_before.conversation_tail
+    );
+    assert!(parent_after.turn.is_none());
+    assert_eq!(reviewer.request_count(), 2);
+    for (index, child) in children.iter().enumerate() {
+        reopened.drain(&child.path).await?;
+        let resumed = reopened.state(&child.path).await?;
+        assert!(matches!(resumed.phase, crate::agent::Phase::Idle));
+        assert!(resumed.turn.is_none());
+        assert_eq!(resumed.conversation_tail, child.conversation_tail + 1);
+        let entry =
+            crate::agent::answer(&*turns.stream, &child.path, child.conversation_tail).await?;
+        assert_eq!(entry.inbox, original_turns[index]);
+        let calls = calls.lock().unwrap();
+        let child_calls = calls
+            .iter()
+            .filter(|(path, _, _)| path == &child.path)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            child_calls.len(),
+            2,
+            "approval replay executed an extra worker step"
+        );
+        assert_eq!(
+            child_calls[0].1, child_calls[1].1,
+            "approval wake substituted another operation"
+        );
+        assert_eq!(
+            child_calls[1].2,
+            Some(if index == 0 {
+                InteractionOutcome::Approved {}
+            } else {
+                InteractionOutcome::Declined {}
+            })
+        );
+    }
+    assert!(
+        reviewer
+            .requests()
+            .iter()
+            .all(|request| request.tools.is_empty())
+    );
     Ok(())
 }
