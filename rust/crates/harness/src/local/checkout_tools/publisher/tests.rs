@@ -59,6 +59,42 @@ async fn before_checkout_admission<T>(future: impl std::future::Future<Output = 
 }
 
 #[tokio::test]
+async fn one_operation_captures_native_edits_before_distinct_file_publications() -> Result<()> {
+    let (directory, _fixture, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    for path in ["baseline", "first", "second"] {
+        std::fs::write(directory.path().join("native"), path).map_err(storage)?;
+        let file = publisher
+            .stage_once(
+                operation,
+                path,
+                path.as_bytes(),
+                "text/plain",
+                path,
+                Default::default(),
+            )?
+            .await?;
+        // Replaying a completed publication must retain its original receipt.
+        let replay = publisher
+            .stage_once(
+                operation,
+                path,
+                path.as_bytes(),
+                "text/plain",
+                path,
+                Default::default(),
+            )?
+            .await?;
+        assert_eq!(file, replay);
+        assert_eq!(
+            std::fs::read(directory.path().join(path)).map_err(storage)?,
+            path.as_bytes()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<()> {
     let directory = temporary_directory()?;
     std::fs::create_dir(directory.path().join("directory")).map_err(storage)?;
