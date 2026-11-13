@@ -1594,11 +1594,20 @@ impl<P: StreamProvider + ?Sized + 'static> Drop for Inbound<P> {
 impl<P: StreamProvider + ?Sized + 'static> SocketProvider for Sockets<P> {
     fn prepare(self: Arc<Self>, open: Bytes) -> Result<Box<dyn PreparedSocketOpen>, StreamError> {
         let open = SocketOpen::decode(&open).map_err(|_| StreamError::InvalidArgument)?;
-        Ok(Box::new(PreparedOpen {
+        Ok(self.prepare_decoded(open))
+    }
+}
+
+impl<P: StreamProvider + ?Sized + 'static> Sockets<P> {
+    /// Retain an already decoded canonical open through authorization. Product
+    /// dispatchers select an owner without decoding the same request again.
+    /// Preparation performs no IO and installs no socket.
+    pub fn prepare_decoded(self: Arc<Self>, open: SocketOpen) -> Box<dyn PreparedSocketOpen> {
+        Box::new(PreparedOpen {
             resource: open.resource(),
             host: self,
             open,
-        }))
+        })
     }
 }
 

@@ -108,6 +108,7 @@ pub struct Hosted<P: AuthorityProvider + 'static, O: 'static, L> {
     resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
     pub(crate) completion: Option<BoxProviderFuture<'static, Result<()>>>,
     pub(crate) shutdown: Option<Box<dyn FnOnce() -> Result<()> + Send + Sync>>,
+    routing: Option<Arc<acyclic_actors::route::AccountNode<P>>>,
     _owner: L,
 }
 
@@ -133,8 +134,21 @@ where
             resources,
             completion: None,
             shutdown: None,
+            routing: None,
             _owner: owner,
         }
+    }
+
+    /// Serve account routing and NodeLink sockets on this same authenticated
+    /// endpoint. The supplied node owns no remote session roots. Its explicit
+    /// policy checks peer membership and account storage admission; the host
+    /// enrolls nodes before issuing their credentials.
+    #[must_use]
+    pub fn with_account_routing(mut self, routing: acyclic_actors::route::AccountNode<P>) -> Self {
+        self.routing = Some(Arc::new(
+            routing.with_products(self.server.clone(), self.server.clone()),
+        ));
+        self
     }
 
     /// End the endpoint when its runtime stops. Dropping the producer must
@@ -230,21 +244,43 @@ pub async fn serve<C: Composition>(
     let (lifetime, ended) = tokio::sync::watch::channel(());
     let completion = host.completion.take();
     let shutdown_result = host.shutdown.take();
+    let routing = host.routing.clone();
     let mut completion = std::pin::pin!(async move {
-        match completion {
-            Some(completion) => completion.await,
-            None => std::future::pending().await,
-        }
+        let agents = async move {
+            match completion {
+                Some(completion) => completion.await,
+                None => std::future::pending().await,
+            }
+        };
+        let nodes = async move {
+            match routing {
+                Some(routing) => routing
+                    .run(|actor, error| tracing::error!(?actor, %error, "node delivery failed"))
+                    .await
+                    .map(|never| match never {})
+                    .map_err(failed),
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! { result = agents => result, result = nodes => result }
     });
     let (completed, mut result) = tokio::sync::oneshot::channel();
+    let calls: Arc<dyn acyclic_stream::session::CallProvider> = match &host.routing {
+        Some(routing) => routing.clone(),
+        None => server.clone(),
+    };
+    let sockets: Arc<dyn acyclic_stream::session::SocketProvider> = match &host.routing {
+        Some(routing) => routing.clone(),
+        None => server.clone(),
+    };
     let service = acyclic_stream::session::Service::new(
         bound.agents().provider().clone(),
         authority,
         "self-hosted".into(),
         acyclic_stream::session::Limits::default(),
     )
-    .with_products(host.resources.clone(), server.clone())
-    .with_sockets(server.clone())
+    .with_products(host.resources.clone(), calls)
+    .with_sockets(sockets)
     .with_lifetime(ended);
     let tls = match config.tls {
         Some(identity) => {

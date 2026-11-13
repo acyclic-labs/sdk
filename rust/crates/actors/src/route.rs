@@ -18,6 +18,8 @@ mod admission;
 pub use admission::{Delivered, Rejection, Routed};
 mod account;
 pub use account::{AccountService, Admission, AdmissionPolicy, admit, relay_resource};
+mod serving;
+pub use serving::AccountNode;
 
 const CALL_PROTOCOL: &str = "acyclic.actors.route.account.v1";
 

@@ -70,6 +70,11 @@ pub struct AccountService<P: StreamProvider + ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> AccountService<P> {
+    pub(super) fn handles(&self, invocation: &[u8]) -> bool {
+        super::SourceWire::decode(invocation)
+            .is_ok_and(|header| header.domain == super::CALL_PROTOCOL)
+    }
+
     /// Inject the account's existing provider, routing subtree and host policy.
     pub fn new(
         account: AccountId,

@@ -25,6 +25,9 @@ mod session_pages;
 #[path = "hosting_tests/peer_delivery.rs"]
 mod peer_delivery;
 
+#[path = "hosting_tests/routing.rs"]
+mod routing;
+
 struct Never;
 
 impl TurnExecutors for Never {
