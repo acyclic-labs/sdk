@@ -23,9 +23,13 @@ async fn native_append_replay_cannot_spend_unreserved_write_credit_after_lease_r
     let mut settling = Box::pin(lease.settle());
     assert!(futures::poll!(settling.as_mut()).is_pending());
     let meter = Arc::new(Meter::default());
-    meter.limit.store(0, Ordering::SeqCst);
     let mut replay =
         Box::pin(provider.native_write(crate::WriteRequest::Append(request), meter.original()));
+    // Fund the native operation's frames before refusing further allocations.
+    // The cached scalar receipt needs no new allocation or write reservation.
+    meter
+        .limit
+        .store(meter.allocations.load(Ordering::SeqCst), Ordering::SeqCst);
     // If execution waits for publication, release owns the earlier FIFO turn.
     // A retained result can instead complete immediately without write credit.
     let first = futures::poll!(replay.as_mut());
@@ -37,6 +41,8 @@ async fn native_append_replay_cannot_spend_unreserved_write_credit_after_lease_r
     };
     assert_eq!(output.value(), &crate::WriteOutcome::Append(original));
     assert_eq!(provider.tail(root).await, Err(StreamError::NotFound));
+    assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+    assert_eq!(meter.write_bytes.load(Ordering::SeqCst), 0);
     drop(output);
     drop(replay);
     drop(provider);
