@@ -432,6 +432,12 @@ async fn replay_preserves_review_boundaries_skipped_during_active_work() -> Resu
     let reopened = StockExecution::ordinary(&executor);
     let replay = async {
         for step in 0..3 {
+            if step > 0 {
+                // Live response preparation consumes the preceding decision.
+                reopened
+                    .prepared_response(journal, &input, step, &prior, None)
+                    .await?;
+            }
             let events = reopened.model_step(journal, &input, step, &prior).await?;
             reopened
                 .request_context_review(journal, &input, step, &prior, original_metadata(&events))
