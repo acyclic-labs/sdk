@@ -376,7 +376,8 @@ async fn unrelated_turn_completion_preserves_a_queued_cancellation()
         )],
         idempotency_key: crate::agent::intent_key("complete-first", &[])?,
     };
-    crate::agent::cancellation::complete(provider.as_ref(), &path, &outs, &mut completed).await?;
+    crate::agent::cancellation::complete(provider.as_ref(), &path, &outs, None, &mut completed)
+        .await?;
     crate::agent::submit(provider.as_ref(), completed).await?;
     crate::agent::submit(provider.as_ref(), pending_cancel).await?;
     assert_eq!(
@@ -421,7 +422,13 @@ async fn unrelated_turn_completion_preserves_a_queued_cancellation()
 async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::agent::{ConversationEntry, Phase, Progress, Reply, TurnOutcome, Wake};
-    for parked in [None, Some(false), Some(true)] {
+    for (parked, steered) in [
+        (None, false),
+        (Some(false), false),
+        (Some(true), false),
+        (None, true),
+        (Some(true), true),
+    ] {
         let provider = MemoryStream::default();
         let id = AgentId::from_bytes([29; 16]);
         let adopted = ForkAdopted {
@@ -472,7 +479,7 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
             message(user.clone(), "stopped-goal".into())?,
             message(user.clone(), "other-goal".into())?,
         ];
-        let continuations = [
+        let mut continuations = [
             message(
                 Sender::Agent { path: path.clone() },
                 format!("goal:{}:1", runs[0]),
@@ -482,9 +489,26 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
                 format!("goal:{}:1", runs[1]),
             )?,
         ];
-        for input in originals.iter().chain(&continuations) {
+        for input in &originals {
             crate::agent::submit(&provider, crate::agent::send(&path, &user, input)?).await?;
         }
+        let active = message(user.clone(), "unrelated-turn".into())?;
+        if steered {
+            crate::agent::submit(&provider, crate::agent::send(&path, &user, &active)?).await?;
+            // This goal retains its independent turn after the cancelled
+            // continuation is withdrawn from the unrelated turn's boundary.
+            let InboxRecord::Message(other) = continuations[1].clone() else {
+                unreachable!()
+            };
+            continuations[1] = InboxRecord::FollowUp(other);
+        }
+        for input in &continuations {
+            crate::agent::submit(&provider, crate::agent::send(&path, &user, input)?).await?;
+        }
+        let cancelled_input = if steered { 4 } else { 3 };
+        let other_input = cancelled_input + 1;
+        let cancel_sequence = other_input + 1;
+        let cursor = cancel_sequence + 1;
         let entries = originals
             .into_iter()
             .enumerate()
@@ -517,9 +541,18 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
             .await?;
         let mut state = AgentState::adopted(path.clone(), &adopted)?;
         state.conversation_tail = 2;
-        if let Some(host) = parked {
+        if steered {
             state.turn = Some(Progress {
                 inbox: 3,
+                checkpoint: Vec::new(),
+            });
+            state.phase = Phase::Running;
+            state.queued.push_back(
+                crate::agent::turn_input(cancelled_input, continuations[0].clone()).unwrap(),
+            );
+        } else if let Some(host) = parked {
+            state.turn = Some(Progress {
+                inbox: cancelled_input,
                 checkpoint: Vec::new(),
             });
             state.phase = if host {
@@ -533,44 +566,128 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
                 }
             };
         } else {
-            state
-                .queued
-                .push_back(crate::agent::turn_input(3, continuations[0].clone()).unwrap());
+            state.queued.push_back(
+                crate::agent::turn_input(cancelled_input, continuations[0].clone()).unwrap(),
+            );
         }
         state
             .queued
-            .push_back(crate::agent::turn_input(4, continuations[1].clone()).unwrap());
+            .push_back(crate::agent::turn_input(other_input, continuations[1].clone()).unwrap());
         let cancel = InboxRecord::Cancel(Cancellation {
             by: user.clone(),
             id: "stop-goal".try_into()?,
-            input: 3,
+            input: cancelled_input,
             conversation: 2,
         });
         crate::agent::submit(&provider, crate::agent::send(&path, &user, &cancel)?).await?;
-        let mut stopped = crate::agent::step(
-            &Opening(Mutex::new(None)),
+        let mut stopped = if steered {
+            let selection = crate::agent::select_boundary(
+                &provider,
+                &path,
+                3,
+                4,
+                crate::agent::BoundaryEnd::Exact(cursor),
+            )
+            .await?;
+            assert!(selection.inputs.is_empty());
+            struct BoundaryRetirement(Mutex<Option<TurnStep>>);
+            impl TurnDriver for BoundaryRetirement {
+                fn step<'a>(
+                    &'a self,
+                    _: &'a AgentState,
+                    _: u64,
+                    _: Option<Queued>,
+                    _: CancellationToken,
+                ) -> TurnFuture<'a> {
+                    Box::pin(async move { Ok(self.0.lock().unwrap().take().unwrap()) })
+                }
+            }
+            let mut outs = vec![Out::Steered(selection.through)];
+            if parked.is_none() {
+                outs.push(Out::Conversation(
+                    ConversationEntry {
+                        inbox: 3,
+                        input: crate::agent::turn_input(3, active).unwrap().input,
+                        output: file.clone(),
+                        outcome: TurnOutcome::Completed,
+                        goal: None,
+                        observed_through: selection.through,
+                        announcements: Vec::new(),
+                        tool_results: None,
+                        steering: Some(crate::agent::SteeringTranscript {
+                            through: selection.through,
+                            file: file.clone(),
+                        }),
+                        notices: None,
+                    }
+                    .encode()?,
+                ));
+            }
+            crate::agent::step(
+                &BoundaryRetirement(Mutex::new(Some(TurnStep {
+                    checkpoint: parked.map(|_| Vec::new()),
+                    wait: if parked.is_some() {
+                        Wait::Host("host".into())
+                    } else {
+                        Wait::Input
+                    },
+                    drops: None,
+                    outs,
+                }))),
+                &path,
+                Some(state.clone()),
+                (cancel_sequence, 0),
+                Wake::Alarm,
+                CancellationToken::new(),
+            )
+            .await?
+        } else {
+            crate::agent::step(
+                &Opening(Mutex::new(None)),
+                &path,
+                Some(state.clone()),
+                (cursor, 0),
+                Wake::Inbox {
+                    sequence: cancel_sequence,
+                    record: cancel.clone(),
+                },
+                CancellationToken::new(),
+            )
+            .await?
+        };
+        let conversation_tail = if steered && parked.is_none() { 3 } else { 2 };
+        assert_eq!(stopped.state.turn.is_some(), steered && parked.is_some());
+        assert_eq!(stopped.state.conversation_tail, conversation_tail);
+        assert_eq!(stopped.state.dropped_before, 0);
+        assert_eq!(stopped.state.queued.front().unwrap().inbox, other_input);
+        let mut publication = crate::agent::lower(
+            &stopped,
+            if steered { cancel_sequence } else { cursor },
+            crate::agent::intent_key("goal-stop", &[])?,
+        )?;
+        let retired = (steered && parked.is_some()).then_some(crate::agent::BoundaryCut {
+            from: 4,
+            through: cursor,
+        });
+        crate::agent::cancellation::complete(
+            &provider,
             &path,
-            Some(state.clone()),
-            (6, 0),
-            Wake::Inbox {
-                sequence: 5,
-                record: cancel,
-            },
-            CancellationToken::new(),
+            &stopped.outs,
+            retired,
+            &mut publication,
         )
         .await?;
-        assert!(stopped.state.turn.is_none());
-        assert_eq!(stopped.state.conversation_tail, 2);
-        assert_eq!(stopped.state.dropped_before, 0);
-        assert_eq!(stopped.state.queued.front().unwrap().inbox, 4);
-        let mut publication =
-            crate::agent::lower(&stopped, 6, crate::agent::intent_key("goal-stop", &[])?)?;
-        crate::agent::cancellation::complete(&provider, &path, &stopped.outs, &mut publication)
-            .await?;
         // Preparation alone does not settle the run: the marker and stopped
         // checkpoint must publish together. No synthetic final entry is added.
         assert_eq!(
-            crate::agent::reply(&provider, &mut state, 6, &"stopped-goal".try_into()?, 1).await?,
+            crate::agent::reply(
+                &provider,
+                &mut state,
+                cursor,
+                &"stopped-goal".try_into()?,
+                1
+            )
+            .await?,
             Reply::Continuing { run: runs[0] }
         );
         crate::agent::submit(&provider, publication.clone()).await?;
@@ -579,7 +696,7 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
             crate::agent::reply(
                 &provider,
                 &mut stopped.state,
-                6,
+                cursor,
                 &"stopped-goal".try_into()?,
                 1
             )
@@ -590,14 +707,37 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
             crate::agent::reply(
                 &provider,
                 &mut stopped.state,
-                6,
+                cursor,
                 &"other-goal".try_into()?,
                 2
             )
             .await?,
             Reply::Continuing { run: runs[1] }
         );
-        assert_eq!(provider.head(path.conversation()?).await?.tail, 2);
+        assert_eq!(
+            provider.head(path.conversation()?).await?.tail,
+            conversation_tail
+        );
+        if steered {
+            let late = crate::agent::step(
+                &Opening(Mutex::new(None)),
+                &path,
+                Some(stopped.state),
+                (cursor, 0),
+                Wake::Inbox {
+                    sequence: cancel_sequence,
+                    record: cancel,
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+            assert!(
+                !late
+                    .outs
+                    .iter()
+                    .any(|out| matches!(out, Out::InputCancelled { .. }))
+            );
+        }
     }
     Ok(())
 }
