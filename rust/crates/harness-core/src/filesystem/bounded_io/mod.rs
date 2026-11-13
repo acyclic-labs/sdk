@@ -373,7 +373,7 @@ impl PreparationIo {
         }
     }
     #[inline]
-    pub(in crate::filesystem) fn account<T>(
+    pub(crate) fn account<T>(
         &self,
         operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
     ) -> std::result::Result<T, acyclic_fs::FsError> {

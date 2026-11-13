@@ -620,6 +620,31 @@ async fn private_agent_fork_binds_child_views_without_replacing_companion_roots(
         16_384,
         None,
     )?;
+    let (_, complete) = projected_reader
+        .list_private_directory(
+            &child_volume,
+            "",
+            "ui",
+            acyclic_harness_core::filesystem::DirectoryOptions {
+                generation: None,
+                after: None,
+                maximum_entries: u32::MAX,
+                ceiling: None,
+            },
+        )
+        .await?
+        .ok_or("computed directory was absent")?;
+    complete.validate()?;
+    let mut duplicate = complete.clone();
+    duplicate.entries.push(complete.entries[0].clone());
+    duplicate.examined = duplicate
+        .examined
+        .checked_add(1)
+        .ok_or("page work overflow")?;
+    assert!(
+        duplicate.validate().is_err(),
+        "producer order must not permit duplicate names"
+    );
     fn options<'a>(
         generation: Option<&'a acyclic_harness_core::resources::GenerationRef>,
         after: Option<&'a str>,
