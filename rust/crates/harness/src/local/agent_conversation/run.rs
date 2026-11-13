@@ -886,10 +886,9 @@ mod tests {
             )
             .await?;
         release_input.send(()).unwrap();
-        tokio::select! {
-            result = &mut run => panic!("run ended before the continued model admission: {result:?}"),
-            result = continuing => result.map_err(failed)?,
-        }
+        // Goal completion may wake the run observer before the already queued
+        // A continuation dispatches. Observe the host's actual admission here.
+        continuing.await.map_err(failed)?;
         // While A's continuation is held, B's completed actor transition is
         // the committed state. In-flight driver state is not observable here.
         assert!(
@@ -903,6 +902,11 @@ mod tests {
             "independent input inherited another run's admission",
         );
         finish.send(()).unwrap();
+        bound
+            .agents()
+            .drain(conversation.agent())
+            .await
+            .map_err(failed)?;
         let outcome = (&mut run).await;
         assert!(matches!(outcome?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
         // B has no continuation. A's completed transition is now the durable
