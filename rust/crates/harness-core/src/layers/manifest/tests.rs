@@ -139,10 +139,15 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
             workspaces[index]
                 .write_text("/changed.ts", "export default true;")
                 .await?;
-            assert!(matches!(
-                fs.submit_commit(commit, budget, &cancellation).await?.value,
-                acyclic_fs::FilesystemCommitOutcome::Rejected(_)
-            ));
+            match fs.submit_commit(commit, budget, &cancellation).await?.value {
+                acyclic_fs::FilesystemCommitOutcome::Rejected(_) => {}
+                acyclic_fs::FilesystemCommitOutcome::Unknown { error, .. } => {
+                    panic!("source {index} race returned unknown: {error:?}");
+                }
+                acyclic_fs::FilesystemCommitOutcome::Committed(_) => {
+                    panic!("source {index} race published the candidate");
+                }
+            }
             assert_eq!(
                 workspaces[5]
                     .read("/agent.ts", 1024, budget, &cancellation)
