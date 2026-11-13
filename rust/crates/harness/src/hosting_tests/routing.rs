@@ -190,7 +190,10 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
     };
     let mut presence = acyclic_stream::records_only(
         stream
-            .follow(FollowRequest::new(paths.presence(&source)?, 1))
+            .follow(FollowRequest {
+                when_absent: acyclic_stream::WhenAbsent::Wait,
+                ..FollowRequest::new(paths.presence(&source)?, 1)
+            })
             .await?,
     );
     let exercise = async {
