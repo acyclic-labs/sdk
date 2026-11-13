@@ -142,3 +142,20 @@ overlay/fork, opened-file version, bounded page/range, idle-cost and mounted
 override-removal regressions use the same asynchronous provider boundary.
 The harness native signal-file adapter remains a separate integration obligation;
 this SDK primitive proof alone does not establish that mounted integration.
+
+Original-cut native point reads share the portable Streams selector and never
+fall back to portable IO. In `acyclic-stream --lib`, run
+`replay_tests::native_latest_before_keeps_original_cuts_and_budget`,
+`replay_tests::portable_success_cannot_substitute_for_native_admission`, and
+`replay_tests::latest_before_requires_the_original_single_record_cursor_to_close`.
+The real memory provider distinguishes old keyed/unkeyed cuts from later writes,
+missing keys and zero cuts, denies original native allocation, and rejects a
+cancelled zero-cut read. The real-provider cursor wrapper injects an extra record
+or a late error, with the healthy single-record cursor as its control.
+`point-cursor-closure.patch` removes the portable cursor-close check; the cursor
+regression must fail at `point read ignored an extra record or a late cursor error`.
+`point-zero-cancellation.patch` removes the original native cancellation check;
+the native regression must fail at `cancelled native point read admitted absence`.
+Apply each independently, require that exact assertion, reverse it and require
+the identical regression to pass. These new tests and mutant executions are
+pending; patch applicability is not a runtime kill or native mounted-file proof.

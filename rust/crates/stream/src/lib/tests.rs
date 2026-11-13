@@ -91,6 +91,7 @@ mod replay_tests {
         inner: MemoryStream,
         missing: u64,
         extra_records: u32,
+        late_error: bool,
     }
 
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -133,11 +134,15 @@ mod replay_tests {
                 Some(self.inner.read(extra).await?)
             };
             let missing = self.missing;
+            let late_error = self.late_error;
             let records = self.inner.read(request).await?;
             Ok(records.map_cursor(|records| {
                 Box::pin(
                     records
                         .chain(futures::stream::iter(extra).flatten())
+                        .chain(futures::stream::iter(
+                            late_error.then_some(Err(StreamError::Unavailable)),
+                        ))
                         .filter(move |record| {
                             std::future::ready(
                                 !matches!(record, Ok(record) if record.sequence == missing),
@@ -167,6 +172,7 @@ mod replay_tests {
             inner: MemoryStream::default(),
             missing: u64::MAX,
             extra_records: 0,
+            late_error: false,
         };
         let path = StreamPath::new("native-refusal")?;
         let request = AppendRequest {
@@ -194,8 +200,164 @@ mod replay_tests {
             provider.append(request).await?,
             AppendOutcome::Committed(_)
         ));
-        assert_eq!(provider.tail(path).await?, 1);
+        assert_eq!(provider.tail(path.clone()).await?, 1);
+        assert!(matches!(
+            provider
+                .native_latest_before(path.clone(), None, 1, Default::default(), meter.original())
+                .await?,
+            Err(StreamError::Unsupported)
+        ));
+        assert_eq!(meter.read_operations.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        assert_eq!(
+            provider
+                .latest_before(path, None, 1, Default::default())
+                .await?
+                .map(|record| record.sequence),
+            Some(0),
+            "portable point read must remain a real fallback countercontrol"
+        );
         Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_latest_before_keeps_original_cuts_and_budget()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::sync::atomic::Ordering;
+        let provider = MemoryStream::default();
+        let path = StreamPath::new("native-original-point")?;
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![
+                    AppendRecord::latest("first", "key", false)?,
+                    AppendRecord::latest("other", "other", false)?,
+                    AppendRecord::latest("second", "key", false)?,
+                ],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let before = 3;
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![AppendRecord::latest("later", "key", false)?],
+                if_tail: Some(before),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let key = Bytes::from_static(b"key");
+        for (key, cut, expected) in [
+            (Some(key.clone()), before, Some(2)),
+            (Some(key), 1, Some(0)),
+            (None, before, Some(2)),
+            (Some(Bytes::from_static(b"missing")), before, None),
+        ] {
+            let meter = Arc::new(crate::test_meter::Meter::default());
+            let original = provider
+                .native_latest_before(
+                    path.clone(),
+                    key.clone(),
+                    cut,
+                    Default::default(),
+                    meter.original(),
+                )
+                .await??;
+            assert_eq!(
+                original.value().as_ref().map(|record| record.sequence),
+                expected,
+                "native point selection borrowed a later cut"
+            );
+            assert_eq!(
+                provider
+                    .latest_before(path.clone(), key, cut, Default::default())
+                    .await?
+                    .map(|record| record.sequence),
+                expected
+            );
+            drop(original);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            meter.assert_refunded();
+        }
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        let absent = provider
+            .native_latest_before(
+                StreamPath::new("never-created")?,
+                None,
+                0,
+                Default::default(),
+                meter.original(),
+            )
+            .await??;
+        assert!(absent.value().is_none());
+        assert_eq!(meter.read_operations.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
+        drop(absent);
+        meter.deny_allocation.store(true, Ordering::SeqCst);
+        assert!(
+            provider
+                .native_latest_before(
+                    path.clone(),
+                    None,
+                    before,
+                    Default::default(),
+                    meter.original()
+                )
+                .await
+                .is_err(),
+            "native point read bypassed its original allocation denial"
+        );
+        meter.assert_refunded();
+        meter.deny_allocation.store(false, Ordering::SeqCst);
+        meter.cancelled.store(true, Ordering::SeqCst);
+        assert!(
+            provider
+                .native_latest_before(path, None, 0, Default::default(), meter.original(),)
+                .await
+                .is_err(),
+            "cancelled native point read admitted absence"
+        );
+        meter.assert_refunded();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn latest_before_requires_the_original_single_record_cursor_to_close() {
+        for (extra_records, late_error, expected) in [
+            (0, false, None),
+            (1, false, Some(StreamError::InvalidResponse)),
+            (0, true, Some(StreamError::Unavailable)),
+        ] {
+            let provider = Gapped {
+                inner: MemoryStream::default(),
+                missing: u64::MAX,
+                extra_records,
+                late_error,
+            };
+            let path = StreamPath::new("original-point-close").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec!["first".into(), "later".into()],
+                    if_tail: Some(0),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+            let result = provider
+                .latest_before(path, None, 1, Default::default())
+                .await;
+            match expected {
+                Some(expected) => assert_eq!(
+                    result.err(),
+                    Some(expected),
+                    "point read ignored an extra record or a late cursor error"
+                ),
+                None => assert_eq!(result.unwrap().map(|record| record.sequence), Some(0)),
+            }
+        }
     }
 
     async fn filled<P: StreamProvider>(provider: P, records: u64) -> Stream<P> {
@@ -355,6 +517,7 @@ mod replay_tests {
                     inner,
                     missing,
                     extra_records: 0,
+                    late_error: false,
                 },
                 2_100,
             )
@@ -380,6 +543,7 @@ mod replay_tests {
                 inner: MemoryStream::default(),
                 missing: u64::MAX,
                 extra_records: 1,
+                late_error: false,
             },
             2_500,
         )
