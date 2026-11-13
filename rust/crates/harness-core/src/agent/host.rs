@@ -25,6 +25,8 @@ use acyclic_stream::{
 use futures::TryStreamExt as _;
 use std::{convert::Infallible, sync::Arc};
 
+mod presence;
+
 /// Outcome of one control commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -801,12 +803,19 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         enabled: bool,
     ) -> Result<(), Error> {
         let request = super::set_peer_membership(root, by, id, enabled)?;
-        match submit(&*self.provider, request).await? {
-            Submitted::Committed(_) => Ok(()),
-            Submitted::RecipientClosed(_) => Err(Error::Record("the peer root is archived")),
-            Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
-            Submitted::Conflict(_) => Err(Error::Record("peer membership changed")),
-        }
+        self.publish_presence_control(
+            root,
+            request,
+            enabled,
+            async |request| match submit(&*self.provider, request).await? {
+                Submitted::Committed(_) => Ok(()),
+                Submitted::RecipientClosed(_) => Err(Error::Record("the peer root is archived")),
+                Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
+                Submitted::Conflict(_) => Err(Error::Record("peer membership changed")),
+            },
+            |_| Ok(()),
+        )
+        .await
     }
 
     /// Close `target` and its open descendants. Closing admission precedes
@@ -820,7 +829,20 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         id: &'a IntentId,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Delivered, Error>> {
         Box::pin(async move {
-            let delivered = self.deliver(target, archive(target, by, id)?).await?;
+            let delivered = self
+                .publish_presence_control(
+                    target,
+                    archive(target, by, id)?,
+                    false,
+                    async |request| self.deliver(target, request).await,
+                    |record| {
+                        self.runtime.wake(&self.actor(target)?);
+                        Ok(Delivered::Committed {
+                            inbox: record.sequence,
+                        })
+                    },
+                )
+                .await?;
             self.pause(target, false).await?;
             let state = self.state(target).await?;
             let mut ancestry = vec![(target.clone(), state.open_children, None)];

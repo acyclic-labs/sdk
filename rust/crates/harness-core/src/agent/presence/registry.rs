@@ -68,10 +68,15 @@ impl SessionPublication {
 
     /// One fully qualified root's row. Namespace identities cannot collide.
     pub fn path(&self) -> Result<StreamPath, Error> {
+        Self::row_path(&self.actor)
+    }
+
+    /// Canonical row location without loading or constructing public metadata.
+    pub fn row_path(actor: &ActorReference) -> Result<StreamPath, Error> {
         StreamPath::new(format!(
             "{}/{}",
-            Self::directory(self.actor.account())?,
-            acyclic_auth::encode_component(&self.actor.encode())
+            Self::directory(actor.account())?,
+            acyclic_auth::encode_component(&actor.encode())
         ))
         .map_err(Error::Stream)
     }

@@ -472,6 +472,48 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         actor: &ActorReference,
         agent: &AgentPath,
     ) -> Result<(super::checkpoint::Head, u64), Error> {
+        let (head, cursor, _) = self.observed_head(actor, agent).await?;
+        Ok((head, cursor))
+    }
+
+    /// The same original checkpoint observation and its publication fence.
+    /// Metadata companions must not describe a later or earlier actor state.
+    pub(super) async fn head_with_guard(
+        &self,
+        actor: &ActorReference,
+        agent: &AgentPath,
+    ) -> Result<
+        (
+            super::checkpoint::Head,
+            u64,
+            acyclic_stream::CommitCondition,
+        ),
+        Error,
+    > {
+        let (head, cursor, snapshot) = self.observed_head(actor, agent).await?;
+        let cut = snapshot.follow_request();
+        let guard = acyclic_stream::CommitCondition::Head {
+            path: cut.path,
+            expected: cut.from,
+            commit_id: cut
+                .preceding
+                .ok_or(Error::Record("agent state has no original anchor"))?,
+        };
+        Ok((head, cursor, guard))
+    }
+
+    async fn observed_head(
+        &self,
+        actor: &ActorReference,
+        agent: &AgentPath,
+    ) -> Result<
+        (
+            super::checkpoint::Head,
+            u64,
+            acyclic_actors::local::Snapshot,
+        ),
+        Error,
+    > {
         let snapshot = self
             .store
             .load(actor)
@@ -529,7 +571,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .state
             .spawned_children
             .bind(Arc::clone(self.store.provider()));
-        Ok((observed, cursor))
+        Ok((observed, cursor, snapshot))
     }
 }
 
