@@ -105,6 +105,18 @@ pub enum TurnAdmission {
 }
 
 impl TurnAdmission {
+    /// Host observation uses the retained host ceiling, not a workload's
+    /// agent-bound scope. Native custody remains native; delegated custody
+    /// cannot gain authority by observing a descendant.
+    fn host(issuer: &RuntimeAuthority) -> Self {
+        issuer
+            .caller()
+            .map_or(Self::LocalRoot, |(audience, scope)| Self::Admitted {
+                audience: audience.clone(),
+                scope: scope.clone(),
+            })
+    }
+
     /// Checks identity, audience, lifetime and attenuation before storage IO.
     /// File authority is checked separately against the committed bindings.
     pub(super) fn verify(
@@ -2532,6 +2544,29 @@ where
     )
 }
 
+// The caller has authenticated its own workload and direct-child relationship.
+// Optional activity uses only the host's retained ceiling; it never rebinds the
+// parent's agent-scoped workload admission to a different identity.
+async fn query_activity_journal<P, A, O>(
+    stream: &Arc<P>,
+    host: &Arc<FilesystemHost<A, O>>,
+    issuer: &RuntimeAuthority,
+    agent: &AgentState,
+) -> Result<Option<FilesystemExecutionJournal<P, A, O>>>
+where
+    P: crate::store::JournalProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let admission = TurnAdmission::host(issuer);
+    match query_journal(stream, host, issuer, &admission, agent).await {
+        Ok(journal) => Ok(Some(journal)),
+        // Missing optional journal authority does not revoke phase observation.
+        Err(error) if error.code() == crate::wire::ErrorCode::Unauthorized => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// What one agent turn's `wait` observes: each child's status and, once it
 /// settled, its last answer, read under a grant of exactly that output.
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
@@ -2676,11 +2711,13 @@ where
         child: &'a AgentPath,
     ) -> BoxFuture<'a, Result<crate::agent::Settlement>> {
         Box::pin(async move {
-            if !child.is_child_of(&self.agent) {
+            if child != &self.agent && !child.is_child_of(&self.agent) {
                 return Err(Error::Unauthorized(
                     "activity is outside the selected child relationship".into(),
                 ));
             }
+            // The workload still proves its own identity before any child IO.
+            self.admission.verify(&self.issuer, &self.agent)?;
             let (state, mut settled) =
                 match crate::agent::observed_settlement(&self.stream, &self.within, child).await {
                     Ok(observed) => observed,
@@ -2710,15 +2747,12 @@ where
                 if let Some(queued) = crate::agent::turn_input(input, record) {
                     let operation =
                         crate::agent::turn_id(&state, &queued.input).map_err(Error::from)?;
-                    let journal = query_journal(
-                        &self.stream,
-                        &self.host,
-                        &self.issuer,
-                        &self.admission,
-                        &state,
-                    )
-                    .await?;
-                    settled.activity = journal.activity(operation, &*self.clock).await?;
+                    let journal =
+                        query_activity_journal(&self.stream, &self.host, &self.issuer, &state)
+                            .await?;
+                    if let Some(journal) = journal {
+                        settled.activity = journal.activity(operation, &*self.clock).await?;
+                    }
                 }
             }
             Ok(settled)

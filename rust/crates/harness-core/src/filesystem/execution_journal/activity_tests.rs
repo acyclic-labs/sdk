@@ -1,7 +1,8 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 #[tokio::test]
-async fn latest_activity_reads_one_original_record_independent_of_history() -> Result<()> {
+async fn latest_activity_reads_one_authenticated_cut_independent_of_history() -> Result<()> {
     let stream = Arc::new(acyclic_stream::testing::Counted::new(
         acyclic_stream::MemoryStream::default(),
     ));
@@ -68,7 +69,11 @@ async fn latest_activity_reads_one_original_record_independent_of_history() -> R
             .await?
             .ok_or_else(|| Error::Storage("fixture activity is absent".into()))?;
         let requests = sample.finish().requests;
-        assert_eq!(requests.data(), 1, "activity replayed history");
+        assert_eq!(
+            requests.data(),
+            2,
+            "only checkpoint and atomic anchor are read"
+        );
         assert_eq!(requests.control(), 1, "activity repeated tail discovery");
         assert_eq!(activity.sequence, original.sequence);
         assert_eq!(activity.step, Some(step));
@@ -83,5 +88,23 @@ async fn latest_activity_reads_one_original_record_independent_of_history() -> R
         assert_eq!(refused.data(), 0, "foreign operation read data");
         assert_eq!(refused.control(), 0, "foreign operation reached storage");
     }
+    // An unattested raw suffix is not progress from a published execution cut.
+    journal
+        .stream
+        .append(acyclic_stream::AppendRequest {
+            path: crate::distributed::execution_path(operation, &mut None)?,
+            records: vec![
+                acyclic_stream::OwnedBytes::from_static(b"not a published observation").into(),
+            ],
+            if_tail: Some(33),
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
+    let activity = journal
+        .activity(operation, &clock)
+        .await?
+        .ok_or_else(|| Error::Storage("authenticated activity disappeared".into()))?;
+    assert_eq!(activity.sequence, 33);
+    assert_eq!(activity.step, Some(31));
     Ok(())
 }

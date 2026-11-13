@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_stream::StreamProviderExt as _;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
@@ -7,8 +6,9 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Read exactly the last observation at a fixed original stream cut.
-    /// History length cannot increase this query's read count. An absent
+    /// Read the last authenticated observation at a fixed original stream cut:
+    /// one checkpoint tail, its signed record and its atomic anchor. History
+    /// length cannot increase this query's read count. An absent
     /// execution has no activity; it never inherits an earlier turn's progress.
     pub async fn activity(
         &self,
@@ -16,30 +16,31 @@ where
         clock: &dyn acyclic_actors::local::Clock,
     ) -> Result<Option<crate::executor::ExecutionActivity>> {
         self.require_operation(operation, None)?;
-        let path = crate::distributed::execution_path(operation, &mut None)?;
-        let tail = match self.stream.tail(path).await {
-            Ok(tail) => tail,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let Some(after) = tail.checked_sub(1) else {
-            return Ok(None);
-        };
-        let record = self
-            .replay(operation, after, 1, None)?
+        Ok(self
+            .checkpoint_cut(operation, None, |record| {
+                let observation = observations::decode_observation(&record.value, None)?;
+                if observation.operation_id != operation
+                    || observation.turn_operation != self.turn_operation(operation)
+                {
+                    return Err(Error::Storage(
+                        "execution activity identity is invalid".into(),
+                    ));
+                }
+                Ok(crate::executor::ExecutionActivity {
+                    sequence: record.sequence.checked_add(1).ok_or_else(|| {
+                        Error::Storage("execution activity sequence overflows".into())
+                    })?,
+                    step: observation.event.step(),
+                    committed_at_micros: Some(record.committed_at_micros),
+                    age_ms: Some(
+                        clock
+                            .now_unix_ms()
+                            .saturating_sub(record.committed_at_micros / 1000),
+                    ),
+                })
+            })
             .await?
-            .into_iter()
-            .next()
-            .filter(|record| record.operation_id == operation && record.sequence == tail)
-            .ok_or_else(|| Error::Storage("execution activity cut is unavailable".into()))?;
-        Ok(Some(crate::executor::ExecutionActivity {
-            sequence: record.sequence,
-            step: record.event.step(),
-            committed_at_micros: record.committed_at_micros,
-            age_ms: record
-                .committed_at_micros
-                .map(|at| clock.now_unix_ms().saturating_sub(at / 1000)),
-        }))
+            .map(|(_, _, activity)| activity))
     }
 
     /// Original append continuation of this admitted private journal. The
