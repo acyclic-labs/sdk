@@ -182,6 +182,7 @@ pub(super) struct Traffic {
 
 #[derive(Default)]
 pub(super) struct Counts {
+    pub(super) request_metadata: Mutex<Vec<tonic::metadata::MetadataMap>>,
     pub(super) opening_interests: AtomicUsize,
     pub(super) node: Mutex<String>,
     pub(super) destinations: Mutex<Vec<String>>,
@@ -317,6 +318,11 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         &self,
         request: Request<Streaming<wire::SessionFrame>>,
     ) -> Result<Reply<Self::SessionStream>, Status> {
+        self.counts
+            .request_metadata
+            .lock()
+            .unwrap()
+            .push(request.metadata().clone());
         assert_eq!(
             request
                 .metadata()

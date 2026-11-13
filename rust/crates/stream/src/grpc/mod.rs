@@ -10,7 +10,7 @@ use prost::Message;
 use thiserror::Error;
 use tonic::{
     Code, Request, Response, Status,
-    metadata::{Ascii, MetadataValue},
+    metadata::{Ascii, MetadataKey, MetadataMap, MetadataValue},
     transport::{Channel, Endpoint},
 };
 use tracing::field::Empty;
@@ -54,6 +54,9 @@ pub enum ConnectError {
     /// Bearer credential cannot be represented as HTTP metadata.
     #[error("invalid Stream bearer credential")]
     InvalidCredential,
+    /// Request metadata contains an invalid ASCII key or value.
+    #[error("invalid Stream request metadata")]
+    InvalidMetadata,
     /// Caller-supplied private CA bundle is empty.
     #[error("invalid Stream private CA certificate")]
     InvalidCaCertificate,
@@ -80,6 +83,7 @@ impl From<ConnectError> for crate::session::transport::Failure {
 /// verification and mutual TLS, through [`Client::from_authenticated_channel`].
 #[derive(Clone)]
 pub struct Client {
+    metadata: RequestMetadata,
     operation_claims: Arc<crate::OperationClaims>,
     channel: Channel,
     authorization: Option<MetadataValue<Ascii>>,
@@ -92,6 +96,31 @@ pub struct Client {
     session_ca: Option<Arc<[u8]>>,
     session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
     session_connector: Option<ChannelConnector>,
+}
+
+/// Immutable metadata shared by all physical request paths.
+#[derive(Clone, Default)]
+pub(crate) struct RequestMetadata(Arc<MetadataMap>);
+
+impl RequestMetadata {
+    pub(crate) fn request<T>(
+        &self,
+        body: T,
+        authorization: Option<MetadataValue<Ascii>>,
+        lease: Option<acyclic_auth::credential::ResolvedCredential>,
+    ) -> Request<T> {
+        let mut request = Request::new(body);
+        *request.metadata_mut() = (*self.0).clone();
+        if let Some(lease) = lease {
+            request.extensions_mut().insert(lease);
+        }
+        if let Some(authorization) = authorization {
+            request
+                .metadata_mut()
+                .insert("authorization", authorization);
+        }
+        request
+    }
 }
 
 /// Caller-owned policy for a service-provided session route. The connector must
@@ -130,6 +159,33 @@ impl<P> Clone for Service<P> {
 }
 
 impl Client {
+    /// Sets fixed ASCII metadata on every RPC, including routed sessions and
+    /// reconnects. Replaces previous entries and starts a fresh session pool;
+    /// other clones retain their metadata. Authorization is reserved for credentials.
+    pub fn with_request_metadata<K: AsRef<str>, V: AsRef<str>>(
+        mut self,
+        entries: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<Self, ConnectError> {
+        let mut metadata = MetadataMap::new();
+        for (key, value) in entries {
+            let key = MetadataKey::<Ascii>::from_bytes(key.as_ref().as_bytes())
+                .map_err(|_| ConnectError::InvalidMetadata)?;
+            if key == "authorization" {
+                return Err(ConnectError::InvalidMetadata);
+            }
+            let value = value.as_ref();
+            if !value.is_ascii() {
+                return Err(ConnectError::InvalidMetadata);
+            }
+            let value = MetadataValue::<Ascii>::try_from(value)
+                .map_err(|_| ConnectError::InvalidMetadata)?;
+            metadata.append(key, value);
+        }
+        self.metadata = RequestMetadata(Arc::new(metadata));
+        self.sessions = Arc::new(crate::session::Cache::new());
+        Ok(self)
+    }
+
     /// Adopt an authenticated home channel and an explicit policy for every
     /// routed connection. No credential resolution or connection starts here.
     /// [`CredentialProvider::transport_identity`] sends no authorization: the
@@ -250,6 +306,7 @@ impl Client {
 
     pub(crate) fn from_channel(channel: Channel, authorization: MetadataValue<Ascii>) -> Self {
         Self {
+            metadata: RequestMetadata::default(),
             channel,
             authorization: Some(authorization),
             credential: None,
@@ -268,6 +325,7 @@ impl Client {
     /// only when the receiving service admits that authenticated channel.
     pub fn from_channel_with_credential(channel: Channel, credential: CredentialProvider) -> Self {
         Self {
+            metadata: RequestMetadata::default(),
             channel,
             authorization: None,
             credential: Some(credential),
@@ -306,16 +364,7 @@ impl Client {
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
         let (authorization, lease) =
             request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
-        let mut request = Request::new(body);
-        if let Some(lease) = lease {
-            request.extensions_mut().insert(lease);
-        }
-        if let Some(authorization) = authorization {
-            request
-                .metadata_mut()
-                .insert("authorization", authorization);
-        }
-        Ok(request)
+        Ok(self.metadata.request(body, authorization, lease))
     }
 
     /// Retries observed transient transport failures with the same request.
