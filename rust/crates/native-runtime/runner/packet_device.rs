@@ -707,13 +707,7 @@ fn write_control(control: Fd, bytes: &[u8]) -> Result<(), Errno> {
     // Publication state has already been consumed. EAGAIN cannot be treated
     // as an unfinished read by the event loop: losing this receipt must close
     // the session and wake its owner rather than wait forever for another one.
-    let written = sys::write(control, bytes).map_err(|error| {
-        if error.0 == sys::EAGAIN {
-            Errno(sys::EPIPE)
-        } else {
-            error
-        }
-    })?;
+    let written = sys::write(control, bytes)?;
     if written != bytes.len() {
         return Err(Errno(sys::EPIPE));
     }
