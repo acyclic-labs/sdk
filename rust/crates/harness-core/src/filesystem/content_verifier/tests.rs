@@ -32,7 +32,9 @@ async fn issuer_layers_preserve_precedence_pins_and_original_read_authority() ->
             .await
     }
     let provider = ProviderRef::new("layers".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let fs = Fs::memory();
+    let host =
+        FilesystemHost::new(fs.clone(), &provider, None)?.with_changes(fs.stream_provider())?;
     let agent = AgentId::from_bytes([123; 16]);
     let mut volumes = Vec::new();
     let mut capabilities = vec!["tool:call:read".to_owned()];
@@ -175,7 +177,38 @@ async fn issuer_layers_preserve_precedence_pins_and_original_read_authority() ->
     ] {
         assert_eq!(read(task.clone(), path).await?.value["text"], "parent");
     }
+    use futures::FutureExt as _;
     let context = ToolContext::new(task, crate::OperationId::new(), "read-only-source")?;
+    context
+        .wait_tool_path("volume:///parent/selection-4", None)
+        .now_or_never()
+        .expect("an existing pinned file is ready")?;
+    // A later publication must not make an absent file appear in this cut.
+    host.put_content(
+        parent,
+        &grant,
+        "later-only",
+        b"later",
+        "text/plain",
+        "later-only",
+        Some(4096),
+        &IdempotencyKey::new("later-only")?,
+        None,
+        access,
+    )
+    .await?;
+    for path in [
+        "volume:///parent/later-only",
+        "volume:///parent/never-published",
+    ] {
+        let absent = context
+            .wait_tool_path(path, None)
+            .now_or_never()
+            .expect("an immutable absent file cannot wait for a future publication");
+        assert!(
+            matches!(absent, Err(ref error) if error.code() == crate::wire::ErrorCode::NotFound)
+        );
+    }
     let denied_write = context.tool_write_path_selection("volume:///parent/new", None);
     assert!(
         matches!(denied_write, Err(ref error) if error.code() == crate::wire::ErrorCode::Unauthorized)
