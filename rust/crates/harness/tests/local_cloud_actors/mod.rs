@@ -438,7 +438,9 @@ async fn published_actor(endpoints: &Endpoints) -> TestResult<grpc::Client> {
     for code in [CODE, CODE_V2] {
         objects
             .put(
-                acyclic_stream::OwnedBytes::copy_from_slice(code.trim_end_matches('\n').as_bytes()),
+                acyclic_objects::Sealed::new(acyclic_stream::OwnedBytes::copy_from_slice(
+                    code.trim_end_matches('\n').as_bytes(),
+                )),
                 Vec::new(),
             )
             .await?;

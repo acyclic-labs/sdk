@@ -28,11 +28,17 @@ pub(super) async fn objects_history(root: &Path, seed: u64) -> Result<(), String
             expected.remove(&digest);
         } else {
             let object = provider
-                .put(body.clone().into(), Vec::new())
+                .put(
+                    acyclic_objects::Sealed::new(body.clone().into()),
+                    Vec::new(),
+                )
                 .await
                 .map_err(open_error)?;
             let replay = provider
-                .put(body.clone().into(), Vec::new())
+                .put(
+                    acyclic_objects::Sealed::new(body.clone().into()),
+                    Vec::new(),
+                )
                 .await
                 .map_err(open_error)?;
             if object.verified() != replay.verified()
@@ -77,7 +83,10 @@ pub(super) async fn objects_many_chunks_setup(root: &Path) -> Result<(), String>
         .await
         .map_err(open_error)?;
     provider
-        .put(acyclic_stream::OwnedBytes::from(many_chunks()?), Vec::new())
+        .put(
+            acyclic_objects::Sealed::new(acyclic_stream::OwnedBytes::from(many_chunks()?)),
+            Vec::new(),
+        )
         .await
         .map_err(open_error)?;
     Ok(())
@@ -89,7 +98,7 @@ pub(super) async fn objects_sparse_first_put(root: &Path) -> Result<(), String> 
         .map_err(open_error)?;
     let put = provider
         .put(
-            acyclic_stream::OwnedBytes::from_static(b"sparse body"),
+            acyclic_objects::Sealed::new(acyclic_stream::OwnedBytes::from_static(b"sparse body")),
             Vec::new(),
         )
         .await

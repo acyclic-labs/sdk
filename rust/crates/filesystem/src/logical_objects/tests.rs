@@ -763,7 +763,7 @@ async fn writes_hash_each_body_once() -> Result<(), Box<dyn std::error::Error>> 
     let before = hashed();
     store
         .provider
-        .put(body(7), Vec::new())
+        .put(acyclic_objects::Sealed::new(body(7)), Vec::new())
         .await
         .map_err(ObjectStoreError::LogicalObjects)?;
     once(hashed() - before, 1);

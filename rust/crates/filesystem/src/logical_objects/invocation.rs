@@ -135,7 +135,7 @@ impl<P: Blobs + ?Sized> Provider for P {
                     ..WorkCounters::UNCHARGED
                 })?;
                 let (body, references) = request.value;
-                let result = self.put_sealed(body, references).await;
+                let result = self.put(body, references).await;
                 release(work, request.allocation, request.bytes)?;
                 result.map_err(|error| ObjectStoreError::LogicalObjects(error).into())
             }
@@ -221,7 +221,7 @@ impl<P: Blobs + ?Sized> Provider for P {
                     backend_write_operations: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let results = self.put_batch_sealed(request.value).await;
+                let results = self.put_batch(request.value).await;
                 release(work, request.allocation, request.bytes)?;
                 let bytes = (results.capacity() * size_of::<Result<Put, Error>>()) as u64;
                 let (controls, late) = work.record_actual_owned(bytes)?;

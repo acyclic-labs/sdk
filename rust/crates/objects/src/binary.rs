@@ -3,7 +3,7 @@ use crate::{
     Availability, Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object,
     Page, Put, Released, Retained, RootId, Sealed, Usage, convert, wire,
 };
-use acyclic_stream::{OwnedBytes, ProviderPlatform, ProviderTask, Revision};
+use acyclic_stream::{ProviderPlatform, ProviderTask, Revision};
 use bytes::Bytes;
 use prost::Message;
 use std::future::Future;
@@ -93,11 +93,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         self.transport.availability(digest).await
     }
 
-    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
-        self.put_sealed(Sealed::new(body), references).await
-    }
-
-    async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+    async fn put(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         let digest = Digest::sealed(&body);
         let length = body.bytes().len() as u64;
         self.publish(
@@ -113,10 +109,7 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
         .await
     }
 
-    async fn put_batch_sealed(
-        &self,
-        requests: Vec<(Sealed, Vec<Digest>)>,
-    ) -> Vec<Result<Put, Error>> {
+    async fn put_batch(&self, requests: Vec<(Sealed, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
         let members = requests.len();
         if members == 0 {
             return Vec::new();

@@ -175,7 +175,9 @@ mod tests {
             Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
         let account = store.account(b"inline-selection")?;
         let bytes = OwnedBytes::from_static(b"original physical selection");
-        let leaf = account.put(bytes.clone(), Vec::new()).await?;
+        let leaf = account
+            .put(crate::Sealed::new(bytes.clone()), Vec::new())
+            .await?;
         let leaf = leaf.verified().ok_or("leaf publication is known")?;
         let manifest = account
             .put_manifest(Manifest {

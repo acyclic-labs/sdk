@@ -2,7 +2,7 @@
 //! primary's writes only when told.
 use super::*;
 use crate::MemoryObjects;
-use acyclic_stream::AppliedRevisions;
+use acyclic_stream::{AppliedRevisions, OwnedBytes};
 use std::sync::Mutex;
 use std::time::Duration;
 use tonic::transport::Endpoint;
@@ -20,7 +20,7 @@ struct Replica {
     primary: MemoryObjects,
     view: MemoryObjects,
     applied: AppliedRevisions,
-    pending: Mutex<Vec<OwnedBytes>>,
+    pending: Mutex<Vec<crate::Sealed>>,
     requested: Mutex<Option<tokio::sync::oneshot::Sender<MetadataMap>>>,
 }
 
@@ -69,7 +69,7 @@ impl Blobs for Replica {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
         self.view.availability(digest).await
     }
-    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+    async fn put(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         self.pending.lock().expect("pending").push(body.clone());
         self.primary.put(body, references).await
     }
@@ -179,10 +179,16 @@ async fn caller_supplied_channel_refreshes_credentials_for_each_rpc() -> TestRes
     });
     let client = client_over(resolve, credential);
     client
-        .put(OwnedBytes::from_static(b"first"), Vec::new())
+        .put(
+            crate::Sealed::new(OwnedBytes::from_static(b"first")),
+            Vec::new(),
+        )
         .await?;
     client
-        .put(OwnedBytes::from_static(b"second"), Vec::new())
+        .put(
+            crate::Sealed::new(OwnedBytes::from_static(b"second")),
+            Vec::new(),
+        )
         .await?;
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
     assert_eq!(
@@ -289,7 +295,9 @@ async fn grpc_availability_runs_shared_accounts_and_retains_source_failure() -> 
 }
 
 async fn written(writer: &GrpcObjects, body: &'static [u8]) -> Result<(Digest, Revision), Error> {
-    let put = writer.put(body.into(), Vec::new()).await?;
+    let put = writer
+        .put(crate::Sealed::new(body.into()), Vec::new())
+        .await?;
     let verified = put
         .verified()
         .ok_or(Error::from(wire::ErrorCode::Unavailable))?;
@@ -492,7 +500,8 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
         )
         .into();
         let beginning = tokio::time::Instant::now();
-        let mut request = Box::pin(objects.put(b"held".as_slice().into(), Vec::new()));
+        let mut request =
+            Box::pin(objects.put(crate::Sealed::new(b"held".as_slice().into()), Vec::new()));
         tokio::select! {
             result = &mut request => panic!("stalled refresh completed: {result:?}"),
             result = started => result?,
@@ -515,7 +524,9 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
 
         // Both refusals leave a new, valid source usable on the same channel.
         objects.credential = CredentialProvider::new(|| async { Ok("fixture".into()) });
-        objects.put(b"ready".as_slice().into(), Vec::new()).await?;
+        objects
+            .put(crate::Sealed::new(b"ready".as_slice().into()), Vec::new())
+            .await?;
         assert_eq!(replica.pending.lock().unwrap().len(), 1);
     }
     Ok(())

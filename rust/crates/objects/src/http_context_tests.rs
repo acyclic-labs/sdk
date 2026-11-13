@@ -1,6 +1,8 @@
 //! Real loopback gateway controls with event-held response bodies.
 use super::*;
 use acyclic_auth::operation::{Context, Stopped};
+#[cfg(feature = "test-support")]
+use acyclic_stream::OwnedBytes;
 use futures::{FutureExt, channel::oneshot, future::pending};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -16,25 +18,10 @@ async fn stopped_http_put_hashes_no_bytes_and_never_calls_credentials() -> TestR
         HttpObjects::with_credential_provider("http://127.0.0.1:1/", provider, Some(4096), None)?
             .with_context(Context::new(1, std::future::ready(()), pending()));
     let body: OwnedBytes = b"stopped-before-sealing".as_slice().into();
-    let before = acyclic_stream::hashed_on_this_thread();
-    assert_eq!(
-        objects
-            .put(body.clone(), Vec::new())
-            .await
-            .unwrap_err()
-            .stopped,
-        Some(Stopped::Deadline)
-    );
-    assert_eq!(acyclic_stream::hashed_on_this_thread(), before);
     let sealed = crate::Sealed::new(body);
-    assert!(acyclic_stream::hashed_on_this_thread() > before);
     let before = acyclic_stream::hashed_on_this_thread();
     assert_eq!(
-        objects
-            .put_sealed(sealed, Vec::new())
-            .await
-            .unwrap_err()
-            .stopped,
+        objects.put(sealed, Vec::new()).await.unwrap_err().stopped,
         Some(Stopped::Deadline)
     );
     assert_eq!(acyclic_stream::hashed_on_this_thread(), before);

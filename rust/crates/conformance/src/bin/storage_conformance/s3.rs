@@ -49,8 +49,8 @@ pub async fn verify(
     let right = account(store.clone(), &prefix)?;
     let body = OwnedBytes::from_static(b"race");
     let (a, b) = tokio::join!(
-        left.put(body.clone(), Vec::new()),
-        right.put(body.clone(), Vec::new())
+        left.put(acyclic_objects::Sealed::new(body.clone()), Vec::new()),
+        right.put(acyclic_objects::Sealed::new(body.clone()), Vec::new())
     );
     one_creator(a?, b?)?;
 
@@ -58,13 +58,14 @@ pub async fn verify(
     let body = OwnedBytes::from(vec![0x5a; 6 * 1024 * 1024 + 17]);
     let digest = Digest::of(&body);
     let parts_before = store.multipart_parts.load(Ordering::Relaxed);
-    left.put(body.clone(), Vec::new()).await?;
+    left.put(acyclic_objects::Sealed::new(body.clone()), Vec::new())
+        .await?;
     if store.multipart_parts.load(Ordering::Relaxed) - parts_before != 2 {
         return Err("step=s3-multipart: expected two successful UploadPart responses; recovery: inspect conditional multipart support and rerun storage-conformance".into());
     }
     let reopened = account(store.clone(), &prefix)?;
     assert!(matches!(
-        reopened.put(body.clone(), Vec::new()).await?,
+        reopened.put(acyclic_objects::Sealed::new(body.clone()), Vec::new()).await?,
         Put::AlreadyExists { verified } if verified.digest == digest
     ));
     assert_eq!(
@@ -125,7 +126,9 @@ async fn cold_ranges(
     for generation in 1..=8u8 {
         let body = OwnedBytes::from(vec![generation; 1024 * 1024]);
         let digest = Digest::of(&body);
-        provider.put(body, Vec::new()).await?;
+        provider
+            .put(acyclic_objects::Sealed::new(body), Vec::new())
+            .await?;
         if generation != 1 && generation != 8 {
             continue;
         }

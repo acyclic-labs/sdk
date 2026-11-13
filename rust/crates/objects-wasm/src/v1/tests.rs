@@ -115,7 +115,10 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     let client = BinaryObjects::new(transport.clone());
     let body = OwnedBytes::from_static(b"selected original account bytes");
     let digest = Digest::of(&body);
-    let put = client.put(body.clone(), Vec::new()).await.unwrap();
+    let put = client
+        .put(acyclic_objects::Sealed::new(body.clone()), Vec::new())
+        .await
+        .unwrap();
     assert_eq!(put.verified().unwrap().digest, digest);
     assert_eq!(
         put.verified().unwrap().revision,
@@ -134,12 +137,15 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     let calls = opened(&port);
     let batch = client
         .put_batch(vec![
-            (OwnedBytes::from_static(b"batch member"), vec![digest]),
             (
-                OwnedBytes::from_static(b"batch dangling"),
+                acyclic_objects::Sealed::new(OwnedBytes::from_static(b"batch member")),
+                vec![digest],
+            ),
+            (
+                acyclic_objects::Sealed::new(OwnedBytes::from_static(b"batch dangling")),
                 vec![Digest::of(b"never stored")],
             ),
-            (body.clone(), Vec::new()),
+            (acyclic_objects::Sealed::new(body.clone()), Vec::new()),
         ])
         .await;
     assert_eq!(opened(&port), calls + 1);
@@ -184,7 +190,7 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     let cancelled = OwnedBytes::from_static(b"cancelled before account publication");
     let cancelled_digest = Digest::of(&cancelled);
     {
-        let operation = client.put(cancelled, Vec::new());
+        let operation = client.put(acyclic_objects::Sealed::new(cancelled), Vec::new());
         let mut operation = core::pin::pin!(operation);
         assert!(futures::poll!(operation.as_mut()).is_pending());
     }
@@ -233,7 +239,10 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
     // This is the original provider's capacity refusal, through the same
     // Rust -> JavaScript -> Rust request path as successful account results.
     let bounded = MemoryObjects::bounded(0);
-    let expected = bounded.put(body.clone(), Vec::new()).await.unwrap_err();
+    let expected = bounded
+        .put(acyclic_objects::Sealed::new(body.clone()), Vec::new())
+        .await
+        .unwrap_err();
     let bounded_port = account_port(
         ObjectsV1Memory {
             inner: Arc::new(bounded),
@@ -241,7 +250,10 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
         .into(),
     );
     let bounded = BinaryObjects::new(JavaScriptTransport::new(bounded_port.clone()).unwrap());
-    let actual = bounded.put(body, Vec::new()).await.unwrap_err();
+    let actual = bounded
+        .put(acyclic_objects::Sealed::new(body), Vec::new())
+        .await
+        .unwrap_err();
     assert_eq!(
         actual, expected,
         "original provider refusal survives JavaScript"

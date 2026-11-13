@@ -56,7 +56,7 @@ async fn put(
     body: OwnedBytes,
     references: Vec<Digest>,
 ) -> Result<Digest, Failure> {
-    match blobs.put(body, references).await {
+    match blobs.put(crate::Sealed::new(body), references).await {
         Ok(Put::Created { verified } | Put::AlreadyExists { verified }) => Ok(verified.digest),
         other => Err(fail(case, other)),
     }
@@ -123,13 +123,17 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     // put-created-then-already-exists-verified
     let body = bytes(&format!("{run}/plain"), 4096);
     let digest = Digest::of(&body);
-    let created = first.put(body.clone(), Vec::new()).await;
+    let created = first
+        .put(crate::Sealed::new(body.clone()), Vec::new())
+        .await;
     expect!(
         "put-created-then-already-exists-verified",
         matches!(&created, Ok(Put::Created { verified }) if verified.digest == digest && verified.length == 4096),
         created
     );
-    let again = first.put(body.clone(), Vec::new()).await;
+    let again = first
+        .put(crate::Sealed::new(body.clone()), Vec::new())
+        .await;
     expect!(
         "put-created-then-already-exists-verified",
         matches!(&again, Ok(Put::AlreadyExists { verified }) if verified.digest == digest && verified.length == 4096),
@@ -196,7 +200,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     // references-must-exist-and-match
     let missing = first
         .put(
-            bytes(&format!("{run}/dangling"), 10),
+            crate::Sealed::new(bytes(&format!("{run}/dangling"), 10)),
             vec![Digest::of(b"never stored")],
         )
         .await;
@@ -213,7 +217,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         vec![digest],
     )
     .await?;
-    let conflict = first.put(parent_body, Vec::new()).await;
+    let conflict = first.put(crate::Sealed::new(parent_body), Vec::new()).await;
     expect!(
         "references-must-exist-and-match",
         code(&conflict) == Some(ErrorCode::Conflict),
@@ -228,10 +232,13 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let members = [&base, &dangling, &child, &base].map(|body| Digest::of(body));
     let puts = first
         .put_batch(vec![
-            (base.clone(), Vec::new()),
-            (dangling.clone(), vec![Digest::of(b"never stored")]),
-            (child.clone(), vec![base_digest]),
-            (base.clone(), Vec::new()),
+            (crate::Sealed::new(base.clone()), Vec::new()),
+            (
+                crate::Sealed::new(dangling.clone()),
+                vec![Digest::of(b"never stored")],
+            ),
+            (crate::Sealed::new(child.clone()), vec![base_digest]),
+            (crate::Sealed::new(base.clone()), Vec::new()),
         ])
         .await;
     let outcome = |put: &Result<Put, Error>, digest: Digest| match put {
@@ -259,7 +266,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     );
     let before = first.usage().await;
     let repeated = first
-        .put_batch(vec![(base, Vec::new()), (child, vec![base_digest])])
+        .put_batch(vec![
+            (crate::Sealed::new(base), Vec::new()),
+            (crate::Sealed::new(child), vec![base_digest]),
+        ])
         .await;
     let after = first.usage().await;
     let outcomes: Vec<_> = repeated
@@ -521,7 +531,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&foreign_read)
     );
     let foreign_reference = second
-        .put(bytes(&format!("{run}/foreign"), 8), vec![digest])
+        .put(
+            crate::Sealed::new(bytes(&format!("{run}/foreign"), 8)),
+            vec![digest],
+        )
         .await;
     expect!(
         "cross-account-isolation",
@@ -540,7 +553,9 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         foreign_delete == Ok(Delete::Absent),
         foreign_delete
     );
-    let independent = second.put(body.clone(), Vec::new()).await;
+    let independent = second
+        .put(crate::Sealed::new(body.clone()), Vec::new())
+        .await;
     expect!(
         "cross-account-isolation",
         matches!(&independent, Ok(Put::Created { verified }) if verified.digest == digest),

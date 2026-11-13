@@ -8,7 +8,6 @@ use crate::{
 use crate::{
     NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
 };
-use acyclic_stream::OwnedBytes;
 use acyclic_stream::testing::{Counted, RequestClass};
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -19,13 +18,9 @@ impl<P: Blobs> ExplicitBlobs for Counted<P> {
         self.inner().availability(digest).await
     }
 
-    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+    async fn put(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         self.record(RequestClass::Data);
         self.inner().put(body, references).await
-    }
-    async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        self.record(RequestClass::Data);
-        self.inner().put_sealed(body, references).await
     }
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         self.record(RequestClass::Data);
@@ -99,16 +94,12 @@ impl<P: Blobs> ExplicitBlobs for Counted<P> {
     ) -> Result<acyclic_stream::RevisionCut, Error> {
         self.inner().admitted(minimum).await
     }
-    async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
-        self.record(RequestClass::Data);
-        self.inner().put_batch(requests).await
-    }
-    async fn put_batch_sealed(
+    async fn put_batch(
         &self,
         requests: Vec<(crate::Sealed, Vec<Digest>)>,
     ) -> Vec<Result<Put, Error>> {
         self.record(RequestClass::Data);
-        self.inner().put_batch_sealed(requests).await
+        self.inner().put_batch(requests).await
     }
     async fn get_batch(
         &self,

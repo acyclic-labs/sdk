@@ -520,7 +520,9 @@ async fn a_quiet_account_collection_opens_no_epoch() -> Result<(), Box<dyn Error
     // That definitive non-mutation must preserve its warmed cache entry.
     let account = fs.local_account();
     let bytes = OwnedBytes::from_static(b"retained outside the filesystem");
-    let put = account.put(bytes.clone(), Vec::new()).await?;
+    let put = account
+        .put(acyclic_objects::Sealed::new(bytes.clone()), Vec::new())
+        .await?;
     let root = acyclic_objects::RootId::new(*b"external-cache-owner")?;
     account
         .retain(

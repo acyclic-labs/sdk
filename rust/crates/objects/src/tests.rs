@@ -81,14 +81,14 @@ async fn a_full_bounded_account_can_still_delete() -> Result<(), Box<dyn std::er
     let probe = Store::new(MemoryMedium::default());
     probe
         .account(b"acct")?
-        .put(vec![5; 8].into(), Vec::new())
+        .put(crate::Sealed::new(vec![5; 8].into()), Vec::new())
         .await?;
     let full = stored(probe.medium()).await?;
     // Exactly full after one put: the delete mark must not need more room.
     let store = Store::new(MemoryMedium::bounded(full));
     let blobs = store.account(b"acct")?;
     let digest = blobs
-        .put(vec![5; 8].into(), Vec::new())
+        .put(crate::Sealed::new(vec![5; 8].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -102,7 +102,9 @@ async fn a_full_bounded_account_can_still_delete() -> Result<(), Box<dyn std::er
 #[tokio::test]
 async fn releases_and_sweeps_commit_revisions() -> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();
-    let put = blobs.put(OwnedBytes::from(vec![3; 8]), Vec::new()).await?;
+    let put = blobs
+        .put(crate::Sealed::new(OwnedBytes::from(vec![3; 8])), Vec::new())
+        .await?;
     let digest = put.verified().ok_or("a put verifies")?.digest;
     let root = RootId::new(b"root".to_vec())?;
     let retained = blobs.retain(&root, vec![digest]).await?;
@@ -142,7 +144,9 @@ async fn stores_sharing_a_medium_serve_each_others_revisions()
     let second = Store::new(medium).account(b"shared")?;
     first.flush(None).await?;
     let applied = first.revisions().await?.ok_or("stores issue revisions")?;
-    let put = second.put(OwnedBytes::from(vec![4; 8]), Vec::new()).await?;
+    let put = second
+        .put(crate::Sealed::new(OwnedBytes::from(vec![4; 8])), Vec::new())
+        .await?;
     let written = put
         .verified()
         .and_then(|verified| verified.revision.clone())
@@ -189,8 +193,12 @@ async fn a_reopened_store_serves_tokens_from_before_the_restart()
     };
 
     let before = open(root.path()).await?;
-    let written = committed(before.put(OwnedBytes::from(vec![1; 8]), Vec::new()).await?)
-        .ok_or("a put commits a revision")?;
+    let written = committed(
+        before
+            .put(crate::Sealed::new(OwnedBytes::from(vec![1; 8])), Vec::new())
+            .await?,
+    )
+    .ok_or("a put commits a revision")?;
     drop(before);
 
     let reopened = open(root.path()).await?;
@@ -204,7 +212,7 @@ async fn a_reopened_store_serves_tokens_from_before_the_restart()
     // The restarted run keeps the incarnation under its own run's scope.
     let later = committed(
         reopened
-            .put(OwnedBytes::from(vec![2; 8]), Vec::new())
+            .put(crate::Sealed::new(OwnedBytes::from(vec![2; 8])), Vec::new())
             .await?,
     )
     .ok_or("a put commits a revision")?;
@@ -246,7 +254,7 @@ async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn
     let digest = Digest::of(&body);
     store
         .account(b"first")?
-        .put(body.clone(), Vec::new())
+        .put(crate::Sealed::new(body.clone()), Vec::new())
         .await?;
     assert!(matches!(
         crate::LocalMedium::open(root.path(), Default::default(), None).await,
@@ -321,7 +329,7 @@ pub(crate) async fn failed_release(
     let root = RootId::new(*b"cause")?;
     let body = OwnedBytes::from(b"server cause".to_vec());
     let digest = client
-        .put(body, Vec::new())
+        .put(crate::Sealed::new(body), Vec::new())
         .await?
         .verified()
         .ok_or("put was not acknowledged")?
@@ -354,12 +362,18 @@ pub(crate) async fn failed_batch(
     server.faults.store(128, Ordering::SeqCst);
     let results = client
         .put_batch(vec![
-            (b"batch cause first".as_slice().into(), Vec::new()),
             (
-                b"batch cause missing".as_slice().into(),
+                crate::Sealed::new(b"batch cause first".as_slice().into()),
+                Vec::new(),
+            ),
+            (
+                crate::Sealed::new(b"batch cause missing".as_slice().into()),
                 vec![Digest::of(b"batch cause absent reference")],
             ),
-            (b"batch cause last".as_slice().into(), Vec::new()),
+            (
+                crate::Sealed::new(b"batch cause last".as_slice().into()),
+                Vec::new(),
+            ),
         ])
         .await;
     server.faults.store(0, Ordering::SeqCst);
@@ -377,7 +391,10 @@ pub(crate) async fn failed_batch(
     }
     // A fresh request on the same transport progresses after the barrier fails.
     client
-        .put(b"after batch failure".as_slice().into(), Vec::new())
+        .put(
+            crate::Sealed::new(b"after batch failure".as_slice().into()),
+            Vec::new(),
+        )
         .await?;
     Ok(())
 }
@@ -473,10 +490,17 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
     // The fault lands on the publication, not on opening the revisions.
     blobs.flush(None).await?;
     store.medium().faults.store(1, Ordering::SeqCst);
-    assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
+    assert_eq!(
+        blobs
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
+        Put::Unknown
+    );
     store.medium().faults.store(0, Ordering::SeqCst);
     assert!(matches!(
-        blobs.put(body.clone(), Vec::new()).await?,
+        blobs
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
         Put::Created { .. }
     ));
     let root = RootId::new(*b"uncertain")?;
@@ -522,7 +546,12 @@ async fn abandoned_envelope_publications_release_only_their_own_flush_tracking()
         let body = OwnedBytes::from_static(b"abandoned publication");
         if outcome == "unknown" {
             *medium.ambiguous.lock().unwrap() = Some("/e/");
-            assert_eq!(account.put(body.clone(), Vec::new()).await?, Put::Unknown);
+            assert_eq!(
+                account
+                    .put(crate::Sealed::new(body.clone()), Vec::new())
+                    .await?,
+                Put::Unknown
+            );
             *medium.ambiguous.lock().unwrap() = None;
         } else {
             // Hold the real write after it applies but before its caller
@@ -533,11 +562,14 @@ async fn abandoned_envelope_publications_release_only_their_own_flush_tracking()
                 "/e/"
             };
             let (mut reached, release) = medium.park("create", fragment);
-            let mut publishing = Box::pin(account.put(body.clone(), Vec::new()));
+            let mut publishing =
+                Box::pin(account.put(crate::Sealed::new(body.clone()), Vec::new()));
             drive_to_park(publishing.as_mut(), &mut reached).await;
             if matches!(outcome, "adopted" | "payload-cancelled") {
                 assert!(matches!(
-                    account.put(body.clone(), Vec::new()).await?,
+                    account
+                        .put(crate::Sealed::new(body.clone()), Vec::new())
+                        .await?,
                     Put::AlreadyExists { .. }
                 ));
             }
@@ -565,7 +597,7 @@ async fn ambiguous_revival_stops_at_its_original_conditional_write()
         let blobs = store.account(b"revival")?;
         let body = OwnedBytes::from(vec![19; 64]);
         let digest = blobs
-            .put(body.clone(), Vec::new())
+            .put(crate::Sealed::new(body.clone()), Vec::new())
             .await?
             .verified()
             .ok_or("initial publication was not acknowledged")?
@@ -578,7 +610,12 @@ async fn ambiguous_revival_stops_at_its_original_conditional_write()
             .medium()
             .faults
             .store(4 | if applied { 8 } else { 0 }, Ordering::SeqCst);
-        assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
+        assert_eq!(
+            blobs
+                .put(crate::Sealed::new(body.clone()), Vec::new())
+                .await?,
+            Put::Unknown
+        );
         assert_eq!(
             store.medium().replacements.load(Ordering::SeqCst) - before,
             1,
@@ -601,7 +638,9 @@ async fn ambiguous_revival_stops_at_its_original_conditional_write()
         );
         // Both real storage outcomes admit an exact caller resend. The
         // unapplied case is the negative control for a falsely acknowledged revival.
-        let resent = blobs.put(body.clone(), Vec::new()).await?;
+        let resent = blobs
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?;
         assert!(matches!(resent, Put::AlreadyExists { .. }));
         assert_eq!(
             resent
@@ -619,7 +658,10 @@ async fn ambiguous_revival_stops_at_its_original_conditional_write()
 async fn incomplete_root_scan_suspends_collection() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::new(Faulty::default());
     let blobs = store.account(b"account")?;
-    let Put::Created { verified } = blobs.put(vec![2; 64].into(), Vec::new()).await? else {
+    let Put::Created { verified } = blobs
+        .put(crate::Sealed::new(vec![2; 64].into()), Vec::new())
+        .await?
+    else {
         return Err("not created".into());
     };
     blobs
@@ -646,7 +688,10 @@ async fn incomplete_root_scan_suspends_collection() -> Result<(), Box<dyn std::e
 async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();
-    let Put::Created { verified } = blobs.put(vec![3; 8].into(), Vec::new()).await? else {
+    let Put::Created { verified } = blobs
+        .put(crate::Sealed::new(vec![3; 8].into()), Vec::new())
+        .await?
+    else {
         return Err("not created".into());
     };
     for _ in 0..2 {
@@ -938,7 +983,7 @@ async fn a_revival_losing_both_conditional_writes_returns_conflict()
     let second = Store::new(medium.clone()).account(b"twice-contended")?;
     let body = OwnedBytes::from(vec![37; 64]);
     let digest = first
-        .put(body.clone(), Vec::new())
+        .put(crate::Sealed::new(body.clone()), Vec::new())
         .await?
         .verified()
         .ok_or("initial publication was not acknowledged")?
@@ -947,13 +992,15 @@ async fn a_revival_losing_both_conditional_writes_returns_conflict()
     assert_eq!(first.collect().await?.swept, 0);
 
     let (mut observed, release) = medium.park("read", "/e/");
-    let put = first.put(body.clone(), Vec::new());
+    let put = first.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(put);
     drive_to_park(put.as_mut(), &mut observed).await;
     // Another real put revives the observed envelope, then collection stamps
     // it again. The original observation loses CAS to a condemned successor.
     assert!(matches!(
-        second.put(body.clone(), Vec::new()).await?,
+        second
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
         Put::AlreadyExists { .. }
     ));
     assert_eq!(second.collect().await?.swept, 0);
@@ -963,7 +1010,9 @@ async fn a_revival_losing_both_conditional_writes_returns_conflict()
     drive_to_park(put.as_mut(), &mut observed_again).await;
     assert_eq!(medium.lost.load(Ordering::SeqCst), 1);
     assert!(matches!(
-        second.put(body.clone(), Vec::new()).await?,
+        second
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
         Put::AlreadyExists { .. }
     ));
     assert_eq!(second.collect().await?.swept, 0);
@@ -1006,13 +1055,13 @@ async fn a_disappearing_payload_returns_without_recreating_an_orphan()
     let body = OwnedBytes::from(vec![29; 64]);
     let digest = Digest::of(&body);
     let (mut created, create_release) = medium.park("create", "/e/");
-    let first_put = first.put(body.clone(), Vec::new());
+    let first_put = first.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(first_put);
     drive_to_park(first_put.as_mut(), &mut created).await;
     // The adopter observes the actual incomplete version before the original
     // writer finishes its payload, then loses its own create to those bytes.
     let (mut absent, read_release) = medium.park("read", "/p/");
-    let second_put = second.put(body.clone(), Vec::new());
+    let second_put = second.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(second_put);
     drive_to_park(second_put.as_mut(), &mut absent).await;
     create_release
@@ -1040,7 +1089,9 @@ async fn a_disappearing_payload_returns_without_recreating_an_orphan()
     assert!(medium.inner.list(&prefix, None, 1).await?.is_empty());
     // Negative control: an explicit caller resend creates one readable version.
     assert!(matches!(
-        second.put(body.clone(), Vec::new()).await?,
+        second
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
         Put::Created { .. }
     ));
     assert_eq!(second.get(digest, ByteRange::FULL, 64).await?.body(), &body);
@@ -1055,7 +1106,7 @@ async fn a_lost_medium_gate_ends_at_its_original_write() -> Result<(), Box<dyn s
     account.flush(None).await?;
     let body = OwnedBytes::from(vec![31; 64]);
     let (mut reached, release) = medium.park("create", "/e/");
-    let put = account.put(body.clone(), Vec::new());
+    let put = account.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(put);
     drive_to_park(put.as_mut(), &mut reached).await;
     drop(release);
@@ -1063,7 +1114,7 @@ async fn a_lost_medium_gate_ends_at_its_original_write() -> Result<(), Box<dyn s
     // never a fabricated definite refusal or an immortal notification wait.
     assert_eq!(put.await?, Put::Unknown);
     assert!(matches!(
-        account.put(body, Vec::new()).await?,
+        account.put(crate::Sealed::new(body), Vec::new()).await?,
         Put::AlreadyExists { .. }
     ));
     // A lost observer also releases the medium future with its typed cause.
@@ -1094,7 +1145,7 @@ async fn delete_then_reference(
     let (deleting, writing) = (Store::new(medium.clone()), Store::new(medium.clone()));
     let (deleting, writing) = (deleting.account(b"acct")?, writing.account(b"acct")?);
     let child = writing
-        .put(vec![7; 32].into(), Vec::new())
+        .put(crate::Sealed::new(vec![7; 32].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1105,7 +1156,7 @@ async fn delete_then_reference(
     drive_to_park(deleted.as_mut(), &mut reached).await;
     let written = match writer {
         Writer::Put => writing
-            .put(vec![8; 32].into(), vec![child])
+            .put(crate::Sealed::new(vec![8; 32].into()), vec![child])
             .await
             .map(|put| put.verified().is_some()),
         Writer::Retain => writing
@@ -1150,13 +1201,13 @@ async fn a_reference_indexed_first_refuses_the_delete() -> Result<(), Box<dyn st
         Store::new(medium.clone()).account(b"acct")?,
     );
     let child = writing
-        .put(vec![7; 32].into(), Vec::new())
+        .put(crate::Sealed::new(vec![7; 32].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
         .digest;
     let (mut reached, release) = medium.park("create", "/i/");
-    let written = writing.put(vec![8; 32].into(), vec![child]);
+    let written = writing.put(crate::Sealed::new(vec![8; 32].into()), vec![child]);
     tokio::pin!(written);
     drive_to_park(written.as_mut(), &mut reached).await;
     let deleted = deleting.delete(child).await;
@@ -1184,7 +1235,10 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     for body in [b"old child".as_slice(), b"new child".as_slice()] {
         children.push(
             writing
-                .put(OwnedBytes::copy_from_slice(body), Vec::new())
+                .put(
+                    crate::Sealed::new(OwnedBytes::copy_from_slice(body)),
+                    Vec::new(),
+                )
                 .await?
                 .verified()
                 .ok_or("unknown child")?
@@ -1193,7 +1247,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     }
     let body = OwnedBytes::from(vec![9; 32]);
     let digest = writing
-        .put(body.clone(), vec![children[0]])
+        .put(crate::Sealed::new(body.clone()), vec![children[0]])
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1202,7 +1256,9 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
     let deleted = deleting.delete(digest);
     tokio::pin!(deleted);
     drive_to_park(deleted.as_mut(), &mut reached).await;
-    let put = writing.put(body.clone(), vec![children[1]]).await;
+    let put = writing
+        .put(crate::Sealed::new(body.clone()), vec![children[1]])
+        .await;
     release
         .send(())
         .expect("parked medium operation remains alive");
@@ -1252,11 +1308,15 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         let store = Store::new(Counting::default());
         let blobs = store.account(b"cost")?;
         for value in 0..population {
-            blobs.put(vec![value; 8].into(), Vec::new()).await?;
+            blobs
+                .put(crate::Sealed::new(vec![value; 8].into()), Vec::new())
+                .await?;
         }
         let child = Digest::of(&[0; 8]);
         let parent = Digest::of(&[255; 8]);
-        blobs.put(vec![255; 8].into(), vec![child]).await?;
+        blobs
+            .put(crate::Sealed::new(vec![255; 8].into()), vec![child])
+            .await?;
         store.medium().take();
         let removed = blobs.delete(parent).await?;
         assert_eq!(removed.references, [child]);
@@ -1264,7 +1324,9 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         if let Some(previous) = &previous {
             assert_eq!(&direct, previous, "unrelated blobs add no delete work");
         }
-        blobs.put(vec![255; 8].into(), vec![child]).await?;
+        blobs
+            .put(crate::Sealed::new(vec![255; 8].into()), vec![child])
+            .await?;
         store.medium().take();
         // Cost negative: the old caller reads the same envelope separately.
         let old = blobs.head(parent).await?.references;
@@ -1282,13 +1344,13 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
 async fn delete_reads_only_its_inbound_index() -> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();
     let child = blobs
-        .put(vec![1; 8].into(), Vec::new())
+        .put(crate::Sealed::new(vec![1; 8].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
         .digest;
     let parent = blobs
-        .put(vec![2; 8].into(), vec![child])
+        .put(crate::Sealed::new(vec![2; 8].into()), vec![child])
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1318,7 +1380,7 @@ async fn an_interrupted_holders_index_key_pins_its_child() -> Result<(), Box<dyn
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"acct")?;
     let child = blobs
-        .put(vec![3; 8].into(), Vec::new())
+        .put(crate::Sealed::new(vec![3; 8].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1348,13 +1410,13 @@ async fn another_processs_collection_keeps_a_fresh_blob_for_one_full_pass()
         Store::new(medium).account(b"acct")?,
     );
     let pinned = writing
-        .put(vec![4; 8].into(), Vec::new())
+        .put(crate::Sealed::new(vec![4; 8].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
         .digest;
     let loose = writing
-        .put(vec![5; 8].into(), Vec::new())
+        .put(crate::Sealed::new(vec![5; 8].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1373,7 +1435,9 @@ async fn another_processs_collection_keeps_a_fresh_blob_for_one_full_pass()
         Err(ErrorCode::NotFound)
     );
     // A re-put refreshes the grace of bytes still present.
-    let refreshed = writing.put(vec![4; 8].into(), Vec::new()).await?;
+    let refreshed = writing
+        .put(crate::Sealed::new(vec![4; 8].into()), Vec::new())
+        .await?;
     assert!(matches!(refreshed, Put::AlreadyExists { .. }));
     Ok(())
 }
@@ -1387,7 +1451,7 @@ async fn release_then_retain() -> Result<Delete, Box<dyn std::error::Error>> {
         Store::new(medium.clone()).account(b"acct")?,
     );
     let child = retaining
-        .put(vec![6; 32].into(), Vec::new())
+        .put(crate::Sealed::new(vec![6; 32].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1435,7 +1499,7 @@ async fn a_delete_never_removes_a_writers_pending_reference()
     let (deleting, writing, reputting) = stores;
     let body = OwnedBytes::from(vec![7; 32]);
     let child = writing
-        .put(body.clone(), Vec::new())
+        .put(crate::Sealed::new(body.clone()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1447,14 +1511,20 @@ async fn a_delete_never_removes_a_writers_pending_reference()
     drive_to_park(deleted.as_mut(), &mut deleter_reached).await;
     let (mut writer_reached, writer_release) =
         medium.park("create", format!("/i/{}/e", child.to_hex()));
-    let written = writing.put(vec![8; 32].into(), vec![child]);
+    let written = writing.put(crate::Sealed::new(vec![8; 32].into()), vec![child]);
     tokio::pin!(written);
     drive_to_park(written.as_mut(), &mut writer_reached).await;
     deleter_release
         .send(())
         .expect("parked medium operation remains alive");
     assert_eq!(deleted.await?, Delete::Deleted);
-    assert!(reputting.put(body, Vec::new()).await?.verified().is_some());
+    assert!(
+        reputting
+            .put(crate::Sealed::new(body), Vec::new())
+            .await?
+            .verified()
+            .is_some()
+    );
     writer_release
         .send(())
         .expect("parked medium operation remains alive");
@@ -1479,7 +1549,7 @@ async fn stalled_delete_then_reput(
     );
     let body = OwnedBytes::from(vec![12; 32]);
     let digest = others
-        .put(body.clone(), Vec::new())
+        .put(crate::Sealed::new(body.clone()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1496,7 +1566,9 @@ async fn stalled_delete_then_reput(
         Some(ErrorCode::NotFound)
     );
     assert!(matches!(
-        others.put(body.clone(), Vec::new()).await?,
+        others
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
         Put::Created { .. }
     ));
     others.retain(&RootId::new(*b"root")?, vec![digest]).await?;
@@ -1551,7 +1623,7 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"acct")?;
     let child = blobs
-        .put(vec![11; 32].into(), Vec::new())
+        .put(crate::Sealed::new(vec![11; 32].into()), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
@@ -1570,7 +1642,9 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
     );
     // Marked, it refuses new holders, as a live deleter needs; the refused
     // parent's index key still holds it.
-    let parent = blobs.put(vec![12; 32].into(), vec![child]).await;
+    let parent = blobs
+        .put(crate::Sealed::new(vec![12; 32].into()), vec![child])
+        .await;
     assert_eq!(
         parent.map_err(|error| error.code).err(),
         Some(ErrorCode::MissingReference)
@@ -1578,7 +1652,7 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
     assert_eq!(blobs.collect().await?.swept, 0);
     assert!(
         blobs
-            .put(vec![12; 32].into(), vec![child])
+            .put(crate::Sealed::new(vec![12; 32].into()), vec![child])
             .await?
             .verified()
             .is_some()
@@ -1623,7 +1697,7 @@ async fn stalled_put(
     let digest = Digest::of(&body);
     let (operation, fragment, skip) = stall;
     let (mut reached, release) = medium.park_after(operation, fragment, skip);
-    let put = writer.put(body.clone(), Vec::new());
+    let put = writer.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(put);
     drive_to_park(put.as_mut(), &mut reached).await;
     for _ in 0..passes {
@@ -1666,7 +1740,9 @@ async fn stalled_put(
             // Negative control: the collector really removed the envelope,
             // so a commit that skipped its check would reference a lost blob.
             assert!(fenced, "{stall:?}");
-            let retried = writer.put(body.clone(), Vec::new()).await?;
+            let retried = writer
+                .put(crate::Sealed::new(body.clone()), Vec::new())
+                .await?;
             assert!(matches!(retried, Put::Created { .. }));
             writer.retain(&root, vec![digest]).await?;
             let read = writer.get(digest, ByteRange::FULL, 64).await?;
@@ -1718,7 +1794,7 @@ async fn a_delayed_collector_never_removes_a_later_version()
     let body = OwnedBytes::from(vec![8; 64]);
     let digest = Digest::of(&body);
     let (mut reached, release) = medium.park("create", "/p/");
-    let put = writer.put(body.clone(), Vec::new());
+    let put = writer.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(put);
     drive_to_park(put.as_mut(), &mut reached).await;
     collector.collect().await?;
@@ -1735,7 +1811,9 @@ async fn a_delayed_collector_never_removes_a_later_version()
     assert!(matches!(put.await?, Put::Created { .. }));
     // A later put of the same digest publishes a fresh version meanwhile.
     assert!(matches!(
-        writer.put(body.clone(), Vec::new()).await?,
+        writer
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
         Put::Created { .. }
     ));
     resume
@@ -1779,11 +1857,13 @@ async fn equal_puts(
     let digest = Digest::of(&body);
     let (operation, fragment, skip) = stall;
     let (mut reached, release) = medium.park_after(operation, fragment, skip);
-    let stalled = first.put(body.clone(), Vec::new());
+    let stalled = first.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(stalled);
     drive_to_park(stalled.as_mut(), &mut reached).await;
     *medium.ambiguous.lock().unwrap() = lossy.then_some("/p/");
-    let other = second.put(body.clone(), Vec::new()).await?;
+    let other = second
+        .put(crate::Sealed::new(body.clone()), Vec::new())
+        .await?;
     *medium.ambiguous.lock().unwrap() = None;
     release
         .send(())
@@ -1843,7 +1923,9 @@ async fn put_racing_a_condemned_envelope(removed: bool) -> Result<Put, Box<dyn s
     let hex = digest.to_hex();
     let envelope = format!("/e/{}/{hex}", &hex[..2]);
     assert!(matches!(
-        second.put(body.clone(), Vec::new()).await?,
+        second
+            .put(crate::Sealed::new(body.clone()), Vec::new())
+            .await?,
         Put::Created { .. }
     ));
     // The real collector condemns the unrooted blob.
@@ -1855,7 +1937,7 @@ async fn put_racing_a_condemned_envelope(removed: bool) -> Result<Put, Box<dyn s
         // Parked after observing the condemned envelope, before reviving it.
         medium.park("read", envelope.as_str())
     };
-    let parked = first.put(body.clone(), Vec::new());
+    let parked = first.put(crate::Sealed::new(body.clone()), Vec::new());
     tokio::pin!(parked);
     drive_to_park(parked.as_mut(), &mut reached).await;
     if removed {
@@ -1866,7 +1948,9 @@ async fn put_racing_a_condemned_envelope(removed: bool) -> Result<Put, Box<dyn s
     } else {
         // An equal put wins the revival.
         assert!(matches!(
-            second.put(body.clone(), Vec::new()).await?,
+            second
+                .put(crate::Sealed::new(body.clone()), Vec::new())
+                .await?,
             Put::AlreadyExists { .. }
         ));
     }
@@ -1907,12 +1991,14 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     let blobs = Store::new(medium.clone()).account(b"account")?;
     let mut published = Vec::new();
     for fill in 0..4_u8 {
-        let put = blobs.put(vec![fill; 16].into(), Vec::new()).await?;
+        let put = blobs
+            .put(crate::Sealed::new(vec![fill; 16].into()), Vec::new())
+            .await?;
         published.push(put.verified().ok_or("a put verifies")?.digest);
     }
     // Its envelope is created; its payload is still to come.
     let (mut reached, release) = medium.park("create", "/e/");
-    let stalled = blobs.put(vec![99; 16].into(), Vec::new());
+    let stalled = blobs.put(crate::Sealed::new(vec![99; 16].into()), Vec::new());
     tokio::pin!(stalled);
     drive_to_park(stalled.as_mut(), &mut reached).await;
     let mut listed = Vec::new();
@@ -2170,12 +2256,17 @@ async fn operations<M: Medium>(
     let blobs = store.account(b"account")?;
     for blob in 0..existing {
         blobs
-            .put(blob.to_le_bytes().to_vec().into(), Vec::new())
+            .put(
+                crate::Sealed::new(blob.to_le_bytes().to_vec().into()),
+                Vec::new(),
+            )
             .await?;
     }
     store.medium().take();
     assert!(matches!(
-        blobs.put(vec![0xff; 64].into(), Vec::new()).await?,
+        blobs
+            .put(crate::Sealed::new(vec![0xff; 64].into()), Vec::new())
+            .await?,
         Put::Created { .. }
     ));
     let put = store.medium().take();
@@ -2252,8 +2343,16 @@ async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
             .map(|verified| verified.digest)
             .ok_or("unknown")
     };
-    let child = digest(blobs.put(vec![1; 8].into(), Vec::new()).await?)?;
-    let parent = digest(blobs.put(vec![2; 8].into(), vec![child]).await?)?;
+    let child = digest(
+        blobs
+            .put(crate::Sealed::new(vec![1; 8].into()), Vec::new())
+            .await?,
+    )?;
+    let parent = digest(
+        blobs
+            .put(crate::Sealed::new(vec![2; 8].into()), vec![child])
+            .await?,
+    )?;
     let root = RootId::new(*b"root")?;
     store.medium().flushed();
     blobs.retain(&root, vec![parent]).await?;
@@ -2267,7 +2366,11 @@ async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
     blobs.flush(Some(&[parent])).await?;
     assert_eq!(store.medium().flushed(), Vec::<usize>::new());
     // Negative control: a new blob in the closure is flushed with it.
-    let fresh = digest(blobs.put(vec![3; 8].into(), vec![parent]).await?)?;
+    let fresh = digest(
+        blobs
+            .put(crate::Sealed::new(vec![3; 8].into()), vec![parent])
+            .await?,
+    )?;
     blobs.flush(Some(&[fresh])).await?;
     assert_eq!(store.medium().flushed(), [3]);
     Ok(())
@@ -2299,7 +2402,10 @@ async fn flush_excludes_collection_through_acknowledgement()
         let selected = [Digest::of(b"body")];
         if matches!(kind, "flush" | "manifest") {
             account
-                .put(OwnedBytes::from_static(b"body"), Vec::new())
+                .put(
+                    crate::Sealed::new(OwnedBytes::from_static(b"body")),
+                    Vec::new(),
+                )
                 .await?;
         }
         if kind == "manifest" {
@@ -2854,14 +2960,26 @@ async fn commit_scenario(
             .map(|verified| verified.digest)
             .ok_or("unknown")
     };
-    let child = digest(blobs.put(vec![1; 48].into(), Vec::new()).await?)?;
-    let parent = digest(blobs.put(vec![2; 48].into(), vec![child]).await?)?;
+    let child = digest(
+        blobs
+            .put(crate::Sealed::new(vec![1; 48].into()), Vec::new())
+            .await?,
+    )?;
+    let parent = digest(
+        blobs
+            .put(crate::Sealed::new(vec![2; 48].into()), vec![child])
+            .await?,
+    )?;
     blobs.retain(&RootId::new(*b"root")?, vec![parent]).await?;
     *acknowledged = Some([parent, child]);
     let gone = RootId::new(*b"gone")?;
     blobs.retain(&gone, vec![child]).await?;
     blobs.release(&gone).await?;
-    let entry = digest(blobs.put(vec![3; 48].into(), vec![child]).await?)?;
+    let entry = digest(
+        blobs
+            .put(crate::Sealed::new(vec![3; 48].into()), vec![child])
+            .await?,
+    )?;
     if append_first {
         medium.append(entry)?;
         blobs.flush(Some(&[entry])).await?;
@@ -3052,7 +3170,9 @@ async fn after_a_crashed_put(
     if present != listed || (present && !whole(blobs.get(digest, ByteRange::FULL, 64).await)) {
         return Err(format!("present {present}, listed {listed}, but not whole").into());
     }
-    let put = blobs.put(body.clone(), Vec::new()).await?;
+    let put = blobs
+        .put(crate::Sealed::new(body.clone()), Vec::new())
+        .await?;
     if put.verified().is_none() || !whole(blobs.get(digest, ByteRange::FULL, 64).await) {
         return Err(format!("reput {put:?} left it unreadable").into());
     }
@@ -3087,7 +3207,7 @@ async fn a_crash_inside_a_put_leaves_no_blob_until_a_reput_completes_it()
         let whole = Crashing::new(true, true, None);
         Store::new(whole.clone())
             .account(b"account")?
-            .put(body.clone(), Vec::new())
+            .put(crate::Sealed::new(body.clone()), Vec::new())
             .await?;
         let steps = whole.disk.lock().unwrap().operations;
         let mut violations = Vec::new();
@@ -3102,7 +3222,7 @@ async fn a_crash_inside_a_put_leaves_no_blob_until_a_reput_completes_it()
                 let crashed = Crashing::new(true, true, Some(budget));
                 let _ = Store::new(crashed.clone())
                     .account(b"account")?
-                    .put(body.clone(), Vec::new())
+                    .put(crate::Sealed::new(body.clone()), Vec::new())
                     .await;
                 let restarted = Crashing {
                     short_reads,
@@ -3130,8 +3250,12 @@ async fn a_crash_inside_a_put_leaves_no_blob_until_a_reput_completes_it()
 async fn uncommitted_parent(medium: &Crashing) -> Result<Digest, Box<dyn std::error::Error>> {
     let blobs = Store::new(medium.clone()).account(b"account")?;
     let child = Digest::of(&[1; 48]);
-    blobs.put(vec![1; 48].into(), Vec::new()).await?;
-    blobs.put(vec![2; 48].into(), vec![child]).await?;
+    blobs
+        .put(crate::Sealed::new(vec![1; 48].into()), Vec::new())
+        .await?;
+    blobs
+        .put(crate::Sealed::new(vec![2; 48].into()), vec![child])
+        .await?;
     Ok(Digest::of(&[2; 48]))
 }
 
@@ -3234,9 +3358,11 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
             .map(|verified| verified.digest)
             .ok_or("unknown")
     };
-    let (child, child_syncs) = syncs(blobs.put(vec![7; 64].into(), Vec::new())).await;
+    let (child, child_syncs) =
+        syncs(blobs.put(crate::Sealed::new(vec![7; 64].into()), Vec::new())).await;
     let child = digest(child?)?;
-    let (parent, parent_syncs) = syncs(blobs.put(vec![8; 64].into(), vec![child])).await;
+    let (parent, parent_syncs) =
+        syncs(blobs.put(crate::Sealed::new(vec![8; 64].into()), vec![child])).await;
     let parent = digest(parent?)?;
     assert!(child_syncs.is_empty(), "{child_syncs:?}");
     assert!(parent_syncs.is_empty(), "{parent_syncs:?}");
@@ -3353,7 +3479,7 @@ impl Overlap {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Blobs for Overlap {
-    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, crate::Error> {
+    async fn put(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, crate::Error> {
         self.enter(self.inner.put(body, references)).await
     }
     async fn put_manifest(&self, manifest: crate::Manifest) -> Result<Put, crate::Error> {
@@ -3408,12 +3534,20 @@ async fn default_batches_overlap_one_window_and_keep_request_order()
     let count = crate::BATCH_WINDOW * 2 + 3;
     let body = |index: usize| OwnedBytes::from(index.to_le_bytes().to_vec());
     // Negative control: one-at-a-time puts never overlap under the probe.
-    blobs.put(body(count), Vec::new()).await?;
-    blobs.put(body(count + 1), Vec::new()).await?;
+    blobs
+        .put(crate::Sealed::new(body(count)), Vec::new())
+        .await?;
+    blobs
+        .put(crate::Sealed::new(body(count + 1)), Vec::new())
+        .await?;
     assert_eq!(blobs.peak.load(Ordering::SeqCst), 1);
 
     let puts = blobs
-        .put_batch((0..count).map(|index| (body(index), Vec::new())).collect())
+        .put_batch(
+            (0..count)
+                .map(|index| (crate::Sealed::new(body(index)), Vec::new()))
+                .collect(),
+        )
         .await;
     assert_eq!(blobs.peak.swap(0, Ordering::SeqCst), crate::BATCH_WINDOW);
     let mut reads = Vec::with_capacity(count);
@@ -3433,9 +3567,12 @@ async fn default_batches_overlap_one_window_and_keep_request_order()
     let digest = Digest::of(&parent);
     let puts = blobs
         .put_batch(vec![
-            (parent.clone(), Vec::new()),
-            (OwnedBytes::from_static(b"dependent child"), vec![digest]),
-            (parent, Vec::new()),
+            (crate::Sealed::new(parent.clone()), Vec::new()),
+            (
+                crate::Sealed::new(OwnedBytes::from_static(b"dependent child")),
+                vec![digest],
+            ),
+            (crate::Sealed::new(parent), Vec::new()),
         ])
         .await;
     assert!(matches!(puts[0], Ok(Put::Created { .. })));
@@ -3455,7 +3592,10 @@ async fn a_collection_pages_through_more_blobs_than_one_listing()
     let mut kept = None;
     for index in 0..count {
         let put = blobs
-            .put(OwnedBytes::from(index.to_le_bytes().to_vec()), Vec::new())
+            .put(
+                crate::Sealed::new(OwnedBytes::from(index.to_le_bytes().to_vec())),
+                Vec::new(),
+            )
             .await?;
         kept.get_or_insert(put.verified().ok_or("a fresh put verifies")?.digest);
     }
@@ -3603,7 +3743,9 @@ async fn a_native_batch_has_every_member_in_flight_at_once()
     let store = Store::new(Latent::default());
     let blobs = store.account(b"account")?;
     // The account's revisions open before any measurement.
-    blobs.put(vec![0].into(), Vec::new()).await?;
+    blobs
+        .put(crate::Sealed::new(vec![0].into()), Vec::new())
+        .await?;
     store.medium().peak();
     let batch = blobs
         .put_batch_native(
@@ -3632,7 +3774,7 @@ async fn a_native_batch_has_every_member_in_flight_at_once()
     assert_eq!(store.medium().peak(), usize::from(N));
     // Negative control: the same work, one member after another.
     for (body, references) in bodies(2) {
-        blobs.put(body, references).await?;
+        blobs.put(crate::Sealed::new(body), references).await?;
     }
     for digest in &digests {
         blobs.get(*digest, ByteRange::FULL, 8).await?;
@@ -3647,10 +3789,16 @@ async fn a_repeat_put_observes_metadata_and_probes_presence_without_writes()
     let store = Store::new(Counting::default());
     let blobs = store.account(b"account")?;
     let child = Digest::of(&[1; 8]);
-    blobs.put(vec![1; 8].into(), Vec::new()).await?;
-    blobs.put(vec![2; 8].into(), vec![child]).await?;
+    blobs
+        .put(crate::Sealed::new(vec![1; 8].into()), Vec::new())
+        .await?;
+    blobs
+        .put(crate::Sealed::new(vec![2; 8].into()), vec![child])
+        .await?;
     store.medium().take();
-    let again = blobs.put(vec![2; 8].into(), vec![child]).await?;
+    let again = blobs
+        .put(crate::Sealed::new(vec![2; 8].into()), vec![child])
+        .await?;
     assert!(matches!(again, Put::AlreadyExists { .. }));
     let counts = store.medium().take();
     // The failed envelope create, the envelope and the presence probe.
@@ -3680,7 +3828,9 @@ async fn a_repeat_put_observes_metadata_and_probes_presence_without_writes()
         .0;
     store.medium().inner.remove(&payload).await?;
     store.medium().take();
-    blobs.put(vec![2; 8].into(), vec![child]).await?;
+    blobs
+        .put(crate::Sealed::new(vec![2; 8].into()), vec![child])
+        .await?;
     let counts = store.medium().take();
     assert_eq!(counts.get("create"), Some(&3), "{counts:?}");
     Ok(())
@@ -3694,7 +3844,9 @@ async fn a_native_batch_member_starts_once_the_members_it_needs_complete()
         std::sync::Arc::new(Budget::new(u64::MAX));
     let store = Store::new(Latent::default());
     let blobs = store.account(b"account")?;
-    blobs.put(vec![0].into(), Vec::new()).await?;
+    blobs
+        .put(crate::Sealed::new(vec![0].into()), Vec::new())
+        .await?;
     // The child's writes take many round trips.
     let slow = |seed: u8| {
         *store.medium().slow.lock().unwrap() = Some(Digest::of(&[seed; 8]).to_hex());
@@ -3722,8 +3874,11 @@ async fn a_native_batch_member_starts_once_the_members_it_needs_complete()
     // parent first.
     let [child, parent, _] = <[_; 3]>::try_from(batch(4)).map_err(|_| "three members")?;
     slow(4);
-    let (parent, _) =
-        futures::future::join(blobs.put(parent.0, parent.1), blobs.put(child.0, child.1)).await;
+    let (parent, _) = futures::future::join(
+        blobs.put(crate::Sealed::new(parent.0), parent.1),
+        blobs.put(crate::Sealed::new(child.0), child.1),
+    )
+    .await;
     assert_eq!(
         parent.err().map(|error| error.code),
         Some(ErrorCode::MissingReference)
@@ -3748,7 +3903,9 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
     };
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"account")?;
-    blobs.put(vec![0].into(), Vec::new()).await?;
+    blobs
+        .put(crate::Sealed::new(vec![0].into()), Vec::new())
+        .await?;
     let put = async |seed: u8, limit: u64, window: usize| {
         let budget = std::sync::Arc::new(Budget::new(limit));
         let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
@@ -3790,7 +3947,7 @@ async fn a_native_retain_runs_inside_the_callers_work() -> Result<(), Box<dyn st
         let store = Store::new(MemoryMedium::default());
         let blobs = store.account(b"account")?;
         let digest = blobs
-            .put(vec![7; 8].into(), Vec::new())
+            .put(crate::Sealed::new(vec![7; 8].into()), Vec::new())
             .await?
             .verified()
             .ok_or("unknown")?
@@ -3854,7 +4011,7 @@ async fn a_retain_short_of_writes_writes_no_index_key() -> Result<(), Box<dyn st
         let store = Store::new(MemoryMedium::default());
         let blobs = store.account(b"account")?;
         let digest = blobs
-            .put(vec![7; 8].into(), Vec::new())
+            .put(crate::Sealed::new(vec![7; 8].into()), Vec::new())
             .await?
             .verified()
             .ok_or("unknown")?
@@ -3891,7 +4048,7 @@ async fn a_retain_refused_its_memory_writes_no_index_key() -> Result<(), Box<dyn
         let store = Store::new(Latent::default());
         let blobs = store.account(b"account")?;
         let digest = blobs
-            .put(vec![7; 8].into(), Vec::new())
+            .put(crate::Sealed::new(vec![7; 8].into()), Vec::new())
             .await?
             .verified()
             .ok_or("unknown")?
@@ -3936,19 +4093,30 @@ async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> 
     };
     let body = |seed: u8| OwnedBytes::from(vec![seed; LENGTH as usize]);
     let blobs = crate::MemoryObjects::memory();
-    blobs.put(vec![0].into(), Vec::new()).await?;
-    let (put, bytes) = hashed(blobs.put(body(1), Vec::new())).await;
+    blobs
+        .put(crate::Sealed::new(vec![0].into()), Vec::new())
+        .await?;
+    let (put, bytes) =
+        hashed(async { blobs.put(crate::Sealed::new(body(1)), Vec::new()).await }).await;
     put?;
     once(bytes, 1);
-    let (puts, bytes) =
-        hashed(blobs.put_batch((2..6).map(|seed| (body(seed), Vec::new())).collect())).await;
+    let (puts, bytes) = hashed(async {
+        blobs
+            .put_batch(
+                (2..6)
+                    .map(|seed| (crate::Sealed::new(body(seed)), Vec::new()))
+                    .collect(),
+            )
+            .await
+    })
+    .await;
     for put in puts {
         put?;
     }
     once(bytes, 4);
     // A sealed body is stored without another hash.
     let sealed = crate::Sealed::new(body(6));
-    let (put, bytes) = hashed(blobs.put_sealed(sealed, Vec::new())).await;
+    let (put, bytes) = hashed(blobs.put(sealed, Vec::new())).await;
     put?;
     once(bytes, 0);
 
@@ -3964,18 +4132,20 @@ async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> 
         put?;
         once(bytes, 1);
     }
-    // Negative control: a provider that only implements `put` lowers a
-    // sealed batch to it, and the body is hashed twice.
-    let unsealed = Overlap {
+    // A wrapper using the default batch preserves every original seal.
+    let wrapped = Overlap {
         inner: crate::MemoryObjects::memory(),
         live: Default::default(),
         peak: Default::default(),
     };
-    unsealed.put(vec![0].into(), Vec::new()).await?;
-    let (puts, bytes) = hashed(unsealed.put_batch(vec![(body(7), Vec::new())])).await;
+    wrapped
+        .put(crate::Sealed::new(vec![0].into()), Vec::new())
+        .await?;
+    let sealed = crate::Sealed::new(body(7));
+    let (puts, bytes) = hashed(wrapped.put_batch(vec![(sealed, Vec::new())])).await;
     for put in puts {
         put?;
     }
-    once(bytes, 2);
+    once(bytes, 0);
     Ok(())
 }

@@ -1,6 +1,7 @@
 //! Stores and reads a blob through the configured Objects HTTP endpoint.
 
-use acyclic_objects::{Blobs, ByteRange, HttpObjects};
+use acyclic_objects::{Blobs, ByteRange, HttpObjects, Sealed};
+use acyclic_stream::OwnedBytes;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -10,7 +11,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Some(1024 * 1024),
         None,
     )?;
-    let put = objects.put(b"hello".to_vec().into(), Vec::new()).await?;
+    let put = objects
+        .put(Sealed::new(OwnedBytes::from_static(b"hello")), Vec::new())
+        .await?;
     let digest = put
         .verified()
         .ok_or("outcome unknown; retrying is safe")?

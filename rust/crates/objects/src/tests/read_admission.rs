@@ -94,7 +94,10 @@ async fn native_local_inputs_retire_before_their_credit() -> Result<(), Box<dyn 
     let store = Store::new(medium.clone());
     let blobs = store.account(b"input-frame-custody")?;
     let child = blobs
-        .put(b"original child".as_slice().into(), Vec::new())
+        .put(
+            crate::Sealed::new(b"original child".as_slice().into()),
+            Vec::new(),
+        )
         .await?
         .verified()
         .ok_or("original child publication is known")?
@@ -221,7 +224,7 @@ async fn native_local_batch_retires_results_before_their_credit()
     for byte in [1, 2] {
         digests.push(
             blobs
-                .put(vec![byte; length].into(), Vec::new())
+                .put(crate::Sealed::new(vec![byte; length].into()), Vec::new())
                 .await?
                 .verified()
                 .ok_or("original publication is known")?
@@ -329,7 +332,7 @@ async fn native_local_batch_refusals_belong_to_their_original_members()
     let blobs = store.account(b"original-members")?;
     let bytes = OwnedBytes::from(b"real local batch".to_vec());
     let digest = blobs
-        .put(bytes.clone(), Vec::new())
+        .put(crate::Sealed::new(bytes.clone()), Vec::new())
         .await?
         .verified()
         .ok_or("original publication is known")?
@@ -406,13 +409,19 @@ async fn native_local_presence_finishes_on_original_read_outcomes()
     let store = Store::new(medium.clone());
     let blobs = store.account(b"original-presence")?;
     let child = blobs
-        .put(b"presence reference".as_slice().into(), Vec::new())
+        .put(
+            crate::Sealed::new(b"presence reference".as_slice().into()),
+            Vec::new(),
+        )
         .await?
         .verified()
         .ok_or("original child is known")?
         .digest;
     let digest = blobs
-        .put(b"present".as_slice().into(), vec![child])
+        .put(
+            crate::Sealed::new(b"present".as_slice().into()),
+            vec![child],
+        )
         .await?
         .verified()
         .ok_or("original publication is known")?
@@ -475,7 +484,7 @@ async fn native_local_decoded_metadata_keeps_its_original_credit()
     for byte in 0..3 {
         references.push(
             blobs
-                .put(vec![byte; 17].into(), Vec::new())
+                .put(crate::Sealed::new(vec![byte; 17].into()), Vec::new())
                 .await?
                 .verified()
                 .ok_or("original reference is known")?
@@ -484,7 +493,7 @@ async fn native_local_decoded_metadata_keeps_its_original_credit()
     }
     references.sort_unstable();
     let digest = blobs
-        .put(vec![7; 19].into(), references.clone())
+        .put(crate::Sealed::new(vec![7; 19].into()), references.clone())
         .await?
         .verified()
         .ok_or("original object is known")?
@@ -537,7 +546,7 @@ async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
         let bytes = vec![byte; 1931];
         expected.extend_from_slice(&bytes);
         let digest = blobs
-            .put(bytes.into(), Vec::new())
+            .put(crate::Sealed::new(bytes.into()), Vec::new())
             .await?
             .verified()
             .ok_or("original fragment publication is known")?
@@ -662,7 +671,9 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
         Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
     let writer = store.account(b"original-account")?;
     let bytes = OwnedBytes::from(b"retained package bytes".to_vec());
-    let put = writer.put(bytes.clone(), Vec::new()).await?;
+    let put = writer
+        .put(crate::Sealed::new(bytes.clone()), Vec::new())
+        .await?;
     let verified = put.verified().ok_or("publication is known")?;
     let digest = verified.digest;
     let root = RootId::new(b"original-publication".to_vec())?;
@@ -719,7 +730,10 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     assert_eq!(selected.medium().writes.load(Ordering::SeqCst), 0);
     // The same projection refuses a real writer; reads did not borrow authority.
     assert_eq!(
-        reader.put(bytes, Vec::new()).await.map_err(|e| e.code),
+        reader
+            .put(crate::Sealed::new(bytes), Vec::new())
+            .await
+            .map_err(|e| e.code),
         Err(ErrorCode::Unavailable),
     );
     assert_eq!(selected.medium().writes.load(Ordering::SeqCst), 1);

@@ -35,10 +35,16 @@ pub async fn verify(
     let missing = Digest::of(b"never stored");
     let results = account
         .put_batch(vec![
-            (alpha.clone(), Vec::new()),
-            (OwnedBytes::from_static(b"dangling"), vec![missing]),
-            (beta.clone(), vec![Digest::of(&alpha)]),
-            (alpha.clone(), Vec::new()),
+            (acyclic_objects::Sealed::new(alpha.clone()), Vec::new()),
+            (
+                acyclic_objects::Sealed::new(OwnedBytes::from_static(b"dangling")),
+                vec![missing],
+            ),
+            (
+                acyclic_objects::Sealed::new(beta.clone()),
+                vec![Digest::of(&alpha)],
+            ),
+            (acyclic_objects::Sealed::new(alpha.clone()), Vec::new()),
         ])
         .await;
     assert_eq!(results.len(), 4);
@@ -65,7 +71,9 @@ pub async fn verify(
         let object = reopened.get(Digest::of(&body), ByteRange::FULL, 64).await?;
         assert_eq!(object.body().as_ref(), body.as_ref());
         assert!(matches!(
-            reopened.put(body, Vec::new()).await?,
+            reopened
+                .put(acyclic_objects::Sealed::new(body), Vec::new())
+                .await?,
             Put::AlreadyExists { .. }
         ));
     }
