@@ -5,8 +5,7 @@ use crate::{
     local::AppliedCut,
     route::{self, NodeActor, NodeId, NodePresence, Paths},
 };
-use acyclic_stream::{FollowRequest, StreamProviderExt as _};
-use futures::TryStreamExt as _;
+use acyclic_stream::FollowRequest;
 
 #[tokio::test]
 async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() -> TestResult {
@@ -141,7 +140,7 @@ async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() 
 
     // A reconnect can overlap the old transport's Close. The old connection
     // must not make the replacement offline, even after its input is consumed.
-    let mut replacement = route::open_link(&client, 1, backend.account(), &node).await?;
+    let replacement = route::open_link(&client, 1, backend.account(), &node).await?;
     let online = changes.try_next().await?.ok_or("missing reconnect event")?;
     let online = NodePresence::decode(&online.value)?;
     assert!(online.online && online.node == node && online.generation == 2);

@@ -2,7 +2,7 @@
 use super::{Envelope, Error, NodeId, Paths};
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
-    IdempotencyKey, StreamError, StreamProvider, StreamProviderExt as _,
+    IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use prost::Message as _;
@@ -17,9 +17,7 @@ struct Cursor {
     next: u64,
 }
 
-pub(super) fn creation(paths: &Paths, node: &NodeId) -> Result<CommitEffect, Error> {
-    let relay = paths.relay(node)?;
-    let cursor = paths.relay_cursor(node)?;
+pub(super) fn creation(relay: StreamPath, cursor: StreamPath) -> Result<CommitEffect, Error> {
     Ok(CommitEffect::hard(
         vec![
             CommitCondition::Absent {
@@ -62,14 +60,60 @@ pub async fn drain<P, D>(
     account: &P,
     paths: &Paths,
     node: &NodeId,
+    deliver: D,
+) -> Result<Infallible, Error>
+where
+    P: StreamProvider + ?Sized,
+    D: AsyncFnMut(Envelope) -> Result<(), Error>,
+{
+    consume(
+        account,
+        paths.relay(node)?,
+        paths.relay_cursor(node)?,
+        deliver,
+    )
+    .await
+}
+
+/// Forward the source node's durable outbox in order while its NodeLink is open.
+/// `admit` must await account placement, authority and storage admission and
+/// the committed relay receipt (or durable rejection Notice). No local cursor
+/// advances while admission waits for credit or a transport is unavailable.
+/// A reopened forwarder resubmits the identical envelope after a lost receipt.
+pub async fn forward<P, D>(
+    local: &P,
+    paths: &Paths,
+    node: &NodeId,
+    mut admit: D,
+) -> Result<Infallible, Error>
+where
+    P: StreamProvider + ?Sized,
+    D: AsyncFnMut(Envelope) -> Result<(), Error>,
+{
+    consume(
+        local,
+        paths.outbox(node)?,
+        paths.outbox_cursor(node)?,
+        async |envelope: Envelope| {
+            if envelope.source != *node {
+                return Err(Error::InvalidRecord);
+            }
+            admit(envelope).await
+        },
+    )
+    .await
+}
+
+async fn consume<P, D>(
+    account: &P,
+    relay: StreamPath,
+    cursor_path: StreamPath,
     mut deliver: D,
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
     D: AsyncFnMut(Envelope) -> Result<(), Error>,
 {
-    let relay = paths.relay(node)?;
-    let cursor_path = paths.relay_cursor(node)?;
     let (mut next, mut cursor_tail) = match account.head(cursor_path.clone()).await {
         Ok(head) => {
             let record = head.last.ok_or(Error::InvalidRecord)?;
