@@ -155,6 +155,15 @@ pub enum QueryError {
     },
 }
 
+impl From<QueryError> for StreamError {
+    fn from(error: QueryError) -> Self {
+        match error {
+            QueryError::Stream(source) => source,
+            error => Self::InvalidResponse.with_source(error),
+        }
+    }
+}
+
 /// Lazy projection of one selected trace stream or window. Construct this over
 /// an ordinary paged read or live follow; no collector, task or storage is added.
 /// Memory retains active spans and one fixed-size aggregate per mechanism,
@@ -270,6 +279,32 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
 }
 
 impl<S> TraceQuery<S> {
+    /// Consume one caller-selected provider page into this same projection.
+    /// Repeated pages retain active joins and original error categories. The
+    /// request owns its authorization cut, cursor and explicit page bound.
+    pub async fn read_page<P: crate::StreamProvider + ?Sized>(
+        &mut self,
+        provider: &P,
+        request: crate::ReadRequest,
+    ) -> Result<u32, QueryError> {
+        let mut records = provider.read(request).await?;
+        let mut count = 0;
+        while let Some(record) = records.next().await {
+            let record = record?;
+            self.admit(
+                record.sequence,
+                RetainedRecord {
+                    commit_id: record.commit_id,
+                    path: record.origin,
+                    sequence: record.sequence,
+                },
+                record.value.as_ref(),
+            )?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
     /// Admit an authorized borrowed row through the same projection as `next`.
     /// The selected cursor may differ from immutable publication coordinates
     /// after a fork. Original payload custody remains with the reader.

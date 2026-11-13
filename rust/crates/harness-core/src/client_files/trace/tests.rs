@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_stream::{
-    MemoryStream,
+    MemoryStream, StreamProviderExt as _,
     trace::{Mechanism, Outcome, SpanEvent, SpanId, TraceRecord},
 };
 use futures::StreamExt as _;
@@ -126,5 +126,67 @@ async fn bounded_trace_files_preserve_captured_cuts_and_follow_original_sources(
         }
         cause = cause.source().ok_or("original decoder cause was lost")?;
     }
+
+    // Pair a start in the first maximum-sized provider page with its finish
+    // in the next. The caller's window is larger than one protocol page.
+    let paired = SpanId { sequence: 1, ..id };
+    let mut batch = Vec::new();
+    for index in 0..=acyclic_stream::MAX_ITEMS {
+        let event = if index == 0 {
+            SpanEvent::Started {
+                id: paired,
+                parent: None,
+                name: "wait".into(),
+                mechanism: Mechanism::Wait,
+                at_ns: 40,
+                guarantee: None,
+            }
+        } else {
+            SpanEvent::Finished {
+                id: if index == acyclic_stream::MAX_ITEMS {
+                    paired
+                } else {
+                    SpanId {
+                        sequence: index as u64 + 1,
+                        ..id
+                    }
+                },
+                at_ns: 60,
+                bytes: None,
+                result: Outcome::Unsettled,
+            }
+        };
+        batch.push(
+            acyclic_stream::OwnedBytes::from(serde_json::to_vec(&TraceRecord::V1(event))?).into(),
+        );
+        if batch.len() == acyclic_stream::MAX_ITEMS || index == acyclic_stream::MAX_ITEMS {
+            provider
+                .append(acyclic_stream::AppendRequest {
+                    path: path.clone(),
+                    records: std::mem::take(&mut batch),
+                    if_tail: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                })
+                .await?;
+        }
+    }
+    let requested = format!("{PREFIX}3/{}.json", acyclic_stream::MAX_ITEMS + 1);
+    let through = acyclic_stream::MAX_ITEMS as u64 + 4;
+    let values = files
+        .read(
+            provider.as_ref(),
+            &agent,
+            &[&requested],
+            &path,
+            through,
+            Default::default(),
+        )
+        .await?;
+    let value: serde_json::Value = serde_json::from_str(&values[0].text)?;
+    assert_eq!(value["coveredThrough"], through);
+    assert_eq!(value["activeWaits"], 0);
+    assert_eq!(value["mechanisms"]["wait"]["completed"], 1);
+    assert_eq!(value["mechanisms"]["wait"]["elapsed_ns"], 20);
+    assert_eq!(value["unpairedFinishes"], acyclic_stream::MAX_ITEMS - 1);
     Ok(())
 }

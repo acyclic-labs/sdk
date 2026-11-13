@@ -78,37 +78,38 @@ impl<P: StreamProvider + ?Sized> FileView<P> for TraceFiles {
                     continue;
                 }
                 let end = (from + u64::from(count)).min(through);
-                let records = provider
-                    .read(ReadRequest {
-                        path: stream.clone(),
-                        from,
-                        limit: u32::try_from(end - from).map_err(|error| {
-                            acyclic_stream::StreamError::InvalidResponse.with_source(error)
-                        })?,
-                        key: None,
-                        at_least: at_least.clone(),
-                    })
-                    .await?;
-                let mut query = TraceQuery::new(records, Default::default());
+                let mut query = TraceQuery::new((), Default::default());
                 let mut received_through = from;
-                while query
-                    .next()
-                    .await
+                while received_through < end {
+                    let limit = u32::try_from(
+                        (end - received_through).min(acyclic_stream::MAX_ITEMS as u64),
+                    )
                     .map_err(|error| {
                         acyclic_stream::StreamError::InvalidResponse.with_source(error)
-                    })?
-                    .is_some()
-                {
-                    received_through += 1;
-                }
-                if received_through != end {
-                    return Err(acyclic_stream::StreamError::InvalidResponse
-                        .with_source(IncompleteWindow {
-                            from,
-                            end,
-                            received_through,
-                        })
-                        .into());
+                    })?;
+                    let received = query
+                        .read_page(
+                            provider,
+                            ReadRequest {
+                                path: stream.clone(),
+                                from: received_through,
+                                limit,
+                                key: None,
+                                at_least: at_least.clone(),
+                            },
+                        )
+                        .await
+                        .map_err(acyclic_stream::StreamError::from)?;
+                    received_through += u64::from(received);
+                    if received != limit {
+                        return Err(acyclic_stream::StreamError::InvalidResponse
+                            .with_source(IncompleteWindow {
+                                from,
+                                end,
+                                received_through,
+                            })
+                            .into());
+                    }
                 }
                 files.push(QueryFile {
                     path: path.to_owned(),
