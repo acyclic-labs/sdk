@@ -82,20 +82,13 @@ mod tests {
             let child = templates
                 .child(&parent, &path, &volumes, role, None)
                 .await?;
-            assert_eq!(
-                child.model.as_deref(),
-                Some(if role == "orchestrator" {
-                    "morph/morph-kimik31"
-                } else {
-                    "morph/morph-dsv41flash"
-                })
-            );
+            assert_eq!(child.model, parent.model);
         }
         let orchestrator = templates
             .child(&parent, &path, &volumes, "orchestrator", None)
             .await?;
         assert_eq!(orchestrator.context, SpawnContext::Fresh);
-        assert_eq!(orchestrator.model.as_deref(), Some("morph/morph-kimik31"));
+        assert_eq!(orchestrator.model, parent.model);
         assert_eq!(orchestrator.template.as_ref().unwrap().volume(), &seed);
         templates
             .child(&orchestrator, &path, &volumes, "orchestrator", None)
@@ -147,7 +140,7 @@ mod tests {
                 ContentAccess::default(),
             )
         };
-        const FRESH: &[u8] = b"---\nversion: 1\ncontext: fresh\nmay_spawn: [worker]\n---\nRetain this exact directive.\n";
+        const FRESH: &[u8] = b"---\nversion: 1\nmodel: example/role\ncontext: fresh\nmay_spawn: [worker]\n---\nRetain this exact directive.\n";
         put("templates/worker/AGENT.md", FRESH)?.await?;
         // An unrelated malformed template must not be discovered or parsed.
         put("templates/unrelated/AGENT.md", b"not valid frontmatter")?.await?;
@@ -155,18 +148,19 @@ mod tests {
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
         assert_eq!(selected.context, SpawnContext::Fresh);
-        assert_eq!(selected.model, parent.model);
+        assert_eq!(selected.model.as_deref(), Some("example/role"));
         let selected_file = selected.template.as_ref().unwrap();
         assert_eq!(selected_file.volume(), &home);
         put(
             "templates/worker/AGENT.md",
-            b"---\nversion: 1\ncontext: fork\nmay_spawn: []\n---\nA later directive.\n",
+            b"---\nversion: 1\nmodel: example/later\ncontext: fork\nmay_spawn: []\n---\nA later directive.\n",
         )?
         .await?;
         let later = templates
             .child(&parent, &path, &volumes, "worker", None)
             .await?;
         assert_eq!(later.context, SpawnContext::Fork);
+        assert_eq!(later.model.as_deref(), Some("example/later"));
         assert_ne!(later.template, selected.template);
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&host),

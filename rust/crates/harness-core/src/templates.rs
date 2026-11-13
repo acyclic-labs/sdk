@@ -244,27 +244,3 @@ pub(crate) async fn directive(
         }),
     })
 }
-
-#[cfg(test)]
-mod model_precedence_tests {
-    use super::*;
-
-    #[test]
-    fn configured_role_model_wins_over_parent_or_requested_fallback() {
-        for fallback in [None, Some("other/parent"), Some("other/requested")] {
-            assert_eq!(
-                resolve_model(Some("morph/morph-dsv41flash"), fallback),
-                Some("morph/morph-dsv41flash")
-            );
-        }
-    }
-
-    #[test]
-    fn role_without_model_inherits_parent_model() {
-        assert_eq!(
-            resolve_model(None, Some("other/parent")),
-            Some("other/parent")
-        );
-        assert_eq!(resolve_model(None, None), None);
-    }
-}

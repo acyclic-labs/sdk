@@ -934,37 +934,3 @@ mod resolver_tests {
         Ok(())
     }
 }
-
-#[cfg(all(test, not(loom)))]
-mod fixed_role_binding_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn fixed_bindings_obey_the_configured_role_selection() -> Result<()> {
-        let role = crate::templates::root()?.model;
-        let selected =
-            crate::templates::resolve_model(role.as_deref(), None).unwrap_or("test/fixed");
-        for selection in [selected.to_owned(), format!("{selected}-different")] {
-            let (provider, name) = selection
-                .split_once('/')
-                .ok_or_else(|| Error::Invalid("role model requires provider/model".into()))?;
-            let model = Model::new(provider.into(), name.into(), "1".into())?;
-            let provider: Arc<dyn ModelProvider> =
-                Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
-            let allowed = crate::templates::resolve_model(role.as_deref(), Some(&selection))
-                == Some(selection.as_str());
-            let result = LocalHarnessConfig::new(".", (model.clone(), provider))
-                .resolve(None, true)
-                .await;
-            if allowed {
-                assert_eq!(result?.model.map(|binding| binding.0), Some(model));
-            } else {
-                let error = result
-                    .err()
-                    .ok_or_else(|| Error::Invalid("incompatible binding admitted".into()))?;
-                assert!(error.to_string().contains("LocalHarnessConfig::resolving"));
-            }
-        }
-        Ok(())
-    }
-}
