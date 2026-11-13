@@ -103,7 +103,7 @@ impl<
                 {
                     let changed: Result<Option<bool>, LazyWorkspaceError> = async {
                         let regular = |record: Option<crate::kernel::FileRecord>| {
-                            record.is_some_and(|record| record.kind == crate::FileKind::Regular)
+                            record.is_some_and(|record| record.kind == FileKind::Regular)
                         };
                         if !regular(row.value.before) && !regular(row.value.after) {
                             return Ok(Some(false));
@@ -111,11 +111,11 @@ impl<
                         if row
                             .value
                             .before
-                            .is_some_and(|record| record.kind != crate::FileKind::Regular)
+                            .is_some_and(|record| record.kind != FileKind::Regular)
                             || row
                                 .value
                                 .after
-                                .is_some_and(|record| record.kind != crate::FileKind::Regular)
+                                .is_some_and(|record| record.kind != FileKind::Regular)
                         {
                             return Ok(Some(true));
                         }
