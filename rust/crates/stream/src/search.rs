@@ -10,6 +10,8 @@ use futures::TryStreamExt as _;
 use std::num::NonZeroU32;
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 struct Frame {
     path: StreamPath,
     sequence: u64,

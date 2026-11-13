@@ -4,47 +4,35 @@ use super::{Cursor, Frame};
 use crate::{Revision, RevisionScope, StreamPath};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireCursor {
     version: u32,
     pattern: Vec<u8>,
     cut: Option<(Vec<u8>, u128, u64)>,
-    frontier: Vec<WireFrame>,
+    frontier: Vec<Frame>,
     matcher: Option<[u8; 32]>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireFrame {
-    path: StreamPath,
-    sequence: u64,
-    tail: Option<u64>,
-    after: Option<StreamPath>,
-    content: Option<Vec<u8>>,
 }
 
 impl Serialize for Cursor {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        WireCursor {
+        #[derive(Serialize)]
+        struct Borrowed<'a> {
+            version: u32,
+            pattern: &'a [u8],
+            cut: Option<(&'a [u8], u128, u64)>,
+            frontier: &'a [Frame],
+            matcher: Option<[u8; 32]>,
+        }
+        Borrowed {
             version: 1,
-            pattern: self.pattern.clone(),
-            matcher: self.matcher,
+            pattern: &self.pattern,
             cut: self
                 .at
                 .as_ref()
-                .map(|at| (at.scope.as_bytes().to_vec(), at.incarnation, at.index)),
-            frontier: self
-                .frontier
-                .iter()
-                .map(|frame| WireFrame {
-                    path: frame.path.clone(),
-                    sequence: frame.sequence,
-                    tail: frame.tail,
-                    after: frame.after.clone(),
-                    content: frame.content.clone(),
-                })
-                .collect(),
+                .map(|at| (at.scope.as_bytes(), at.incarnation, at.index)),
+            frontier: &self.frontier,
+            matcher: self.matcher,
         }
         .serialize(serializer)
     }
@@ -92,17 +80,7 @@ impl<'de> Deserialize<'de> for Cursor {
             pattern: wire.pattern,
             at,
             matcher: wire.matcher,
-            frontier: wire
-                .frontier
-                .into_iter()
-                .map(|frame| Frame {
-                    path: frame.path,
-                    sequence: frame.sequence,
-                    tail: frame.tail,
-                    after: frame.after,
-                    content: frame.content,
-                })
-                .collect(),
+            frontier: wire.frontier,
         })
     }
 }
