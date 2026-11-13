@@ -279,6 +279,7 @@ impl Fixture {
             .bootstrap_scope(
                 "journal",
                 &Capabilities::new([
+                    acyclic_harness::contract::capability::HARNESS_HOST.to_owned(),
                     private.capability(VolumeOperation::Read, &mut None)?,
                     private.capability(VolumeOperation::Write, &mut None)?,
                     self.volume.capability(VolumeOperation::Read, &mut None)?,
