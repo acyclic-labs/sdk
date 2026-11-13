@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/filesystem/execution_journal/supervision.rs
++++ b/rust/crates/harness-core/src/filesystem/execution_journal/supervision.rs
+@@ -387,7 +387,7 @@
+                 policy,
+             )
+             .await?;
+-        if policy.quiet_ms.is_some() && !background_started {
++        if policy.quiet_ms.is_some() {
+             self.tool_job_projection(
+                 &mut projection,
+                 crate::supervision::tool_jobs::Record {
