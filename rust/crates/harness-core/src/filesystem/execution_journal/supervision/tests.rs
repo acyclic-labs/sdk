@@ -141,7 +141,7 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
         bindings
             .build()?
             .agent_context(&crate::Capabilities::new(Vec::<String>::new()), content)?
-            .with_execution_journal(Arc::new(journal)),
+            .with_execution_journal(Arc::new(journal), operation)?,
     );
     let source = source.ok_or_else(|| Error::Invalid("original source missing".into()))?;
     let write = crate::runtime::ToolContext::new(task.clone(), write_operation, "write")?;
@@ -387,6 +387,7 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                 call_id,
                 result,
                 projection,
+                record_kind: None,
             };
             let key = format!("terminal-{index}");
             journal.append(run, &key, &terminal, None)?.await?;
@@ -438,7 +439,6 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                         }],
                         tools: Vec::new(),
                         sampling: Default::default(),
-                        max_output_tokens: None,
                     },
                     Limits::default(),
                     None,
