@@ -45,7 +45,17 @@ impl JournalWrites<'_> {
     }
 
     pub(in crate::executor) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.mutex().lock().await
+        acyclic_stream::trace::observe_value(
+            acyclic_stream::trace::Request {
+                name: "harness.journal_writer_lock",
+                mechanism: acyclic_stream::trace::Mechanism::Lock,
+                parent: None,
+                guarantee: Some("serialized_journal_read_tail_commit"),
+            },
+            self.mutex().lock(),
+            |_| Some((Some(0), acyclic_stream::trace::Outcome::Succeeded)),
+        )
+        .await
     }
 }
 
@@ -258,5 +268,83 @@ impl StockExecutor {
             policy.identity_with_native_work(work)?;
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::JournalWrites;
+    use acyclic_stream::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn borrowed_journal_writer_observes_original_lock_and_guard()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let writers = JournalWrites::default();
+        let borrowed = writers.borrowed();
+        let held = writers.lock().await;
+        let trace = acyclic_stream::Stream::new(
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            "agents/worker/trace",
+        )?;
+        let recorder = Arc::new(Recorder::new(trace.clone(), [25; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ProviderCall,
+                None,
+                Some("original_request"),
+            )
+            .await?
+            .into_owned();
+        let parent = root.id();
+        let mut waiting = Box::pin(root.within(borrowed.lock()));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(held);
+        let guard = waiting.await;
+        assert!(
+            writers.mutex().try_lock().is_err(),
+            "observation replaced the original writer guard"
+        );
+        drop(guard);
+        assert!(writers.mutex().try_lock().is_ok());
+        let _terminal = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        let mut completed = 0;
+        let mut lock = false;
+        while completed < 2 {
+            if let Some(Observation::Completed {
+                start,
+                result,
+                bytes,
+                ..
+            }) = query.next().await?
+            {
+                completed += 1;
+                if start.name == "harness.journal_writer_lock" {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(start.mechanism, Mechanism::Lock);
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("serialized_journal_read_tail_commit")
+                    );
+                    assert_eq!(result, Outcome::Succeeded);
+                    assert_eq!(bytes, Some(0));
+                    lock = true;
+                }
+            }
+        }
+        assert!(lock);
+        assert_eq!(query.totals()[&Mechanism::Lock].completed, 1);
+        drop(writers.lock().await);
+        assert_eq!(
+            trace.tail().await?,
+            4,
+            "unscoped lock acquired diagnostic work"
+        );
+        Ok(())
     }
 }

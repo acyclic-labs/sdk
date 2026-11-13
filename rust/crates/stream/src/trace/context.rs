@@ -93,6 +93,17 @@ pub async fn observe_outcome<T, E>(
     work: impl Future<Output = Result<T, E>>,
     _outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, super::Outcome)>,
 ) -> Result<T, E> {
+    observe_value(request, work, _outcome).await
+}
+
+/// Observe an original result or value, including a borrowed lock guard, without
+/// wrapping an infallible mechanism in a fabricated error type. The classifier
+/// runs only for an admitted span and no terminal publication delays return.
+pub async fn observe_value<T>(
+    request: Request,
+    work: impl Future<Output = T>,
+    _outcome: impl FnOnce(&T) -> Option<(Option<u64>, super::Outcome)>,
+) -> T {
     let (result, recording) = OwnedRecording::accompany(child(request), work).await;
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     if let Some(recording) = recording

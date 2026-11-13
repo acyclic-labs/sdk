@@ -147,6 +147,12 @@ A delivery wait returning EOF on an original live selection has not observed
 settlement and records `Unsettled`. A finite selection can complete successfully.
 This classification uses the cursor's original selected end, without another
 head read, and leaves its snapshot, delivered records and EOF unchanged.
+The stock executor's owned and borrowed journal writers share one lock entrance.
+`harness.journal_writer_lock` names the serialization of each read-tail/commit
+transition and observes the original mutex acquisition; it returns the original
+guard without extending it through a diagnostic wait. The SDK value observation
+helper shares the same admission and terminal implementation as result observation,
+so infallible mechanisms need no invented error or parallel recorder.
 A registry-bound producer also carries its own admitted lease count. The final
 lease retires new inherited child observations even when the original request
 still retains its recorder or another agent remains followed. This is an inline

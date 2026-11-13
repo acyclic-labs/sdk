@@ -11,7 +11,7 @@ mod context;
 #[cfg(feature = "serde")]
 pub(crate) use context::{is_source, records};
 #[cfg(feature = "serde")]
-pub use context::{observe, observe_outcome};
+pub use context::{observe, observe_outcome, observe_value};
 #[cfg(feature = "serde")]
 mod interest;
 #[cfg(feature = "serde")]
