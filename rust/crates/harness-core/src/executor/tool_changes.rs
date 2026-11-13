@@ -191,7 +191,7 @@ impl StockExecution<'_> {
         if !has_tools
             && previous.is_empty()
             && self
-                .origin
+                .stock
                 .epoch_tools
                 .as_deref()
                 .is_none_or(|tools| !tools.iter().any(|tool| selected(&tool)))
@@ -200,7 +200,7 @@ impl StockExecution<'_> {
         }
         let decoded;
         let previous = if previous.is_empty() {
-            self.origin
+            self.stock
                 .epoch_tools
                 .as_deref()
                 .map(Vec::as_slice)

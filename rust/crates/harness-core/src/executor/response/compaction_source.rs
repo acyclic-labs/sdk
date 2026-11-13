@@ -29,7 +29,7 @@ impl StockExecution<'_> {
             )?;
             let ceiling = policy.input_ceiling(accounting.capacity)?;
             let count = match stock_count_tokens(
-                self.stock.provider.as_ref(),
+                self.selected_provider().as_ref(),
                 &request,
                 ceiling,
                 self.io,

@@ -63,12 +63,12 @@ impl StockExecution<'_> {
         // A step may select another complete binding, but the parent journal
         // and its working cuts still belong to the configuration that issued
         // the turn. Summaries have their own frozen request configuration.
-        if self.summary.is_none() && !std::ptr::eq(&*self.stock, self.origin) {
+        if self.summary.is_none() && self.selected.is_some() {
             return Self {
                 io: self.io,
                 context: self.context,
                 single_request: self.single_request,
-                ..Self::ordinary(self.origin)
+                ..Self::ordinary(self.stock)
             }
             .configuration_request_digest(input);
         }
@@ -130,8 +130,7 @@ impl StockExecution<'_> {
         // bindings are pinned by each retained model request, not this fixed
         // executor configuration digest.
         let tools = self
-            .stock
-            .tools
+            .selected_tools()
             .fixed_definitions(self.stock.tool_scope.grants(), io)?;
         let task_context = self.context.map(|(context, operation)| IssuedContext {
             admission_operation: operation,
@@ -148,7 +147,7 @@ impl StockExecution<'_> {
             &Request {
                 executor: "acyclic.stock.v11",
                 input,
-                model: &self.stock.model,
+                model: self.selected_model(),
                 sampling: self.sampling()?,
                 context: &contracts,
                 tools: &tools,
@@ -160,13 +159,12 @@ impl StockExecution<'_> {
                 policy: self.stock.policy_identity.as_ref(),
                 #[cfg(not(target_arch = "wasm32"))]
                 tool_hooks: self
-                    .stock
-                    .hooks
+                    .selected_hooks()
                     .as_ref()
                     .map(|hooks| ("1", &hooks.manifest)),
                 inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
                 #[cfg(not(target_arch = "wasm32"))]
-                after_hooks: &self.stock.after_hooks,
+                after_hooks: self.selected_after_hooks(),
                 compaction: self.compaction_policy()?,
                 model_capacity: if self.unchecked()? {
                     None

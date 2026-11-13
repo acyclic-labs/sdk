@@ -6,3 +6,9 @@ pub(crate) const fn allocation_bytes(payload: Layout) -> Result<usize, LayoutErr
         Err(error) => Err(error),
     }
 }
+
+/// Exact shared-owner allocation layout, including its header and alignment.
+/// This layout is available to every operation owner, including WebAssembly.
+pub fn shared_allocation_bytes<T>() -> Result<u64, LayoutError> {
+    allocation_bytes(Layout::new::<T>()).map(|bytes| bytes as u64)
+}

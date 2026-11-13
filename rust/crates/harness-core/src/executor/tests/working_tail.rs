@@ -91,7 +91,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
         });
         // A new execution has no in-memory working checkpoint to rely on.
         let mut session = StockExecution::ordinary(&executor);
-        session.stock = ExecutionConfiguration::Shared(Arc::clone(&replacement));
+        session.selected = Some(replacement.as_ref().clone().into_step_binding(None)?);
         session.ensure_started(&journal, &input).await?;
         let (context_input, base, working) = session
             .response_base(&journal, &input, step, &prior)

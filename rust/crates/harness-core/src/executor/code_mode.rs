@@ -269,7 +269,7 @@ impl StockExecution<'_> {
                     )
                 })?;
             let definitions =
-                stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?;
+                stock_tool_definitions(self.selected_tools(), &self.stock.tool_scope, self.io)?;
             let funded = self
                 .io
                 .map(|io| io.encode(&definitions, u64::MAX, false))
@@ -309,7 +309,7 @@ impl StockExecution<'_> {
                 maximum,
                 allocator,
                 interpreter::INTERRUPT_BUDGET,
-                self.stock.tools.has_lazy_tools(),
+                self.selected_tools().has_lazy_tools(),
             )));
             let mut ordinal = 0_u64;
             let mut log_ordinal = 0_u64;
@@ -523,10 +523,9 @@ impl StockExecution<'_> {
             .then(|| call.name.value.strip_prefix("acyclic."))
             .flatten();
         let pinned = match canonical {
-            Some(name) => match self.stock.tools.capability(name, self.io)? {
+            Some(name) => match self.selected_tools().capability(name, self.io)? {
                 Some(tool) => self
-                    .stock
-                    .tools
+                    .selected_tools()
                     .get_shared(
                         &tool.definition.name,
                         Some(&tool.definition.revision),
@@ -578,10 +577,9 @@ impl StockExecution<'_> {
             self.native_work(),
         )?;
         let (invocation, pinned) = if !call.module
-            && self.stock.tools.has_lazy_tools()
-            && self
-                .stock
-                .tools
+            & self.selected_tools().has_lazy_tools()
+            & self
+                .selected_tools()
                 .resolve(&invocation.name, self.io)?
                 .is_none()
         {
@@ -593,7 +591,7 @@ impl StockExecution<'_> {
                 )
                 .await?
             {
-                Ok(selected) => selected.bind(&self.stock.tools, self.io)?,
+                Ok(selected) => selected.bind(self.selected_tools(), self.io)?,
                 Err(cause) => return Ok(ExecutionProgress::Ready(Err(cause))),
             }
         } else {
@@ -675,8 +673,7 @@ impl StockExecution<'_> {
             )
         })?;
         let value = if self
-            .stock
-            .tools
+            .selected_tools()
             .get(&name, None, self.io)?
             .is_some_and(|tool| tool.executor.is_code_mode())
         {

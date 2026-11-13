@@ -140,7 +140,7 @@ impl StockExecution<'_> {
     ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_turn_input(journal, input).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(reason) = &self.stock.prompt_block {
+        if let Some(reason) = self.selected_prompt_block() {
             return Err(Error::Invalid(reason.clone()));
         }
         self.ensure_started(journal, input).await?;
@@ -188,8 +188,11 @@ impl StockExecution<'_> {
                         .select(journal, input.operation_id, step, self.io)?
                         .await?
                 {
-                    let changed = !std::ptr::eq(&*self.stock, selected.as_ref());
-                    self.stock = ExecutionConfiguration::Shared(selected);
+                    let changed = self
+                        .selected
+                        .as_ref()
+                        .is_none_or(|previous| !Arc::ptr_eq(previous, &selected));
+                    self.selected = Some(selected);
                     if changed {
                         self.compaction.take();
                         // A continuation owns the preceding binding's model,
@@ -332,7 +335,7 @@ impl StockExecution<'_> {
                     #[cfg(not(target_arch = "wasm32"))]
                     if after_answer.is_none() {
                         let mut notices = Vec::new();
-                        for hook in &self.stock.after_hooks {
+                        for hook in self.selected_after_hooks() {
                             for text in hook.settlement() {
                                 let text = stock_string_copy(text, self.io)?;
                                 stock_vec_push(&mut notices, text, self.io)?;

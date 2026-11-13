@@ -711,7 +711,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 /// A host-owned source of complete, admitted per-step configurations.
 /// Selections must be retained under the original `(operation, step)` before
 /// returning, so replay never substitutes current files for an admitted cut.
-/// The selected executor includes its provider, native declarations, sampling,
+/// The selected binding includes its provider, native declarations, sampling,
 /// context capacity and reasoning profile. It cannot replace the running
 /// execution's journal, original task authority, context epoch or inherited
 /// prefix. Instruction changes enter through ordinary appended source records.
@@ -725,9 +725,27 @@ pub trait StepConfiguration: acyclic_stream::ProviderPlatform {
         operation: OperationId,
         step: u32,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<StockExecutor>>>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<Arc<StepBinding>>>>;
 }
 
+/// One immutable model-step selection. It carries the provider's complete model
+/// profile, sampling, executable declarations and hooks, while turn context,
+/// task authority and journal ownership remain with the running executor.
+pub struct StepBinding {
+    model: ExecutorModel,
+    sampling: Option<crate::model::ModelSampling>,
+    resolved_sampling: once_cell::sync::OnceCell<crate::model::ModelSampling>,
+    provider: Arc<dyn ModelProvider>,
+    tools: ToolRegistry,
+    #[cfg(not(target_arch = "wasm32"))]
+    hooks: Option<Arc<crate::hooks::BoundHooks>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    after_hooks: Vec<crate::plugins::AfterHook>,
+    #[cfg(not(target_arch = "wasm32"))]
+    prompt_block: Option<String>,
+    // All selected values retire before the original owner's shared storage.
+    _custody: Option<crate::filesystem::PreparationCustody>,
+}
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
