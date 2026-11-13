@@ -112,12 +112,18 @@ impl Matcher {
 #[derive(Clone, Debug, Default)]
 pub struct Hooks {
     bindings: Vec<Arc<Binding>>,
+    custody: Vec<Arc<acyclic_fs::NativeAllocation>>,
 }
 
 impl Hooks {
     /// Appends already validated rules in authority order, sharing their compiled matchers.
     pub fn append(&mut self, other: Self) {
         self.bindings.extend(other.bindings);
+        self.custody.extend(other.custody);
+    }
+
+    pub(crate) fn retain_native(&mut self, custody: Arc<acyclic_fs::NativeAllocation>) {
+        self.custody.push(custody);
     }
 
     /// Whether any command fires at a site the stock execution loop owns.

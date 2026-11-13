@@ -216,6 +216,8 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
                 "plugins/helper/hooks/after-done.ts",
                 "export default [{notice:{text:'n'.repeat(65536),wake:true}}];",
             ),
+            ("plugins/helper/hooks/before-tool.sh", "exit 0"),
+            ("plugins/helper/hooks/before-tool.ps1", "exit 0"),
         ])),
     };
     fn layers(bytes: &[u8]) -> [Layer<'_>; 1] {
@@ -237,6 +239,8 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
     .into_result()?;
     assert_eq!(admitted.descriptions[0].len(), 65536);
     let after = admitted.after[0].clone();
+    let rules = admitted.rules.clone();
+    assert!(!rules.is_empty());
     assert_eq!(after.settlement().next().unwrap().len(), 65536);
     // Replace the evaluator's single cache entry. Admission owns its data independently.
     config::evaluate(
@@ -251,6 +255,11 @@ async fn native_plugin_admission_retains_manifest_and_after_hook_ownership() -> 
     drop(admitted);
     assert!(work.live_allocation_bytes() >= baseline + 65536);
     drop(after);
+    assert!(
+        work.live_allocation_bytes() > baseline,
+        "shared executable rules retain their admission"
+    );
+    drop(rules);
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
