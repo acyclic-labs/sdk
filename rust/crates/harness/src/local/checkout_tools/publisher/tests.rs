@@ -58,7 +58,15 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
     std::fs::create_dir(directory.path().join("directory")).map_err(storage)?;
     let (_fixture, publisher) = open_fixture(directory.path(), temporary_directory()?).await?;
     let _busy = lock_owned(StateArc::clone(&publisher.tools.state)).await;
-    let denied = crate::Capabilities::new(Vec::<String>::new());
+    let denied = crate::Capabilities::new([acyclic_fs::access::Capability::whole_volume(
+        None,
+        &[
+            acyclic_fs::access::Action::List,
+            acyclic_fs::access::Action::Read,
+        ],
+    )
+    .to_scope_label()
+    .map_err(|error| Error::Invalid(error.to_string()))?]);
     for (ceiling, code) in [
         (Some(&denied), crate::wire::ErrorCode::Unauthorized),
         (None, crate::wire::ErrorCode::Invalid),
