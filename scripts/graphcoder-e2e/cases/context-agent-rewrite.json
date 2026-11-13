@@ -98,9 +98,24 @@
     "last_model_contains": [
       "PINNED_FACT_USE_BLUE_WIDGET"
     ],
-    "requests": 4
+    "requests": 4,
+    "model_notices": [
+      {
+        "notice": {
+          "kind": "context.changed",
+          "source": "harness",
+          "body": {
+            "document": {
+              "path": "context/pins/evidence/decision.md"
+            },
+            "version": 1,
+            "text": "PINNED_FACT_USE_BLUE_WIDGET"
+          }
+        },
+        "step": 3
+      }
+    ]
   },
   "physical": true,
   "ntfs": true
 }
-
