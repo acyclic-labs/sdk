@@ -821,10 +821,12 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             budget,
             &cancellation,
             |_| async {
-                Ok::<_, acyclic_fs::WorkspaceError>(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: acyclic_fs::WorkCounters::UNCHARGED,
-                })
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
             },
         )
         .await?
