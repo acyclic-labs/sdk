@@ -361,7 +361,13 @@ impl Snapshot {
             path,
             tail,
             anchor: Some(record.commit_id),
-            unsettled: state.custody,
+            // An inherited publication belongs to its source actor. Only a
+            // record written beyond this fork's inherited prefix can own
+            // custody here; the source still recovers its original intent.
+            unsettled: state.custody
+                && provenance
+                    .as_ref()
+                    .is_none_or(|origin| record.sequence >= origin.inherited.forked_at),
             state: Some(state),
             provenance,
         })

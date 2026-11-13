@@ -733,6 +733,74 @@ async fn lost_ack_keeps_participant_and_replays_the_sealed_request_once() -> Res
     Ok(())
 }
 
+/// A raw Streams fork inherits bytes, not the source's settlement obligation.
+#[tokio::test]
+async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), Failure> {
+    for settled in [false, true] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![Fault::None, Fault::None, Fault::LoseAck],
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let result = store
+            .publish(
+                &store.load(&actor).await?,
+                1,
+                &Trigger::Record { subscription: "inbox".into(), sequence: 0 },
+                None,
+                transition(false)?,
+                key("copy-source-publication")?,
+            )
+            .await;
+        let Err(Error::Unknown { publication, .. }) = result else {
+            return Err("source publication must commit with a lost acknowledgement".into());
+        };
+        drop(publication);
+        let source = store.load(&actor).await?;
+        if settled {
+            store.recover_custody(&source).await?;
+        }
+        for delete_first in [false, true] {
+            let child = ActorReference::new(b"account", b"agents", if delete_first { b"delete-copy" } else { b"active-copy" })?;
+            let mut fork = PreparedPublish::foreign(key(if delete_first { "copy-delete" } else { "copy-active" })?);
+            fork.join(CommitEffect::hard(
+                Vec::new(),
+                vec![CommitMutation::Fork {
+                    source: store.path(&actor)?,
+                    destination: store.path(&child)?,
+                    at_tail: source.tail,
+                    records: Vec::new(),
+                    exclude: Vec::new(),
+                }],
+            ))?;
+            store.submit(fork).await?;
+            let cut = store.load(&child).await?;
+            if delete_first {
+                store.submit(store.delete(&cut, key("delete-inherited-copy")?)?).await?;
+            } else {
+                let claimed = store.claim(&cut, 2, key("claim-inherited-copy")?).await?;
+                store.publish(
+                    &claimed,
+                    2,
+                    &Trigger::Record { subscription: "inbox".into(), sequence: 1 },
+                    None,
+                    Transition { participant: None, effects: Vec::new(), ..transition(false)? },
+                    key("publish-inherited-copy")?,
+                ).await?;
+                store.submit(store.delete(&store.load(&child).await?, key("delete-active-copy")?)?).await?;
+            }
+            assert!(store.load(&child).await?.state().is_some_and(State::deleted));
+            assert_eq!(counts.committed.load(Ordering::SeqCst), usize::from(settled), "a copy must not settle source custody");
+        }
+        // Positive ownership control: the original source still must settle.
+        store.recover_custody(&source).await?;
+        assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
+
 /// The owner dies after its composed publication applied but before it learned
 /// so: the intent the publication itself carried lets the next owner settle
 /// the participant exactly once, and a later plain publication clears it.
