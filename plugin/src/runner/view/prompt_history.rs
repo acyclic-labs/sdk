@@ -1,9 +1,6 @@
 //! Navigation owns only the original socket and prompts the user has requested.
 use super::{Conversation, Failure};
-use acyclic_harness::{
-    client::{AgentPageRequest, InputPreviewStep, MAX_READ_BYTES},
-    local::agent_conversation::ConversationInput,
-};
+use acyclic_harness::local::sessions::PromptHistory;
 use futures::{Future, future::BoxFuture};
 use std::{
     collections::VecDeque,
@@ -11,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-type Loaded = Result<(ConversationInput, Option<String>), Failure>;
+type Loaded = Result<(PromptHistory, Option<String>), Failure>;
 
 pub(super) struct Reply {
     pub request: u64,
@@ -28,7 +25,7 @@ struct Navigation {
 
 pub(super) struct History {
     conversation: Arc<Conversation>,
-    source: Option<ConversationInput>,
+    source: Option<PromptHistory>,
     loading: Option<BoxFuture<'static, Loaded>>,
     messages: Vec<String>,
     cursor: Option<usize>,
@@ -122,49 +119,10 @@ impl History {
                 let source = self.source.take();
                 let conversation = Arc::clone(&self.conversation);
                 self.loading = Some(Box::pin(async move {
-                    let mut source = match source {
-                        Some(source) => source,
-                        None => {
-                            conversation
-                                .prompt_history_query(AgentPageRequest::new(
-                                    1,
-                                    MAX_READ_BYTES as u32,
-                                    None,
-                                )?)
-                                .await?
-                        }
-                    };
-                    let mut text = String::new();
-                    let mut original = None;
-                    loop {
-                        match source.next().await? {
-                            Some(InputPreviewStep::Progress) => {}
-                            Some(InputPreviewStep::MessageRange {
-                                inbox,
-                                offset,
-                                preview,
-                            }) => {
-                                if offset != text.len() as u64
-                                    || original.is_some_and(|selected| selected != inbox)
-                                {
-                                    return Err(
-                                        "Prompt history range lost its original input.".into()
-                                    );
-                                }
-                                original = Some(inbox);
-                                text.push_str(&preview.text);
-                                if text.len() as u64 == preview.bytes {
-                                    return Ok((source, Some(text)));
-                                }
-                            }
-                            Some(InputPreviewStep::Selected(None)) => return Ok((source, None)),
-                            _ => {
-                                return Err(
-                                    "Prompt history ended without its original completion.".into(),
-                                );
-                            }
-                        }
-                    }
+                    let mut source = source
+                        .unwrap_or_else(|| PromptHistory::new(conversation.connection().clone()));
+                    let text = source.next().await?;
+                    Ok((source, text))
                 }));
             }
             match self
