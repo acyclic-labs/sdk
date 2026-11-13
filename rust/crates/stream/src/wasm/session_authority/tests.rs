@@ -9,6 +9,7 @@ fn public_trust(revoked: bool) -> String {
         "account": "account", "issuer_keys": snapshot.issuers,
         "minimum_key_epoch": 1,
         "environment_keys_valid_until": null,
+        "not_before_unix_seconds": 0,
         "revoked_key_ids": if revoked { vec!["key"] } else { vec![] },
         "revoked_block_ids": [],
     })
