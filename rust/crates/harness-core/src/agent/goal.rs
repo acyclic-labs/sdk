@@ -178,7 +178,10 @@ pub(super) async fn settle(
                     path: agent.path.clone(),
                 },
                 id,
-                re: None,
+                re: agent
+                    .run_admission
+                    .map(|operation| IntentId::try_from(operation.to_string()))
+                    .transpose()?,
                 body: Box::new(view.source),
                 attachments: None,
             }),
