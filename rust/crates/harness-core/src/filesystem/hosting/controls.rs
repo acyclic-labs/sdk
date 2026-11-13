@@ -125,10 +125,10 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
     pub(super) fn bind_composer(
         &self,
         composer: std::sync::Weak<dyn acyclic_actors::guest::Composer>,
-    ) {
+    ) -> Result<(), Error> {
         self.composer
             .set(composer)
-            .expect("control composer bound once");
+            .map_err(|_| Error::Record("control composer already bound"))
     }
 
     fn actor(&self, within: &ActorReference, agent: &AgentPath) -> Result<ActorReference, Error> {
