@@ -140,6 +140,10 @@ pub async fn verify_with_reply_wait(
             &acyclic_harness_client::AgentId::from_bytes([1; 16]),
         );
     }
+    // A foreign root needs its own credential before any lookup, so it is
+    // refused whether or not it exists: a session-serving host denies access,
+    // a single-tree host reports no such agent. Neither discloses the root;
+    // the serving protocol vector proves a missing descendant's no_such_agent.
     match execute(
         &controls,
         &AgentCommand::Settlement {
@@ -150,6 +154,7 @@ pub async fn verify_with_reply_wait(
     .await
     {
         Err(AgentExchangeError::Control(error)) if error.code() == "no_such_agent" => {}
+        Err(AgentExchangeError::Session(acyclic_stream::StreamError::AccessDenied)) => {}
         Err(error) => return Err(exchange_failure("tree_admission", error)),
         Ok(_) => return Err(failure("tree_admission", "endpoint exposed a foreign tree")),
     }
