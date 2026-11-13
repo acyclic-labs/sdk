@@ -308,6 +308,22 @@ impl State {
     pub const fn subscriptions(&self) -> &BTreeMap<String, Subscription> {
         &self.subscriptions
     }
+    /// Interests not already covered by a producer-activated manifest input.
+    /// An alias keeps its own cursor, but needs no second follow or restore marker.
+    fn external_subscriptions<'a>(
+        &'a self,
+        manifest: &'a crate::guest::Manifest,
+    ) -> impl Iterator<Item = (&'a String, &'a Subscription)> + 'a {
+        self.subscriptions.iter().filter(move |(id, subscription)| {
+            !subscription.paused
+                && !manifest.subscriptions.contains(*id)
+                && !manifest.subscriptions.iter().any(|input| {
+                    self.subscriptions
+                        .get(input)
+                        .is_some_and(|owned| owned.path == subscription.path)
+                })
+        })
+    }
     /// Next unconsumed sequence of a declared subscription.
     pub fn cursor(&self, subscription: &str) -> Option<u64> {
         self.subscriptions

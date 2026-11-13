@@ -49,13 +49,11 @@ impl Subscriptions {
     /// The guest-added interests of `state`, each at its earliest cursor.
     fn selected(manifest: &crate::guest::Manifest, state: &State) -> BTreeMap<StreamPath, u64> {
         let mut selected = BTreeMap::<StreamPath, u64>::new();
-        for (id, subscription) in state.subscriptions() {
-            if !subscription.paused && !manifest.subscriptions.contains(id) {
-                selected
-                    .entry(subscription.path.clone())
-                    .and_modify(|cursor| *cursor = (*cursor).min(subscription.cursor))
-                    .or_insert(subscription.cursor);
-            }
+        for (_, subscription) in state.external_subscriptions(manifest) {
+            selected
+                .entry(subscription.path.clone())
+                .and_modify(|cursor| *cursor = (*cursor).min(subscription.cursor))
+                .or_insert(subscription.cursor);
         }
         selected
     }

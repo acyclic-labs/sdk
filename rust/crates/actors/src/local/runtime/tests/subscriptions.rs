@@ -1,5 +1,137 @@
 use super::*;
 
+async fn input_aliases<P: StreamProvider>(provider: P) -> TestResult {
+    let provider = Arc::new(provider);
+    let store = Store::new(provider.clone(), root()?);
+    let address = actor("input-alias")?;
+    let input = StreamPath::new("owned/input")?;
+    let mut creation = PreparedPublish::foreign(key("create-input-alias")?);
+    creation.join(
+        store.create(
+            None,
+            &address,
+            crate::local::Creation {
+                checkpoint: Some(ledger("out/input-alias")?),
+                subscriptions: ["inbox", "alias"]
+                    .into_iter()
+                    .map(|id| {
+                        (
+                            id.into(),
+                            Subscription {
+                                path: input.clone(),
+                                cursor: 0,
+                            },
+                        )
+                    })
+                    .collect(),
+                ..crate::local::Creation::default()
+            },
+        )?,
+    )?;
+    creation.join(store.activation(&address)?)?;
+    store.submit(creation).await?;
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    assert!(
+        runtime.subscriptions.lock().unwrap().paths.is_empty(),
+        "an inbox alias opened a redundant follow"
+    );
+    assert!(
+        runtime
+            .store()
+            .interest_holders(runtime.store().scheduling_shard(&address), None)
+            .await?
+            .0
+            .is_empty(),
+        "an inbox alias created a restore marker"
+    );
+
+    // Negative control: a genuinely external interest still needs its source
+    // follow, because its producer does not publish this actor's activation.
+    let (_, external, observed) = observers(&provider, 1).await?;
+    runtime.track(external[0].clone())?;
+    runtime.drain_actor(&external[0]).await?;
+    assert_eq!(runtime.subscriptions.lock().unwrap().paths.len(), 1);
+    assert!(
+        runtime
+            .subscriptions
+            .lock()
+            .unwrap()
+            .paths
+            .contains_key(&observed)
+    );
+
+    let mut serving =
+        Box::pin(runtime.run(|_, error| panic!("subscription delivery failed: {error}")));
+    observe_while_running(serving.as_mut(), async {
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    let mut publication = PreparedPublish::foreign(key("activated-input")?);
+    publication.join(CommitEffect::hard(
+        vec![CommitCondition::Tail {
+            path: input.clone(),
+            expected: 0,
+        }],
+        vec![CommitMutation::Append {
+            path: input.clone(),
+            records: vec!["emit".into()],
+        }],
+    ))?;
+    publication.join(runtime.store().activation(&address)?)?;
+    runtime.store().submit(publication).await?;
+    observe_while_running(serving.as_mut(), async {
+        state_after(runtime.store(), &address, |state| {
+            state.cursor("inbox") == Some(1) && state.cursor("alias") == Some(1)
+        })
+        .await?;
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    assert_eq!(
+        records(provider.as_ref(), "out/input-alias").await?.len(),
+        2,
+        "the alias lost its independent cursor"
+    );
+    assert!(
+        !runtime
+            .subscriptions
+            .lock()
+            .unwrap()
+            .paths
+            .contains_key(&input)
+    );
+    provider
+        .append(AppendRequest {
+            path: observed,
+            records: vec!["emit".into()],
+            if_tail: None,
+            idempotency_key: key("external-input-control")?,
+        })
+        .await?;
+    observe_while_running(serving.as_mut(), async {
+        state_after(runtime.store(), &external[0], |state| {
+            state.cursor("observed") == Some(1)
+        })
+        .await?;
+        runtime.complete().await?;
+        Ok(())
+    })
+    .await?;
+    assert_eq!(records(provider.as_ref(), "out/observer-0").await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn input_aliases_share_activation_without_follow_or_restore_work() -> TestResult {
+    input_aliases(MemoryStream::default()).await?;
+    let directory = tempfile::tempdir()?;
+    input_aliases(LocalStream::open(directory.path(), Default::default()).await?).await
+}
+
 async fn observers<P: StreamProvider>(
     provider: &Arc<P>,
     count: usize,

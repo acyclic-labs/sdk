@@ -369,10 +369,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         state: &super::State,
         handler: &dyn crate::guest::Handler,
     ) -> Result<Option<CommitEffect>, Error> {
-        if state.subscriptions().keys().all(|id| {
-            handler.manifest().subscriptions.contains(id)
-                && !handler.external_subscriptions().contains(id)
-        }) {
+        if !handler.external_subscriptions().iter().any(|id| state.subscriptions().contains_key(id))
+            && state.external_subscriptions(handler.manifest()).next().is_none()
+        {
             return Ok(None);
         }
         let path = self.interest_marker_path(actor)?;
