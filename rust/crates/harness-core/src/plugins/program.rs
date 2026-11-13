@@ -11,15 +11,18 @@ use crate::{
 /// Retain this value through admission and dispatch; do not reopen entry files.
 #[derive(Debug)]
 pub struct LoadedProgram {
-    /// The same declaration consumed by the stock tool registry.
-    pub definition: ToolDefinition,
-    /// The same command consumed by the stock hook runner.
-    pub run: HookRun,
+    definition: ToolDefinition,
+    pub(crate) run: HookRun,
     // Retained manifest and entry bytes retire before their original credit.
     custody: acyclic_fs::NativeCustody,
 }
 
 impl LoadedProgram {
+    /// The pinned declaration, borrowed without detaching its original credit.
+    pub fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
     /// Binds an authored tool to the host's ordinary shell capability. Every
     /// invocation is canonicalized before permission and approval checks, so
     /// authorship cannot widen the execution grant. Arguments travel as JSON
@@ -121,6 +124,12 @@ impl LoadedProgram {
 /// Refuses an invalid manifest, a name mismatch, an escaping entry path, or a
 /// missing native form. Operational reads retain their original error.
 pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProgram> {
+    let lowering = tree
+        .preparation_io()
+        .and_then(crate::filesystem::PreparationIo::original_native_work)
+        .map(crate::filesystem::PreparationIo::from_native_work)
+        .transpose()?;
+    let io = lowering.as_ref();
     crate::executor::with_history_io(tree.preparation_io(), |work| {
         crate::conversation::validate_content_path(directory, work)
     })?;
@@ -134,7 +143,9 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         .ok_or_else(|| {
             Error::Invalid("program directory must be tools/<name> or hooks/<name>".into())
         })?;
-    let path = format!("{kind}/{name}/program.ts");
+    let path = crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(format_args!("{kind}/{name}/program.ts"), work)
+    })?;
     let source = tree
         .read(&path)
         .await?
@@ -147,10 +158,12 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         Surface::Data,
     )
     .await?;
-    let mut custody = evaluated._custody;
-    let manifest: ProgramManifest = serde_json::from_value(evaluated.value)
-        .map_err(|error| Error::Invalid(format!("{path}: {error}")))?;
-    if manifest.version != 1 || manifest.name != name {
+    let mut manifest = evaluated.value.record::<ProgramManifest>()?;
+    let mut retained = crate::javascript_allocator::EngineResult {
+        value: (),
+        custody: None,
+    };
+    if manifest.value.version != 1 || manifest.value.name != name {
         return Err(Error::Invalid(format!(
             "{path}: unsupported version or mismatched name"
         )));
@@ -158,21 +171,26 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
     let mut identity = blake3::Hasher::new_derive_key("acyclic.harness.program.v1");
     identity.update(&evaluated.digest);
     let mut native = None;
-    for (form, entry) in [("sh", manifest.entry.sh), ("ps1", manifest.entry.ps1)] {
+    for (form, entry) in [
+        ("sh", &manifest.value.entry.sh),
+        ("ps1", &manifest.value.entry.ps1),
+    ] {
         identity.update(form.as_bytes());
         let Some(entry) = entry else {
             identity.update(&[0]);
             continue;
         };
         crate::executor::with_history_io(tree.preparation_io(), |work| {
-            crate::conversation::validate_content_path(&entry, work)
+            crate::conversation::validate_content_path(entry, work)
         })?;
-        if !entry.ends_with(&format!(".{form}")) {
+        if !entry.ends_with(if form == "sh" { ".sh" } else { ".ps1" }) {
             return Err(Error::Invalid(format!(
                 "{path}: {form} entry has the wrong extension"
             )));
         }
-        let script_path = format!("{directory}/{entry}");
+        let script_path = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(format_args!("{directory}/{entry}"), work)
+        })?;
         let bytes = tree
             .read(&script_path)
             .await?
@@ -185,38 +203,47 @@ pub async fn load_program(tree: &dyn Tree, directory: &str) -> Result<LoadedProg
         identity.update(&(bytes.len() as u64).to_be_bytes());
         identity.update(&bytes);
         if (form == "ps1") == cfg!(windows) {
-            if let Some(custody) = &mut custody {
-                custody.grow(script.len() as u64)?;
-                custody.work().spent(acyclic_fs::WorkCounters {
-                    bytes_copied: script.len() as u64,
-                    ..acyclic_fs::WorkCounters::UNCHARGED
-                })?;
-            }
-            native = Some(script.to_owned());
+            native = Some(crate::executor::stock_string_copy(script, io)?);
         }
+        crate::executor::stock_retire_text(script_path, io)?;
     }
     let command = native
         .ok_or_else(|| Error::Unsupported(format!("{path}: no native entry for this host")))?;
+    let selected_bytes = crate::core::owned_sum([
+        manifest.value.name.capacity() as u64,
+        manifest.value.description.capacity() as u64,
+        crate::executor::json::json_value_retained_owned_bytes(&manifest.value.input_schema)?,
+    ])?;
+    let revision = crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(format_args!("{}", identity.finalize().to_hex()), work)
+    })?;
+    crate::javascript_allocator::transfer(&mut manifest.custody, selected_bytes, &mut retained)?;
     let definition = ToolDefinition {
-        name: manifest.name,
-        revision: identity.finalize().to_hex().to_string(),
-        description: manifest.description,
-        input_schema: manifest.input_schema,
+        name: std::mem::take(&mut manifest.value.name),
+        revision,
+        description: std::mem::take(&mut manifest.value.description),
+        input_schema: std::mem::take(&mut manifest.value.input_schema),
         output_schema: serde_json::json!({}),
         projection_schema: serde_json::json!({}),
     };
+    crate::executor::stock_retire_text(path, io)?;
     crate::executor::with_history_io(tree.preparation_io(), |work| definition.validate(work))?;
+    let selected_shell = if cfg!(windows) {
+        None
+    } else {
+        Some(crate::executor::stock_string_copy("sh", io)?)
+    };
+    if let Some(lowering) = lowering {
+        let bytes = lowering.owned_bytes()?;
+        retained.absorb(Some(lowering.into_native_custody(bytes)?))?;
+    }
     Ok(LoadedProgram {
         definition,
         run: HookRun::Shell {
             command,
-            shell: if cfg!(windows) {
-                None
-            } else {
-                Some("sh".into())
-            },
+            shell: selected_shell,
         },
-        custody,
+        custody: retained.custody,
     })
 }
 
