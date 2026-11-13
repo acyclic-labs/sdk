@@ -2721,8 +2721,14 @@ mod tests {
                 },
             )
             .await?;
-            view.apply(&conversation, Event::Turn { sequence, entry }, sequence + 1)
-                .await?;
+            // The observer frontier may already include later records. The
+            // retained event's sequence must select this turn's prompt bytes.
+            view.apply(
+                &conversation,
+                Event::Turn { sequence, entry },
+                sequence + 17,
+            )
+            .await?;
             let failure = view.exit().expect_err("old turn replaced terminal failure");
             assert_eq!(failure.to_string(), message);
             assert_eq!(
