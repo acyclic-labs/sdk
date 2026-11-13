@@ -696,7 +696,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     let mut bytes = prefix.clone();
     bytes.extend_from_slice(&length);
     bytes.extend_from_slice(&payload);
-    bytes.extend_from_slice(&frame_checksum(&length, &payload));
+    bytes.extend_from_slice(&JOURNAL_FRAME.checksum(&length, &payload));
     std::fs::write(&path, &bytes)?;
     assert!(matches!(
         LocalStream::open(directory.path(), limits).await,

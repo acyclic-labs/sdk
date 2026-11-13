@@ -109,20 +109,15 @@ impl PreparedFrame {
         {
             return Err(LocalStreamError::InvalidLimits);
         }
-        let length = u32::try_from(FRAME_TIME_BYTES + size)
-            .map_err(|_| LocalStreamError::InvalidLimits)?
-            .to_le_bytes();
         self.encoded.clear();
-        self.encoded.extend_from_slice(&length);
-        self.encoded.extend_from_slice(&time.to_le_bytes());
-        command.encode(&mut self.encoded);
-        let checksum = frame_checksum(
-            &length,
-            self.encoded
-                .get(4..)
-                .ok_or(LocalStreamError::IncompleteFrame)?,
-        );
-        self.encoded.extend_from_slice(&checksum);
+        JOURNAL_FRAME.encode_with(
+            (FRAME_TIME_BYTES + size) as u64,
+            &mut self.encoded,
+            |write| {
+                write(&time.to_le_bytes())?;
+                command.encode_with(write)
+            },
+        )?;
         if let Some(work) = &self.work {
             let hashed = b"acyclic-stream-local-frame-v1\0".len() + 4 + FRAME_TIME_BYTES + size;
             let codec = self

@@ -6,7 +6,3 @@ const JOURNAL_FRAME: acyclic_native_runtime::LogFrame = acyclic_native_runtime::
     minimum_body: FRAME_TIME_BYTES as u64 + 1,
     maximum_body: (FRAME_TIME_BYTES + MAX_COMMAND_BYTES) as u64,
 };
-
-fn frame_checksum(length: &[u8; 4], command: &[u8]) -> [u8; 32] {
-    JOURNAL_FRAME.checksum(length, command)
-}

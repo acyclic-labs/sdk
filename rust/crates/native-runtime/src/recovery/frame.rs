@@ -82,17 +82,16 @@ impl LogFrame {
     /// The checksum of a frame whose prefix and body are given.
     #[must_use]
     pub fn checksum(&self, prefix: &[u8], body: &[u8]) -> [u8; Self::CHECKSUM_BYTES] {
-        self.checksum_parts(prefix, &[body])
+        let mut hasher = self.checksum_start(prefix);
+        hasher.update(body);
+        hasher.finalize().into()
     }
 
-    fn checksum_parts(&self, prefix: &[u8], body: &[&[u8]]) -> [u8; Self::CHECKSUM_BYTES] {
+    fn checksum_start(&self, prefix: &[u8]) -> Sha256 {
         let mut hasher = Sha256::new();
         hasher.update(self.domain);
         hasher.update(prefix);
-        for part in body {
-            hasher.update(part);
-        }
-        hasher.finalize().into()
+        hasher
     }
 
     /// Appends the frame whose body is `parts`, in order, to `out`.
@@ -101,6 +100,24 @@ impl LogFrame {
             .iter()
             .try_fold(0_u64, |total, part| total.checked_add(part.len() as u64))
             .ok_or(io::ErrorKind::InvalidInput)?;
+        self.encode_with(body, out, |write| {
+            for part in parts {
+                write(part)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Append a frame whose body is produced directly into its reserved output.
+    /// The producer must write exactly `body` bytes; an error leaves an unfinished
+    /// prefix in `out` and never appends a checksum. No body chunk can grow the
+    /// output beyond the admitted frame extent.
+    pub fn encode_with(
+        &self,
+        body: u64,
+        out: &mut Vec<u8>,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
+    ) -> io::Result<()> {
         let (prefix, width) = self.prefix(body).ok_or(io::ErrorKind::InvalidInput)?;
         let prefix = prefix.get(..width).ok_or(io::ErrorKind::InvalidInput)?;
         let bytes = usize::try_from(self.frame_bytes(body).ok_or(io::ErrorKind::InvalidInput)?)
@@ -114,10 +131,21 @@ impl LogFrame {
         }
         out.try_reserve(bytes).map_err(io::Error::other)?;
         out.extend_from_slice(prefix);
-        for part in parts {
-            out.extend_from_slice(part);
+        let mut remaining = body;
+        let mut hasher = self.checksum_start(prefix);
+        produce(&mut |chunk| {
+            let next = remaining
+                .checked_sub(chunk.len() as u64)
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            out.extend_from_slice(chunk);
+            hasher.update(chunk);
+            remaining = next;
+            Ok(())
+        })?;
+        if remaining != 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
         }
-        out.extend_from_slice(&self.checksum_parts(prefix, parts));
+        out.extend_from_slice(&hasher.finalize());
         Ok(())
     }
 
@@ -190,6 +218,66 @@ mod tests {
         maximum_body: u64::MAX - 64,
         ..NARROW
     };
+
+    #[test]
+    fn produced_frames_enforce_the_admitted_body_before_sealing() -> std::io::Result<()> {
+        use std::io::{Seek as _, Write as _};
+
+        for format in [NARROW, WIDE] {
+            let mut expected = Vec::new();
+            format.encode(&[b"abcde"], &mut expected)?;
+            for split in 0..=5 {
+                let mut output = Vec::with_capacity(expected.len());
+                let capacity = output.capacity();
+                format.encode_with(5, &mut output, |write| {
+                    write(b"abcde".get(..split).unwrap())?;
+                    write(b"abcde".get(split..).unwrap())
+                })?;
+                assert_eq!(output, expected);
+                assert_eq!(output.capacity(), capacity);
+                let mut file = tempfile::tempfile()?;
+                file.write_all(&output)?;
+                file.rewind()?;
+                assert_eq!(
+                    format.read(file, output.len() as u64)?,
+                    Some(b"abcde".to_vec())
+                );
+            }
+
+            // A producer cannot force an allocation beyond its declared body.
+            let mut output = Vec::with_capacity(expected.len());
+            let capacity = output.capacity();
+            let error = format
+                .encode_with(5, &mut output, |write| {
+                    write(b"ab")?;
+                    write(b"cdef")
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(output.capacity(), capacity);
+            assert_eq!(output.len(), format.prefix_bytes() + 2);
+            assert!(!format.is_valid(&output));
+
+            output.clear();
+            let error = format
+                .encode_with(5, &mut output, |write| write(b"ab"))
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(!format.is_valid(&output));
+
+            output.clear();
+            let error = format
+                .encode_with(5, &mut output, |write| {
+                    write(b"abcde")?;
+                    Err(std::io::Error::from_raw_os_error(123))
+                })
+                .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(123));
+            assert_eq!(output.len(), format.prefix_bytes() + 5);
+            assert!(!format.is_valid(&output));
+        }
+        Ok(())
+    }
 
     #[test]
     fn a_frame_is_valid_only_whole_and_unchanged() {
