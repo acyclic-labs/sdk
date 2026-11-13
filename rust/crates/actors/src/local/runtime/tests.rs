@@ -2284,7 +2284,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     // Poll through claim and state observation, then cancel the stalled handler.
     assert!(
         runtime
-            .deliver(&address, &slot, None)
+            .deliver(&address, &slot, &mut None)
             .now_or_never()
             .is_none()
     );
