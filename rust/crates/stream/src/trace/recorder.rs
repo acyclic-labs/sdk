@@ -134,9 +134,18 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
     }
 
     async fn publish(&self, event: SpanEvent) -> Result<RetainedRecord, StreamError> {
+        let (id, phase) = match &event {
+            SpanEvent::Started { id, .. } => (id, 0),
+            SpanEvent::Finished { id, .. } => (id, 1),
+        };
+        let mut key = b"acyclic.trace.v1".to_vec();
+        key.extend_from_slice(&id.process);
+        key.extend_from_slice(&id.sequence.to_be_bytes());
+        key.push(phase);
+        let key = IdempotencyKey::new(key)?;
         let bytes = serde_json::to_vec(&TraceRecord::V1(event))
             .map_err(|source| StreamError::InvalidResponse.with_source(source))?;
-        match self.stream.append(bytes, IdempotencyKey::unique()).await? {
+        match self.stream.append(bytes, key).await? {
             AppendOutcome::Committed(receipt) => Ok(RetainedRecord {
                 commit_id: receipt.commit_id,
                 path: self.stream.path().clone(),
