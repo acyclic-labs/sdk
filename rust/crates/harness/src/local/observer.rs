@@ -28,6 +28,8 @@ pub enum Event {
     /// streams. [`Observer::absorb`] reads it into [`Observer::live`]; a
     /// caller that does not display it reads nothing.
     Delta,
+    /// The optional accepted-input follow advanced through this exclusive cursor.
+    Input { through: u64 },
 }
 
 /// A live, read-only observation of one agent. Revoking the scope it derives
@@ -40,6 +42,8 @@ pub struct Observer {
     status: StreamPath,
     /// The `fs:/` resource of the agent's `tools/`.
     resource: String,
+    input_resource: Option<String>,
+    input_through: u64,
     /// Next conversation sequence not yet returned to the caller.
     next_turn: u64,
     /// A phase-aware opening already supplied the state through this checkpoint.
@@ -87,7 +91,7 @@ impl Observer {
                 .wire()
                 .map_err(storage)
         };
-        let observer = Self::opening(
+        let mut observer = Self::opening(
             connection,
             AgentSelection {
                 agent: agent.clone(),
@@ -96,6 +100,14 @@ impl Observer {
             },
             Some(projection),
         )?;
+        let input = acyclic_stream::wire_codec::session::stream_resource(
+            agent.inbox().map_err(storage)?.as_str(),
+        );
+        let mut sources = observer.sources();
+        sources.push(input.clone());
+        if projection.validate_sources(&sources).is_ok() {
+            observer.watch_inputs_from(projection.cursor(&input).wire().map_err(storage)?)?;
+        }
         projection
             .validate_sources(&observer.sources())
             .map_err(storage)?;
@@ -143,6 +155,8 @@ impl Observer {
             conversation: agent.conversation().map_err(storage)?,
             status: agent.status().map_err(storage)?,
             resource: connection.tools.clone(),
+            input_resource: None,
+            input_through: 0,
             next_turn: from,
             status_floor: None,
             tail: OutputTail::default(),
@@ -177,14 +191,51 @@ impl Observer {
     }
 
     /// The bounded set of sources selected by this observer.
-    pub fn sources(&self) -> [String; 3] {
-        [
+    pub fn sources(&self) -> Vec<String> {
+        let mut sources = vec![
             acyclic_stream::wire_codec::session::stream_resource(self.status.as_str()),
             acyclic_stream::wire_codec::session::stream_resource(self.conversation.as_str()),
             self.resource.clone(),
-        ]
+        ];
+        sources.extend(self.input_resource.iter().cloned());
+        sources
     }
 
+    /// Follow accepted input on the same bounded reader and credential. No
+    /// message body is loaded. Other observers pay nothing unless they opt in.
+    pub fn watch_inputs(&mut self) -> Result<()> {
+        self.watch_inputs_from(wire::SessionCursor {
+            next: 0,
+            opaque: Default::default(),
+        })
+    }
+
+    fn watch_inputs_from(&mut self, cursor: wire::SessionCursor) -> Result<()> {
+        if self.input_resource.is_some() {
+            return Ok(());
+        }
+        let resource = acyclic_stream::wire_codec::session::stream_resource(
+            self.agent.inbox().map_err(storage)?.as_str(),
+        );
+        self.input_through = cursor.next;
+        self.client
+            .open_resource(wire::SessionSubscription {
+                credential: self.connection.controls.observation_credential(),
+                filter: None,
+                channel: None,
+                resume: Some(cursor),
+                kind: Some(wire::session_subscription::Kind::Follow(
+                    wire::SessionFollow {
+                        resource: resource.clone(),
+                        delivery: wire::SessionDelivery::Latest as i32,
+                        ..Default::default()
+                    },
+                )),
+            })
+            .map_err(storage)?;
+        self.input_resource = Some(resource);
+        Ok(())
+    }
     fn apply(&mut self, event: AgentEvent, after: Option<u64>) -> Result<Option<Event>> {
         Ok(match event {
             AgentEvent::Status { status, .. } => {
@@ -208,6 +259,16 @@ impl Observer {
                 self.next_turn = sequence + 1;
                 self.reset_output()?;
                 Some(Event::Turn(entry))
+            }
+            AgentEvent::Resource { resource, .. }
+                if self.input_resource.as_ref() == Some(&resource) =>
+            {
+                after
+                    .filter(|through| *through > self.input_through)
+                    .map(|through| {
+                        self.input_through = through;
+                        Event::Input { through }
+                    })
             }
             AgentEvent::Resource { .. } => Some(Event::Delta),
             AgentEvent::Progress => None,
