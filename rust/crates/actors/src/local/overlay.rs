@@ -152,7 +152,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         cut: &Snapshot,
         child: &ActorReference,
-        branch: Branch,
+        mut branch: Branch,
     ) -> Result<CommitEffect, Error> {
         let state = cut
             .state
@@ -164,6 +164,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         if branch.subscriptions.values().any(|read| read.path == path) {
             return Err(Error::Invalid("actor subscribes to its own state"));
+        }
+        // Rebinding a child's sources cannot resume work its copied checkpoint
+        // still considers suspended. Only the child's own resume transition can.
+        for (id, subscription) in &mut branch.subscriptions {
+            subscription.paused = state.subscriptions[id].paused;
         }
         let overlay = State {
             subscriptions: branch.subscriptions,

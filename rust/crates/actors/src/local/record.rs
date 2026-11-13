@@ -10,12 +10,13 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
 /// lengths and the fixed integers and flags.
 pub const STATE_RECORD_OVERHEAD: usize =
-    152 + STATE_FORMAT_V1.len() + 2 + crate::escrow::MAX_RECORD_LEN;
+    152 + STATE_FORMAT_V2.len() + 2 + crate::escrow::MAX_RECORD_LEN;
 // The first byte has forbidden protobuf wire type 7: an older unversioned
 // decoder MUST fail rather than discard metadata and subsequently rewrite it.
-// Version 1 of the `ACS` domain keeps funding in its host-owned field, so guest
+// Version 2 retains per-subscription suspension. Older state records are refused,
+// never rewritten after discarding their cursor state. Funding stays host-owned; guest
 // metadata is never promoted into funding authority by the state reader.
-const STATE_FORMAT_V1: &[u8] = b"\xffACS\x01";
+const STATE_FORMAT_V2: &[u8] = b"\xffACS\x02";
 /// Host-owned admission fields projected without allocating the checkpoint,
 /// subscriptions or metadata. Authenticate the original actor path separately
 /// and fence its original record when publishing a dependent dispatch.
@@ -30,7 +31,7 @@ pub struct AdmissionState {
 }
 
 fn payload(record: &[u8]) -> Result<&[u8], Error> {
-    acyclic_stream::persistence::header(record, &STATE_FORMAT_V1[..4], &STATE_FORMAT_V1[4..])
+    acyclic_stream::persistence::header(record, &STATE_FORMAT_V2[..4], &STATE_FORMAT_V2[4..])
         .map_err(Into::into)
 }
 
@@ -43,7 +44,9 @@ impl AdmissionState {
     }
 }
 /// Framing bytes each subscription adds beyond its id and path, at most.
-pub const SUBSCRIPTION_OVERHEAD: usize = 32;
+// Four length-delimited fields (map entry, id, value, path), one u64 cursor,
+// and the suspension tag/value. Each length has at most ten varint bytes.
+pub const SUBSCRIPTION_OVERHEAD: usize = 4 * (1 + 10) + (1 + 10) + 2;
 /// Framing bytes each metadata entry adds beyond its key and value, at most.
 pub const METADATA_OVERHEAD: usize = 32;
 
@@ -95,6 +98,8 @@ struct SubscriptionRecord {
     path: String,
     #[prost(uint64, tag = "2")]
     cursor: u64,
+    #[prost(bool, tag = "3")]
+    paused: bool,
 }
 
 /// The consumed-alarm field of a state record; every other field is skipped
@@ -130,7 +135,7 @@ pub fn alarm_admission() -> Arc<dyn acyclic_stream::CommitAdmission> {
 }
 
 fn delivered_deadline(record: &[u8]) -> Option<u64> {
-    ConsumedRecord::decode(record.strip_prefix(STATE_FORMAT_V1)?)
+    ConsumedRecord::decode(record.strip_prefix(STATE_FORMAT_V2)?)
         .ok()?
         .consumed_alarm_deadline_unix_ms
 }
@@ -156,6 +161,7 @@ impl State {
                         SubscriptionRecord {
                             path: subscription.path.as_str().to_owned(),
                             cursor: subscription.cursor,
+                            paused: subscription.paused,
                         },
                     )
                 })
@@ -177,8 +183,8 @@ impl State {
                 .placement_branch
                 .map(|commit| commit.as_bytes().to_vec()),
         };
-        let mut record = Vec::with_capacity(STATE_FORMAT_V1.len() + payload.encoded_len());
-        record.extend_from_slice(STATE_FORMAT_V1);
+        let mut record = Vec::with_capacity(STATE_FORMAT_V2.len() + payload.encoded_len());
+        record.extend_from_slice(STATE_FORMAT_V2);
         payload.encode_raw(&mut record);
         record
     }
@@ -196,6 +202,7 @@ impl State {
                 id,
                 Subscription {
                     path,
+                    paused: subscription.paused,
                     cursor: subscription.cursor,
                 },
             );
@@ -367,6 +374,7 @@ mod tests {
                 "inbox".to_owned(),
                 Subscription {
                     path: path.clone(),
+                    paused: true,
                     cursor: u64::MAX,
                 },
             )]),
@@ -398,11 +406,11 @@ mod tests {
         // Neither an old writer ignoring new fields nor an unversioned input
         // can silently replace this actor's committed metadata and journal cut.
         assert!(Record::decode(record.as_slice()).is_err());
-        assert!(State::decode(&record[STATE_FORMAT_V1.len()..]).is_err());
-        assert!(AdmissionState::from_record(&record[STATE_FORMAT_V1.len()..]).is_err());
-        for version in [0, 2, u8::MAX] {
+        assert!(State::decode(&record[STATE_FORMAT_V2.len()..]).is_err());
+        assert!(AdmissionState::from_record(&record[STATE_FORMAT_V2.len()..]).is_err());
+        for version in [0, 1, u8::MAX] {
             let mut obsolete = record.clone();
-            obsolete[STATE_FORMAT_V1.len() - 1] = version;
+            obsolete[STATE_FORMAT_V2.len() - 1] = version;
             assert!(matches!(
                 State::decode(&obsolete),
                 Err(Error::Stream(acyclic_stream::StreamError::Unsupported))

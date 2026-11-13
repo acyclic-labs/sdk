@@ -113,6 +113,8 @@ pub struct Subscription {
     pub path: StreamPath,
     /// Next unconsumed sequence.
     pub cursor: u64,
+    /// Delivery is suspended while retaining this exact next input.
+    pub paused: bool,
 }
 
 /// Read-only subscription projection bound to its original committed state.
@@ -175,7 +177,7 @@ pub struct Delivery {
     pub trigger: Trigger,
     /// Host clock observation for this attempt, in Unix milliseconds.
     pub now_unix_ms: u64,
-    /// The consumed record for `Trigger::Record`; `None` for alarms.
+    /// The delivered record for `Trigger::Record`; `None` for alarms.
     pub record: Option<Record>,
     /// Committed cuts from the same admitted state as the checkpoint and epoch.
     /// Present for record and alarm deliveries, including zero cursors. This is
@@ -223,8 +225,9 @@ pub struct Transition {
     /// One participant to join to the publication, as a request the host's
     /// [`Composer`] validates and composes; never guest-held custody.
     pub participant: Option<Participant>,
-    /// Subscription changes, applied in order after the consumed input and
-    /// committed with the checkpoint. IDs outside the manifest's producer-owned
+    /// Subscription changes, applied in order with the input disposition and
+    /// committed with the checkpoint. A final Pause for the delivered input
+    /// retains its cursor; otherwise that input is consumed. IDs outside the manifest's producer-owned
     /// inputs are observed by the runtime, sharing one follow per distinct stream.
     /// Subscriptions are the actor's runtime
     /// state: a running actor binds and unbinds its own inputs.
@@ -245,6 +248,19 @@ pub enum SubscriptionChange {
         /// which the host reads before publication: every record committed
         /// after the publication is delivered.
         from: Option<u64>,
+    },
+    /// Suspend delivery at the committed cursor. Pausing the input being
+    /// delivered publishes the checkpoint and effects without consuming it.
+    /// Invocation responses require consumption and cannot pause their input.
+    Pause {
+        /// Subscription identity, which must already be bound.
+        id: String,
+    },
+    /// Resume delivery from the exact retained cursor. Other inputs can resume
+    /// a subscription in the same commit as their own checkpoint and effects.
+    Resume {
+        /// Subscription identity, which must already be bound.
+        id: String,
     },
     /// Unbind `id`. Its committed history is untouched; an absent id is a no-op.
     Remove {

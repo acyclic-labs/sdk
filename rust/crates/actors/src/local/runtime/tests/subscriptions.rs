@@ -27,6 +27,7 @@ async fn observing<P: StreamProvider>(
                     "observed".into(),
                     Subscription {
                         path: observed.clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),
@@ -476,4 +477,195 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
         );
     }
     Ok(())
+}
+
+use std::sync::atomic::AtomicUsize;
+
+struct ApprovalPause(Package, AtomicUsize);
+impl Handler for ApprovalPause {
+    fn manifest(&self) -> &Manifest {
+        self.0.manifest()
+    }
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        _: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        Box::pin(async move {
+            use crate::guest::SubscriptionChange;
+            self.1.fetch_add(1, Ordering::SeqCst);
+            let Trigger::Record { subscription, .. } = &delivery.trigger else {
+                panic!("unexpected alarm")
+            };
+            let (state, change, destination, bytes) = match (
+                subscription.as_str(),
+                checkpoint.map(|value| value.bytes.as_ref()),
+            ) {
+                ("source", None) => (
+                    b"pending".as_slice(),
+                    Some(SubscriptionChange::Pause {
+                        id: "source".into(),
+                    }),
+                    "pause/requests",
+                    Bytes::from_static(b"approval"),
+                ),
+                ("approval", Some(b"pending")) => (
+                    b"approved".as_slice(),
+                    Some(SubscriptionChange::Resume {
+                        id: "source".into(),
+                    }),
+                    "pause/approvals",
+                    Bytes::from_static(b"approved"),
+                ),
+                ("source", Some(b"approved")) => (
+                    b"complete".as_slice(),
+                    None,
+                    "pause/effects",
+                    Bytes::copy_from_slice(&delivery.record.as_ref().expect("source record").value),
+                ),
+                _ => panic!("suspended input was delivered: {subscription}"),
+            };
+            Ok(Transition {
+                response: None,
+                checkpoint: Checkpoint {
+                    codec: self.manifest().codec.clone(),
+                    bytes: Bytes::copy_from_slice(state),
+                },
+                alarm: AlarmChange::Keep,
+                subscriptions: change.into_iter().collect(),
+                effects: vec![acyclic_stream::CommitEffect::hard(
+                    vec![],
+                    vec![CommitMutation::Append {
+                        path: StreamPath::new(destination).expect("valid destination"),
+                        records: vec![bytes.into()],
+                    }],
+                )],
+                participant: None,
+            })
+        })
+    }
+}
+
+async fn pause_retains_input<P: StreamProvider + 'static>(provider: P) -> TestResult {
+    let provider = Arc::new(provider);
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = actor("paused-source")?;
+    let source = StreamPath::new("pause/source")?;
+    let approval = StreamPath::new("pause/approval")?;
+    let mut create = PreparedPublish::foreign(key("pause/create")?);
+    create.join(store.create(
+        None,
+        &address,
+        crate::local::Creation {
+            subscriptions: BTreeMap::from([
+                (
+                    "source".into(),
+                    Subscription {
+                        path: source.clone(),
+                        cursor: 0,
+                        paused: false,
+                    },
+                ),
+                (
+                    "approval".into(),
+                    Subscription {
+                        path: approval.clone(),
+                        cursor: 0,
+                        paused: false,
+                    },
+                ),
+            ]),
+            checkpoint: None,
+            escrow: None,
+        },
+    )?)?;
+    create.join(store.activation(&address)?)?;
+    create.join(acyclic_stream::CommitEffect::hard(
+        vec![],
+        vec![CommitMutation::Append {
+            path: source.clone(),
+            records: vec![Bytes::from_static(b"original").into()],
+        }],
+    ))?;
+    store.submit(create).await?;
+    let handler = Arc::new(ApprovalPause(Package::new()?, AtomicUsize::new(0)));
+    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    let paused = runtime.store().load(&address).await?;
+    let state = paused.state().ok_or("missing paused state")?;
+    assert_eq!(state.cursor("source"), Some(0));
+    assert!(state.subscriptions()["source"].paused);
+    assert_eq!(state.checkpoint().unwrap().bytes.as_ref(), b"pending");
+    assert_eq!(
+        records(&*provider, "pause/requests").await?,
+        vec![Bytes::from_static(b"approval")]
+    );
+    assert!(records(&*provider, "pause/effects").await?.is_empty());
+    assert!(
+        !runtime
+            .subscriptions
+            .lock()
+            .unwrap()
+            .paths
+            .contains_key(&source)
+    );
+    let child = actor("paused-child")?;
+    let mut subscriptions = state.subscriptions().clone();
+    subscriptions.get_mut("source").unwrap().paused = false;
+    let mut fork = PreparedPublish::foreign(key("pause/fork")?);
+    fork.join(
+        runtime
+            .store()
+            .branch(&paused, &child, Branch::unfunded(subscriptions))?,
+    )?;
+    runtime.store().submit(fork).await?;
+    let inherited = runtime.store().load(&child).await?;
+    assert!(inherited.state().unwrap().subscriptions()["source"].paused);
+    assert_eq!(inherited.state().unwrap().cursor("source"), Some(0));
+    runtime.drain_actor(&address).await?;
+    assert_eq!(handler.1.load(Ordering::SeqCst), 1);
+    drop(runtime);
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    runtime.track(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    assert_eq!(handler.1.load(Ordering::SeqCst), 1);
+    provider
+        .append(AppendRequest {
+            path: approval,
+            records: vec![Bytes::from_static(b"allow").into()],
+            if_tail: None,
+            idempotency_key: key("pause/allow")?,
+        })
+        .await?;
+    runtime.drain_actor(&address).await?;
+    let settled = runtime.store().load(&address).await?;
+    let state = settled.state().ok_or("missing resumed state")?;
+    assert_eq!(
+        (state.cursor("source"), state.cursor("approval")),
+        (Some(1), Some(1))
+    );
+    assert!(!state.subscriptions()["source"].paused);
+    assert_eq!(state.checkpoint().unwrap().bytes.as_ref(), b"complete");
+    assert_eq!(
+        records(&*provider, "pause/effects").await?,
+        vec![Bytes::from_static(b"original")]
+    );
+    assert_eq!(handler.1.load(Ordering::SeqCst), 3);
+    runtime.drain_actor(&address).await?;
+    assert_eq!(handler.1.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn paused_inputs_keep_their_cursor_across_restart_and_resume_from_another_input() -> TestResult
+{
+    pause_retains_input(MemoryStream::default()).await?;
+    let directory = tempfile::tempdir()?;
+    pause_retains_input(LocalStream::open(directory.path(), Default::default()).await?).await
 }

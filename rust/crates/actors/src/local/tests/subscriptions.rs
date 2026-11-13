@@ -63,6 +63,7 @@ async fn subscription_controls_recover_original_intent_after_reopen_and_removal(
         "events".into(),
         Subscription {
             path: input.clone(),
+            paused: false,
             cursor: 1,
         },
     );

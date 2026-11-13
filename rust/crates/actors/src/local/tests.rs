@@ -918,6 +918,7 @@ fn inbox(address: &ActorReference) -> Result<BTreeMap<String, Subscription>, Str
         "inbox".into(),
         Subscription {
             path: StreamPath::new(format!("inboxes/{}", address.id()))?,
+            paused: false,
             cursor: 0,
         },
     )]))
@@ -1558,6 +1559,7 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
             "inbox".into(),
             Subscription {
                 path: first.clone(),
+                paused: false,
                 cursor: 0,
             },
         )]),
@@ -1580,6 +1582,48 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
     };
     let consumed = turn(Vec::new())?;
     assert_eq!(consumed.subscriptions["inbox"].cursor, 1);
+    let paused = turn(vec![SubscriptionChange::Pause { id: "inbox".into() }])?;
+    assert_eq!(paused.cursor("inbox"), Some(0));
+    assert!(paused.subscriptions["inbox"].paused);
+    assert_eq!(State::decode(&paused.encode())?, paused);
+    assert!(matches!(
+        next(
+            paused.clone(),
+            &own,
+            &Alarm::default(),
+            &record(0),
+            &transition(2, AlarmChange::Keep)
+        ),
+        Err(Error::Paused)
+    ));
+    let resumed = turn(vec![
+        SubscriptionChange::Pause { id: "inbox".into() },
+        SubscriptionChange::Resume { id: "inbox".into() },
+    ])?;
+    assert_eq!(resumed, consumed);
+    for change in [
+        SubscriptionChange::Pause {
+            id: "absent".into(),
+        },
+        SubscriptionChange::Resume {
+            id: "absent".into(),
+        },
+    ] {
+        assert!(matches!(turn(vec![change]), Err(Error::Invalid(_))));
+    }
+    let mut invocation = transition(1, AlarmChange::Keep);
+    invocation.response = Some(bytes::Bytes::from_static(b"reply"));
+    invocation.subscriptions = vec![SubscriptionChange::Pause { id: "inbox".into() }];
+    assert!(matches!(
+        next(
+            state.clone(),
+            &own,
+            &Alarm::default(),
+            &record(0),
+            &invocation
+        ),
+        Err(Error::Invalid(_))
+    ));
     // Re-adding the bound id at its path, even from an older start, keeps
     // the cursor this same turn consumed.
     assert_eq!(turn(vec![add("inbox", &first, Some(0))])?, consumed);
@@ -1592,6 +1636,7 @@ fn actor_subscription_changes_keep_consumed_cursors_and_refuse_conflicts() -> Te
         rebound.subscriptions["inbox"],
         Subscription {
             path: second.clone(),
+            paused: false,
             cursor: 7
         }
     );

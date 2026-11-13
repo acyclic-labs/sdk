@@ -251,6 +251,7 @@ async fn shared_input_invocations_execute_only_under_the_original_store_root() -
                         "inbox".into(),
                         crate::guest::Subscription {
                             path: input,
+                            paused: false,
                             cursor: 0,
                         },
                     )]),

@@ -851,7 +851,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             };
             subscriptions.insert(
                 spec.subscription_id().to_owned(),
-                Subscription { path, cursor },
+                Subscription {
+                    path,
+                    cursor,
+                    paused: false,
+                },
             );
         }
         let cut = self.load(&parent).await?;
@@ -1802,7 +1806,7 @@ fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {
         .ok_or(Error::Conflict)
 }
 
-/// The pure durable transition: consume exactly the trigger, then apply the
+/// The pure durable transition: consume or suspend exactly the trigger, then apply the
 /// alarm change. Checkpoint, cursor and alarm move together or not at all.
 fn next(
     mut state: State,
@@ -1811,7 +1815,32 @@ fn next(
     trigger: &Trigger,
     transition: &Transition,
 ) -> Result<State, Error> {
-    consume(&mut state, original_alarm, trigger)?;
+    let held = match trigger {
+        Trigger::Record { subscription, .. } => transition
+            .subscriptions
+            .iter()
+            .rev()
+            .find_map(|change| {
+                use crate::guest::SubscriptionChange;
+                match change {
+                    SubscriptionChange::Pause { id } if id == subscription => Some(true),
+                    SubscriptionChange::Resume { id } | SubscriptionChange::Remove { id }
+                        if id == subscription =>
+                    {
+                        Some(false)
+                    }
+                    _ => None,
+                }
+            })
+            .unwrap_or(false),
+        Trigger::Alarm { .. } => false,
+    };
+    if held && transition.response.is_some() {
+        return Err(Error::Invalid(
+            "invocation response cannot retain its input",
+        ));
+    }
+    consume(&mut state, original_alarm, trigger, !held)?;
     change_alarm(&mut state.alarm, transition.alarm)?;
     subscribe(&mut state.subscriptions, own, &transition.subscriptions)?;
     state.checkpoint = Some(transition.checkpoint.clone());
@@ -1845,6 +1874,7 @@ fn subscribe(
                             id.clone(),
                             Subscription {
                                 path: path.clone(),
+                                paused: false,
                                 cursor,
                             },
                         );
@@ -1854,12 +1884,23 @@ fn subscribe(
             SubscriptionChange::Remove { id } => {
                 subscriptions.remove(id);
             }
+            SubscriptionChange::Pause { id } | SubscriptionChange::Resume { id } => {
+                let bound = subscriptions
+                    .get_mut(id)
+                    .ok_or(Error::Invalid("undeclared subscription"))?;
+                bound.paused = matches!(change, SubscriptionChange::Pause { .. });
+            }
         }
     }
     Ok(())
 }
 
-fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Result<(), Error> {
+fn consume(
+    state: &mut State,
+    original_alarm: &Alarm,
+    trigger: &Trigger,
+    advance: bool,
+) -> Result<(), Error> {
     if state.paused {
         return Err(Error::Paused);
     }
@@ -1873,11 +1914,14 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
             sequence,
             ..
         } => {
-            let cursor = &mut state
+            let bound = state
                 .subscriptions
                 .get_mut(subscription)
-                .ok_or(Error::Invalid("undeclared subscription"))?
-                .cursor;
+                .ok_or(Error::Invalid("undeclared subscription"))?;
+            if bound.paused {
+                return Err(Error::Paused);
+            }
+            let cursor = &mut bound.cursor;
             let from = match trigger {
                 Trigger::KeyedRecord { from, .. } => *from,
                 _ => *sequence,
@@ -1885,9 +1929,11 @@ fn consume(state: &mut State, original_alarm: &Alarm, trigger: &Trigger) -> Resu
             if *cursor != from || *sequence < from {
                 return Err(Error::Conflict);
             }
-            *cursor = sequence
-                .checked_add(1)
-                .ok_or(Error::Invalid("subscription cursor overflow"))?;
+            if advance {
+                *cursor = sequence
+                    .checked_add(1)
+                    .ok_or(Error::Invalid("subscription cursor overflow"))?;
+            }
             state.consumed = None;
         }
         Trigger::Alarm {

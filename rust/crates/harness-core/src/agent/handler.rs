@@ -271,6 +271,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
                 INBOX.to_owned(),
                 Subscription {
                     path: agent.inbox()?,
+                    paused: false,
                     cursor,
                 },
             )]),

@@ -50,7 +50,7 @@ impl Subscriptions {
     fn selected(manifest: &crate::guest::Manifest, state: &State) -> BTreeMap<StreamPath, u64> {
         let mut selected = BTreeMap::<StreamPath, u64>::new();
         for (id, subscription) in state.subscriptions() {
-            if !manifest.subscriptions.contains(id) {
+            if !subscription.paused && !manifest.subscriptions.contains(id) {
                 selected
                     .entry(subscription.path.clone())
                     .and_modify(|cursor| *cursor = (*cursor).min(subscription.cursor))

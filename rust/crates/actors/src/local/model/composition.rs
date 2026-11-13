@@ -374,6 +374,7 @@ async fn placed(
                     "inbox".to_owned(),
                     Subscription {
                         path: path("mail/inbox")?,
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

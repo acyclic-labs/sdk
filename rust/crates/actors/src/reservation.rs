@@ -34,6 +34,7 @@ pub fn create<P: acyclic_stream::StreamProvider + ?Sized>(
                     "inbox".into(),
                     crate::guest::Subscription {
                         path: inbox.clone(),
+                        paused: false,
                         cursor: 0,
                     },
                 )]),

@@ -641,6 +641,7 @@ pub async fn attach<P: StreamProvider + ?Sized>(
                 INBOX.into(),
                 Subscription {
                     path: paths.inbox(&state.target.name)?,
+                    paused: false,
                     cursor: 0,
                 },
             ),
@@ -648,6 +649,7 @@ pub async fn attach<P: StreamProvider + ?Sized>(
                 QUEUE.into(),
                 Subscription {
                     path: paths.queue(&state.target.name)?,
+                    paused: false,
                     cursor: 0,
                 },
             ),
