@@ -198,6 +198,12 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 .iter()
                 .any(|attribute| attribute.name == INTENT && attribute.value.as_ref() == intent)
         {
+            if let Err(source) = self.confirm_durability().await {
+                return Err(Error::SubscriptionDurabilityUnknown {
+                    envelope: Box::new(envelope),
+                    source,
+                });
+            }
             return Ok(true);
         }
         Err(StreamError::IdempotencyMismatch.into())
