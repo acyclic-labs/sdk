@@ -55,7 +55,7 @@ mod machine;
 mod names;
 mod notices;
 pub use names::NameIndex;
-pub use notices::NoticeSelection;
+pub use notices::{ApprovalSelection, NoticeSelection};
 pub(crate) mod records;
 mod release;
 mod reply;
@@ -106,10 +106,11 @@ pub use commit::{
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, NOTICE_MEDIA_TYPE, OpenControl,
-    OpenTurn, TurnHost, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE, approval_intent,
-    encode_user_input, expand_attachments, model_input, model_input_at, turn_announcements,
-    turn_id, turn_notices, turn_segment,
+    OpenTriage, OpenTurn, TurnHost, TurnOutcome, TurnOutputs, USER_INPUT_MEDIA_TYPE,
+    approval_intent, encode_user_input, expand_attachments, model_input, model_input_at,
+    turn_announcements, turn_id, turn_notices, turn_segment,
 };
+pub(crate) use handler::observe_state;
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, InputProgress, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
