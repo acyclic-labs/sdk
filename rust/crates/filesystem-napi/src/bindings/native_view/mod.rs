@@ -253,6 +253,7 @@ impl NativeCheckout {
             NativeWatchOptions {
                 limits: self.config.limits,
                 recursive,
+                permit_fence_writes: true,
             },
         )
         .map_err(napi_error)?;

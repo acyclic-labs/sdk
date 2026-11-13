@@ -87,6 +87,10 @@ fn older_state_directory_is_refused_without_migration() -> Result<()> {
         let record = directory.join(name);
         let bytes = b"older owner format; must not reach a decoder";
         fs::write(&record, bytes).map_err(storage)?;
+        let retained = directory.join("retained-physical-view");
+        fs::create_dir_all(retained.join(".git/objects")).map_err(storage)?;
+        fs::write(retained.join(".git/objects/sentinel"), b"old metadata").map_err(storage)?;
+        fs::write(retained.join("working.txt"), b"unpublished work").map_err(storage)?;
         let refusal = |error: Error| {
             assert!(matches!(
                 error,
@@ -108,6 +112,14 @@ fn older_state_directory_is_refused_without_migration() -> Result<()> {
         }
         refusal(Owner::remove(&directory, SigningCustody::PrivateFile(&custody)).unwrap_err());
         assert_eq!(fs::read(&record).map_err(storage)?, bytes);
+        assert_eq!(
+            fs::read(retained.join(".git/objects/sentinel")).map_err(storage)?,
+            b"old metadata"
+        );
+        assert_eq!(
+            fs::read(retained.join("working.txt")).map_err(storage)?,
+            b"unpublished work"
+        );
         assert!(!directory.join(RECORD).exists());
         assert!(!custody.exists(), "refusal created signing custody");
     }

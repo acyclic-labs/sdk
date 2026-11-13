@@ -662,6 +662,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             NativeWatchOptions {
                 limits: workspace.volume.config().limits,
                 recursive: true,
+                permit_fence_writes: true,
             },
         )
         .map_err(engine)?;

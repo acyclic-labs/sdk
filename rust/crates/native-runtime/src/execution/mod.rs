@@ -348,6 +348,7 @@ impl BoundPath {
         {
             use std::os::windows::fs::OpenOptionsExt;
             options
+                .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES)
                 .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
                 // A bound Windows root cannot be renamed while the grant is live.
                 .share_mode(
@@ -443,10 +444,16 @@ impl AsRef<[u8]> for BoundPath {
 fn bind_roots(
     paths: impl IntoIterator<Item = PathBuf>,
 ) -> io::Result<acyclic_collections::CompiledPrefixIndex<BoundPath, ()>> {
-    let mut roots = paths
+    let roots = paths
         .into_iter()
         .map(|path| BoundPath::new(&path))
         .collect::<io::Result<Vec<_>>>()?;
+    index_roots(roots)
+}
+
+fn index_roots(
+    mut roots: Vec<BoundPath>,
+) -> io::Result<acyclic_collections::CompiledPrefixIndex<BoundPath, ()>> {
     roots.sort_unstable_by(|left, right| {
         AsRef::<[u8]>::as_ref(left).cmp(AsRef::<[u8]>::as_ref(right))
     });
@@ -497,6 +504,27 @@ impl ExecutionGrant {
         )
     }
 
+    /// Composes native-only read bindings under their retained host ceilings.
+    /// Missing or unreadable optional roots add no authority. Each available
+    /// root is bound once and checked against the ceiling's original
+    /// filesystem objects before entering the immutable launch policy.
+    pub fn workspace_default_with_optional_read_scopes(
+        workspace: &Path,
+        access: ExecutionAccess,
+        write: impl IntoIterator<Item = PathBuf>,
+        read: impl IntoIterator<Item = PathBuf>,
+        scoped_read: impl IntoIterator<Item = (PathBuf, Self)>,
+    ) -> io::Result<Self> {
+        Self::composed_with_read_scopes(
+            workspace,
+            access,
+            write,
+            defaults::runtime_read_roots()?.into_iter().chain(read),
+            ExecutionNetwork::Isolated,
+            scoped_read,
+        )
+    }
+
     /// Binds existing, absolute workspace and read-only roots. Symlinks are
     /// resolved here; the adapter binds native objects again at active launch.
     /// No ambient home, temporary directory or filesystem root is added.
@@ -527,6 +555,17 @@ impl ExecutionGrant {
         read: impl IntoIterator<Item = PathBuf>,
         network: ExecutionNetwork,
     ) -> io::Result<Self> {
+        Self::composed_with_read_scopes(workspace, access, write, read, network, [])
+    }
+
+    fn composed_with_read_scopes(
+        workspace: &Path,
+        access: ExecutionAccess,
+        write: impl IntoIterator<Item = PathBuf>,
+        read: impl IntoIterator<Item = PathBuf>,
+        network: ExecutionNetwork,
+        scoped_read: impl IntoIterator<Item = (PathBuf, Self)>,
+    ) -> io::Result<Self> {
         if matches!(&network, ExecutionNetwork::TcpPorts(ports) if ports.contains(&0)) {
             return Err(refused("TCP port zero is not a destination grant"));
         }
@@ -537,7 +576,32 @@ impl ExecutionGrant {
             return Err(refused("execution workspace is not a directory"));
         }
         let write = bind_roots(write)?;
-        let read = bind_roots(read)?;
+        let mut read = read
+            .into_iter()
+            .map(|path| BoundPath::new(&path))
+            .collect::<io::Result<Vec<_>>>()?;
+        for (path, ceiling) in scoped_read {
+            let root = match BoundPath::new(&path) {
+                Ok(root) => root,
+                Err(error)
+                    if !error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+                        && matches!(
+                            error.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                        ) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            if !ceiling.policy.contains(&root, false, None)? {
+                return Err(refused("native read root exceeds its authority ceiling"));
+            }
+            read.push(root);
+        }
+        let read = index_roots(read)?;
         #[cfg(target_os = "macos")]
         let roots = || {
             std::iter::once(&workspace)
@@ -769,6 +833,13 @@ impl ExecutionGrant {
     #[must_use]
     pub fn workspace(&self) -> &Path {
         &self.policy.workspace
+    }
+
+    /// The pinned workspace object, for another primitive to compare its
+    /// original root witness without reopening a mutable path.
+    #[must_use]
+    pub fn workspace_file(&self) -> &std::fs::File {
+        &self.policy.workspace._object
     }
 
     pub(crate) fn validate_launch<'a>(

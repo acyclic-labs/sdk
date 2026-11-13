@@ -14,10 +14,14 @@ struct Fixture {
 /// the sink its source would deliver into. The watch observes only its root
 /// directory, so the test alone delivers what happens beneath the excluded
 /// directories.
-fn fixture(names: &[(&str, u32)]) -> Result<Fixture, Box<dyn std::error::Error>> {
+fn fixture(
+    names: &[(&str, u32)],
+    permit_fence_writes: bool,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
     options.recursive = false;
+    options.permit_fence_writes = permit_fence_writes;
     let mut watch = NativeWatch::open(root.path(), options)?;
     let mut excluded = Vec::new();
     for (name, _) in names {
@@ -94,7 +98,7 @@ fn deliver(
 /// does; with none writable, the fence confirms nothing instead of failing.
 #[test]
 fn a_fence_places_its_cookie_where_the_host_takes_one() -> Result<(), Box<dyn std::error::Error>> {
-    let mut writable = fixture(&[(".git", 0o555), (".volumes", 0o755)])?;
+    let mut writable = fixture(&[(".git", 0o555), (".volumes", 0o755)], true)?;
     let arrived = cookie(&mut writable.watch)?;
     assert!(matches!(&arrived, HostChange::Altered(path) if path.starts_with(".volumes")));
     deliver(&writable.hints, &[arrived], u64::MAX)?;
@@ -102,7 +106,7 @@ fn a_fence_places_its_cookie_where_the_host_takes_one() -> Result<(), Box<dyn st
     assert!(writable.watch.confirmable()?);
 
     // Negative control: the only excluded directory refuses the cookie.
-    let mut refused = fixture(&[(".git", 0o555)])?;
+    let mut refused = fixture(&[(".git", 0o555)], true)?;
     assert!(refused.watch.place_cookie(|_, _| Ok(()))?.is_none());
     assert!(
         armed(&refused.watch)?.is_none(),
@@ -115,18 +119,66 @@ fn a_fence_places_its_cookie_where_the_host_takes_one() -> Result<(), Box<dyn st
     Ok(())
 }
 
+/// Observation exclusions never imply permission to write a fence cookie.
+#[test]
+fn read_only_observation_filters_events_without_touching_excluded_subtrees()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut observation = fixture(&[(".git", 0o755)], false)?;
+    let missing = observation.watch.root.join("missing");
+    let excluded = [&observation.watch.root.join(".git"), &missing]
+        .into_iter()
+        .map(|path| {
+            relative_namespace_path(
+                &observation.watch.root,
+                path,
+                observation.watch.profile,
+                VolumeLimits::default(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    observation.watch.exclude_subtrees(&excluded)?;
+    deliver(
+        &observation.hints,
+        &[HostChange::Altered(".git/objects/data".into())],
+        u64::MAX,
+    )?;
+    assert!(observation.watch.confirmable()?);
+    assert!(observation.watch.place_cookie(|_, _| Ok(()))?.is_none());
+    assert!(!missing.exists());
+    assert_eq!(
+        std::fs::read_dir(observation.watch.root.join(".git"))?.count(),
+        0
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let cancellation = CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                backend_write_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, _)| cause)?;
+        observation.watch.fence_with_native_work(&work)?;
+        assert_eq!(work.receipt().backend_write_operations, 0);
+        assert!(!observation.watch.confirmable()?);
+    }
+    Ok(())
+}
+
 /// A cookie confirms delivery only when no batch before it was lost, and
 /// only once the batch carrying it is accepted whole.
 #[test]
 fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error::Error>> {
     // Negative control: a cookie with nothing lost confirms.
-    let mut quiet = fixture(&[(".volumes", 0o755)])?;
+    let mut quiet = fixture(&[(".volumes", 0o755)], true)?;
     let arrived = cookie(&mut quiet.watch)?;
     deliver(&quiet.hints, &[arrived], u64::MAX)?;
     assert!(quiet.watch.await_cookie()?);
 
     // A batch is lost while the fence waits, then the cookie arrives.
-    let mut lost = fixture(&[(".volumes", 0o755)])?;
+    let mut lost = fixture(&[(".volumes", 0o755)], true)?;
     let arrived = cookie(&mut lost.watch)?;
     lost.hints.delivery_lost();
     deliver(&lost.hints, &[arrived], u64::MAX)?;
@@ -143,7 +195,7 @@ fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error
     ));
 
     // The batch carrying the cookie fails after it: the fence stays armed.
-    let mut torn = fixture(&[(".volumes", 0o755)])?;
+    let mut torn = fixture(&[(".volumes", 0o755)], true)?;
     let batch = [
         cookie(&mut torn.watch)?,
         HostChange::Altered("authored.txt".into()),
@@ -158,7 +210,7 @@ fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error
 
     // Producer loss settles a cookie that can no longer arrive. The join
     // covers termination before or after the waiter acquires the state lock.
-    let mut stopped = fixture(&[(".volumes", 0o755)])?;
+    let mut stopped = fixture(&[(".volumes", 0o755)], true)?;
     let _undelivered = cookie(&mut stopped.watch)?;
     assert!(stopped.watch.confirmable()?);
     let producer = AdapterDelivery {
@@ -182,7 +234,7 @@ fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error
 
     // A consumer that loses continuity publishes the same rescan obligation
     // directly, without manufacturing an expired deadline or host changes.
-    let mut invalidated = fixture(&[(".volumes", 0o755)])?;
+    let mut invalidated = fixture(&[(".volumes", 0o755)], true)?;
     let _undelivered = cookie(&mut invalidated.watch)?;
     invalidated.watch.invalidate()?;
     assert!(!invalidated.watch.await_cookie()?);
@@ -204,7 +256,7 @@ fn a_cookie_after_a_lost_batch_never_confirms() -> Result<(), Box<dyn std::error
 fn cancellation_ends_a_cookie_wait_before_or_after_registration()
 -> Result<(), Box<dyn std::error::Error>> {
     for cancelled_first in [false, true] {
-        let mut fixture = fixture(&[(".volumes", 0o755)])?;
+        let mut fixture = fixture(&[(".volumes", 0o755)], true)?;
         let arrived = cookie(&mut fixture.watch)?;
         let stop = CancellationToken::new();
         if cancelled_first {

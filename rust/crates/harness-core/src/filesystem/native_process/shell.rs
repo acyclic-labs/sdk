@@ -191,6 +191,12 @@ pub fn workspace_grant<T>(
         if let Some(scratch) = &mounts.scratch_root {
             write.push(scratch.clone());
         }
+        let mut scoped_read = Vec::new();
+        for (root, ceiling) in &mounts.native_read_roots {
+            if root.try_exists().map_err(io)? {
+                scoped_read.push((root.clone(), ceiling.clone()));
+            }
+        }
         // A closed environment must not rediscover the owner's home through
         // host NSS IPC. Ordinary tools use the same workspace as their home.
         #[cfg(unix)]
@@ -223,9 +229,15 @@ pub fn workspace_grant<T>(
             environment.insert("TEMP".into(), temporary.clone());
             environment.insert("TMP".into(), temporary);
         }
-        ExecutionGrant::workspace_default(&primary, access, write, read)
-            .map(Some)
-            .map_err(io)
+        ExecutionGrant::workspace_default_with_optional_read_scopes(
+            &primary,
+            access,
+            write,
+            read,
+            scoped_read,
+        )
+        .map(Some)
+        .map_err(io)
     }
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {

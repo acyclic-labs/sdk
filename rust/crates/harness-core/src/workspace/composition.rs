@@ -100,6 +100,12 @@ pub struct MountTable<T> {
     /// Host-owned scratch outside authored project files, when locally bound.
     #[doc(hidden)]
     pub scratch_root: Option<PathBuf>,
+    /// Selected host-owned read roots for this native binding. New host entries
+    /// require a new binding; absent paths add no authority. Execution grants
+    /// identity-pin available roots under their retained authority ceilings.
+    #[doc(hidden)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub native_read_roots: Vec<(PathBuf, acyclic_native_runtime::execution::ExecutionGrant)>,
     entries: BTreeMap<Arc<str>, Option<usize>>,
     // Immutable indices into canonical path order. Paths share their allocation
     // with the namespace; neither identity lookup nor iteration copies a path.
@@ -464,6 +470,8 @@ pub fn compose<T>(
     Ok(MountTable {
         root,
         scratch_root: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        native_read_roots: Vec::new(),
         entries,
         mounted,
         volumes: volumes_by_identity,

@@ -667,6 +667,68 @@ fn composed_grants_attenuate_all_write_roots_and_fence_replacement() {
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn scoped_native_reads_pin_the_original_parent_and_refuse_escape() {
+    let temp = tempfile::tempdir().unwrap();
+    let original = temp.path().join("original");
+    let private = temp.path().join("private");
+    let foreign = temp.path().join("foreign");
+    let child = original.join("opaque");
+    for path in [&original, &private, &foreign, &child] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let ceiling = ExecutionGrant::new(
+        &original,
+        ExecutionAccess::ReadOnly,
+        [],
+        ExecutionNetwork::Off,
+    )
+    .unwrap();
+    let compose = |path: &Path| {
+        ExecutionGrant::workspace_default_with_optional_read_scopes(
+            &private,
+            ExecutionAccess::WorkspaceWrite,
+            [],
+            [],
+            [(path.to_path_buf(), ceiling.clone())],
+        )
+    };
+    compose(&child).unwrap();
+    compose(&original.join("absent")).unwrap();
+    let relative = compose(Path::new("opaque")).unwrap_err();
+    assert!(
+        relative
+            .get_ref()
+            .is_some_and(|cause| cause.is::<ExecutionRefusal>())
+    );
+    #[cfg(target_os = "macos")]
+    assert!(compose(&original.join("opaque/../opaque")).is_err());
+    assert!(
+        compose(&foreign).is_err(),
+        "a host binding cannot exceed its retained parent"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0)).unwrap();
+        let admitted = compose(&child);
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700)).unwrap();
+        admitted.unwrap();
+        let escape = original.join("escape");
+        std::os::unix::fs::symlink(&foreign, &escape).unwrap();
+        assert!(compose(&escape).is_err());
+        std::fs::rename(&original, temp.path().join("retired")).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        std::fs::create_dir(&child).unwrap();
+        assert!(
+            compose(&child).is_err(),
+            "a replacement parent cannot inherit native read authority"
+        );
+    }
+    #[cfg(windows)]
+    assert!(std::fs::rename(&original, temp.path().join("retired")).is_err());
+}
 #[cfg(target_os = "linux")]
 pub(crate) fn system_read_roots() -> Vec<PathBuf> {
     ["/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache"]

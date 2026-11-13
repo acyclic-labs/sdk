@@ -2,7 +2,7 @@ use super::{AgentId, TaskId, VolumeRef};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Owner record v9: store-owned seed reference and journal-owned frozen manifests.
+/// Owner record v13: native-only opaque subtrees never enter SDK generations.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Owner {

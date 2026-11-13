@@ -251,6 +251,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
     let watch_options = NativeWatchOptions {
         limits: test_config().limits,
         recursive: true,
+        permit_fence_writes: true,
     };
     let watch =
         FsNativeWatch::open_with_profile(source_root.path(), test_config().profile, watch_options)?;

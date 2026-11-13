@@ -40,7 +40,9 @@ impl Cursor {
             };
             #[cfg(all(test, not(loom)))]
             self.inject("begin")?;
-            self.watcher.watch_tree(&[]).map_err(storage)?;
+            self.watcher
+                .watch_tree(workspace::SOURCE_EXCLUDED_ROOTS)
+                .map_err(storage)?;
             #[cfg(all(test, not(loom)))]
             self.inject("watch-tree")?;
             let captured = capture_baseline(

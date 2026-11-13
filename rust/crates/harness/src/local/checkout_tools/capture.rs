@@ -24,17 +24,18 @@ pub(in crate::local) struct Cursor {
 impl Cursor {
     fn open(workspace: &LocalWorkspace) -> Result<Self> {
         let config = workspace.view().workspace().volume_config();
-        // The held native source fences delivery without writing a cookie into
-        // the checkout. Register directories once; subsequent commands consume
-        // only push hints on this persistent watcher.
+        // Never write a fence cookie into the checkout. Precise backends fence
+        // push delivery; FSEvents has no read-only completion proof and uses
+        // the authenticated baseline instead. Keep registration persistent.
         let mut options = NativeWatchOptions::new(config.limits);
+        options.permit_fence_writes = false;
         // FSEvents and ReadDirectoryChangesW observe the whole root on one
         // stream or handle: a handle per directory would grow with the checkout.
         // Inotify watches are per directory on one descriptor, so Linux registers each
         // directory as capture discovers it.
         options.recursive = cfg!(any(target_os = "macos", windows));
         #[cfg(not(target_os = "macos"))]
-        let watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
+        let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
             .map_err(storage)?;
         // FSEvents' held-source adapter requires retained native custody. Linux
         // selects its held source for a nonrecursive watch, Windows always.
@@ -45,13 +46,16 @@ impl Cursor {
         )
         .map_err(|(cause, _)| storage(cause))?;
         #[cfg(target_os = "macos")]
-        let watcher = NativeWatch::open_with_profile_with_native_work(
+        let mut watcher = NativeWatch::open_with_profile_with_native_work(
             &workspace.path,
             config.profile,
             options,
             &work,
         )
         .map_err(storage)?;
+        watcher
+            .exclude_subtrees(workspace.source_policy.excluded_prefixes())
+            .map_err(storage)?;
         Ok(Self {
             watcher,
             initial: None,
@@ -65,7 +69,10 @@ impl Cursor {
     pub(super) fn initial(workspace: &LocalWorkspace) -> Result<Self> {
         let mut cursor = Self::open(workspace)?;
         let rescan = cursor.watcher.begin_rescan().map_err(storage)?;
-        cursor.watcher.watch_tree(&[]).map_err(storage)?;
+        cursor
+            .watcher
+            .watch_tree(workspace::SOURCE_EXCLUDED_ROOTS)
+            .map_err(storage)?;
         cursor.initial = Some(cursor.watcher.finish_rescan(rescan).map_err(storage)?);
         Ok(cursor)
     }
@@ -450,5 +457,5 @@ pub(in crate::local) fn configuration(
         maximum_paths: None,
         maximum_extent_spans: None,
     };
-    (options, CapturePolicy::default())
+    (options, workspace.source_policy.clone())
 }

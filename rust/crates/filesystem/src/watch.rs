@@ -221,6 +221,10 @@ pub struct NativeWatchOptions {
     pub limits: VolumeLimits,
     /// Whether descendants are observed recursively.
     pub recursive: bool,
+    /// Permits temporary fence cookies in excluded subtrees. Set false for
+    /// observation without writes; backends without a read-only delivery fence
+    /// then require an authenticated rescan.
+    pub permit_fence_writes: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -255,6 +259,7 @@ impl NativeWatchOptions {
         Self {
             limits,
             recursive: true,
+            permit_fence_writes: true,
         }
     }
 }
@@ -1569,6 +1574,7 @@ pub struct NativeWatch {
     profile: FilesystemProfile,
     limits: VolumeLimits,
     recursive: bool,
+    permit_fence_writes: bool,
     watched_directories: Vec<PathBuf>,
     receiver: Mutex<QueueReceiver<QueuedWatchChange>>,
     held_root: NativeWatchHeldRoot,
@@ -2241,6 +2247,7 @@ impl NativeWatch {
             profile,
             limits: options.limits,
             recursive: options.recursive,
+            permit_fence_writes: options.permit_fence_writes,
             watched_directories,
             receiver: Mutex::new(receiver),
             held_root,
@@ -3270,6 +3277,9 @@ impl NativeWatch {
 
     /// Stops reporting hints for events wholly inside `subtrees`.
     pub fn exclude_subtrees(&mut self, subtrees: &[NamespacePath]) -> Result<(), NativeWatchError> {
+        if let Some(work) = self.original_work.clone() {
+            return self.exclude_subtrees_with_native_work(subtrees, &work);
+        }
         let cancellation = CancellationToken::new();
         let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         self.exclude_subtrees_with_work(subtrees, &mut work, None)
@@ -3543,7 +3553,7 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<bool, NativeWatchError> {
         self.take_lost_delivery(work)?;
-        if !self.confirmable()? {
+        if !self.confirmable()? || !self.permit_fence_writes {
             return Ok(false);
         }
         work.started_io(WorkCounters {
@@ -3705,6 +3715,9 @@ impl NativeWatch {
         &mut self,
         mut prepare: impl FnMut(&mut Self, &Path) -> Result<(), NativeWatchError>,
     ) -> Result<Option<PathBuf>, NativeWatchError> {
+        if !self.permit_fence_writes {
+            return Ok(None);
+        }
         for home in self.fence_homes()? {
             prepare(self, &home)?;
             self.fences = self.fences.wrapping_add(1);

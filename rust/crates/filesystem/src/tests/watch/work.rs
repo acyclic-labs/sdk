@@ -217,6 +217,13 @@ fn ordinary_watch_retains_preparation_custody_through_shutdown()
     assert!(opened.work.backend_read_operations >= 2);
     watch.accept_lazy_baseline_with_native_work(&birth)?;
     cancellation.cancel();
+    assert!(
+        matches!(
+            watch.exclude_subtrees(&[]),
+            Err(NativeWatchError::Cancelled(_))
+        ),
+        "exclusions must retain their producer's cancellation custody"
+    );
     let fresh =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;

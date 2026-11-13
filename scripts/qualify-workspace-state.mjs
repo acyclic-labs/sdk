@@ -2,7 +2,7 @@
 // Shipping GraphCoder, a real shell and stock Git; no Git metadata workaround.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Processes } from "./graphcoder-e2e/process.mjs";
@@ -78,6 +78,7 @@ const server = createServer(async (request, response) => {
     if (step === 0) {
       assert.ok(JSON.stringify(body.input).includes(mentionText.trimEnd()), "resolved mention content missing from the first model request");
       const expected = active.git;
+      const inspectGit = !active.unreadable && !active.gitfile;
       const code = `
 const edited = await tools.shell({command:"printf 'model edit\\n' > tracked.txt; printf '%040000d' 0"});
 if (!edited.success || !edited.spill) throw Error(JSON.stringify(edited));
@@ -89,15 +90,26 @@ for (const path of ${JSON.stringify(authoredPaths)}) {
   await tools.edit({path, old_text: original, new_text: changed});
   if ((await readAll(path)) !== changed) throw Error('authored edit not readable: ' + path);
 }
-const status = await tools.shell({command:"git status --porcelain=v1 --untracked-files=all"});
-const diff = await tools.shell({command:"git diff -- tracked.txt"});
+let status = null, diff = null;
+if (${inspectGit}) {
+status = await tools.shell({command:"git status --porcelain=v1 --untracked-files=all"});
+diff = await tools.shell({command:"git diff -- tracked.txt"});
 if (${expected}) {
   const expected = ['tracked.txt', ...${JSON.stringify(authoredPaths)}].map(path => 'M ' + path).sort();
   const observed = status.stdout.split(String.fromCharCode(10)).filter(Boolean).map(line => line.trim()).sort();
   if (!status.success || JSON.stringify(observed) !== JSON.stringify(expected)) throw Error('unclean status: '+JSON.stringify(status));
   if (!diff.success || !diff.stdout.includes('-original') || !diff.stdout.includes('+model edit')) throw Error('missing real diff: '+JSON.stringify(diff));
+  const mutation = await tools.shell({command:"printf 'forbidden' > .git/acyclic-mutation-probe"});
+  if (mutation.success) throw Error('native shell mutated host Git metadata: '+JSON.stringify(mutation));
 } else {
   if (status.success || diff.success || !status.stderr.includes('not a git repository')) throw Error('plain directory Git boundary: '+JSON.stringify({status,diff}));
+  const absent = await tools.shell({command:"test ! -e .git && test ! -L .git"});
+  if (!absent.success) throw Error('plain directory acquired a Git metadata binding: '+JSON.stringify(absent));
+}
+}
+if (${Boolean(active.gitfile)}) {
+  const opaque = await tools.shell({command:"test ! -e .git && ! git rev-parse --git-dir"});
+  if (!opaque.success) throw Error('Gitfile must remain opaque, without a misleading native alias: '+JSON.stringify(opaque));
 }
 export default {proof:'WORKSPACE_STATE_OK',status,diff};`;
       response.write(sse({ type: "response.output_item.done", output_index: 0,
@@ -131,22 +143,43 @@ try {
   seed(source);
   await git(source, ["add", "-f", "--", "tracked.txt", ...authoredPaths]);
   await git(source, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "original"]);
-  for (const repository of [true, false]) {
-    const workspace = join(root, repository ? "clone" : "plain");
+  for (const { name, repository, unreadable, writable = false, gitfile = false } of [
+    { name: "clone", repository: true, unreadable: false },
+    { name: "writable-git", repository: true, unreadable: false, writable: true },
+    { name: "unreadable-git", repository: true, unreadable: true },
+    { name: "gitfile", repository: true, unreadable: false, gitfile: true },
+    { name: "plain", repository: false, unreadable: false },
+  ]) {
+    const workspace = join(root, name);
     if (repository) await git(root, ["clone", source, workspace]);
     else { mkdirSync(workspace); seed(workspace); }
-    const entries = workspaceEntries(workspace);
-    let before;
-    if (repository) {
-      gitDirectory = join(workspace, ".git"); before = metadata(gitDirectory, false);
-      assert.throws(() => writeFileSync(join(gitDirectory, "info/exclude"), "unexpected", { flag: "a" }), { code: "EACCES" });
+    if (gitfile) {
+      renameSync(join(workspace, ".git"), join(root, `${name}-metadata`));
+      writeFileSync(join(workspace, ".git"), `gitdir: ../${name}-metadata\n`);
+      await git(workspace, ["rev-parse", "--show-toplevel"]);
     }
-    active = { git: repository, requests: 0 };
+    const entries = workspaceEntries(workspace);
+    let before, gitfileBefore;
+    if (repository) {
+      gitDirectory = gitfile ? join(root, `${name}-metadata`) : join(workspace, ".git");
+      if (writable) {
+        const probe = join(gitDirectory, "host-write-control");
+        writeFileSync(probe, "host is allowed to write"); unlinkSync(probe);
+      }
+      before = metadata(gitDirectory, writable ? undefined : false);
+      if (gitfile) gitfileBefore = metadata(join(workspace, ".git"));
+      if (!writable) assert.throws(() => writeFileSync(join(gitDirectory, "info/exclude"), "unexpected", { flag: "a" }), { code: "EACCES" });
+      if (unreadable) {
+        chmodSync(gitDirectory, 0);
+        assert.throws(() => readdirSync(gitDirectory), { code: "EACCES" });
+      }
+    }
+    active = { git: repository, unreadable, gitfile, requests: 0 };
     const result = await Promise.race([failed, processes.run(binary, ["--default-config", "--workspace", workspace,
-      "--workspace-mounting", "physical", "--host-state-directory", join(root, repository ? "clone-state" : "plain-state"),
+      "--workspace-mounting", "physical", "--host-state-directory", join(root, `${name}-state`),
       "--settings-root", settings, "--catalog", catalog, "--model", "morph/morph-kimik31", "--no-compaction", "--operation", randomUUID(),
-      "-p", "Edit tracked.txt and @.system/execution/note.txt then inspect the workspace with real git through shell."], { env, cwd: workspace })]);
-    captures.push({ repository, ...result });
+      "-p", `Edit tracked.txt and @.system/execution/note.txt through shell.${unreadable ? "" : " Inspect the workspace with real git."}`], { env, cwd: workspace })]);
+    captures.push({ repository, unreadable, writable, gitfile, ...result });
     assert.equal(result.code, 0, result.stderr + result.stdout.slice(-4000));
     assert.equal(active.requests, 3, "one tool batch, task answer and stock feedback settlement");
     assert.ok(result.stdout.includes("WORKSPACE_STATE_DONE"));
@@ -154,15 +187,20 @@ try {
     for (const path of authoredPaths) assert.equal(readFileSync(join(workspace, path), "utf8"), "authored edit\n", path);
     assert.deepEqual(workspaceEntries(workspace), entries);
     if (repository) {
+      if (unreadable) chmodSync(gitDirectory, before.mode);
       const status = await git(workspace, ["status", "--porcelain=v1", "--untracked-files=all"]);
       assert.deepEqual(status.split("\n").filter(Boolean).map(line => line.trim()).sort(), ["tracked.txt", ...authoredPaths].map(path => `M ${path}`).sort());
       assert.deepEqual(metadata(gitDirectory), before);
+      if (gitfile) assert.deepEqual(metadata(join(workspace, ".git")), gitfileBefore);
     }
   }
   passed = true;
 } finally {
   await processes.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-  if (gitDirectory) metadata(gitDirectory, true);
+  if (gitDirectory) {
+    chmodSync(gitDirectory, lstatSync(gitDirectory).mode | 0o700);
+    metadata(gitDirectory, true);
+  }
   if (process.env.E2E_OUTPUT) {
     const output = resolve(process.env.E2E_OUTPUT); mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "workspace-state.json"), JSON.stringify({ passed, captures, fixture: passed ? null : root }));
@@ -170,4 +208,4 @@ try {
   if (passed) removeFixture(root);
   else console.error(`WORKSPACE_STATE_FAILURE_FIXTURE ${root}`);
 }
-console.log("PASS read-only stock Git clone and non-Git workspace: ordinary authored names, edits only, external harness state");
+console.log("PASS read-only, writable and unreadable Git clones, opaque relative Gitfile and non-Git workspace: edits only, external harness state");

@@ -181,6 +181,12 @@ impl LocalWorkspace {
             )
             .await?;
         }
+        // These aliases are reconstructible native bindings, not SDK content.
+        // Retain the original root across forks, without traversing the omitted
+        // subtree or chaining aliases through another task's transient view.
+        for (root, target) in self.opaque_native_directories()? {
+            volumes::bind_alias(&path.join(root), &target, None)?;
+        }
         std::fs::canonicalize(&path).map_err(storage)
     }
 
@@ -265,6 +271,8 @@ impl LocalWorkspace {
             path: self.path.clone(),
             fresh: false,
             import_source: false,
+            source_policy: self.source_policy.clone(),
+            source_root: self.source_root.clone(),
             mount_directory: self.mount_directory.clone(),
             host_state: self.host_state.clone(),
             task_view_admission: Arc::clone(&self.task_view_admission),
@@ -432,6 +440,8 @@ impl LocalWorkspace {
             path,
             fresh: false,
             import_source: false,
+            source_policy: self.source_policy.clone(),
+            source_root: self.source_root.clone(),
             mount_directory: self.mount_directory.clone(),
             host_state: self.host_state.clone(),
             task_view_admission: Arc::clone(&self.task_view_admission),
