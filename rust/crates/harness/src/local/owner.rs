@@ -257,9 +257,11 @@ impl RootWitness {
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.
 
-/// Version fourteen retains native skill-source metadata in owner Streams and
-/// hook effects in the host journal, retaining v13 opaque-subtree exclusion.
-/// Earlier owners may retain native metadata
+/// Version fourteen retains native skill-source metadata and complete-cut
+/// pre-root settings decisions in owner Streams, plus hook effects in the
+/// host journal and version thirteen opaque-subtree exclusion. Earlier owners
+/// may retain native metadata
+
 /// sidecars or private hook outcomes; refuse them before record decoding,
 /// credential access or filesystem attachment, without importing their state.
 pub(super) const RECORD: &str = "owner.v14";

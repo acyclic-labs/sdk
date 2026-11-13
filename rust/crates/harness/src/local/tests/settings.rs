@@ -1,5 +1,5 @@
 //! `agent.ts` selects the session's sampling at open, and each home version's
-//! admission is recorded in the journal.
+//! admission is retained in owner Streams.
 
 use super::{text, volume, volume_config};
 use crate::{
@@ -97,6 +97,7 @@ async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash
         signed: &harness.signed,
         home: &harness.scratch,
         journal: &harness.journal,
+        decisions: decisions(harness)?,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
         maximum_bytes: harness.limits.file_bytes,
@@ -105,31 +106,104 @@ async fn settings_cut(harness: &LocalHarness, path: &str) -> Result<blake3::Hash
     tree.cut()
 }
 
+fn decisions(harness: &LocalHarness) -> Result<crate::config::SettingsAdmissions> {
+    Ok(crate::config::SettingsAdmissions::new(
+        harness
+            .agent_stream
+            .clone()
+            .ok_or_else(|| Error::Unsupported("settings fixture needs its owner stream".into()))?,
+    ))
+}
+
 async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<Admission> {
-    let cut = settings_cut(harness, path).await?.to_hex();
-    let grant = ContentGrant::verify_directory_read(
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    decisions(harness)?
+        .latest(harness.root, path, version, &work)
+        .await?
+        .ok_or_else(|| Error::NotFound("settings admission record".into()))
+}
+
+async fn private_admission_cannot_replace_decision(
+    harness: &LocalHarness,
+    original: &Admission,
+) -> Result<()> {
+    let path = format!(
+        "live/agents/{}/admissions/{}/{}.json",
+        harness.root, original.path, original.version
+    );
+    let read = ContentGrant::verify_directory_read(
         &harness.verifier,
         &harness.signed,
         &harness.journal,
         "",
         &mut None,
     )?;
-    let (_, bytes, _) = harness
+    assert!(
+        harness
+            .files
+            .read_private_path_indexed(
+                &harness.journal,
+                &read,
+                &path,
+                None,
+                None,
+                ContentAccess::default()
+            )
+            .await?
+            .is_none(),
+        "admission evidence must not publish a private file"
+    );
+    let forged = Admission {
+        status: AdmissionStatus::Applied,
+        error: None,
+        ..original.clone()
+    };
+    let bytes = serde_json::to_vec(&forged).map_err(|error| Error::Invalid(error.to_string()))?;
+    let scope = harness
+        .root_authority
+        .as_ref()
+        .expect("fixture owns its issuer")
+        .bootstrap_scope(
+            "forged-admission",
+            &crate::Capabilities::new([harness
+                .journal
+                .capability(VolumeOperation::Write, &mut None)?]),
+            Some(harness.root),
+            &mut None,
+        )?;
+    let write = ContentGrant::verify(
+        &harness.verifier,
+        &scope,
+        &harness.journal,
+        VolumeOperation::Write,
+        &mut None,
+    )?;
+    harness
         .files
-        .read_private_path_indexed(
+        .put_content(
             &harness.journal,
-            &grant,
-            &format!(
-                "live/agents/{}/admissions/{path}/{cut}/{version}.json",
-                harness.root
-            ),
+            &write,
+            &path,
+            &bytes,
+            "application/json",
+            "authored forgery",
             None,
+            &IdempotencyKey::new("forged-admission")?,
             None,
             ContentAccess::default(),
         )
-        .await?
-        .ok_or_else(|| Error::NotFound("settings admission record".into()))?;
-    serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
+        .await?;
+    assert_eq!(
+        admission(harness, &original.path, &original.version).await?,
+        *original,
+        "ordinary private writes cannot replace retained enforcement evidence"
+    );
+    Ok(())
 }
 
 async fn run(
@@ -1076,6 +1150,8 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
             journal: &harness.journal,
             seed: (&harness.seed.0, &harness.seed.1),
             configuration: harness.harness.issuer_configuration(),
+            decisions: decisions(&harness)?,
+
             maximum_bytes: harness.limits.file_bytes,
         };
         let tree =
@@ -1236,6 +1312,8 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
         journal: &harness.journal,
         seed: (&harness.seed.0, &harness.seed.1),
         configuration: harness.harness.issuer_configuration(),
+        decisions: decisions(&harness)?,
+
         maximum_bytes: harness.limits.file_bytes,
     };
     let tree =
@@ -1256,6 +1334,7 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
     let record = admission(&harness, "plugins.ts", &version).await?;
     assert_eq!(record.status, AdmissionStatus::Invalid);
     assert_eq!(record.error.as_deref(), Some(reason.as_str()));
+    private_admission_cannot_replace_decision(&harness, &record).await?;
     Ok(())
 }
 

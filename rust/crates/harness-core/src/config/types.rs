@@ -130,8 +130,11 @@ pub enum Action {
     Call,
 }
 
-/// `live/agents/<agent>/admissions/<path>/<cut>/<version>.json`: the selected
-/// file version's outcome under one complete original configuration cut.
+/// What happened to one version of a settings file, retained in the owner's
+/// versioned settings-admissions stream. Ordinary indexed reads and follows
+/// query decisions even when startup refuses before creating an agent root.
+/// Each query also binds the complete original configuration cut.
+
 /// "invalid" and "rejected" cannot relax enforcement: retain previously
 /// admitted settings, or refuse the session when no retained generation exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

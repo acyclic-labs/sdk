@@ -1,7 +1,8 @@
 //! `agent.ts` admission: the six original sources fold over
 //! the model the session was started with; the result selects the model and
-//! its sampling. Each source cut's outcome is recorded as an
-//! [`Admission`](crate::config::Admission) in the journal.
+//! its sampling. Each complete original source cut has an outcome retained
+//! as an Admission in the original owner Streams.
+
 use super::*;
 use crate::config::{self, AdmissionStatus, AgentConfig, Sampling};
 use crate::conversation::{ContentAccess, ContentGrant};
@@ -27,6 +28,8 @@ pub(super) struct Volumes<'a> {
     pub(super) journal: &'a VolumeRef,
     pub(super) seed: (&'a VolumeRef, &'a crate::resources::GenerationRef),
     pub(super) configuration: &'a [Option<crate::layers::PinnedLayer>; 4],
+    pub(super) decisions: crate::config::SettingsAdmissions,
+
     pub(super) maximum_bytes: Option<u64>,
 }
 
@@ -336,6 +339,7 @@ async fn admitted<T>(
 
 /// Records the selected file version's outcome under the complete original
 /// configuration cut, so issuer edits cannot overwrite another cut's outcome.
+
 async fn record(
     volumes: &Volumes<'_>,
     io: Option<&crate::executor::PreparationIo>,

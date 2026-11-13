@@ -70,7 +70,11 @@ journals, pinned hook configurations, frozen manifests and context delivery
 frontiers with read-only selected inputs, retains the same store-owned seed
 reference and v1 actor records, and excludes native-only opaque subtrees from
 captured generations. Native skill-source metadata is a versioned indexed
-record in the original owner's Streams state; lifecycle markers and outcomes
+record in the original owner's Streams state. Settings decisions, including
+invalid and rejected startup, are versioned indexed records in that same owner
+state. Ordinary bounded reads and follows expose the decision query without
+creating an agent root or publishing private admission files. Lifecycle markers
+and outcomes
 are in the host journal. There are no native source-metadata sidecars or
 private hook-outcome readers. If that record is absent but owner.json,
 owner.v2, owner.v3, owner.v4, owner.v5,
