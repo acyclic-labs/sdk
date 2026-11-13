@@ -1,18 +1,24 @@
 //! Closed model-admission cells need no generic JSON diagnostic reservation.
 use super::*;
 
+// Current-attempt reasoning bytes plus the three abandoned-output counters.
+const ATTEMPT_BYTES: usize = 32;
+
 pub(super) fn encode(
     value: Option<&ModelEventAdmission>,
     io: Option<&PreparationIo>,
 ) -> Result<OwnedBytes> {
     let length = match value {
         None => 5,
-        Some(value) => value.calls.iter().try_fold(30_usize, |length, call| {
-            length
-                .checked_add(8)
-                .and_then(|length| length.checked_add(call.len()))
-                .ok_or_else(|| corrupt(io))
-        })?,
+        Some(value) => value
+            .calls
+            .iter()
+            .try_fold(30 + ATTEMPT_BYTES, |length, call| {
+                length
+                    .checked_add(8)
+                    .and_then(|length| length.checked_add(call.len()))
+                    .ok_or_else(|| corrupt(io))
+            })?,
     };
     crate::executor::with_history_io(io, |work| {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -24,7 +30,7 @@ pub(super) fn encode(
             })?;
             work.copy_bytes(length as u64)?;
         }
-        bytes.extend_from_slice(b"EXM2");
+        bytes.extend_from_slice(b"EXM3");
         match value {
             None => bytes.push(0),
             Some(value) => {
@@ -36,6 +42,15 @@ pub(super) fn encode(
                 for call in &value.calls {
                     bytes.extend_from_slice(&(call.len() as u64).to_le_bytes());
                     bytes.extend_from_slice(call.as_bytes());
+                }
+                let abandoned = value.abandoned;
+                for counter in [
+                    value.reasoning_bytes,
+                    abandoned.attempts,
+                    abandoned.content_bytes,
+                    abandoned.reasoning_bytes,
+                ] {
+                    bytes.extend_from_slice(&counter.to_le_bytes());
                 }
             }
         }
@@ -51,9 +66,14 @@ fn take<'a>(bytes: &mut &'a [u8], length: usize, io: Option<&PreparationIo>) -> 
     Ok(value)
 }
 
+fn counter(bytes: &mut &[u8], io: Option<&PreparationIo>) -> Result<u64> {
+    Ok(u64::from_le_bytes(
+        take(bytes, 8, io)?.try_into().map_err(|_| corrupt(io))?,
+    ))
+}
+
 fn number(bytes: &mut &[u8], io: Option<&PreparationIo>) -> Result<usize> {
-    let value = u64::from_le_bytes(take(bytes, 8, io)?.try_into().map_err(|_| corrupt(io))?);
-    usize::try_from(value).map_err(|_| corrupt(io))
+    usize::try_from(counter(bytes, io)?).map_err(|_| corrupt(io))
 }
 
 pub(super) fn decode(
@@ -63,7 +83,7 @@ pub(super) fn decode(
     bytes = acyclic_auth::format::header(
         bytes,
         b"EXM",
-        b"2",
+        b"3",
         || corrupt(io),
         || {
             canonical_boundary(
@@ -84,13 +104,9 @@ pub(super) fn decode(
         [1] => true,
         _ => return Err(corrupt(io)),
     };
-    let text_bytes = u64::from_le_bytes(
-        take(&mut bytes, 8, io)?
-            .try_into()
-            .map_err(|_| corrupt(io))?,
-    );
+    let text_bytes = counter(&mut bytes, io)?;
     let length = number(&mut bytes, io)?;
-    if length > bytes.len() / 8 {
+    if length > bytes.len().saturating_sub(ATTEMPT_BYTES) / 8 {
         return Err(corrupt(io));
     }
     crate::executor::with_history_io(io, |work| {
@@ -107,6 +123,12 @@ pub(super) fn decode(
                 std::str::from_utf8(take(&mut bytes, length, io)?).map_err(|_| corrupt(io))?;
             calls.push(crate::core::copy_text(text, &mut quota)?);
         }
+        let reasoning_bytes = counter(&mut bytes, io)?;
+        let abandoned = crate::executor::ModelAbandonedOutput {
+            attempts: counter(&mut bytes, io)?,
+            content_bytes: counter(&mut bytes, io)?,
+            reasoning_bytes: counter(&mut bytes, io)?,
+        };
         if !bytes.is_empty() {
             return Err(corrupt(io));
         }
@@ -116,6 +138,8 @@ pub(super) fn decode(
             calls,
             completed,
             text_bytes,
+            reasoning_bytes,
+            abandoned,
         }))
     })
 }
@@ -130,7 +154,7 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
             assert_eq!(encoded.as_ref(), bytes);
             let restored = decode(&encoded, None).expect("writer output decodes");
             assert_eq!(encode(restored.as_ref(), None).unwrap(), encoded);
-            for version in [b'0', b'1', b'3', u8::MAX] {
+            for version in [b'0', b'2', b'4', u8::MAX] {
                 let mut header = bytes[..4].to_vec();
                 header[3] = version;
                 assert_eq!(
@@ -164,6 +188,12 @@ pub(in crate::filesystem::execution_journal) mod codec_fuzz {
                     calls: vec!["".into(), "tool-\u{1f980}".into()],
                     completed: true,
                     text_bytes: u64::MAX,
+                    reasoning_bytes: u64::MAX,
+                    abandoned: crate::executor::ModelAbandonedOutput {
+                        attempts: u64::MAX,
+                        content_bytes: u64::MAX,
+                        reasoning_bytes: u64::MAX,
+                    },
                 }),
             ),
         ] {
@@ -187,9 +217,15 @@ mod tests {
             calls: vec!["call".into()],
             completed: true,
             text_bytes: 37,
+            reasoning_bytes: 5,
+            abandoned: crate::executor::ModelAbandonedOutput {
+                attempts: 2,
+                content_bytes: 11,
+                reasoning_bytes: 13,
+            },
         };
         let encoded = encode(Some(&value), None)?;
-        for version in [b'0', b'1', b'3', u8::MAX] {
+        for version in [b'0', b'2', b'4', u8::MAX] {
             let mut header = encoded[..4].to_vec();
             header[3] = version;
             assert_eq!(
@@ -201,12 +237,14 @@ mod tests {
         assert_eq!(
             (
                 decoded.count,
-                decoded.calls,
                 decoded.completed,
-                decoded.text_bytes
+                decoded.text_bytes,
+                decoded.reasoning_bytes,
+                decoded.abandoned
             ),
-            (7, value.calls, true, 37)
+            (7, true, 37, 5, value.abandoned)
         );
+        assert_eq!(decoded.calls, value.calls);
         for length in 0..encoded.len() {
             assert!(decode(&encoded[..length], None).is_err());
         }
