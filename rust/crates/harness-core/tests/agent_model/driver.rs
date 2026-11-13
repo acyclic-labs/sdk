@@ -1,6 +1,6 @@
 //! The executor turn driver: one turn is one executor operation, resumed by identity.
 
-use super::{Result, adopted, id, intent, step_to_rest, steps_to_rest};
+use super::{Result, adopted, id, intent, step_to_rest};
 use acyclic_harness_core::{
     Error as CoreError, OperationId,
     agent::*,
@@ -847,8 +847,9 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
     sends.into_iter().next()
 }
 
-/// Delivers inbox `sequence` until the agent rests, committing each opening
-/// step to `streams` as the actor does, and returns the resting step for the
+/// Delivers inbox `sequence` until the agent rests, as the actor does: each
+/// step that asks to continue at once is committed to every one of `streams`
+/// before its continuation is delivered. Returns the resting step for the
 /// caller to commit.
 async fn settle_committing(
     driver: &ExecutorDriver<Host>,
@@ -859,30 +860,41 @@ async fn settle_committing(
     streams: &[&acyclic_stream::MemoryStream],
 ) -> Result<Step> {
     use acyclic_stream::{CommitOutcome, StreamProviderExt as _};
-    let mut steps = steps_to_rest(
+    let cancellation = acyclic_actors::guest::CancellationToken::new();
+    let mut next = step(
         driver,
         path,
         state,
         (sequence, 0),
         wake,
-        acyclic_actors::guest::CancellationToken::new(),
+        cancellation.clone(),
     )
     .await?;
-    let settled = steps.pop().ok_or("delivery took no step")?;
-    for (index, opening) in steps.iter().enumerate() {
+    let mut index = 0;
+    while next.alarm == Alarm::At(CONTINUE_NOW) {
         for stream in streams {
             let commit = lower(
-                opening,
+                &next,
                 sequence + 1,
-                delivery_key(&opening.state, &format!("goal-{sequence}-{index}"))?,
+                delivery_key(&next.state, &format!("goal-{sequence}-{index}"))?,
             )?;
             assert!(matches!(
                 stream.commit(commit).await?,
                 CommitOutcome::Committed(_)
             ));
         }
+        index += 1;
+        next = step(
+            driver,
+            path,
+            Some(next.state),
+            (sequence, 0),
+            Wake::Alarm,
+            cancellation.clone(),
+        )
+        .await?;
     }
-    Ok(settled)
+    Ok(next)
 }
 
 #[tokio::test]
