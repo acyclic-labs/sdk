@@ -748,7 +748,10 @@ async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), F
             .publish(
                 &store.load(&actor).await?,
                 1,
-                &Trigger::Record { subscription: "inbox".into(), sequence: 0 },
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
                 None,
                 transition(false)?,
                 key("copy-source-publication")?,
@@ -763,8 +766,20 @@ async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), F
             store.recover_custody(&source).await?;
         }
         for delete_first in [false, true] {
-            let child = ActorReference::new(b"account", b"agents", if delete_first { b"delete-copy" } else { b"active-copy" })?;
-            let mut fork = PreparedPublish::foreign(key(if delete_first { "copy-delete" } else { "copy-active" })?);
+            let child = ActorReference::new(
+                b"account",
+                b"agents",
+                if delete_first {
+                    b"delete-copy"
+                } else {
+                    b"active-copy"
+                },
+            )?;
+            let mut fork = PreparedPublish::foreign(key(if delete_first {
+                "copy-delete"
+            } else {
+                "copy-active"
+            })?);
             fork.join(CommitEffect::hard(
                 Vec::new(),
                 vec![CommitMutation::Fork {
@@ -778,21 +793,44 @@ async fn copied_actors_leave_committed_custody_with_the_source() -> Result<(), F
             store.submit(fork).await?;
             let cut = store.load(&child).await?;
             if delete_first {
-                store.submit(store.delete(&cut, key("delete-inherited-copy")?)?).await?;
+                store
+                    .submit(store.delete(&cut, key("delete-inherited-copy")?)?)
+                    .await?;
             } else {
                 let claimed = store.claim(&cut, 2, key("claim-inherited-copy")?).await?;
-                store.publish(
-                    &claimed,
-                    2,
-                    &Trigger::Record { subscription: "inbox".into(), sequence: 1 },
-                    None,
-                    Transition { participant: None, effects: Vec::new(), ..transition(false)? },
-                    key("publish-inherited-copy")?,
-                ).await?;
-                store.submit(store.delete(&store.load(&child).await?, key("delete-active-copy")?)?).await?;
+                store
+                    .publish(
+                        &claimed,
+                        2,
+                        &Trigger::Record {
+                            subscription: "inbox".into(),
+                            sequence: 1,
+                        },
+                        None,
+                        Transition {
+                            participant: None,
+                            effects: Vec::new(),
+                            ..transition(false)?
+                        },
+                        key("publish-inherited-copy")?,
+                    )
+                    .await?;
+                store
+                    .submit(store.delete(&store.load(&child).await?, key("delete-active-copy")?)?)
+                    .await?;
             }
-            assert!(store.load(&child).await?.state().is_some_and(State::deleted));
-            assert_eq!(counts.committed.load(Ordering::SeqCst), usize::from(settled), "a copy must not settle source custody");
+            assert!(
+                store
+                    .load(&child)
+                    .await?
+                    .state()
+                    .is_some_and(State::deleted)
+            );
+            assert_eq!(
+                counts.committed.load(Ordering::SeqCst),
+                usize::from(settled),
+                "a copy must not settle source custody"
+            );
         }
         // Positive ownership control: the original source still must settle.
         store.recover_custody(&source).await?;
