@@ -14,16 +14,27 @@ where
         request: acyclic_stream::trace::Request,
         work: impl std::future::Future<Output = std::result::Result<T, E>>,
     ) -> std::result::Result<T, E> {
+        self.observe_handoff(request, work, |_| acyclic_stream::trace::Outcome::Succeeded)
+            .await
+    }
+
+    /// The original value determines settlement without a post-work suspension.
+    /// The classifier is never evaluated without an admitted recording.
+    pub(super) async fn observe_handoff<T, E>(
+        &self,
+        request: acyclic_stream::trace::Request,
+        work: impl std::future::Future<Output = std::result::Result<T, E>>,
+        _outcome: impl FnOnce(&T) -> acyclic_stream::trace::Outcome,
+    ) -> std::result::Result<T, E> {
         match &self.traces {
             Some((traces, owner)) => {
                 let observed = traces.handoff(owner.as_str(), request, work).await;
                 #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
-                if observed.result.is_ok()
+                if let Ok(value) = &observed.result
                     && let Ok(acyclic_stream::trace::Settlement::Pending(recording)) =
                         observed.observation
                 {
-                    let _completion =
-                        recording.finish_submitted(None, acyclic_stream::trace::Outcome::Succeeded);
+                    let _completion = recording.finish_submitted(None, _outcome(value));
                 }
                 observed.result
             }

@@ -385,7 +385,22 @@ where
         crate::conversation::BoundedContentFuture<'a, Option<crate::executor::ToolSettlement>>,
     > {
         crate::conversation::BoundedContentFuture::new(io, || {
-            self.observe_tool_settlement(query, io)
+            self.observe_handoff(
+                acyclic_stream::trace::Request {
+                    name: "harness.tool_settlement",
+                    mechanism: acyclic_stream::trace::Mechanism::AuthCheck,
+                    parent: None,
+                    guarantee: Some("authenticated_tool_terminal_cut"),
+                },
+                self.observe_tool_settlement(query, io),
+                |settlement| {
+                    if settlement.is_some() {
+                        acyclic_stream::trace::Outcome::Succeeded
+                    } else {
+                        acyclic_stream::trace::Outcome::Unsettled
+                    }
+                },
+            )
         })
     }
 
@@ -755,7 +770,22 @@ where
             )));
         }
         Some(crate::conversation::BoundedContentFuture::new(io, || {
-            approvals.ready(operation)
+            self.observe_handoff(
+                acyclic_stream::trace::Request {
+                    name: "harness.tool_effect_barrier",
+                    mechanism: acyclic_stream::trace::Mechanism::Wait,
+                    parent: None,
+                    guarantee: Some("prior_tool_effect_publication"),
+                },
+                approvals.ready(operation),
+                |ready| {
+                    if *ready {
+                        acyclic_stream::trace::Outcome::Succeeded
+                    } else {
+                        acyclic_stream::trace::Outcome::Unsettled
+                    }
+                },
+            )
         }))
     }
 

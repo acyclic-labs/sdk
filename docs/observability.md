@@ -75,6 +75,12 @@ Ordinary journal publication identity, summary provenance and selected-context
 authentication emit `AuthCheck` spans through the same demand-selected recorder.
 The checks preserve their original decision and cause; byte counts remain unknown
 because these boundaries do not own a complete physical-read accounting result.
+Tool approval verification, prior-effect barriers and terminal-settlement lookup
+use the same journal demand boundary. A held effect barrier or absent terminal
+returns its original value and records `Unsettled`; an authenticated terminal
+records completion of the lookup, whose result retains the tool outcome. The
+shared owned append publishes these terminals without suspending effect delivery.
+No retained failure cause is fabricated for an unsuccessful lookup.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

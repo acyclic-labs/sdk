@@ -1121,6 +1121,32 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
             if start.name == name && start.mechanism == acyclic_stream::trace::Mechanism::AuthCheck
                 && start.guarantee.as_deref() == Some(guarantee)));
     }
+    let settlement_from = traces.tail().await?;
+    let absent = crate::executor::ToolSettlementQuery {
+        turn: operation,
+        step: 0,
+        call_id: "trace-absent",
+        effect: crate::tool::ToolInvocation::model_call_operation(
+            operation,
+            0,
+            "trace-absent",
+            None,
+        )?,
+    };
+    assert!(journal.tool_settlement(absent, None)?.await?.is_none());
+    let mut settlement = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(settlement_from, Default::default()).await?,
+        Default::default(),
+    );
+    settlement.next().await?;
+    assert!(matches!(settlement.next().await?,
+        Some(acyclic_stream::trace::Observation::Completed { start, result: acyclic_stream::trace::Outcome::Unsettled, .. })
+        if start.name == "harness.tool_settlement"
+            && start.guarantee.as_deref() == Some("authenticated_tool_terminal_cut")));
+    assert_eq!(
+        settlement.totals()[&acyclic_stream::trace::Mechanism::AuthCheck].unsettled,
+        1
+    );
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     let through = traces.tail().await?;
     let mut failed = acyclic_stream::trace::TraceQuery::new(
@@ -1145,6 +1171,7 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
         journal.replay(operation, 0, 1, None)?.await?[0].event,
         event
     );
+    assert!(journal.tool_settlement(absent, None)?.await?.is_none());
     let unfollowed = journal
         .stage(operation, "unfollowed", b"quiet", "text/plain", None)?
         .await?;
