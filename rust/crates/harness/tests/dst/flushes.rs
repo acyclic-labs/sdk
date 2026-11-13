@@ -276,12 +276,22 @@ fn negative_control_native_drains_are_counted() -> Result<()> {
     );
     #[cfg(target_os = "linux")]
     {
-        std::fs::write(directory.path().join("dirty"), b"durable").map_err(storage)?;
+        use std::{io::Write as _, os::fd::AsRawFd as _};
+
+        // This control proves observation of the real syncfs call, not crash
+        // persistence (the local checkpoint above covers that). A memory file
+        // keeps unrelated dirty files out of the filesystem-wide operation.
+        let mut dirty = std::fs::File::from(
+            rustix::fs::memfd_create(c"drain-control", rustix::fs::MemfdFlags::CLOEXEC)
+                .map_err(storage)?,
+        );
+        dirty.write_all(b"durable").map_err(storage)?;
+        let path = PathBuf::from(format!("/proc/self/fd/{}", dirty.as_raw_fd()));
         let start = driver.schedule.durable_write_count();
         runtime.block_on(async {
             let driver::Outcome::Completed(result) = driver
                 .run(entry(async {
-                    acyclic_native_runtime::sync_filesystem(directory.path())
+                    acyclic_native_runtime::sync_filesystem(&path)
                 }))
                 .await
             else {
