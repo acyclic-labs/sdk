@@ -3,7 +3,7 @@
 
 use acyclic_harness_core::{
     agent::{AgentPath, IntentId},
-    conversation::{DirectoryTarget, FileRef, validate_content_path},
+    conversation::{FileRef, validate_content_path},
     interaction::ApprovalBinding,
     model::ModelContent,
     resources::GenerationRef,
@@ -537,14 +537,12 @@ pub enum AgentCommand {
         /// Row/byte credit; cursor is the next original status sequence.
         page: AgentPageRequest,
     },
-    /// One authorized workspace directory page at its original immutable cut.
+    /// One authorized private directory page at its original immutable cut.
     Directory {
-        /// Exact selected agent; paths never select another agent's bindings.
+        /// Exact selected agent; paths never select a different private volume.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
-        /// Select a committed workspace binding, not an arbitrary volume.
-        target: DirectoryTarget,
-        /// Normalized directory relative to that workspace's declared root.
+        /// Normalized private-volume directory, or empty for its visible root.
         path: String,
         /// None selects the initial immutable generation.
         #[cfg_attr(
@@ -552,9 +550,6 @@ pub enum AgentCommand {
             tsify(type = "WasmResourceRefWire & { kind: 'generation' } | undefined")
         )]
         generation: Option<GenerationRef>,
-        /// Wait for a publication different from this cut. Mutually exclusive
-        /// with a pinned generation and continuation name.
-        after_generation: Option<GenerationRef>,
         /// Shared row/byte credit; its cursor is the preceding page's last name.
         page: AgentPageRequest,
     },
@@ -636,11 +631,9 @@ pub enum AgentCommand {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadTarget {
-    /// A workspace path selected at one immutable directory generation.
-    Path {
-        /// Original selected workspace and its authority boundary.
-        target: DirectoryTarget,
-        /// Normalized path relative to that workspace's declared root.
+    /// A private path selected at one immutable directory generation.
+    Private {
+        /// Normalized path under the selected agent's original private grant.
         path: String,
         /// Exact generation returned by directory discovery.
         #[cfg_attr(
@@ -767,10 +760,7 @@ impl AgentCommand {
                 .map_err(|_| CommandError::Invalid),
             Self::Decide { binding, .. } => binding.validate().map_err(|_| CommandError::Invalid),
             Self::Read {
-                target:
-                    ReadTarget::Path {
-                        path, generation, ..
-                    },
+                target: ReadTarget::Private { path, generation },
                 ..
             } => {
                 validate_content_path(path, &mut None).map_err(|_| CommandError::Invalid)?;
@@ -789,20 +779,16 @@ impl AgentCommand {
             Self::Directory {
                 path,
                 generation,
-                after_generation,
                 page,
                 ..
             } => {
-                if after_generation.is_some() && (generation.is_some() || page.cursor().is_some()) {
-                    return Err(CommandError::Invalid);
-                }
                 if generation.is_none() && page.cursor().is_some() {
                     return Err(CommandError::Invalid);
                 }
                 if !path.is_empty() {
                     validate_content_path(path, &mut None).map_err(|_| CommandError::Invalid)?;
                 }
-                for generation in generation.iter().chain(after_generation.iter()) {
+                if let Some(generation) = generation {
                     generation
                         .validate(&mut None)
                         .map_err(|_| CommandError::Invalid)?;

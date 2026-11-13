@@ -26,7 +26,6 @@ pub use diff_query::{DiffProjection, DiffQuery, DiffQueryEvent, DiffSnapshot, Di
 pub use input_query::{InputPreview, InputPreviewStep, InputQuery, InputSelection};
 
 mod command;
-pub use acyclic_harness_core::conversation::DirectoryTarget;
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
     MAX_READ_BYTES, PreparedCommand, ReadTarget, SessionsScope,

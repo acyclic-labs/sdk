@@ -13,8 +13,6 @@ use acyclic_stream::{
 use futures::TryStreamExt;
 use std::{path::Path, sync::Arc};
 
-mod workspace_files;
-
 /// The root conversation `harness` serves to its own in-process session.
 async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> {
     Ok(Conversation::open(harness.connect().await?))
@@ -1163,10 +1161,8 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // Give the host room for exactly one row while requesting many rows.
     let selected = AgentCommand::Directory {
         agent: root.clone(),
-        target: crate::conversation::DirectoryTarget::Private {},
         path: String::new(),
         generation: Some(first.generation.clone()),
-        after_generation: None,
         page: page(None)?,
     };
     let encoded = encode_agent_reply(
@@ -1217,10 +1213,8 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     // Reusing the preceding page cannot pass the shared continuation boundary.
     let continued = acyclic_harness_client::AgentCommand::Directory {
         agent: root.clone(),
-        target: crate::conversation::DirectoryTarget::Private {},
         path: String::new(),
         generation: Some(first.generation.clone()),
-        after_generation: None,
         page: page(Some(last.clone()))?,
     };
     assert!(
@@ -1236,8 +1230,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let read = acyclic_harness_client::AgentCommand::Read {
         agent: root.clone(),
         offset: 0,
-        target: acyclic_harness_client::ReadTarget::Path {
-            target: crate::conversation::DirectoryTarget::Private {},
+        target: acyclic_harness_client::ReadTarget::Private {
             path: "directory-a".to_owned(),
             generation: first.generation.clone(),
         },

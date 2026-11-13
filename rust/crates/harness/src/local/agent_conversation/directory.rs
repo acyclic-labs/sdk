@@ -1,10 +1,6 @@
 //! Directory pages through the selected conversation's original connection.
 use super::{Conversation, unexpected};
-use crate::{
-    Result,
-    conversation::{DirectoryTarget, PrivateDirectoryPage},
-    resources::GenerationRef,
-};
+use crate::{Result, conversation::PrivateDirectoryPage, resources::GenerationRef};
 use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
 
 impl Conversation {
@@ -42,8 +38,7 @@ impl Conversation {
         Self::read_at(
             &self.connection,
             self.agent(),
-            ReadTarget::Path {
-                target: DirectoryTarget::Private {},
+            ReadTarget::Private {
                 path: path.to_owned(),
                 generation: generation.clone(),
             },
@@ -67,10 +62,8 @@ impl Conversation {
             .connection
             .execute(&AgentCommand::Directory {
                 agent: self.agent().clone(),
-                target: DirectoryTarget::Private {},
                 path: path.to_owned(),
                 generation: generation.cloned(),
-                after_generation: None,
                 page,
             })
             .await?

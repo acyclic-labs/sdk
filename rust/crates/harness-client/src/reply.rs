@@ -877,7 +877,6 @@ fn validate_reply(
             AgentReply::Directory { page },
             AgentCommand::Directory {
                 generation,
-                after_generation,
                 page: request,
                 ..
             },
@@ -890,7 +889,6 @@ fn validate_reply(
                 || generation
                     .as_ref()
                     .is_some_and(|selected| selected != &page.generation)
-                || after_generation.as_ref() == Some(&page.generation)
                 || request.cursor().is_some_and(|after| {
                     page.entries
                         .first()
