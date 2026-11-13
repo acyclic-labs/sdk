@@ -88,7 +88,7 @@ impl BrowserResolvedFile {
             .await
             .map_err(js_error)?;
         ts(BrowserFileReadResult {
-            bytes: receipt.value.to_vec(),
+            bytes: receipt.value.bytes.to_vec(),
             work: browser_work(receipt.work),
         })
     }
