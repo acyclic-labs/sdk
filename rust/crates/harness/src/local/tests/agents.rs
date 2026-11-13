@@ -1315,10 +1315,18 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         )
         .is_err()
     );
-    // A path cannot bypass the original private grant or its internal boundary.
+    // Journal isolation does not reserve names in the authored volume. A path
+    // still cannot escape the selected private directory.
     assert!(
         client
             .directory_page(".system", None, page(None)?)
+            .await?
+            .entries
+            .is_empty()
+    );
+    assert!(
+        client
+            .directory_page("../directory-a", None, page(None)?)
             .await
             .is_err()
     );
@@ -1330,7 +1338,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     assert!(
         client
-            .read_private_range(".system/record", &first.generation, 0)
+            .read_private_range("../directory-a", &first.generation, 0)
             .await
             .is_err()
     );
