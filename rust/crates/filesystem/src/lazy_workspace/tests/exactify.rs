@@ -40,11 +40,11 @@ async fn exactification_preserves_removals_after_its_cut_and_prepared_bytes() {
         .await
         .unwrap();
     root.remove("/file.txt", None, accounting!()).await.unwrap();
-    assert!(matches!(
-        root.retain_observation("/file.txt", &lookup.0, accounting!())
-            .await,
-        Err(LazyWorkspaceError::Concurrent)
-    ));
+    let removed = root.state(accounting!()).await.unwrap();
+    root.retain_observation("/file.txt", &lookup.0, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(root.state(accounting!()).await.unwrap(), removed);
     root.retire_lookup(lookup, accounting!()).unwrap();
     assert!(matches!(
         root.commit_overlay(

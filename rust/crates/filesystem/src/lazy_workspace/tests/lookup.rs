@@ -90,6 +90,16 @@ async fn observation_and_transient_inspection_pin_their_versions() {
     };
     assert_eq!(root.state(accounting!()).await.unwrap(), state);
     source.replace(Bytes::from_static(b"after"));
+    root.retain_observation(
+        "/file.txt",
+        &LazyLookup::Source {
+            source: pinned,
+            node,
+        },
+        accounting!(),
+    )
+    .await
+    .unwrap();
     let file = root
         .open_source_file("/file.txt", pinned, node, accounting!())
         .await
@@ -113,6 +123,20 @@ async fn observation_and_transient_inspection_pin_their_versions() {
     root.stat("/file.txt", accounting!()).await.unwrap();
     assert_eq!(first, root.snapshot(accounting!()).await.unwrap());
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
+
+    let (removed, allocation) = root.inspect("/file.txt", accounting!()).await.unwrap();
+    root.remove("/file.txt", None, accounting!()).await.unwrap();
+    let deleted = root.state(accounting!()).await.unwrap();
+    root.retain_observation("/file.txt", &removed, accounting!())
+        .await
+        .unwrap();
+    assert_eq!(root.state(accounting!()).await.unwrap(), deleted);
+    assert!(matches!(
+        root.stat("/file.txt", accounting!()).await,
+        Err(LazyWorkspaceError::NotFound)
+    ));
+    root.retire_lookup((removed, allocation), accounting!())
+        .unwrap();
 }
 
 #[tokio::test]

@@ -62,9 +62,13 @@ pub enum GuestError {
     /// Artifact encoder failed.
     #[error("checkpoint encode failed: {0}")]
     Encode(String),
-    /// Guest handler failed; the host must discard its heap.
+    /// Guest handler failed definitively; the host must discard its heap.
     #[error("guest handler failed: {0}")]
     Handler(String),
+    /// External work is undecided. Retain its delivery without a failure
+    /// transition that could acknowledge or replace the original operation.
+    #[error("guest handler pending: {0}")]
+    Pending(String),
     /// A capability call named a request whose handler invocation ended:
     /// it returned, timed out or was cancelled.
     #[error("host request is revoked")]

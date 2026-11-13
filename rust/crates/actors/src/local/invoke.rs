@@ -394,6 +394,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         if matches!(outcome, Some(Err(GuestError::PreconditionChanged))) {
             return Err(Error::PreconditionChanged(Vec::new()));
         }
+        if let Some(Err(failure @ GuestError::Pending(_))) = outcome {
+            return Err(Error::Handler(failure.clone()));
+        }
         let invocation = delivered
             .map(Invocation::decode_bound)
             .transpose()?

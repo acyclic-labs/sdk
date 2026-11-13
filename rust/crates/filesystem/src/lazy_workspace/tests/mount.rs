@@ -343,18 +343,44 @@ async fn replacement_directory_hides_old_source_children() {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn mounted_whiteouts_follow_the_original_publication_decision() {
-    let root = attach(
-        &Fs::memory(),
-        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .unwrap();
+    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+    let store = MemoryLazyWorkspaceStore::default();
+    let root = attach(&Fs::memory(), Arc::clone(&source), store.clone())
+        .await
+        .unwrap();
     for committed in [false, true] {
+        let before = store
+            .load_lazy_workspace(root.workspace().id(), accounting!())
+            .await
+            .unwrap()
+            .unwrap();
+        source.replace(Bytes::from_static(if committed {
+            b"committed"
+        } else {
+            b"aborted"
+        }));
+        let snapshot = root.publication_snapshot(accounting!()).await.unwrap();
+        assert!(matches!(snapshot.context, NativeSnapshotContext::Lazy(cut)
+            if cut.source == source.reference()));
+        assert_eq!(
+            store
+                .load_lazy_workspace(root.workspace().id(), accounting!())
+                .await
+                .unwrap(),
+            Some(before.clone()),
+            "a clean publication must not publish epoch bookkeeping"
+        );
         let key = IdempotencyKey::new();
         root.prepare_mount_removals(&["/file.txt".to_owned()], &[], &[], key, accounting!())
             .await
             .unwrap();
+        let prepared = store
+            .load_lazy_workspace(root.workspace().id(), accounting!())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared.source, source.reference());
+        assert_eq!(prepared.revision, before.revision + 1);
         if committed {
             let mut checkout = root
                 .workspace()

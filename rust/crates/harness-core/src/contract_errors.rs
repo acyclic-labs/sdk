@@ -150,6 +150,12 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Content disagreements projected into working files for explicit repair.
+    #[error("merge conflict: {}. Edit the conflicted paths, then continue the merge", paths.join(", "))]
+    MergeConflict {
+        /// Working paths requiring resolution.
+        paths: Vec<String>,
+    },
     /// The agent host definitively refused a request, which committed
     /// nothing. It reads as the host error's own text, already classified.
     #[error("{0}")]
@@ -744,7 +750,10 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_)
+            | Self::MergeConflict { .. }
+            | Self::Refused(_)
+            | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::ModelTokenCountUnavailable
@@ -922,6 +931,16 @@ impl Error {
             )
     }
 
+    /// Preserve an undecided host operation across the guest boundary.
+    pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
+        let error = error.into();
+        if error.uncertain() {
+            acyclic_actors::guest::GuestError::Pending(error.to_string())
+        } else {
+            acyclic_actors::guest::GuestError::Handler(error.to_string())
+        }
+    }
+
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     pub(crate) fn is_tool_failure(&self) -> bool {
@@ -1013,6 +1032,7 @@ impl Error {
             | Self::ModelTokenCountUnavailable
             | Self::NotFound(_)
             | Self::Conflict(_)
+            | Self::MergeConflict { .. }
             | Self::Refused(_)
             | Self::ExactEdit(_)
             | Self::TaskFailed { .. }
