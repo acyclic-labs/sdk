@@ -61,6 +61,7 @@ tokio-stream.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc-metadata"] }
 hyper-util = { workspace = true }
 rustix = { workspace = true, features = ["fs"] }
 tower = { workspace = true }

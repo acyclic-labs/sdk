@@ -23,15 +23,8 @@ pub struct BearerAuth(pub(super) Option<MetadataValue<Ascii>>);
 
 impl BearerAuth {
     pub(super) fn new(token: &str) -> Result<Self, ProviderError> {
-        if !acyclic_auth::credential::valid_credential(token) {
-            return Err(ProviderError::Invalid(
-                "invalid Machines bearer credential".into(),
-            ));
-        }
-        let mut value: MetadataValue<Ascii> = format!("Bearer {token}")
-            .parse()
+        let value = acyclic_auth::credential::bearer_metadata(token)
             .map_err(|_| ProviderError::Invalid("invalid Machines bearer credential".into()))?;
-        value.set_sensitive(true);
         Ok(Self(Some(value)))
     }
 }

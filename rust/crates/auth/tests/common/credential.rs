@@ -95,6 +95,33 @@ fn checked(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("missing bearer transport prefix")?;
     assert_eq!(rest, bytes);
     assert_eq!(std::str::from_utf8(rest)?, value);
+    let header = acyclic_auth::credential::bearer_header(value);
+    let representable = http::HeaderValue::from_bytes(&encoded).is_ok();
+    assert_eq!(header.is_ok(), representable);
+    if let Ok(header) = header {
+        assert!(header.is_sensitive());
+        let retained = header.clone();
+        assert_eq!(header.as_bytes().as_ptr(), retained.as_bytes().as_ptr());
+        drop(header);
+        assert_eq!(retained.as_bytes(), encoded.as_ref());
+    }
+    #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+    {
+        let metadata = acyclic_auth::credential::bearer_metadata(value);
+        let expected =
+            tonic::metadata::MetadataValue::<tonic::metadata::Ascii>::try_from(encoded.clone());
+        assert_eq!(metadata.is_ok(), expected.is_ok());
+        if let Ok(metadata) = metadata {
+            assert!(metadata.is_sensitive());
+            let retained = metadata.clone();
+            assert_eq!(
+                metadata.as_encoded_bytes().as_ptr(),
+                retained.as_encoded_bytes().as_ptr()
+            );
+            drop(metadata);
+            assert_eq!(retained.as_encoded_bytes(), encoded.as_ref());
+        }
+    }
     // No trimming, normalization or token decoding may hide an injected
     // transport delimiter, including one after an otherwise admitted token.
     for delimiter in ['\r', '\n', '\0'] {

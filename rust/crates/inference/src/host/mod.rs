@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tonic::Request;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 use crate::MAXIMUM_MESSAGE_BYTES;
 use crate::contract;
@@ -80,7 +80,7 @@ impl Error {
 
 struct Connection {
     channel: Channel,
-    authorization: Option<Zeroizing<String>>,
+    authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
     client_instance: [u8; 16],
 }
@@ -574,9 +574,7 @@ impl Inference {
             .as_ref()
             .or(self.0.authorization.as_ref())
             .ok_or(Error::Invalid("missing API key"))?;
-        let mut authorization = MetadataValue::<Ascii>::try_from(value_header.as_str())
-            .map_err(|_| Error::Invalid("invalid API key"))?;
-        authorization.set_sensitive(true);
+        let authorization = value_header.clone();
         let mut request = Request::new(value);
         request
             .metadata_mut()

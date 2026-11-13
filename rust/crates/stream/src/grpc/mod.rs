@@ -525,13 +525,8 @@ pub(crate) async fn request_authorization(
 }
 
 fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
-    if !acyclic_auth::credential::valid_credential(bearer_token) {
-        return Err(ConnectError::InvalidCredential);
-    }
-    let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(bearer_token))
-        .map_err(|_| ConnectError::InvalidCredential)?;
-    value.set_sensitive(true);
-    Ok(value)
+    acyclic_auth::credential::bearer_metadata(bearer_token)
+        .map_err(|_| ConnectError::InvalidCredential)
 }
 
 /// Whether the outcome of an attempt is unknown because the transport was lost.

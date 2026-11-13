@@ -54,6 +54,13 @@ pub enum CredentialError {
     /// Empty or header-delimited credentials fail before transport.
     #[error("invalid credential")]
     Invalid,
+    /// The credential cannot be represented as an HTTP header.
+    #[error("invalid credential header")]
+    Header(#[source] http::header::InvalidHeaderValue),
+    /// The credential cannot be represented as native gRPC metadata.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+    #[error("invalid credential metadata")]
+    Metadata(#[source] tonic::metadata::errors::InvalidMetadataValueBytes),
     /// The provider names the channel's own transport identity and has no
     /// bearer to resolve; only transports that honor it may dispatch.
     #[error("credential is the channel's transport identity")]
@@ -66,7 +73,9 @@ impl CredentialError {
     #[must_use]
     pub const fn denial_cause(&self) -> Option<crate::DenialCause> {
         match self {
-            Self::Invalid => Some(crate::DenialCause::Malformed),
+            Self::Invalid | Self::Header(_) => Some(crate::DenialCause::Malformed),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+            Self::Metadata(_) => Some(crate::DenialCause::Malformed),
             Self::Cache { cause, .. } => *cause,
             Self::Provider(_) | Self::TransportIdentity => None,
         }
@@ -376,6 +385,40 @@ pub fn bearer_bytes(value: &str) -> bytes::Bytes {
     bytes.extend_from_slice(PREFIX);
     bytes.extend_from_slice(value.as_bytes());
     crate::operation::ProtectedBytes::new(bytes).into_bytes()
+}
+
+fn validated_bearer(value: &str) -> Result<bytes::Bytes, CredentialError> {
+    if !valid_credential(value) {
+        return Err(CredentialError::Invalid);
+    }
+    Ok(bearer_bytes(value))
+}
+
+/// Construct sensitive HTTP authorization, retaining protected bytes through clones.
+/// This checks representation, not the authority or freshness of a credential.
+///
+/// # Errors
+/// Malformed credentials retain their original header parser failure when present.
+pub fn bearer_header(value: &str) -> Result<http::HeaderValue, CredentialError> {
+    let mut header = http::HeaderValue::from_maybe_shared(validated_bearer(value)?)
+        .map_err(CredentialError::Header)?;
+    header.set_sensitive(true);
+    Ok(header)
+}
+
+/// Construct sensitive native gRPC authorization over the same protected bytes.
+/// This checks representation, not the authority or freshness of a credential.
+///
+/// # Errors
+/// Malformed credentials retain their original metadata parser failure when present.
+#[cfg(all(not(target_arch = "wasm32"), feature = "grpc-metadata"))]
+pub fn bearer_metadata(
+    value: &str,
+) -> Result<tonic::metadata::MetadataValue<tonic::metadata::Ascii>, CredentialError> {
+    let mut metadata = tonic::metadata::MetadataValue::try_from(validated_bearer(value)?)
+        .map_err(CredentialError::Metadata)?;
+    metadata.set_sensitive(true);
+    Ok(metadata)
 }
 
 /// Admit an origin only: no embedded credential, query, fragment or path.

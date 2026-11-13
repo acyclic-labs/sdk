@@ -17,13 +17,20 @@ pub struct BearerAuth(Option<MetadataValue<Ascii>>);
 impl BearerAuth {
     /// Validates an opaque bearer credential and marks its metadata sensitive.
     pub fn new(token: &str) -> Result<Self, Error> {
-        let invalid = || Error::Configuration("invalid bearer credential".to_owned());
-        if !crate::valid_token(token) {
-            return Err(invalid());
-        }
-        let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(token))
-            .map_err(|_| invalid())?;
-        value.set_sensitive(true);
+        #[cfg(not(target_arch = "wasm32"))]
+        let value = acyclic_auth::credential::bearer_metadata(token)
+            .map_err(|_| Error::Configuration("invalid bearer credential".to_owned()))?;
+        #[cfg(target_arch = "wasm32")]
+        let value = {
+            let invalid = || Error::Configuration("invalid bearer credential".to_owned());
+            if !crate::valid_token(token) {
+                return Err(invalid());
+            }
+            let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+                .map_err(|_| invalid())?;
+            value.set_sensitive(true);
+            value
+        };
         Ok(Self(Some(value)))
     }
 }

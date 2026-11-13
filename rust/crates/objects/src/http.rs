@@ -15,14 +15,8 @@ mod availability;
 mod tests;
 
 fn credential_header(token: &str) -> Result<HeaderValue, Error> {
-    let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
-    if !acyclic_auth::credential::valid_credential(token) {
-        return Err(invalid());
-    }
-    let mut value = HeaderValue::from_maybe_shared(acyclic_auth::credential::bearer_bytes(token))
-        .map_err(|_| invalid())?;
-    value.set_sensitive(true);
-    Ok(value)
+    acyclic_auth::credential::bearer_header(token)
+        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
 }
 
 /// The canonical JSON success acknowledgement of a batch put, bounded per member:
