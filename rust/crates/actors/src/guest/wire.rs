@@ -943,6 +943,7 @@ mod tests {
                     "inbox".into(),
                     Subscription {
                         path: StreamPath::new("agents/a/inbox")?,
+                        paused: false,
                         cursor: u64::MAX,
                     },
                 )]
