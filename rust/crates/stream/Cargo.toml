@@ -108,6 +108,7 @@ reqwest = { version = "0.12.28", default-features = false, features = ["rustls-t
 tonic = { workspace = true, default-features = true, features = ["transport", "tls-ring", "tls-webpki-roots"] }
 rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }
+url = "=2.5.8"
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
