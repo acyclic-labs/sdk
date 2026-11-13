@@ -1,4 +1,5 @@
 use super::*;
+use crate::hooks::HookRule;
 use futures::future::BoxFuture;
 use std::collections::BTreeMap;
 
@@ -357,5 +358,46 @@ async fn native_hook_script_copy_refuses_on_the_original_allowance() -> Result<(
     ));
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert_eq!(tree.0.len(), 65536, "refusal preserves the original source");
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_rule_metadata_refuses_before_installation() -> Result<()> {
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let mut hooks = Hooks::default();
+    let hook = || HookSpec {
+        run: HookRun::Shell {
+            command: "echo ready".into(),
+            shell: None,
+        },
+        timeout_ms: None,
+        failure: HookFailure::Block,
+    };
+    let refused = hooks
+        .add_rule_with_io(
+            HookEvent::PreToolUse,
+            String::new(),
+            std::iter::once(hook()),
+            Some(&io),
+        )
+        .expect_err("rule metadata must be admitted before allocation");
+    assert!(matches!(refused, Error::NativeWork { .. }));
+    assert!(hooks.is_empty(), "failed admission must install no rule");
+    hooks.add_rule_with_io(
+        HookEvent::PreToolUse,
+        String::new(),
+        std::iter::once(hook()),
+        None,
+    )?;
+    assert!(!hooks.is_empty());
     Ok(())
 }
