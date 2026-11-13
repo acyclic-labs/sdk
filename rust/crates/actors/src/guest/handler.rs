@@ -177,7 +177,9 @@ pub struct Transition {
     /// [`Composer`] validates and composes; never guest-held custody.
     pub participant: Option<Participant>,
     /// Subscription changes, applied in order after the consumed input and
-    /// committed with the checkpoint. Subscriptions are the actor's runtime
+    /// committed with the checkpoint. IDs outside the manifest's producer-owned
+    /// inputs are observed by the runtime, sharing one follow per distinct stream.
+    /// Subscriptions are the actor's runtime
     /// state: a running actor binds and unbinds its own inputs.
     pub subscriptions: Vec<SubscriptionChange>,
 }

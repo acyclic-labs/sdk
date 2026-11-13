@@ -201,6 +201,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             | Out::Steered(_)
             | Out::Notices(_)
             | Out::PendingSpawns(_)
+            | Out::AwaitReplies(_)
             | Out::PeerGuard { .. } => {}
             Out::Send { to, record } => {
                 if let InboxRecord::Cancel(cancel) = record {

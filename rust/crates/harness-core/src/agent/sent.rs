@@ -25,6 +25,89 @@ pub struct SentMessage {
     pub delivery: Delivered,
 }
 
+/// Settlement of one original send, without exposing the recipient's history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SentReplyStatus {
+    /// The request or its continuing goal has not settled.
+    Pending,
+    /// The exact conversation position that answered the request.
+    Answered {
+        /// Committed answer position, without its content or file authority.
+        sequence: u64,
+    },
+    /// The inbox was closed, or the accepted request was dropped.
+    Dropped,
+}
+
+/// A pending reply's event position, selected with its committed checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyWatch {
+    /// Original recipient from the sender's immutable receipt.
+    pub to: AgentPath,
+    /// Original send intent, never an arbitrary recipient input.
+    pub id: IntentId,
+    /// Original accepted inbox sequence.
+    pub inbox: u64,
+    /// First status publication not covered by the observed checkpoint.
+    pub from: u64,
+}
+
+/// One send's delivery and reply, with a lossless event position while pending.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SentReply {
+    /// Immutable delivery receipt owned by the querying sender.
+    pub message: SentMessage,
+    /// Only the settlement of that original request.
+    pub status: SentReplyStatus,
+    /// Present exactly while another recipient publication can settle it.
+    pub watch: Option<ReplyWatch>,
+}
+
+/// Correlate only a send owned by `sender`. The recipient checkpoint and
+/// status position share one publication, so subscribing from `watch.from`
+/// cannot miss a concurrent answer. No transcript or output body is returned.
+pub async fn sent_reply<P: crate::store::JournalProvider + ?Sized + 'static>(
+    provider: &std::sync::Arc<P>,
+    within: &acyclic_actors::addressing::ActorReference,
+    sender: &AgentPath,
+    id: &IntentId,
+) -> Result<Option<SentReply>, Error> {
+    let Some(message) = sent(provider.as_ref(), sender, id).await? else {
+        return Ok(None);
+    };
+    let Delivered::Committed { inbox } = message.delivery else {
+        return Ok(Some(SentReply {
+            message,
+            status: SentReplyStatus::Dropped,
+            watch: None,
+        }));
+    };
+    let actor = super::handler::Agents::<P>::actor(within, &message.to.id())?;
+    let agents = super::handler::Agents::new(super::actor_store(provider)?);
+    let (mut state, cursor) = agents.state(&actor, &message.to).await?;
+    let reply = super::reply(provider.as_ref(), &mut state, cursor, id, inbox).await?;
+    let (status, watch) = match reply {
+        super::Reply::Answered { sequence, .. } => (SentReplyStatus::Answered { sequence }, None),
+        super::Reply::Dropped => (SentReplyStatus::Dropped, None),
+        super::Reply::Pending | super::Reply::Continuing { .. } => (
+            SentReplyStatus::Pending,
+            Some(ReplyWatch {
+                to: message.to.clone(),
+                id: id.clone(),
+                inbox,
+                from: state.status_tail,
+            }),
+        ),
+    };
+    Ok(Some(SentReply {
+        message,
+        status,
+        watch,
+    }))
+}
+
 /// Look up one original send by intent. `None` means this sender has not yet
 /// published that effect. A marker whose envelope is unavailable is an error,
 /// never a fabricated receipt or permission to deliver again.

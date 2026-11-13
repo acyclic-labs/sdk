@@ -61,7 +61,7 @@ mod release;
 mod reply;
 mod sent;
 pub(crate) use reply::entry as conversation_entry;
-pub use sent::{SentMessage, sent};
+pub use sent::{ReplyWatch, SentMessage, SentReply, SentReplyStatus, sent, sent_reply};
 mod settled;
 #[cfg(test)]
 mod ui_tests;

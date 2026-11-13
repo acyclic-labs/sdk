@@ -101,13 +101,17 @@ pub struct ArchiveAgentInput {
     pub agent: String,
 }
 
-/// Wait for children to settle.
+/// Wait for children or the replies to this agent's original sends.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WaitAgentInput {
     /// Child names or agent paths, as spawn returned them.
     #[serde(default)]
     pub agents: Vec<String>,
+    /// Original send intent IDs returned by this agent's send calls. Replies
+    /// report only that request's settlement, not the recipient's history.
+    #[serde(default)]
+    pub sent: Vec<String>,
     /// How many of them must settle before the wait returns: all of them by
     /// default, 1 for the first, or any quorum in between.
     pub need: Option<u32>,
@@ -622,10 +626,10 @@ impl AgentTool {
             Ok(input) => input,
             Err(error) => return Ok(ToolPreparation::Ready(rejected(error.to_string()))),
         };
-        if input.agents.is_empty() {
+        if input.agents.is_empty() && input.sent.is_empty() {
             if input.need.is_some() {
                 return Ok(ToolPreparation::Ready(rejected(
-                    "need requires named children",
+                    "need requires named children or sent messages",
                 )));
             }
             let until = if input.input {
@@ -634,7 +638,7 @@ impl AgentTool {
                 crate::agent::Until::sleep(timeout)
             } else {
                 return Ok(ToolPreparation::Ready(rejected(
-                    "wait needs children, input or an alarm",
+                    "wait needs children, sent messages, input or an alarm",
                 )));
             };
             return Ok(if released {
@@ -648,16 +652,55 @@ impl AgentTool {
         let on_input = input.input;
         let Some(observer) = &self.turn.observer else {
             return Ok(ToolPreparation::Ready(rejected(
-                "this host observes no children",
+                "this host observes no agent settlements",
             )));
         };
-        let (children, mut need, timeout_ms) = match waited(&**observer, operation, input).await {
+        let WaitSelection {
+            children,
+            sent,
+            mut need,
+            timeout_ms,
+        } = match waited(&**observer, operation, input).await {
             Ok(waited) => waited,
             Err(error @ Error::Invalid(_)) => {
                 return Ok(ToolPreparation::Ready(super::rejected_input(error)));
             }
             Err(error) => return Err(error),
         };
+        let replies = futures::future::try_join_all(sent.iter().map(|id| async move {
+            observer.sent_reply(id).await?.ok_or_else(|| {
+                Error::Invalid(format!(
+                    "{} names no published send by this agent",
+                    id.as_str()
+                ))
+            })
+        }))
+        .await;
+        let replies = match replies {
+            Ok(replies) => replies,
+            Err(error @ (Error::Invalid(_) | Error::Unsupported(_))) => {
+                return Ok(ToolPreparation::Ready(super::rejected_input(error)));
+            }
+            Err(error) => return Err(error),
+        };
+        let mut pending_replies = Vec::new();
+        let mut sent_results = Vec::with_capacity(replies.len());
+        for reply in replies {
+            match &reply.status {
+                crate::agent::SentReplyStatus::Pending => {
+                    pending_replies.push(reply.watch.ok_or_else(|| {
+                        Error::Invalid("pending reply has no event position".into())
+                    })?)
+                }
+                _ => need = need.saturating_sub(1),
+            }
+            sent_results.push(json!({
+                "id": reply.message.id.as_str(),
+                "agent": reply.message.to.as_str(),
+                "delivery": reply.message.delivery,
+                "reply": reply.status,
+            }));
+        }
         let open = self.open().await?;
         let observations = futures::future::try_join_all(children.iter().map(|(name, child)| {
             let observer = &**observer;
@@ -712,7 +755,7 @@ impl AgentTool {
                 stranded.push(format!("{name} ({phase}, not an open child)"));
             }
         }
-        if pending.len() < need as usize {
+        if pending.len().saturating_add(pending_replies.len()) < need as usize {
             return Ok(ToolPreparation::Ready(rejected(format!(
                 "wait cannot be satisfied: {}",
                 stranded.join(", ")
@@ -721,6 +764,7 @@ impl AgentTool {
         if !released && need != 0 {
             return Ok(ToolPreparation::Deferred(crate::agent::Until {
                 input: on_input,
+                replies: pending_replies,
                 ..crate::agent::Until::quorum(pending, need).within(timeout_ms)
             }));
         }
@@ -755,7 +799,7 @@ impl AgentTool {
         ))
         .await?;
         Ok(ToolPreparation::Ready(ToolResult {
-            value: json!({"settled": settled, "unsettled": unsettled}),
+            value: json!({"settled": settled, "unsettled": unsettled, "sent": sent_results}),
         }))
     }
 }
@@ -784,23 +828,47 @@ fn peer_grants(
 /// naming it, how many must settle and its timeout; the model's error when
 /// the input names none, names a non-child, or needs none or more than it
 /// names.
+#[derive(Debug, PartialEq, Eq)]
+struct WaitSelection {
+    children: Vec<(String, AgentPath)>,
+    sent: Vec<IntentId>,
+    need: u32,
+    timeout_ms: Option<u64>,
+}
+
 async fn waited(
     observer: &dyn TurnChildren,
     operation: crate::OperationId,
     input: WaitAgentInput,
-) -> Result<(Vec<(String, AgentPath)>, u32, Option<u64>)> {
-    let children = observer.select(operation, &input.agents).await?;
-    if children.is_empty() {
-        return Err(Error::Invalid("wait names no child".into()));
+) -> Result<WaitSelection> {
+    let children = if input.agents.is_empty() {
+        Vec::new()
+    } else {
+        observer.select(operation, &input.agents).await?
+    };
+    let mut seen = BTreeSet::new();
+    let mut sent = Vec::new();
+    for id in input.sent {
+        if seen.insert(id.clone()) {
+            sent.push(IntentId::try_from(id).map_err(Error::from)?);
+        }
     }
-    let named = u32::try_from(children.len()).unwrap_or(u32::MAX);
+    if children.is_empty() && sent.is_empty() {
+        return Err(Error::Invalid("wait names no child or sent message".into()));
+    }
+    let named = u32::try_from(children.len().saturating_add(sent.len())).unwrap_or(u32::MAX);
     let need = input.need.unwrap_or(named);
     if need == 0 || need > named {
         return Err(Error::Invalid(format!(
-            "need must be between 1 and the {named} distinct children named"
+            "need must be between 1 and the {named} distinct children and sent messages named"
         )));
     }
-    Ok((children, need, input.timeout_ms))
+    Ok(WaitSelection {
+        children,
+        sent,
+        need,
+        timeout_ms: input.timeout_ms,
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1010,7 +1078,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, its error as failed when that turn failed, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase; a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. With no agents, set timeout_ms for one actor alarm, input=true to wait for inbox input, or both to resume on whichever arrives first; input=true also interrupts a child wait. No timer runs per waiting agent. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
+                "Wait for children to settle or for replies to original send IDs in sent. Child results include phase and last answer, failed when a turn failed, and branch when addressed by spawn name. Sent results report only the original delivery and reply settlement, never the peer's transcript or files; exchange reply content with send and re. need (default all) counts distinct children and send IDs together, 1 for the first; timeout_ms returns regardless. With neither agents nor sent, use timeout_ms for one actor alarm, input=true for inbox input, or both for whichever arrives first. input=true also interrupts a settlement wait. No timer runs per waiting agent. Inspect child changes with fs diff <branch>, then accept them with fs merge <branch>",
             )?,
         ),
     ] {

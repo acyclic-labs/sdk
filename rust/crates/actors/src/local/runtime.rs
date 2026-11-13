@@ -2,7 +2,8 @@
 //!
 //! One dispatcher owns one follow of the state root's activation log, one
 //! ready index and one timer. A dormant actor owns no task, timer, follow or
-//! socket: only its registration and one bounded state cut. The activation log
+//! socket for its manifest inputs: only its registration and one bounded state cut. Guest-added
+//! interests share one follow per distinct stream and create no task or timer. The activation log
 //! is also the wake set: a producer that writes an actor's subscription appends
 //! [`Store::activation`] for that actor in the same commit, and the dispatcher's
 //! one follow wakes it. A delivery reads its inputs with bounded finite reads.
@@ -15,6 +16,7 @@ mod dispatcher;
 mod interrupt;
 mod limits;
 mod pause;
+mod subscriptions;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Transition, Trigger};
 #[cfg(test)]
@@ -142,6 +144,7 @@ enum Event {
     Completion(Completion),
     CompletionCancelled,
     Idle,
+    Subscription(Result<(), (Vec<ActorReference>, StreamError)>),
 }
 
 /// Executes one handler package for every actor whose state lives under the
@@ -163,6 +166,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     limits: RuntimeLimits,
     admission: Option<tokio::sync::Semaphore>,
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
+    subscriptions: SyncMutex<subscriptions::Subscriptions>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -180,6 +184,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             limits: RuntimeLimits::default(),
             admission: None,
             completions: OnceLock::new(),
+            subscriptions: SyncMutex::new(subscriptions::Subscriptions::default()),
         }
     }
 
@@ -282,6 +287,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         inner.released = true;
         drop(inner);
         actors.remove(actor);
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release(actor);
         true
     }
 
@@ -366,6 +375,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut failures = Vec::new();
         let mut running = FuturesUnordered::new();
         let mut steps = 0;
+        let mut subscriptions_first = false;
         loop {
             while self
                 .limits
@@ -380,10 +390,35 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     steps = 0;
                 }
             }
-            match running.next().await {
+            let result = poll_fn(|context| {
+                subscriptions_first = !subscriptions_first;
+                if !subscriptions_first
+                    && let Poll::Ready(Some(result)) = running.poll_next_unpin(context)
+                {
+                    return Poll::Ready(Some(result));
+                }
+                if let Poll::Ready(result) = self.poll_subscriptions(context) {
+                    if let Err((actors, error)) = result {
+                        failures.extend(
+                            actors
+                                .into_iter()
+                                .map(|actor| (actor, Error::Stream(error.clone()))),
+                        );
+                    }
+                    return Poll::Ready(Some(Ok(())));
+                }
+                running.poll_next_unpin(context)
+            })
+            .await;
+            match result {
                 Some(Err(failure)) => failures.push(failure),
                 Some(Ok(())) => {}
                 None => break,
+            }
+            steps += 1;
+            if steps == self.limits.work {
+                limits::yield_now().await;
+                steps = 0;
             }
         }
         failures
@@ -541,9 +576,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Alarm changes must wake us even when active admission is
                 // full and the ready queue cannot currently be consumed.
                 self.ready.listen(context);
-                for _ in 0..5 {
+                for _ in 0..6 {
                     let class = next_class;
-                    next_class = (next_class + 1) % 5;
+                    next_class = (next_class + 1) % 6;
                     match class {
                         0 => {
                             // Provider I/O owned by an active delivery must keep
@@ -594,12 +629,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Due(result));
                             }
                         }
-                        _ => {
+                        4 => {
                             if completing.poll_cancelled(context).is_ready() {
                                 return Poll::Ready(Event::CompletionCancelled);
                             }
                             if let Poll::Ready(Some(completion)) = completions.poll_recv(context) {
                                 return Poll::Ready(Event::Completion(completion));
+                            }
+                        }
+                        _ => {
+                            if let Poll::Ready(result) = self.poll_subscriptions(context) {
+                                return Poll::Ready(Event::Subscription(result));
                             }
                         }
                     }
@@ -654,6 +694,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Failed(error) => return Err(error.into()),
                 Event::Completion(completion) => completing.insert(completion),
                 Event::CompletionCancelled => {}
+                Event::Subscription(Ok(())) => {}
+                Event::Subscription(Err((actors, error))) => {
+                    let error = Error::Stream(error);
+                    for actor in actors {
+                        report(&actor, &error);
+                    }
+                    failure.get_or_insert_with(|| Arc::new(error));
+                }
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.
                     // A newly observed prefix resumes the SAME activation follow.
@@ -781,6 +829,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             let Some(state) = snapshot.state() else {
                 inner.observed = None;
+                self.subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .release(actor);
                 return Ok(true);
             };
             if inner.epoch != 0 && state.epoch() != inner.epoch {
@@ -791,6 +843,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // A later wake must observe an external resume as well.
                 inner.observed = None;
                 slot.registration.suspend_alarm();
+                self.subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .release(actor);
                 return Ok(true);
             }
             if slot
@@ -799,8 +855,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .paused
             {
+                self.subscriptions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .release(actor);
                 return Ok(true);
             }
+            self.subscriptions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .bind(self.store.provider(), self.handler.manifest(), actor, state)?;
             let now = self.clock.now_unix_ms();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
             let (trigger, record) = match state.alarm().pending() {

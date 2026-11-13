@@ -34,6 +34,14 @@ pub const INBOX: &str = "inbox";
 #[path = "handler_tests.rs"]
 mod tests;
 
+const REPLY_SUBSCRIPTION: &str = "reply-v1:";
+
+fn reply_subscription(watch: &super::ReplyWatch) -> Result<String, Error> {
+    serde_json::to_string(watch)
+        .map(|value| format!("{REPLY_SUBSCRIPTION}{value}"))
+        .map_err(|_| Error::Record("reply subscription does not encode"))
+}
+
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
@@ -381,6 +389,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .record
             .as_ref()
             .map(|record| record.committed_at_micros);
+        let mut completed_reply = None;
         let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
             (
                 Trigger::Record {
@@ -405,6 +414,55 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             }
             (Trigger::Alarm { generation, .. }, None) => {
                 (Wake::Alarm, cut.cursor, format!("alarm:{generation}"))
+            }
+            (
+                Trigger::Record {
+                    subscription,
+                    sequence,
+                },
+                Some(record),
+            ) if subscription.starts_with(REPLY_SUBSCRIPTION) => {
+                let watch: super::ReplyWatch = serde_json::from_str(
+                    subscription
+                        .strip_prefix(REPLY_SUBSCRIPTION)
+                        .expect("reply prefix"),
+                )
+                .map_err(|_| Error::Record("reply subscription is malformed"))?;
+                let bound = delivery
+                    .subscriptions
+                    .get(subscription)
+                    .ok_or(Error::Record("reply subscription is absent"))?;
+                if bound.path != watch.to.status()?
+                    || bound.cursor != *sequence
+                    || record.sequence != *sequence
+                    || !saved.as_ref().is_some_and(|state| {
+                        state.turn.is_some() && matches!(state.phase, super::Phase::Waiting { .. })
+                    })
+                {
+                    return Err(Error::Record("reply delivery differs from its wait"));
+                }
+                super::StatusRecord::decode(&record.value)?;
+                let actor = Agents::<P>::actor(&delivery.actor, &watch.to.id())?;
+                let (mut state, cursor) = self.agents.state(&actor, &watch.to).await?;
+                let settled = matches!(
+                    super::reply(
+                        self.agents.store.provider().as_ref(),
+                        &mut state,
+                        cursor,
+                        &watch.id,
+                        watch.inbox
+                    )
+                    .await?,
+                    super::Reply::Answered { .. } | super::Reply::Dropped
+                );
+                if settled {
+                    completed_reply = Some(subscription.clone());
+                }
+                (
+                    Wake::Reply { settled },
+                    cut.cursor,
+                    format!("{subscription}:{sequence}"),
+                )
             }
             _ => return Err(Error::Record("delivery does not match its trigger")),
         };
@@ -434,7 +492,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
                 Wake::Inbox { sequence, .. } => *sequence,
-                Wake::Alarm | Wake::Rejected => cursor,
+                Wake::Alarm | Wake::Rejected | Wake::Reply { .. } => cursor,
             };
             super::input::refill(self.agents.store.provider().as_ref(), state, end).await?;
         }
@@ -569,6 +627,30 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             );
         }
         let alarm = step.alarm;
+        let replacement = step.outs.iter().rev().find_map(|out| match out {
+            Out::AwaitReplies(watches) => Some(watches),
+            _ => None,
+        });
+        let waiting =
+            step.state.turn.is_some() && matches!(step.state.phase, super::Phase::Waiting { .. });
+        let mut subscriptions = Vec::new();
+        for (id, _) in delivery.subscriptions.iter() {
+            if id.starts_with(REPLY_SUBSCRIPTION)
+                && (!waiting || replacement.is_some() || completed_reply.as_ref() == Some(id))
+            {
+                subscriptions
+                    .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
+            }
+        }
+        if waiting && let Some(watches) = replacement {
+            for watch in watches {
+                subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
+                    id: reply_subscription(watch)?,
+                    path: watch.to.status()?,
+                    from: Some(watch.from),
+                });
+            }
+        }
         Ok(Transition {
             response: None,
             participant,
@@ -578,7 +660,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
             },
             effects,
-            subscriptions: Vec::new(),
+            subscriptions,
         })
     }
 }

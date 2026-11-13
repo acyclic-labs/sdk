@@ -47,7 +47,7 @@ impl TurnChildren for Selection {
 fn waited<'de>(
     parent: &AgentPath,
     arguments: impl serde::Deserializer<'de, Error = serde_json::Error>,
-) -> std::result::Result<(Vec<(String, AgentPath)>, u32, Option<u64>), ToolResult> {
+) -> std::result::Result<WaitSelection, ToolResult> {
     futures::executor::block_on(super::waited(
         &Selection(parent.clone()),
         crate::OperationId::from_bytes([1; 16]),
@@ -120,23 +120,45 @@ fn check_value(parent: &AgentPath, arguments: Value) {
         return;
     }
     let distinct: BTreeSet<_> = resolved.iter().flatten().collect();
-    if distinct.is_empty() {
-        assert_eq!(actual, Err(rejected("wait names no child")));
+    let mut sent = Vec::new();
+    let mut seen = BTreeSet::new();
+    for id in &input.sent {
+        if seen.insert(id) {
+            match IntentId::try_from(id.clone()) {
+                Ok(id) => sent.push(id),
+                Err(error) => {
+                    assert_eq!(
+                        actual,
+                        Err(super::super::rejected_input(Error::from(error)))
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    if distinct.is_empty() && sent.is_empty() {
+        assert_eq!(actual, Err(rejected("wait names no child or sent message")));
         return;
     }
-    let named = u32::try_from(distinct.len()).unwrap_or(u32::MAX);
+    let named = u32::try_from(distinct.len().saturating_add(sent.len())).unwrap_or(u32::MAX);
     let need = input.need.unwrap_or(named);
     if need == 0 || need > named {
         assert_eq!(
             actual,
             Err(rejected(format!(
-                "need must be between 1 and the {named} distinct children named"
+                "need must be between 1 and the {named} distinct children and sent messages named"
             ))),
             "wait admitted an impossible quorum"
         );
         return;
     }
-    let (children, actual_need, timeout) = actual.unwrap();
+    let WaitSelection {
+        children,
+        sent: selected_sent,
+        need: actual_need,
+        timeout_ms: timeout,
+    } = actual.unwrap();
+    assert_eq!(selected_sent, sent, "wait changed original send identities");
     assert_eq!(
         children.len(),
         distinct.len(),
@@ -219,6 +241,17 @@ mod tests {
             // names are explicit derivations from the captured spawn name.
             let distinct: Vec<_> = (0..32).map(|index| format!("worker-{index}")).collect();
             check_value(&parent, json!({"agents":distinct}));
+            for agents in [json!([]), json!(["worker", worker])] {
+                for sent in [
+                    json!(["first"]),
+                    json!(["first", "first", "second"]),
+                    json!([""]),
+                ] {
+                    for need in [None, Some(0), Some(1), Some(2), Some(3), Some(4)] {
+                        check_value(&parent, json!({"agents":agents,"sent":sent,"need":need}));
+                    }
+                }
+            }
             for arguments in [
                 json!({"agents":[worker, foreign]}),
                 json!({"agents":[""]}),

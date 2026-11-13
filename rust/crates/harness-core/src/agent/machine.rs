@@ -128,7 +128,7 @@ pub struct AgentState {
     /// [`Phase::Waiting`]; empty in every other phase.
     #[serde(default, skip_serializing_if = "super::Children::is_empty")]
     pub awaiting: super::Children,
-    /// How many more of `awaiting` must settle before the waiting turn
+    /// How many more children or original send replies must settle before the waiting turn
     /// resumes; zero in every other phase.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub need: u32,
@@ -430,6 +430,8 @@ pub enum Out {
     },
     /// Retain the paused turn's successful, unpublished spawn admissions.
     PendingSpawns(u64),
+    /// Replace the waiting turn's reply subscriptions in its actor commit.
+    AwaitReplies(Vec<super::ReplyWatch>),
     /// Inbox inputs before this exclusive cursor already reached the model.
     Steered(u64),
     /// Retain the cancellation of one input at this conversation frontier.
@@ -533,6 +535,8 @@ pub enum Wait {
 pub struct Until {
     /// Agents whose settlement counts, each at most once.
     pub awaited: BTreeSet<AgentPath>,
+    /// Original sends whose replies can satisfy the same condition.
+    pub replies: Vec<super::ReplyWatch>,
     /// How many of them must settle.
     pub need: u32,
     /// Milliseconds after the committing step at which the turn resumes
@@ -561,6 +565,7 @@ impl Until {
     pub fn quorum(awaited: BTreeSet<AgentPath>, need: u32) -> Self {
         Self {
             awaited,
+            replies: Vec::new(),
             need,
             timeout_ms: None,
             input: false,
@@ -572,6 +577,7 @@ impl Until {
     pub fn sleep(timeout_ms: u64) -> Self {
         Self {
             awaited: BTreeSet::new(),
+            replies: Vec::new(),
             need: 1,
             timeout_ms: Some(timeout_ms),
             input: false,
@@ -583,6 +589,7 @@ impl Until {
     pub fn input(timeout_ms: Option<u64>) -> Self {
         Self {
             awaited: BTreeSet::new(),
+            replies: Vec::new(),
             need: 1,
             timeout_ms,
             input: true,
@@ -632,6 +639,12 @@ pub trait TurnDriver: acyclic_stream::ProviderPlatform {
 
 /// What woke the agent.
 pub enum Wake {
+    /// One committed recipient status, correlated to an original send.
+    /// The actor removes a settled subscription in this same transition.
+    Reply {
+        /// Whether this original send has an answer or was dropped.
+        settled: bool,
+    },
     /// The inbox record at `sequence`.
     Inbox {
         /// Inbox sequence.
@@ -871,7 +884,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             ..
         }
     );
-    let quiet_notice = matches!(wake, Wake::Rejected)
+    let quiet_notice = matches!(wake, Wake::Rejected | Wake::Reply { settled: false })
         || workspace_change
         || matches!(
             &wake,
@@ -919,6 +932,12 @@ async fn draft_step<T: TurnDriver + ?Sized>(
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         (Some(state), Wake::Alarm | Wake::Rejected) => state,
+        (Some(mut state), Wake::Reply { settled }) => {
+            if settled && matches!(state.phase, Phase::Waiting { .. }) {
+                settle_condition(&mut state);
+            }
+            state
+        }
         // A requested spawn is this step's own spawn effect; it is never a
         // turn input, so it neither wakes nor reorders the turn.
         (
@@ -1155,6 +1174,7 @@ fn finalize_step(
             | Out::Send { .. }
             | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
+            | Out::AwaitReplies(_)
             | Out::Steered(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -1350,6 +1370,11 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
     if !child.is_child_of(&state.path) || !state.awaiting.remove(child).await? {
         return Ok(());
     }
+    settle_condition(state);
+    Ok(())
+}
+
+fn settle_condition(state: &mut AgentState) {
     state.need = state.need.saturating_sub(1);
     if state.need == 0 {
         let before = control(state);
@@ -1361,7 +1386,6 @@ async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(),
             state.phase = Phase::Running;
         }
     }
-    Ok(())
 }
 
 /// Whether a driver's effect fits the record that carries it.
@@ -1369,7 +1393,9 @@ fn admissible(out: &Out) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
         Out::InputCancelled { .. } => true,
-        Out::Steered(_) | Out::PendingSpawns(_) | Out::PeerGuard { .. } => true,
+        Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitReplies(_) | Out::PeerGuard { .. } => {
+            true
+        }
         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
         Out::Send { record, .. } => {
             !matches!(
@@ -1618,8 +1644,8 @@ async fn run<T: TurnDriver + ?Sized>(
             let deadline = until
                 .timeout_ms
                 .map(|timeout| now_unix_ms.saturating_add(timeout));
-            let sleep = until.awaited.is_empty();
-            let reachable = open.len();
+            let sleep = until.awaited.is_empty() && until.replies.is_empty();
+            let reachable = open.len().saturating_add(until.replies.len());
             let input = until.input;
             let wait = kernel::until(need, reachable, sleep, deadline, input);
             #[cfg(feature = "test-support")]
@@ -1628,6 +1654,7 @@ async fn run<T: TurnDriver + ?Sized>(
                 Decision::Until(need, reachable, sleep, deadline, input, wait),
             );
             if matches!(wait, kernel::Wait::Await { .. }) {
+                outs.push(Out::AwaitReplies(until.replies));
                 outs.extend(open.iter().map(|child| Out::Send {
                     to: (**child).clone(),
                     record: InboxRecord::Awaited,

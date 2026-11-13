@@ -20,6 +20,7 @@ mod invocation_failure;
 mod pause;
 mod progress;
 mod retry;
+mod subscriptions;
 
 mod conditional;
 

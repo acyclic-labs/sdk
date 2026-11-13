@@ -132,6 +132,19 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
     /// The agent whose turn observes its children.
     fn agent(&self) -> &AgentPath;
 
+    /// Observe the reply to this agent's original send. A missing intent
+    /// grants no observation of another agent or its inputs.
+    fn sent_reply<'a>(
+        &'a self,
+        _id: &'a super::IntentId,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<super::SentReply>>> {
+        Box::pin(async {
+            Err(crate::Error::Unsupported(
+                "sent reply observation is not bound".into(),
+            ))
+        })
+    }
+
     /// Enabled membership versions retained through the eventual inbox commit.
     fn peer_admission<'a>(
         &'a self,

@@ -274,6 +274,47 @@ async fn fixture_with_pause(
     Ok((agents, stream, root, model, files))
 }
 
+async fn create_peer(
+    agents: &AgentHost<MemoryStream>,
+    files: &Host,
+    root: &AgentPath,
+    peer: &AgentPath,
+) -> Result {
+    let source = agents
+        .state(root)
+        .await?
+        .volumes
+        .into_iter()
+        .find(|binding| binding.name == PRIVATE_VOLUME)
+        .ok_or("root private volume missing")?;
+    let volume = VolumeRef::new(
+        source.volume()?.provider().clone(),
+        "agent-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+            peer.id().to_bytes(),
+        )),
+        &mut None,
+    )?;
+    files.create_volume(&volume).await?;
+    files
+        .create_volume(&acyclic_harness_core::conversation::journal_volume(
+            volume.provider().clone(),
+            &peer.id(),
+        )?)
+        .await?;
+    let mut adoption = adopted(peer.id());
+    adoption.volumes = vec![WorkspaceEntry::initial_volume(
+        WorkspaceRole::Private,
+        PRIVATE_VOLUME.into(),
+        volume,
+    )];
+    agents
+        .create(&intent(&format!("create-{}", peer.id())), adoption)
+        .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn automatic_self_send_is_refused_without_stopping_the_actor() -> Result {
     let own_path = AgentPath::root(&id(81));
@@ -594,36 +635,7 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
         0,
     )
     .await?;
-    let source = agents
-        .state(&root)
-        .await?
-        .volumes
-        .into_iter()
-        .find(|binding| binding.name == PRIVATE_VOLUME)
-        .ok_or("root private volume missing")?;
-    let volume = VolumeRef::new(
-        source.volume()?.provider().clone(),
-        "agent-private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-            peer.id().to_bytes(),
-        )),
-        &mut None,
-    )?;
-    files.create_volume(&volume).await?;
-    files
-        .create_volume(&acyclic_harness_core::conversation::journal_volume(
-            volume.provider().clone(),
-            &peer.id(),
-        )?)
-        .await?;
-    let mut adoption = adopted(peer.id());
-    adoption.volumes = vec![WorkspaceEntry::initial_volume(
-        WorkspaceRole::Private,
-        PRIVATE_VOLUME.into(),
-        volume,
-    )];
-    agents.create(&intent("peer"), adoption).await?;
+    create_peer(&agents, &files, &root, &peer).await?;
     let sender = deliver(&agents, &root, requested("start", &root)).await?;
     assert_eq!(
         sender.phase,
@@ -746,6 +758,189 @@ async fn peer_send_returns_acceptance_before_receiver_execution() -> Result {
         "an exact replay executed the sender again"
     );
     assert_eq!(inbox_tail(&*stream, &peer).await?, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn sent_wait_wakes_on_the_original_reply_without_reading_peer_content() -> Result {
+    for answered_before_wait in [false, true] {
+        let peer = AgentPath::root(&id(82));
+        let (agents, stream, root, model, files) = fixture_with_files(
+            vec![
+                call("send", json!({"agent":peer.as_str(),"message":"request"})),
+                ScriptedTurn::Text("send committed".into()),
+            ],
+            0,
+        )
+        .await?;
+        create_peer(&agents, &files, &root, &peer).await?;
+        deliver(&agents, &root, requested("send-request", &root)).await?;
+        let records = super::super::values(&*stream, peer.inbox()?).await?;
+        let InboxRecord::Message(message) = InboxRecord::decode(&records[1])? else {
+            return Err("original send missing".into());
+        };
+        assert!(
+            sent_reply(&stream, &within(), &peer, &message.id)
+                .await?
+                .is_none(),
+            "another sender's intent became an observation capability"
+        );
+        assert_eq!(
+            sent_reply(&stream, &within(), &root, &message.id)
+                .await?
+                .ok_or("receipt missing")?
+                .status,
+            SentReplyStatus::Pending
+        );
+        submit(
+            &*stream,
+            set_peer_membership(
+                &peer,
+                &super::super::user(),
+                &intent("disable-future-peer-sends"),
+                false,
+            )?,
+        )
+        .await?;
+        let answer = ScriptedTurn::Text("recipient-only answer content".into());
+        if answered_before_wait {
+            model.extend([answer.clone()]);
+            agents.drain(&peer).await?;
+        }
+        model.extend([call(
+            "wait",
+            json!({"sent":[message.id.as_str(),message.id.as_str()]}),
+        )]);
+        if answered_before_wait {
+            model.extend([ScriptedTurn::Text("observed settlement".into())]);
+        }
+        let state = deliver(&agents, &root, requested("wait-request", &root)).await?;
+        if !answered_before_wait {
+            assert!(matches!(state.phase, Phase::Waiting { .. }));
+            assert_eq!(state.need, 1, "duplicate send IDs increased the quorum");
+            let requests = model.request_count();
+            agents.drain(&root).await?;
+            assert_eq!(
+                model.request_count(),
+                requests,
+                "pending wait ran the model"
+            );
+            model.extend([answer, ScriptedTurn::Text("observed settlement".into())]);
+            agents.drain(&peer).await?;
+            agents.drain(&root).await?;
+        }
+        assert_eq!(agents.state(&root).await?.phase, Phase::Idle);
+        let requests = model.requests();
+        let resumed = requests.last().ok_or("wait never resumed")?;
+        let result = resumed
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolResult {
+                    name,
+                    content: ToolResultContent::Json { value },
+                    ..
+                } if name == "wait" => Some(value),
+                _ => None,
+            })
+            .ok_or("wait result missing")?;
+        assert_eq!(
+            result["sent"]
+                .as_array()
+                .ok_or("sent results missing")?
+                .len(),
+            1
+        );
+        assert_eq!(result["sent"][0]["id"], message.id.as_str());
+        assert_eq!(result["sent"][0]["reply"]["kind"], "answered");
+        assert!(!serde_json::to_string(resumed)?.contains("recipient-only answer content"));
+        let before = model.request_count();
+        agents.drain(&root).await?;
+        assert_eq!(
+            model.request_count(),
+            before,
+            "a settled watch resumed twice"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn sent_wait_counts_each_settlement_once_and_cancel_removes_its_subscriptions() -> Result {
+    let peers = [AgentPath::root(&id(82)), AgentPath::root(&id(83))];
+    let (agents, stream, root, model, files) = fixture_with_files(
+        vec![
+            call(
+                "send",
+                json!({"agent":peers[0].as_str(),"message":"first request"}),
+            ),
+            call(
+                "send",
+                json!({"agent":peers[1].as_str(),"message":"second request"}),
+            ),
+            ScriptedTurn::Text("both sends committed".into()),
+        ],
+        0,
+    )
+    .await?;
+    for peer in &peers {
+        create_peer(&agents, &files, &root, peer).await?;
+    }
+    deliver(&agents, &root, requested("send-requests", &root)).await?;
+    let mut ids = Vec::new();
+    for peer in &peers {
+        let records = super::super::values(&*stream, peer.inbox()?).await?;
+        let InboxRecord::Message(message) = InboxRecord::decode(&records[1])? else {
+            return Err("original send missing".into());
+        };
+        ids.push(message.id);
+    }
+    model.extend([call("wait", json!({"sent":ids,"need":2}))]);
+    deliver(&agents, &root, requested("wait-for-both", &root)).await?;
+    assert_eq!(agents.state(&root).await?.need, 2);
+    model.extend([ScriptedTurn::Text("first answer".into())]);
+    agents.drain(&peers[0]).await?;
+    agents.drain(&root).await?;
+    assert_eq!(agents.state(&root).await?.need, 1);
+    let requests = model.request_count();
+    agents.drain(&peers[0]).await?;
+    agents.drain(&root).await?;
+    assert_eq!(agents.state(&root).await?.need, 1);
+    assert_eq!(model.request_count(), requests);
+    let waiting = agents.state(&root).await?;
+    let input = waiting.turn.as_ref().ok_or("waiting turn missing")?.inbox;
+    agents
+        .send(
+            &root,
+            &super::super::user(),
+            &InboxRecord::Cancel(Cancellation {
+                by: super::super::user(),
+                id: intent("cancel-wait"),
+                input,
+                conversation: waiting.conversation_tail,
+            }),
+        )
+        .await?;
+    agents.drain(&root).await?;
+    let snapshot = agents.runtime().store().load(&agents.actor(&root)?).await?;
+    let subscriptions = snapshot
+        .state()
+        .ok_or("sender actor missing")?
+        .subscriptions();
+    assert_eq!(subscriptions.len(), 1, "cancel retained a reply watch");
+    assert!(subscriptions.contains_key(INBOX));
+    model.extend([ScriptedTurn::Text(
+        "second answer after cancellation".into(),
+    )]);
+    agents.drain(&peers[1]).await?;
+    let requests = model.request_count();
+    agents.drain(&root).await?;
+    assert_eq!(
+        model.request_count(),
+        requests,
+        "late reply resumed a cancelled turn"
+    );
     Ok(())
 }
 

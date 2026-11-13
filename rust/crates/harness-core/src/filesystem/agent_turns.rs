@@ -2365,6 +2365,17 @@ where
         &self.agent
     }
 
+    fn sent_reply<'a>(
+        &'a self,
+        id: &'a crate::agent::IntentId,
+    ) -> BoxFuture<'a, Result<Option<crate::agent::SentReply>>> {
+        Box::pin(async move {
+            crate::agent::sent_reply(&self.stream, &self.within, &self.agent, id)
+                .await
+                .map_err(Error::from)
+        })
+    }
+
     fn peer_admission<'a>(
         &'a self,
         grants: &'a crate::Capabilities,
