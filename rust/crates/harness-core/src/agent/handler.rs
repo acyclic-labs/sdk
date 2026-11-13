@@ -34,14 +34,7 @@ pub const INBOX: &str = "inbox";
 #[path = "handler_tests.rs"]
 mod tests;
 
-const REPLY_SUBSCRIPTION: &str = "reply-v1:";
 const ADMISSION_SUBSCRIPTION: &str = "ancestor-admission-v1";
-
-fn reply_subscription(watch: &super::ReplyWatch) -> Result<String, Error> {
-    serde_json::to_string(watch)
-        .map(|value| format!("{REPLY_SUBSCRIPTION}{value}"))
-        .map_err(|_| Error::Record("reply subscription does not encode"))
-}
 
 fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
@@ -508,7 +501,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .record
             .as_ref()
             .map(|record| record.committed_at_micros);
-        let mut completed_reply = None;
+        let mut completed_watch = None;
         let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
             (
                 Trigger::Record {
@@ -642,46 +635,46 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                     sequence,
                 },
                 Some(record),
-            ) if subscription.starts_with(REPLY_SUBSCRIPTION) => {
-                let watch: super::ReplyWatch = serde_json::from_str(
-                    subscription
-                        .strip_prefix(REPLY_SUBSCRIPTION)
-                        .expect("reply prefix"),
-                )
-                .map_err(|_| Error::Record("reply subscription is malformed"))?;
+            ) if super::Watch::is_subscription(subscription) => {
+                let watch = super::Watch::decode_subscription(subscription)?;
                 let bound = delivery
                     .subscriptions
                     .get(subscription)
-                    .ok_or(Error::Record("reply subscription is absent"))?;
-                if bound.path != watch.to.status()?
+                    .ok_or(Error::Record("watch subscription is absent"))?;
+                if bound.path != watch.path()?
                     || bound.cursor != *sequence
+                    || bound.cursor < watch.from()
                     || record.sequence != *sequence
                     || !saved.as_ref().is_some_and(|state| {
                         state.turn.is_some() && matches!(state.phase, super::Phase::Waiting { .. })
                     })
                 {
-                    return Err(Error::Record("reply delivery differs from its wait"));
+                    return Err(Error::Record("source delivery differs from its wait"));
                 }
-                super::StatusRecord::decode(&record.value)?;
-                let actor = Agents::<P>::actor(&delivery.actor, &watch.to.id())?;
-                let (mut head, cursor) = self.agents.head(&actor, &watch.to).await?;
-                let state = &mut head.state;
-                let settled = matches!(
-                    super::reply(
-                        self.agents.store.provider().as_ref(),
-                        state,
-                        cursor,
-                        &watch.id,
-                        watch.inbox
-                    )
-                    .await?,
-                    super::Reply::Answered { .. } | super::Reply::Dropped
-                );
+                let settled = match watch {
+                    super::Watch::Record { .. } => true,
+                    super::Watch::Reply(watch) => {
+                        super::StatusRecord::decode(&record.value)?;
+                        let actor = Agents::<P>::actor(&delivery.actor, &watch.to.id())?;
+                        let (mut head, cursor) = self.agents.head(&actor, &watch.to).await?;
+                        matches!(
+                            super::reply(
+                                self.agents.store.provider().as_ref(),
+                                &mut head.state,
+                                cursor,
+                                &watch.id,
+                                watch.inbox,
+                            )
+                            .await?,
+                            super::Reply::Answered { .. } | super::Reply::Dropped
+                        )
+                    }
+                };
                 if settled {
-                    completed_reply = Some(subscription.clone());
+                    completed_watch = Some(subscription.clone());
                 }
                 (
-                    Wake::Reply { settled },
+                    Wake::Watch { settled },
                     cut.cursor,
                     format!("{subscription}:{sequence}"),
                 )
@@ -715,7 +708,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
                 Wake::Inbox { sequence, .. } => *sequence,
-                Wake::Alarm | Wake::Rejected | Wake::Reply { .. } => cursor,
+                Wake::Alarm | Wake::Rejected | Wake::Watch { .. } => cursor,
             };
             super::input::refill(self.agents.store.provider().as_ref(), state, end).await?;
         }
@@ -889,7 +882,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             step.alarm
         };
         let replacement = step.outs.iter().rev().find_map(|out| match out {
-            Out::AwaitReplies(watches) => Some(watches),
+            Out::AwaitWatches(watches) => Some(watches),
             _ => None,
         });
         let waiting =
@@ -900,8 +893,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 subscriptions
                     .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
             }
-            if id.starts_with(REPLY_SUBSCRIPTION)
-                && (!waiting || replacement.is_some() || completed_reply.as_ref() == Some(id))
+            if super::Watch::is_subscription(id)
+                && (!waiting || replacement.is_some() || completed_watch.as_ref() == Some(id))
             {
                 subscriptions
                     .push(acyclic_actors::guest::SubscriptionChange::Remove { id: id.clone() });
@@ -910,9 +903,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         if waiting && let Some(watches) = replacement {
             for watch in watches {
                 subscriptions.push(acyclic_actors::guest::SubscriptionChange::Add {
-                    id: reply_subscription(watch)?,
-                    path: watch.to.status()?,
-                    from: Some(watch.from),
+                    id: watch.subscription()?,
+                    path: watch.path()?,
+                    from: Some(watch.from()),
                 });
             }
         }

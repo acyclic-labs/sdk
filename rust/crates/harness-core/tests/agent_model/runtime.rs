@@ -127,6 +127,162 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
+async fn record_wait_resumes_once_for_existing_and_future_publications() -> Result {
+    use acyclic_stream::{AppendRequest, FollowRequest, StreamProvider as _};
+    use futures::TryStreamExt as _;
+
+    struct RecordWaiter {
+        source: StreamPath,
+        from: u64,
+        calls: Arc<AtomicUsize>,
+    }
+    impl TurnDriver for RecordWaiter {
+        fn step<'a>(
+            &'a self,
+            _: &'a AgentState,
+            _: u64,
+            _: Option<Queued>,
+            _: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                assert!(call < 2, "a retired watch resumed its turn again");
+                Ok(TurnStep {
+                    checkpoint: (call == 0).then(Vec::new),
+                    outs: Vec::new(),
+                    wait: if call == 0 {
+                        Wait::Until(Until::record(self.source.clone(), self.from))
+                    } else {
+                        Wait::Input
+                    },
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    for (published_before_wait, from) in [(false, 0), (true, 0), (false, 2)] {
+        let provider = Arc::new(MemoryStream::default());
+        let source = StreamPath::new("events/ready")?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let host = AgentHost::new(
+            provider.clone(),
+            RecordWaiter {
+                source: source.clone(),
+                from,
+                calls: calls.clone(),
+            },
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::default(),
+            Arc::new(SystemClock),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        if from != 0 {
+            provider
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: vec!["older".into()],
+                    if_tail: Some(0),
+                    idempotency_key: intent_key("older-source", &[])?,
+                })
+                .await?;
+        }
+        let publish = async || {
+            provider
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: if from == 0 {
+                        vec!["ready".into()]
+                    } else {
+                        vec!["intermediate".into(), "ready".into()]
+                    },
+                    if_tail: Some(u64::from(from != 0)),
+                    idempotency_key: intent_key("source", &[])?,
+                })
+                .await?;
+            Ok(()) as Result
+        };
+        if published_before_wait {
+            publish().await?;
+        }
+        host.send(
+            &root,
+            &user(),
+            &InboxRecord::ApprovalRequested(ApprovalRequested {
+                child: root.child(&id(2))?,
+                id: intent("start"),
+            }),
+        )
+        .await?;
+        let mut statuses = acyclic_stream::records_only(
+            provider
+                .follow(FollowRequest {
+                    when_absent: acyclic_stream::WhenAbsent::Wait,
+                    ..FollowRequest::new(root.status()?, 0)
+                })
+                .await?,
+        );
+        let exercise = async {
+            loop {
+                let record = statuses
+                    .try_next()
+                    .await?
+                    .ok_or("status follow ended before wait")?;
+                if matches!(
+                    StatusRecord::decode(&record.value)?.phase,
+                    Phase::Waiting { .. }
+                ) {
+                    break;
+                }
+            }
+            if !published_before_wait {
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+                assert!(
+                    snapshot
+                        .state()
+                        .ok_or("waiting actor missing")?
+                        .subscriptions()
+                        .values()
+                        .any(|watch| watch.path == source && watch.cursor == from)
+                );
+                publish().await?;
+            }
+            loop {
+                let record = statuses
+                    .try_next()
+                    .await?
+                    .ok_or("status follow ended before resume")?;
+                if StatusRecord::decode(&record.value)?.phase == Phase::Idle {
+                    break;
+                }
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
+            let subscriptions = snapshot
+                .state()
+                .ok_or("resumed actor missing")?
+                .subscriptions();
+            assert_eq!(subscriptions.len(), 1);
+            assert!(
+                subscriptions.contains_key(INBOX),
+                "source watch was not retired with its wake"
+            );
+            Ok(()) as Result
+        };
+        let running = host.run(|actor, error| panic!("{actor:?}: {error}"));
+        futures::pin_mut!(running, exercise);
+        match futures::future::select(running, exercise).await {
+            futures::future::Either::Left((result, _)) => {
+                return Err(format!("runtime ended before source wake: {result:?}").into());
+            }
+            futures::future::Either::Right((result, _)) => result?,
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn same_phase_settlement_advances_the_original_actor_checkpoint() -> Result {
     use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;

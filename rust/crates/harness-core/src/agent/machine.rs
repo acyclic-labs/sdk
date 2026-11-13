@@ -458,8 +458,8 @@ pub enum Out {
     },
     /// Retain the paused turn's successful, unpublished spawn admissions.
     PendingSpawns(u64),
-    /// Replace the waiting turn's reply subscriptions in its actor commit.
-    AwaitReplies(Vec<super::ReplyWatch>),
+    /// Replace the waiting turn's event subscriptions in its actor commit.
+    AwaitWatches(BTreeSet<super::Watch>),
     /// Inbox inputs before this exclusive cursor already reached the model.
     Steered(u64),
     /// Retain the cancellation of one input at this conversation frontier.
@@ -573,8 +573,8 @@ pub struct Until {
     pub operation: Option<crate::OperationId>,
     /// Agents whose settlement counts, each at most once.
     pub awaited: BTreeSet<AgentPath>,
-    /// Original sends whose replies can satisfy the same condition.
-    pub replies: Vec<super::ReplyWatch>,
+    /// Host-admitted stream conditions that satisfy this wait at most once.
+    pub watches: BTreeSet<super::Watch>,
     /// How many of them must settle.
     pub need: u32,
     /// Milliseconds after the committing step at which the turn resumes
@@ -587,6 +587,16 @@ pub struct Until {
 }
 
 impl Until {
+    /// Resume on the first source publication after the observed prefix.
+    /// Actor subscriptions wait for creation when the path is absent.
+    #[must_use]
+    pub fn record(path: acyclic_stream::StreamPath, from: u64) -> Self {
+        Self {
+            watches: BTreeSet::from([super::Watch::Record { path, from }]),
+            ..Self::quorum(BTreeSet::new(), 1)
+        }
+    }
+
     /// Every one of `awaited` settled.
     #[must_use]
     pub fn all(awaited: BTreeSet<AgentPath>) -> Self {
@@ -606,7 +616,7 @@ impl Until {
         Self {
             operation: None,
             awaited,
-            replies: Vec::new(),
+            watches: BTreeSet::new(),
             need,
             timeout_ms: None,
             deadline_unix_ms: None,
@@ -620,7 +630,7 @@ impl Until {
         Self {
             operation: None,
             awaited: BTreeSet::new(),
-            replies: Vec::new(),
+            watches: BTreeSet::new(),
             need: 1,
             timeout_ms: Some(timeout_ms),
             deadline_unix_ms: None,
@@ -634,7 +644,7 @@ impl Until {
         Self {
             operation: None,
             awaited: BTreeSet::new(),
-            replies: Vec::new(),
+            watches: BTreeSet::new(),
             need: 1,
             timeout_ms,
             deadline_unix_ms: None,
@@ -742,10 +752,10 @@ pub trait TurnDriver: acyclic_stream::ProviderPlatform {
 
 /// What woke the agent.
 pub enum Wake {
-    /// One committed recipient status, correlated to an original send.
+    /// One committed publication from a host-admitted watch.
     /// The actor removes a settled subscription in this same transition.
-    Reply {
-        /// Whether this original send has an answer or was dropped.
+    Watch {
+        /// Whether this publication satisfies the watch's condition.
         settled: bool,
     },
     /// The inbox record at `sequence`.
@@ -987,7 +997,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
             ..
         }
     );
-    let quiet_notice = matches!(wake, Wake::Rejected | Wake::Reply { settled: false })
+    let quiet_notice = matches!(wake, Wake::Rejected | Wake::Watch { settled: false })
         || workspace_change
         || matches!(
             &wake,
@@ -1035,7 +1045,7 @@ async fn draft_step<T: TurnDriver + ?Sized>(
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         (Some(state), Wake::Alarm | Wake::Rejected) => state,
-        (Some(mut state), Wake::Reply { settled }) => {
+        (Some(mut state), Wake::Watch { settled }) => {
             if settled && matches!(state.phase, Phase::Waiting { .. }) {
                 settle_condition(&mut state, WaitReason::NeedMet);
             }
@@ -1284,7 +1294,7 @@ fn finalize_step(
             | Out::Commit(_)
             | Out::PeerGuard { .. }
             | Out::PendingSpawns(_)
-            | Out::AwaitReplies(_)
+            | Out::AwaitWatches(_)
             | Out::Steered(_)
             | Out::Archive { .. }
             | Out::Spawn { .. }
@@ -1533,7 +1543,7 @@ fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Diagnostic { .. } => false,
         Out::InputCancelled { .. } => true,
-        Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitReplies(_) | Out::PeerGuard { .. } => {
+        Out::Steered(_) | Out::PendingSpawns(_) | Out::AwaitWatches(_) | Out::PeerGuard { .. } => {
             true
         }
         Out::Conversation(record) => record.len() <= acyclic_stream::MAX_RECORD_BYTES,
@@ -1954,8 +1964,8 @@ async fn run<T: TurnDriver + ?Sized>(
             }
             let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
             let need = until.need.saturating_sub(settled);
-            let sleep = until.awaited.is_empty() && until.replies.is_empty();
-            let reachable = open.len().saturating_add(until.replies.len());
+            let sleep = until.awaited.is_empty() && until.watches.is_empty();
+            let reachable = open.len().saturating_add(until.watches.len());
             let input = until.input;
             let wait = kernel::until(need, reachable, sleep, deadline, input);
             if matches!(wait, kernel::Wait::Continue)
@@ -1969,7 +1979,7 @@ async fn run<T: TurnDriver + ?Sized>(
                 Decision::Until(need, reachable, sleep, deadline, input, wait),
             );
             if matches!(wait, kernel::Wait::Await { .. }) {
-                outs.push(Out::AwaitReplies(until.replies));
+                outs.push(Out::AwaitWatches(until.watches));
                 outs.extend(open.iter().map(|child| Out::Send {
                     to: (**child).clone(),
                     record: InboxRecord::Awaited,

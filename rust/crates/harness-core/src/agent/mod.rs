@@ -74,6 +74,8 @@ pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
 mod cancellation;
 mod messaging;
+mod watch;
+pub use watch::Watch;
 mod steering;
 pub use messaging::{
     MessageDelivery, PeerAdmission, PeerMembership, PeerMembershipHead, SEND_PEER,

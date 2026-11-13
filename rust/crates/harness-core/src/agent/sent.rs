@@ -41,7 +41,7 @@ pub enum SentReplyStatus {
 }
 
 /// A pending reply's event position, selected with its committed checkpoint.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplyWatch {
     /// Original recipient from the sender's immutable receipt.
