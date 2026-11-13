@@ -53,7 +53,7 @@ mod tests {
             )
             .await?,
         );
-        let conversation = Arc::new(Conversation::open(harness.connect().await?));
+        let conversation = Conversation::open(harness.connect().await?);
         let original = "first\r\nsecond\rlast";
         conversation.send("original", original).await?;
         conversation.wait_current_input().await?;
