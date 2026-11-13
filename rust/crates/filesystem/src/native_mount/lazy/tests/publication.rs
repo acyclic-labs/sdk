@@ -27,7 +27,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
             )
             .await
             .map_err(|(cause, _)| cause)?;
-        assert_eq!(acknowledged, Some(receipt));
+        assert_eq!(acknowledged, Some(receipt.clone()));
         Ok::<_, MountSourceError>(receipt)
     };
     view.write_range(&mounted(&["same"]), 0, Bytes::from_static(b"same bytes"))?;
@@ -45,8 +45,8 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     assert!(
         view.lazy
             .matches_optional_content_at_snapshots(
-                unchanged_before,
-                unchanged_after,
+                &unchanged_before,
+                &unchanged_after,
                 "/same",
                 &mut accounting,
             )
@@ -55,7 +55,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert_eq!(
         view.lazy
-            .content_changed_at_snapshots(unchanged_before, unchanged_after, &mut accounting,)
+            .content_changed_at_snapshots(&unchanged_before, &unchanged_after, &mut accounting,)
             .await?,
         None,
         "source identity promotion invented complete alias coverage"
@@ -83,14 +83,14 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     let (before, after) = cuts;
     assert_eq!(
         view.lazy
-            .content_changed_at_snapshots(before, after, &mut accounting)
+            .content_changed_at_snapshots(&before, &after, &mut accounting)
             .await?,
         Some(true),
         "native logical change was not witnessed"
     );
     assert_eq!(
         view.lazy
-            .content_changed_at_snapshots(after, after, &mut accounting)
+            .content_changed_at_snapshots(&after, &after, &mut accounting)
             .await?,
         Some(false),
         "an identical complete logical cut was not unchanged"
@@ -100,37 +100,37 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         assert!(
             !view
                 .lazy
-                .matches_optional_content_at_snapshots(before, after, path, &mut accounting)
+                .matches_optional_content_at_snapshots(&before, &after, path, &mut accounting)
                 .await?,
             "original content change was lost at {path}",
         );
     }
     assert!(
         view.lazy
-            .matches_optional_content_at_snapshots(before, after, "/same", &mut accounting)
+            .matches_optional_content_at_snapshots(&before, &after, "/same", &mut accounting)
             .await?,
         "source promotion with unchanged bytes counted as a content change",
     );
     assert!(
         view.lazy
-            .matches_optional_content_at_snapshots(before, after, "/absent", &mut accounting)
+            .matches_optional_content_at_snapshots(&before, &after, "/absent", &mut accounting)
             .await?,
     );
     assert!(
         view.lazy
-            .stat_at_snapshot(before, "/created", &mut accounting)
+            .stat_at_snapshot(&before, "/created", &mut accounting)
             .await?
             .is_none()
     );
     assert!(
         view.lazy
-            .stat_at_snapshot(after, "/removed", &mut accounting)
+            .stat_at_snapshot(&after, "/removed", &mut accounting)
             .await?
             .is_none()
     );
     assert_eq!(
         view.lazy
-            .read_at_snapshot(before, "/removed", None, 64, &mut accounting)
+            .read_at_snapshot(&before, "/removed", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -139,7 +139,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert_eq!(
         view.lazy
-            .read_at_snapshot(after, "/created", None, 64, &mut accounting)
+            .read_at_snapshot(&after, "/created", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -150,7 +150,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     view.fence_changes()?;
     assert_eq!(
         view.lazy
-            .read_at_snapshot(before, "/edited", None, 64, &mut accounting)
+            .read_at_snapshot(&before, "/edited", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -159,7 +159,7 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     );
     assert_eq!(
         view.lazy
-            .read_at_snapshot(after, "/edited", None, 64, &mut accounting)
+            .read_at_snapshot(&after, "/edited", None, 64, &mut accounting)
             .await?
             .0
             .bytes
@@ -184,13 +184,13 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
     assert!(
         !view
             .lazy
-            .matches_optional_content_at_snapshots(before, after, "/edited", &mut accounting)
+            .matches_optional_content_at_snapshots(&before, &after, "/edited", &mut accounting)
             .await?,
         "later writes or source removal replaced original content evidence",
     );
     assert!(
         view.lazy
-            .matches_optional_content_at_snapshots(after, after, "/edited", &mut accounting)
+            .matches_optional_content_at_snapshots(&after, &after, "/edited", &mut accounting)
             .await?,
         "an identical immutable cut differed from itself",
     );
@@ -251,7 +251,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
             )
             .await
             .map_err(|(cause, _)| cause)?;
-        assert_eq!(acknowledged, Some(receipt));
+        assert_eq!(acknowledged, Some(receipt.clone()));
         Ok::<_, MountSourceError>(receipt)
     };
     let clean = capture(operation)
@@ -311,7 +311,7 @@ async fn caller_selected_publication_replays_a_clean_receipt_without_claiming_la
         }
         assert!(
             view.lazy
-                .stat_at_snapshot(after, "/later", &mut accounting)
+                .stat_at_snapshot(&after, "/later", &mut accounting)
                 .await?
                 .is_none()
         );
