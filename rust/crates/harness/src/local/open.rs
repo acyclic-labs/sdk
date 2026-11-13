@@ -231,13 +231,13 @@ impl Opening {
                 Some(settings) => {
                     let root = std::fs::canonicalize(opening.config.project.root())
                         .map_err(Error::process_io)?;
-                    crate::mcp::McpConfig::install_watched(
+                    Box::pin(crate::mcp::McpConfig::install_watched(
                         opening.tools,
                         Arc::clone(settings),
                         &root,
                         opening.config.mcp_limits,
                         Arc::new(crate::secrets::EnvSecrets),
-                    )
+                    ))
                     .await?
                 }
                 None => crate::mcp::McpInstallation {

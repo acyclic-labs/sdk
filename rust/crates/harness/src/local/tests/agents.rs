@@ -3449,12 +3449,19 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
                 Box::pin(async move {
                     // Native projection must keep running while the actual
                     // turn retains its mount and inspects the inherited file.
-                    let cwd = tokio::fs::canonicalize(&cwd).await.map_err(agent)?;
-                    assert_ne!(cwd, tokio::fs::canonicalize(parent).await.map_err(agent)?);
+                    let cwd = tokio::fs::canonicalize(&cwd)
+                        .await
+                        .map_err(|error| agent(format!("child cwd {cwd:?}: {error}")))?;
+                    let parent = tokio::fs::canonicalize(&parent)
+                        .await
+                        .map_err(|error| agent(format!("parent cwd {parent:?}: {error}")))?;
+                    assert_ne!(cwd, parent);
                     assert_eq!(
                         tokio::fs::read(cwd.join("context-sentinel"))
                             .await
-                            .map_err(agent)?,
+                            .map_err(|error| {
+                                agent(format!("inherited context below {cwd:?}: {error}"))
+                            })?,
                         b"inherited"
                     );
                     observed.store(true, std::sync::atomic::Ordering::SeqCst);
