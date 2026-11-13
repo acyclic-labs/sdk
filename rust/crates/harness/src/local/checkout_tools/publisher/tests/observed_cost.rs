@@ -70,7 +70,8 @@ async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -
             futures::future::join_all(publishers.iter().enumerate().map(|(index, publisher)| {
                 let barrier = &barrier;
                 async move {
-                    let path = format!("{prefix}concurrent-{index}.txt");
+                    let display = format!("concurrent-{index}.txt");
+                    let path = format!("{prefix}{display}");
                     let bytes = format!("writer {index}\n");
                     barrier.wait().await;
                     let started = std::time::Instant::now();
@@ -80,7 +81,7 @@ async fn measure_publications(publishers: &[&CheckoutPublisher], layout: &str) -
                             &path,
                             bytes.as_bytes(),
                             "text/plain",
-                            &path,
+                            &display,
                             Default::default(),
                         )?
                         .await?;
