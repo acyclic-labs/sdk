@@ -72,14 +72,14 @@ async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestR
                 _ => {}
             },
             // A refused turn settles failed; the agent stays open.
-            Ok(Event::Turn(entry)) if entry.inbox == inbox => {
+            Ok(Event::Turn { entry, .. }) if entry.inbox == inbox => {
                 return if settles != matches!(entry.outcome, TurnOutcome::Failed { .. }) {
                     Ok(())
                 } else {
                     Err(format!("turn settled {:?}", entry.outcome).into())
                 };
             }
-            Ok(Event::Turn(_) | Event::Delta) => {}
+            Ok(Event::Turn { .. } | Event::Delta) => {}
             // The in-process Session holds the hosting Runtime's lifetime:
             // failed delivery or producer loss closes this event source.
             Err(acyclic_harness::Error::Storage(_)) if !settles => return Ok(()),
