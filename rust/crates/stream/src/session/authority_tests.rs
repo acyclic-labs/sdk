@@ -1186,3 +1186,89 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     root.finish_submitted(None, Outcome::Succeeded)?;
     Ok(())
 }
+
+#[cfg(feature = "serde")]
+#[tokio::test]
+async fn resource_expiry_trace_settles_only_on_original_clock_event()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    use std::error::Error as _;
+    let state = State::new();
+    let auth = Arc::new(authority(state.clone()));
+    let mut slots = Slots::default();
+    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 1)?;
+    let (_, _, resource) = auth
+        .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+        .map_err(|_| "original resource admission failed")?;
+    let trace = crate::Stream::new(Arc::new(crate::MemoryStream::default()), "owner/trace")?;
+    let recorder = Arc::new(Recorder::new(trace.clone(), [40; 16]));
+    let root = recorder
+        .start(
+            "expiry_owner",
+            Mechanism::ActorDelivery,
+            None,
+            Some("original_session_request"),
+        )
+        .await?;
+    let parent = root.id();
+    let root = root.into_owned();
+    let mut waiting = Box::pin(root.within(resource.expires_at(signed::NOW + 1)));
+    assert!(futures::poll!(&mut waiting).is_pending());
+    state.publish(signed::Snapshot::default(), signed::NOW + 1);
+    waiting.await?;
+    let mut abandoned = Box::pin(root.within(resource.expires_at(signed::NOW + 2)));
+    assert!(futures::poll!(&mut abandoned).is_pending());
+    drop(abandoned);
+    state.lose_clock();
+    let error = root
+        .within(resource.expires_at(signed::NOW + 2))
+        .await
+        .expect_err("lost clock cannot settle expiry");
+    assert!(
+        std::iter::successors(error.source(), |source| source.source())
+            .any(|source| source.is::<SourceClosed>())
+    );
+    let mut query = TraceQuery::new(
+        trace.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut completed = 0;
+    let mut reached = 0;
+    let mut unsettled = 0;
+    while completed != 3 {
+        let Some(event) = query.next().await? else {
+            return Err("diagnostic source ended".into());
+        };
+        if let Observation::Completed {
+            start,
+            bytes,
+            result,
+            ..
+        } = event
+        {
+            assert_eq!(start.parent, Some(parent));
+            assert_eq!(start.name, "stream.resource_expiry");
+            assert_eq!(start.mechanism, Mechanism::Wait);
+            assert_eq!(
+                start.guarantee.as_deref(),
+                Some("protected_clock_reached_credential_expiry")
+            );
+            match result {
+                Outcome::Succeeded => {
+                    assert_eq!(bytes, Some(0));
+                    reached += 1;
+                }
+                Outcome::Unsettled => {
+                    assert_eq!(bytes, None);
+                    unsettled += 1;
+                }
+                _ => return Err("expiry observation fabricated a terminal cause".into()),
+            }
+            completed += 1;
+        }
+    }
+    assert_eq!((reached, unsettled), (1, 2));
+    assert_eq!(query.totals()[&Mechanism::Wait].unsettled, 2);
+    root.finish_submitted(None, Outcome::Succeeded)?;
+    Ok(())
+}

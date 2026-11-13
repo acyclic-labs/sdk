@@ -314,11 +314,22 @@ impl ResourceAuthorization {
     }
     /// Waits on the runtime clock without polling, independently of data credit.
     pub async fn expires_at(&self, unix_seconds: u64) -> Result<(), StreamError> {
-        self.authority
-            .state
-            .expires_at(unix_seconds)
-            .await
-            .map_err(|_| StreamError::Unavailable)
+        let work = self.authority.state.expires_at(unix_seconds);
+        #[cfg(feature = "serde")]
+        let result = crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.resource_expiry",
+                mechanism: crate::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("protected_clock_reached_credential_expiry"),
+            },
+            work,
+            |_| Some(0),
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        let result = work.await;
+        result.map_err(|source| StreamError::Unavailable.with_source(source))
     }
     pub(super) fn renew(&self, next: Arc<VerifiedCapability>) -> Result<(), authority::Rejection> {
         let work = || {
