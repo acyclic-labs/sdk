@@ -8,4 +8,4 @@
 +        result.map(|_| before.authored_generation == after.authored_generation)
      }
  
-     async fn compare_optional_content(
+     /// Finds a regular-file byte change at two exact logical cuts, lazily over

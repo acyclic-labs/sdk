@@ -645,6 +645,66 @@ async fn headless_original_goal_change_is_healthy_under_no_progress_supervision(
 }
 
 #[tokio::test]
+async fn headless_native_edits_count_progress_but_unchanged_rewrites_do_not() {
+    async fn scenario(changed: bool) {
+        let fixture = fixture();
+        std::fs::write(fixture.workspace.join("progress.txt"), b"before").unwrap();
+        let content = if changed { "after!" } else { "before" };
+        #[cfg(unix)]
+        let command = format!("printf '{content}' > progress.txt; cat progress.txt");
+        #[cfg(windows)]
+        let command = format!(
+            "Set-Content -NoNewline -Path progress.txt -Value '{content}'; Get-Content -Raw progress.txt"
+        );
+        let model = model_responses(fixture._directory.path(), vec![
+            tool_response("shell", json!({"command":command}), 0),
+            ANSWER.into(),
+            tool_response("write", json!({"path":"volume:///home/GOAL.md", "content":"---\nstatus: done\n---\nCompleted the objective\n"}), 1),
+            ANSWER.into(),
+        ], "responses").await;
+        let mut policy = Policy {
+            no_progress_turns: Some(1),
+            ..Default::default()
+        };
+        policy.actions.insert(Kind::NoProgress, Action::Stop);
+        policy.reservation.tokens = Some(10_000);
+        let output = run_goal(&fixture, &model, &policy).await;
+        let requests = model.requests.lock().unwrap().clone();
+        model.close().await;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            output.status.code(),
+            Some(if changed { 0 } else { 22 }),
+            "native changed={changed}: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(
+            requests.len(),
+            if changed { 4 } else { 2 },
+            "native capture progress dispatched the wrong number of paid requests"
+        );
+        let native = requests[1]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "function_call_output")
+            .expect("original native result was not delivered");
+        let native: Value = serde_json::from_str(native["output"].as_str().unwrap()).unwrap();
+        assert_eq!(native["success"], true, "native command failed: {native}");
+        assert_eq!(native["exit_code"], 0, "native command failed: {native}");
+        if changed {
+            assert_eq!(result["result"]["kind"], "goal");
+            assert_eq!(result["result"]["goal"]["status"], "done");
+        } else {
+            assert_eq!(result["result"]["kind"], "terminal");
+            assert_eq!(result["result"]["signal"], "no_progress");
+        }
+    }
+    tokio::join!(scenario(true), scenario(false));
+}
+
+#[tokio::test]
 async fn healthy_headless_run_keeps_below_configured_supervision_thresholds() {
     let fixture = fixture();
     let model = model_responses(

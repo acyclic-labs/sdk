@@ -30,6 +30,36 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         assert_eq!(acknowledged, Some(receipt));
         Ok::<_, MountSourceError>(receipt)
     };
+    view.write_range(&mounted(&["same"]), 0, Bytes::from_static(b"same bytes"))?;
+    let unchanged = publish().await?;
+    let (unchanged_before, unchanged_after) = view
+        .lazy
+        .original_publication_cuts(
+            unchanged
+                .operation()
+                .ok_or("missing source promotion receipt")?,
+            &mut accounting,
+        )
+        .await?
+        .ok_or("missing source promotion cuts")?;
+    assert!(
+        view.lazy
+            .matches_optional_content_at_snapshots(
+                unchanged_before,
+                unchanged_after,
+                "/same",
+                &mut accounting,
+            )
+            .await?,
+        "source promotion with unchanged bytes counted as a content change"
+    );
+    assert_eq!(
+        view.lazy
+            .content_changed_at_snapshots(unchanged_before, unchanged_after, &mut accounting,)
+            .await?,
+        None,
+        "source identity promotion invented complete alias coverage"
+    );
     let created = mounted(&["created"]);
     view.create_file(&created, FileMetadata::default(), None, &work)?;
     view.write_range(&created, 0, Bytes::from_static(b"original publication"))?;
@@ -51,6 +81,20 @@ async fn original_publication_retains_both_logical_cuts_after_cleanup_and_later_
         .await?
         .ok_or("original native cuts missing")?;
     let (before, after) = cuts;
+    assert_eq!(
+        view.lazy
+            .content_changed_at_snapshots(before, after, &mut accounting)
+            .await?,
+        Some(true),
+        "native logical change was not witnessed"
+    );
+    assert_eq!(
+        view.lazy
+            .content_changed_at_snapshots(after, after, &mut accounting)
+            .await?,
+        Some(false),
+        "an identical complete logical cut was not unchanged"
+    );
     assert_eq!(after.authored_generation, receipt.generation());
     for path in ["/created", "/removed", "/edited"] {
         assert!(

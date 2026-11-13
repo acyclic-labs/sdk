@@ -52,9 +52,9 @@ impl ExecutionSummary {
             ExecutionEvent::Started { request_digest } => {
                 self.tail == 0 && *request_digest != [0; 32]
             }
-            ExecutionEvent::ConversationItem { .. } | ExecutionEvent::Progress { .. } => {
-                self.tail > 0
-            }
+            ExecutionEvent::ConversationItem { .. }
+            | ExecutionEvent::Progress { .. }
+            | ExecutionEvent::NativeCapture { .. } => self.tail > 0,
             ExecutionEvent::ModelWait {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
@@ -413,10 +413,14 @@ impl ExecutionSummary {
             }
             ExecutionEvent::Started { .. }
             | ExecutionEvent::ConversationItem { .. }
-            | ExecutionEvent::Progress { .. } => {}
+            | ExecutionEvent::Progress { .. }
+            | ExecutionEvent::NativeCapture { .. } => {}
         }
         self.retries.insert(key, (sequence, digest), io)?;
-        if !matches!(event, ExecutionEvent::Progress { .. }) {
+        if !matches!(
+            event,
+            ExecutionEvent::Progress { .. } | ExecutionEvent::NativeCapture { .. }
+        ) {
             self.pending_steps.push(
                 sequence,
                 key,

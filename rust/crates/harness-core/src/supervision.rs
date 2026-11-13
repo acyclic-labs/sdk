@@ -132,7 +132,9 @@ pub struct Policy {
     /// An empty set selects no checks; no tool or build-system names are guessed.
     #[serde(default)]
     pub validation_commands: BTreeSet<String>,
-    /// Consecutive spending turns without progress; null disables this query.
+    /// Consecutive spending turns with measured absence of original content
+    /// progress; null disables this query. An unavailable native comparison
+    /// breaks the absence-proof streak and never counts as positive progress.
     pub no_progress_turns: Option<u64>,
     /// Tool output quiet period in milliseconds; null disables stuck detection.
     pub quiet_ms: Option<u64>,
@@ -367,6 +369,10 @@ pub enum Observation<'a> {
         spent_tokens: bool,
         /// Original progress receipts for this turn only.
         progress: bool,
+        /// Every native producer could establish an original comparison.
+        /// An unavailable measurement breaks an absence-of-progress streak
+        /// without asserting that any progress occurred.
+        progress_measured: bool,
     },
     /// Re-evaluate capacity before dispatch or when a policy generation changes.
     PolicyChanged,
@@ -629,9 +635,10 @@ impl Transition {
             Observation::TurnDone {
                 spent_tokens,
                 progress,
+                progress_measured,
                 ..
             } => {
-                if *progress {
+                if *progress || !*progress_measured {
                     self.state.unproductive_turns = 0;
                 } else if *spent_tokens {
                     self.state.unproductive_turns = self
