@@ -159,6 +159,19 @@ journal terminal's commit/path/sequence, cancellation uses its committed outcome
 and other uncertainty remains unsettled. The original handler, ticket, receipt and
 reconciliation paths are unchanged. These spans replace the three corresponding
 Actors ad-hoc operation wrappers.
+The shipping local-harness DST recovery regressions now persist a version-one
+`replay-seed.json` before execution and retain its original checkout/state world
+through crash, recovery, failure and unwind. The controller reads that file for
+scheduler seeds, semantic crash point, prompts and provider response. The emitted
+`DST_REPLAY_SEED` path can drive the existing regression through
+`SDK_DST_REPLAY_SEED`; this recreates the same recovery case rather than treating
+a receipt reference as executable input. The retained world is not automatically
+deleted. Production-wide capture of arbitrary failed runs and their external
+nondeterministic inputs remains outstanding.
+
+For example, set `SDK_DST_REPLAY_SEED` to the emitted file, then run
+`cargo test --locked -p acyclic-harness --features test-support --test main dst::recovery::live_f3_killed_head_accepts_a_new_prompt -- --exact`.
+The seed selects either supported crash phase; no second test runner is required.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal
