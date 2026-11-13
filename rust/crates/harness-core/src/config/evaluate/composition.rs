@@ -96,7 +96,7 @@ pub(super) async fn compose_inner(
     base: Value,
 ) -> Result<Composition> {
     let mut evidence = Evidence::new(path, layers);
-    let result = fold(path, layers, tree, base, Some(&mut evidence), cache()).await?;
+    let result = fold::<true>(path, layers, tree, base, Some(&mut evidence), cache()).await?;
     // With no effective module there is no evaluation key to bind the base.
     if evidence.modules.is_empty() {
         evidence.identity.update(&[0]);
@@ -118,14 +118,16 @@ pub(super) async fn compose_inner(
 
 /// Fold without retaining input evidence. Operational tree failures remain
 /// outer errors; the inner result is the evaluated content's decision.
-/// This uses the same fold and reads as [`compose`], without evidence buffers.
+/// This uses the same fold and reads as [`compose`], without evidence or link buffers.
 pub async fn compose_result(
     path: &str,
     layers: &[Layer<'_>],
     tree: &dyn Tree,
     base: Value,
-) -> Result<Result<(super::super::ConfigValue, Vec<Link>)>> {
-    fold(path, layers, tree, base, None, cache()).await
+) -> Result<Result<super::super::ConfigValue>> {
+    Ok(fold::<false>(path, layers, tree, base, None, cache())
+        .await?
+        .map(|(value, _)| value))
 }
 
 pub(super) struct Evidence {
@@ -171,7 +173,7 @@ impl Evidence {
 
 // One fold owns precedence, evaluation and typed-error ordering. Existing
 // callers do not allocate a composition evidence buffer they will discard.
-pub(super) async fn fold(
+pub(super) async fn fold<const LINKS: bool>(
     path: &str,
     layers: &[Layer<'_>],
     tree: &dyn Tree,
@@ -202,14 +204,16 @@ pub(super) async fn fold(
         }
         match decision.into_result() {
             Ok(evaluated) => {
-                chain.push(Link {
-                    layer: layer.name.to_owned(),
-                    generation: layer.generation.to_owned(),
-                    module_digest: blake3::Hash::from_bytes(evaluated.digest)
-                        .to_hex()
-                        .to_string(),
-                    form: evaluated.form,
-                });
+                if LINKS {
+                    chain.push(Link {
+                        layer: layer.name.to_owned(),
+                        generation: layer.generation.to_owned(),
+                        module_digest: blake3::Hash::from_bytes(evaluated.digest)
+                            .to_hex()
+                            .to_string(),
+                        form: evaluated.form,
+                    });
+                }
                 value = evaluated.value;
             }
             Err(error) => {

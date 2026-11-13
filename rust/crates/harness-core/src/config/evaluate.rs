@@ -133,7 +133,7 @@ pub async fn compose(
     tree: &dyn Tree,
     base: Value,
 ) -> Result<(super::ConfigValue, Vec<Link>)> {
-    compose_result(path, layers, tree, base).await?
+    composition::fold::<true>(path, layers, tree, base, None, cache()).await?
 }
 
 /// The most recently evaluated result or failure. Replacing the entry drops

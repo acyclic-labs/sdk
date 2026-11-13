@@ -133,7 +133,7 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
     drop(borrowed);
     let inherited = json!({"model": "m".repeat(65536)});
     let tight_io = crate::filesystem::PreparationIo::from_native_work(&tight)?;
-    let (inherited, _) = composition::fold(
+    let (inherited, _) = composition::fold::<false>(
         "settings.ts",
         &[],
         &Metered(&tight_io),
@@ -178,7 +178,8 @@ async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
         },
     ];
     let (value, _) =
-        composition::fold("settings.ts", &layers, &tree, Value::Null, None, &cache).await??;
+        composition::fold::<false>("settings.ts", &layers, &tree, Value::Null, None, &cache)
+            .await??;
     *cache.lock().unwrap() = None;
     assert_eq!(value["text"].as_str().unwrap().len(), 65536);
     assert!(work.live_allocation_bytes() >= baseline + 65536);
