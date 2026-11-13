@@ -16,7 +16,7 @@ fn directory_resolves_unknown_file_lengths_before_publishing_attributes()
     let page = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
     assert_eq!(page.entries.len(), 1);
     let entry = &page.entries[0];
-    assert_eq!(entry.name, b"index.md");
+    assert_eq!(entry.name, mounted(&["index.md"]).components[0]);
     assert_eq!(entry.node.logical_bytes, 6);
     let lookup = view
         .lookup(&mounted(&["index.md"]))?
