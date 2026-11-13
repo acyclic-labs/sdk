@@ -2,51 +2,40 @@
 use super::*;
 
 #[tokio::test]
-async fn optional_planning_and_model_selection_do_not_enter_worker_context() -> Result<()> {
+async fn optional_planning_does_not_enter_worker_context() -> Result<()> {
     let tools = crate::tool::ToolRegistry::default();
-    let mut baseline = None;
-    for model in ["first-model", "second-model"] {
-        let payloads = TestPayloadStore::new()?;
-        let mut manifest = ContextManifest::new(DiscoveredContext::default(), Vec::new(), &tools)?;
-        manifest.environment = Some(EnvironmentFacts {
-            cwd: Some("/project".into()),
-            os: "test".into(),
-            shell: "sh".into(),
-            tool_path: None,
-            tooling: None,
-            current_date: "2026-01-01".into(),
-            timezone: "UTC".into(),
-            model: model.into(),
-        });
-        let reference = manifest
-            .publish(
-                &payloads,
-                crate::OperationId::new(),
-                "manifest.json",
-                payload_limits(),
-            )
-            .await?;
-        let (_, stage) =
-            ContextManifest::bind(reference, &payloads, tools.clone(), payload_limits()).await?;
-        let projected = ContextPipeline::new([stage])
-            .run(&input(), payload_limits(), None)
-            .await?;
-        let encoded = serde_json::to_string(&projected.messages)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        assert!(
-            encoded.contains("/project"),
-            "environment projection was not exercised"
-        );
-        for noise in [model, "<model>", "git_status", "GOAL.md", "plans/"] {
-            assert!(!encoded.contains(noise), "worker context contains {noise}");
-        }
-        let digest =
-            crate::executor::json::canonical_json_digest(&projected.messages, None, &mut None)?;
-        if let Some(expected) = baseline {
-            assert_eq!(digest, expected, "model selection rewrote worker context");
-        } else {
-            baseline = Some(digest);
-        }
+    let payloads = TestPayloadStore::new()?;
+    let mut manifest = ContextManifest::new(DiscoveredContext::default(), Vec::new(), &tools)?;
+    manifest.environment = Some(EnvironmentFacts {
+        cwd: Some("/project".into()),
+        os: "test".into(),
+        shell: "sh".into(),
+        tool_path: None,
+        tooling: None,
+        current_date: "2026-01-01".into(),
+        timezone: "UTC".into(),
+    });
+    let reference = manifest
+        .publish(
+            &payloads,
+            crate::OperationId::new(),
+            "manifest.json",
+            payload_limits(),
+        )
+        .await?;
+    let (_, stage) =
+        ContextManifest::bind(reference, &payloads, tools.clone(), payload_limits()).await?;
+    let projected = ContextPipeline::new([stage])
+        .run(&input(), payload_limits(), None)
+        .await?;
+    let encoded = serde_json::to_string(&projected.messages)
+        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    assert!(
+        encoded.contains("/project"),
+        "environment projection was not exercised"
+    );
+    for noise in ["<model>", "git_status", "GOAL.md", "plans/"] {
+        assert!(!encoded.contains(noise), "worker context contains {noise}");
     }
     // Optional guidance has one source in the seed, available through ordinary
     // skill discovery rather than an unconditional instruction frame.
