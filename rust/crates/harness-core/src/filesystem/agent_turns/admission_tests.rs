@@ -320,7 +320,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .put_content(
                 &journal,
                 &control_grant,
-                "inputs/selected.txt",
+                "context/selected.txt",
                 b"selected input",
                 "text/plain",
                 "selected.txt",
