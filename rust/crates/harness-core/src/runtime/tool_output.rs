@@ -23,6 +23,23 @@ pub fn tool_output_activity_path(turn: OperationId, call: OperationId) -> String
     format!("tools/{turn}/{call}/activity.json")
 }
 
+/// Host-owned physical completion, distinct from a background start receipt.
+pub fn tool_output_completion_path(turn: OperationId, call: OperationId) -> String {
+    format!("tools/{turn}/{call}/completed.json")
+}
+
+/// Version-one physical terminal identity; output counts belong to activity.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ToolOutputCompletion {
+    /// Must be one.
+    pub version: u32,
+    /// Original execution operation.
+    pub turn: OperationId,
+    /// Original tool effect identity.
+    pub call: OperationId,
+}
+
 /// Shared publication core for tool output on any content backend. Native
 /// capture adapters retain only their byte buffering and output channel names.
 pub struct ToolOutputLog {
@@ -39,6 +56,31 @@ impl ToolOutputLog {
             through: 0,
             activity: None,
         }
+    }
+
+    /// The physical owner calls this only after its process tree is reaped.
+    /// Quiet actors follow this immutable publication even after the invoking
+    /// model turn has received a background start result.
+    pub async fn finish(&self) -> Result<()> {
+        if !self.context.output_activity {
+            return Ok(());
+        }
+        let terminal = ToolOutputCompletion {
+            version: 1,
+            turn: self.context.turn_id(),
+            call: self.context.operation_id(),
+        };
+        let bytes =
+            serde_json::to_vec(&terminal).map_err(|error| Error::Invalid(error.to_string()))?;
+        self.context
+            .stage_output_file_once(
+                "completed.json",
+                &bytes,
+                "application/json",
+                "completed.json",
+            )
+            .await?;
+        Ok(())
     }
 
     /// Publish one immutable chunk. Quiet supervision adds a conditional cursor

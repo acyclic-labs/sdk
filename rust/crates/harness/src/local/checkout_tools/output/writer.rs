@@ -10,7 +10,7 @@ const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
 
 pub(super) struct Writer {
     context: ToolContext,
-    output: crate::runtime::ToolOutputLog,
+    pub(super) output: crate::runtime::ToolOutputLog,
     sequence: (u64, u64),
     pending: (Vec<u8>, Vec<u8>),
     maximum: usize,
