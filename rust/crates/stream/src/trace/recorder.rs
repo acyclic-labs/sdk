@@ -109,7 +109,9 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         )
         .await;
         let result = match &admission {
-            Ok(Some(recording)) => super::context::within(recording.id(), work).await,
+            Ok(Some(recording)) => {
+                super::context::within(recording.id(), recording.recorder.clone(), work).await
+            }
             _ => work.await,
         };
         let observation = match admission {
@@ -184,7 +186,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
 
     async fn publish(&self, event: SpanEvent) -> Result<RetainedRecord, StreamError> {
         let (bytes, key) = Self::encode(event)?;
-        match self.stream.append(bytes, key).await? {
+        match super::context::disabled(self.stream.append(bytes, key)).await? {
             AppendOutcome::Committed(receipt) => Ok(RetainedRecord {
                 commit_id: receipt.commit_id,
                 path: self.stream.path().clone(),
@@ -239,7 +241,7 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
 /// descendants may retain its identity without retaining completion ownership.
 #[must_use = "finish observed settlement, or drop to retain an unfinished start"]
 pub struct Recording<P: ?Sized> {
-    recorder: Arc<Recorder<P>>,
+    pub(super) recorder: Arc<Recorder<P>>,
     id: SpanId,
     start: RetainedRecord,
 }
@@ -299,11 +301,18 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
             bytes,
             result,
         })?;
-        Ok(self.recorder.stream.submit_append(crate::AppendRequest {
+        let request = crate::AppendRequest {
             path: self.recorder.stream.path().clone(),
             records: vec![bytes.into()],
             if_tail: None,
             idempotency_key,
-        }))
+        };
+        let command = request.clone();
+        let provider = self.recorder.stream.provider.clone();
+        Ok(crate::AppendPending::submit_task(
+            request,
+            super::context::disabled(async move { provider.append(command).await }),
+            &crate::runtime::PlatformExecutor,
+        ))
     }
 }

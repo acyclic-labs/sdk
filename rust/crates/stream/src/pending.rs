@@ -73,9 +73,23 @@ impl AppendPending {
         executor: &dyn crate::runtime::Executor,
     ) -> Self {
         let command = request.clone();
+        Self::submit_task(
+            request,
+            async move { provider.append(command).await },
+            executor,
+        )
+    }
+
+    pub(crate) fn submit_task(
+        request: AppendRequest,
+        work: impl std::future::Future<Output = Result<AppendOutcome, StreamError>>
+        + crate::ProviderTask
+        + 'static,
+        executor: &dyn crate::runtime::Executor,
+    ) -> Self {
         let (pending, producer) = Self::prepare(request, ());
         executor.spawn(Box::pin(async move {
-            producer.publish(provider.append(command).await);
+            producer.publish(work.await);
         }));
         pending
     }

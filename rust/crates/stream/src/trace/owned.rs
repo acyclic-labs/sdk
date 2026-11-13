@@ -31,6 +31,7 @@ impl<P: StreamProvider + ?Sized> Terminal for Recording<P> {
 /// Dropping without a terminal leaves the original start explicitly unfinished.
 pub struct OwnedRecording {
     id: SpanId,
+    producer: std::sync::Arc<dyn super::context::Producer>,
     _terminal: Box<dyn Terminal>,
 }
 
@@ -39,6 +40,7 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
     pub fn into_owned(self) -> OwnedRecording {
         OwnedRecording {
             id: self.id(),
+            producer: self.recorder.clone(),
             _terminal: Box::new(self),
         }
     }
@@ -48,7 +50,7 @@ impl OwnedRecording {
     /// Poll the original work under this parent, restoring the caller's scope
     /// after every poll, including suspension and cancellation.
     pub async fn within<F: std::future::Future>(&self, work: F) -> F::Output {
-        super::context::within(self.id, work).await
+        super::context::within(self.id, self.producer.clone(), work).await
     }
 
     /// Transfer the original terminal append without suspending the caller.
@@ -59,5 +61,24 @@ impl OwnedRecording {
         result: Outcome,
     ) -> Result<crate::AppendPending, StreamError> {
         self._terminal.submit(bytes, result)
+    }
+}
+
+impl<P: StreamProvider + ?Sized> super::context::Producer for super::Recorder<P> {
+    fn start(
+        self: std::sync::Arc<Self>,
+        request: super::Request,
+    ) -> crate::BoxProviderFuture<'static, Result<OwnedRecording, crate::StreamError>> {
+        Box::pin(async move {
+            super::Recorder::start(
+                &self,
+                request.name,
+                request.mechanism,
+                request.parent,
+                request.guarantee,
+            )
+            .await
+            .map(Recording::into_owned)
+        })
     }
 }

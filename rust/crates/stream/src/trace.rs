@@ -9,6 +9,8 @@ use crate::RetainedRecord;
 #[cfg(feature = "serde")]
 mod context;
 #[cfg(feature = "serde")]
+pub use context::observe;
+#[cfg(feature = "serde")]
 mod interest;
 #[cfg(feature = "serde")]
 mod owned;

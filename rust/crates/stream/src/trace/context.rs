@@ -1,27 +1,89 @@
 //! Causal custody follows an admitted future's poll, never a worker thread.
-use super::SpanId;
-use std::{cell::Cell, future::Future};
+use super::{OwnedRecording, Request, SpanId};
+use crate::{BoxProviderFuture, ProviderPlatform, StreamError};
+use std::{cell::RefCell, future::Future, sync::Arc};
+
+pub(super) trait Producer: ProviderPlatform {
+    fn start(
+        self: Arc<Self>,
+        request: Request,
+    ) -> BoxProviderFuture<'static, Result<OwnedRecording, StreamError>>;
+}
+
+#[derive(Clone)]
+struct Active {
+    id: SpanId,
+    producer: Arc<dyn Producer>,
+}
 
 thread_local! {
-    static CURRENT: Cell<Option<SpanId>> = const { Cell::new(None) };
+    static CURRENT: RefCell<Option<Active>> = const { RefCell::new(None) };
 }
 
 pub(super) fn current() -> Option<SpanId> {
-    CURRENT.get()
+    CURRENT.with_borrow(|active| active.as_ref().map(|active| active.id))
 }
 
-struct Restore(Option<SpanId>);
+pub(super) fn child(
+    mut request: Request,
+) -> Option<BoxProviderFuture<'static, Result<OwnedRecording, StreamError>>> {
+    let active = CURRENT.with_borrow(Clone::clone)?;
+    request.parent = request.parent.or(Some(active.id));
+    Some(active.producer.start(request))
+}
+
+struct Restore(Option<Active>);
 impl Drop for Restore {
     fn drop(&mut self) {
-        CURRENT.set(self.0);
+        CURRENT.replace(self.0.take());
     }
 }
 
-pub(super) async fn within<F: Future>(id: SpanId, future: F) -> F::Output {
+async fn scoped<F: Future>(active: Option<Active>, future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
     futures::future::poll_fn(|cx| {
-        let _restore = Restore(CURRENT.replace(Some(id)));
+        let _restore = Restore(CURRENT.replace(active.clone()));
         future.as_mut().poll(cx)
     })
     .await
+}
+
+pub(super) async fn within<F: Future>(
+    id: SpanId,
+    producer: Arc<dyn Producer>,
+    future: F,
+) -> F::Output {
+    scoped(Some(Active { id, producer }), future).await
+}
+
+pub(super) async fn disabled<F: Future>(future: F) -> F::Output {
+    scoped(None, future).await
+}
+
+/// Invoke the original work under the active owner's child span. Without an
+/// admitted owner this performs one local context check, with no allocation,
+/// clock, subscription lookup or diagnostic IO. Publication errors never replace
+/// the original result; unretained failures remain explicitly unfinished.
+pub async fn observe<T, E>(
+    request: Request,
+    work: impl Future<Output = Result<T, E>>,
+    bytes: impl FnOnce(&T) -> Option<u64>,
+) -> Result<T, E> {
+    let recording = match child(request) {
+        Some(admission) => admission.await.ok(),
+        None => None,
+    };
+    let result = match &recording {
+        Some(recording) => recording.within(work).await,
+        None => work.await,
+    };
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    if let Some(recording) = recording
+        && let Ok(value) = &result
+    {
+        let _completion = recording.finish_submitted(bytes(value), super::Outcome::Succeeded);
+    }
+    #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
+    let _ = bytes;
+    result
 }

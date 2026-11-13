@@ -61,7 +61,21 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
 
     /// One atomic observation of history, durability and inherited origin.
     pub async fn head(&self) -> Result<PathHead, StreamError> {
-        self.provider.head(self.path.clone()).await
+        let work = self.provider.head(self.path.clone());
+        #[cfg(feature = "serde")]
+        return crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.head",
+                mechanism: crate::trace::Mechanism::Io,
+                parent: None,
+                guarantee: Some("atomic_history_durability_origin"),
+            },
+            work,
+            |_| None,
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        work.await
     }
 
     /// Current tail.

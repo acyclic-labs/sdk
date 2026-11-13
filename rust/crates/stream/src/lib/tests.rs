@@ -168,6 +168,7 @@ mod replay_tests {
         inner: MemoryStream,
         missing: u64,
         extra_records: u32,
+        inspect_on_write: bool,
         pause_write: Option<Arc<std::sync::atomic::AtomicUsize>>,
         resume_write: Option<std::sync::Mutex<Option<futures::channel::oneshot::Receiver<()>>>>,
     }
@@ -211,6 +212,14 @@ mod replay_tests {
                     });
                 }
                 return Box::pin(std::future::pending());
+            }
+            if self.inspect_on_write {
+                return Box::pin(async move {
+                    Stream::new(Arc::new(self.inner.clone()), "diagnostic-probe")?
+                        .head()
+                        .await?;
+                    self.inner.write(request).await
+                });
             }
             self.inner.write(request)
         }
@@ -262,6 +271,7 @@ mod replay_tests {
             inner: MemoryStream::default(),
             missing: u64::MAX,
             extra_records: 0,
+            inspect_on_write: false,
             pause_write: None,
             resume_write: None,
         };
@@ -447,6 +457,65 @@ mod replay_tests {
 
     #[cfg(feature = "serde")]
     #[tokio::test]
+    async fn sdk_head_inherits_owner_without_recursive_diagnostics()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        let provider = Arc::new(Gapped {
+            inner: MemoryStream::default(),
+            missing: u64::MAX,
+            extra_records: 0,
+            inspect_on_write: true,
+            pause_write: None,
+            resume_write: None,
+        });
+        let data = Stream::new(provider.clone(), "agents/worker/data")?;
+        data.append(b"original".to_vec(), IdempotencyKey::unique())
+            .await?;
+        let original = data.head().await?;
+        let trace = Stream::new(provider, "agents/worker/trace")?;
+        assert_eq!(trace.tail().await?, 0);
+        let recorder = Arc::new(Recorder::new(trace.clone(), [15; 16]));
+        let root = recorder
+            .start(
+                "request",
+                Mechanism::ToolCall,
+                None,
+                Some("original_request"),
+            )
+            .await?;
+        let parent = root.id();
+        let root = root.into_owned();
+        assert_eq!(root.within(data.head()).await?, original);
+        let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
+        );
+        query.next().await?;
+        query.next().await?;
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { start, bytes: None, result: Outcome::Succeeded, .. })
+            if start.name == "stream.head" && start.parent == Some(parent)
+                && start.guarantee.as_deref() == Some("atomic_history_durability_origin"))
+        );
+        assert!(
+            matches!(query.next().await?, Some(Observation::Completed { id, .. }) if id == parent)
+        );
+        assert_eq!(
+            trace.tail().await?,
+            4,
+            "diagnostic publication recursively traced its own head check"
+        );
+        assert_eq!(data.head().await?, original);
+        assert_eq!(
+            trace.tail().await?,
+            4,
+            "completed scope leaked its owner into unrelated work"
+        );
+        Ok(())
+    }
+    #[cfg(feature = "serde")]
+    #[tokio::test]
     async fn observed_dispatch_handoff_cannot_wait_after_original_claim()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::trace::{
@@ -459,6 +528,7 @@ mod replay_tests {
                 inner: MemoryStream::default(),
                 missing: u64::MAX,
                 extra_records: 0,
+                inspect_on_write: false,
                 pause_write: Some(writes.clone()),
                 resume_write: Some(std::sync::Mutex::new(Some(resume))),
             }),
@@ -611,6 +681,7 @@ mod replay_tests {
             inner,
             missing: u64::MAX,
             extra_records: 0,
+            inspect_on_write: false,
             pause_write: Some(writes.clone()),
             resume_write: None,
         });
@@ -645,6 +716,7 @@ mod replay_tests {
                     inner,
                     missing,
                     extra_records: 0,
+                    inspect_on_write: false,
                     pause_write: None,
                     resume_write: None,
                 },
@@ -677,6 +749,7 @@ mod replay_tests {
                 inner: MemoryStream::default(),
                 missing: u64::MAX,
                 extra_records: 1,
+                inspect_on_write: false,
                 pause_write: None,
                 resume_write: None,
             },

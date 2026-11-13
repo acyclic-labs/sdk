@@ -111,6 +111,15 @@ record instead of deriving identity from the current tail. Conditional refusal
 returns no record. Unfollowed failures keep ordinary append and incur no receipt
 lookup. Original receipt confirmation is the extra read that buys durable cause
 identity on an exact retry; there is no second journal or repeated error payload.
+The per-poll causal context retains the admitted producer as well as its parent.
+SDK mechanisms use shared `trace::observe` to inherit the owning agent stream
+without another subscription or registry lookup. With no active owner it checks
+only local context and invokes the original work. The atomic `Stream::head`
+boundary now emits `stream.head` / `atomic_history_durability_origin` through this
+path, preserving the original head and unknown byte count. Diagnostic publication
+suppresses this context for every poll, including owned terminal appends, so a
+backend's own SDK metadata reads cannot recursively trace diagnostics. Scope exit
+restores the caller's original owner; unrelated futures never inherit that owner.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal
