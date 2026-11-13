@@ -12,7 +12,10 @@ impl StockExecutor {
     /// Shared storage uses the supplied original preparation owner.
     pub fn into_step_binding(self, io: Option<&PreparationIo>) -> Result<Arc<StepBinding>> {
         let attempt = io.map(PreparationIo::scoped).transpose()?;
-        let storage = attempt.as_ref();
+        self.into_step_binding_scoped(attempt.as_ref())
+    }
+
+    fn into_step_binding_scoped(self, storage: Option<&PreparationIo>) -> Result<Arc<StepBinding>> {
         let bytes = acyclic_fs::shared_allocation_bytes::<StepBinding>().map_err(|_| {
             stock_boundary(
                 storage,
@@ -27,7 +30,9 @@ impl StockExecutor {
             }
             Ok(())
         })?;
-        let custody = storage.map(|io| io.take_owned_custody(bytes)).transpose()?;
+        let custody = storage
+            .map(PreparationIo::take_all_owned_custody)
+            .transpose()?;
         Ok(Arc::new(StepBinding {
             model: self.model,
             sampling: self.sampling,
@@ -44,6 +49,25 @@ impl StockExecutor {
         }))
     }
 
+    /// Captures the canonical configuration once before native presentation.
+    /// Later selections borrow the same revisions and hooks; the running turn
+    /// keeps its original context, authority and journal.
+    pub fn step_template(&self) -> StepBinding {
+        StepBinding {
+            model: self.model.clone(),
+            sampling: self.sampling,
+            resolved_sampling: once_cell::sync::OnceCell::new(),
+            provider: Arc::clone(&self.provider),
+            tools: self.tools.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            hooks: self.hooks.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            after_hooks: self.after_hooks.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            prompt_block: self.prompt_block.clone(),
+            _custody: None,
+        }
+    }
     /// Applies a host-admitted complete configuration before each model step.
     /// The source pins its original file selection in this execution's journal;
     /// model and tool dispatch continue through the same stock engine.
@@ -420,5 +444,59 @@ mod tests {
             prop_assert_eq!(executor.tools.definitions(None)?, before);
             prop_assert!(stock_tool_definitions(&executor.tools, &executor.tool_scope, None)?.is_empty());
         }
+    }
+}
+
+impl StepBinding {
+    /// Original protected selection retained by this turn's canonical template.
+    pub fn model_binding(&self) -> &Arc<crate::model::ResolvedModel> {
+        &self.model.0
+    }
+
+    /// Whether an admitted selection retains this exact protected model owner
+    /// and explicit sampling. This comparison does not grant any authority.
+    pub fn matches_model(
+        &self,
+        model: &Arc<crate::model::ResolvedModel>,
+        sampling: Option<crate::model::ModelSampling>,
+    ) -> bool {
+        Arc::ptr_eq(&self.model.0, model) && self.sampling == sampling
+    }
+    /// Binds another admitted model through the same canonical stock composition.
+    /// The template's executable revisions and hooks stay under the running turn's
+    /// original authority; selected native declarations cannot widen that authority.
+    pub fn bind_model(
+        &self,
+        model: Arc<crate::model::ResolvedModel>,
+        sampling: Option<crate::model::ModelSampling>,
+        reader: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+        maximum_bytes: Option<u64>,
+        io: Option<&PreparationIo>,
+    ) -> Result<Arc<StepBinding>> {
+        let attempt = io.map(PreparationIo::scoped).transpose()?;
+        let temporary = attempt.as_ref();
+        let native = model.native_tools()?;
+        let mut executor =
+            StockExecutor::from_binding(model, ContextPipeline::default(), self.tools.clone())
+                .bind_content(reader, maximum_bytes);
+        if let Some(sampling) = sampling {
+            executor = executor.with_sampling(sampling)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            executor.hooks = self.hooks.clone();
+            for hook in &self.after_hooks {
+                stock_vec_push(&mut executor.after_hooks, hook.clone(), temporary)?;
+            }
+            executor.prompt_block = self
+                .prompt_block
+                .as_ref()
+                .map(|reason| stock_string_copy(reason, temporary))
+                .transpose()?;
+        }
+        if let Some(native) = native {
+            executor = executor.with_native_tools(&native)?;
+        }
+        executor.into_step_binding_scoped(temporary)
     }
 }

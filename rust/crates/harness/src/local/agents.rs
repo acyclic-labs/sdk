@@ -250,6 +250,20 @@ impl LocalUser {
 struct LocalContext(Weak<LocalHarness>);
 
 impl TurnContext for LocalContext {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn configure_steps(
+        &self,
+        executor: StockExecutor,
+        agent: &AgentState,
+        authority: &TurnAuthority,
+    ) -> Result<StockExecutor> {
+        let local = self
+            .0
+            .upgrade()
+            .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
+        let source = super::agent_settings::Steps::new(&local, &executor, agent, authority)?;
+        Ok(executor.with_step_configuration(Arc::new(source)))
+    }
     fn settle<'a>(
         &'a self,
         agent: &'a AgentState,

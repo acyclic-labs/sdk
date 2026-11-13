@@ -1,4 +1,4 @@
-//! `agent.ts` at session start: the six original sources fold over
+//! `agent.ts` admission: the six original sources fold over
 //! the model the session was started with; the result selects the model and
 //! its sampling. Each source cut's outcome is recorded as an
 //! [`Admission`](crate::config::Admission) in the journal.
@@ -8,7 +8,7 @@ use crate::conversation::{ContentAccess, ContentGrant};
 use crate::layers::{Layer, is_off};
 use crate::model::ResolvedModel;
 
-/// The settings in force for a session.
+/// The settings admitted from one original source cut.
 pub(super) struct Settings {
     pub(super) model: Arc<ResolvedModel>,
     pub(super) sampling: Option<Sampling>,
@@ -42,6 +42,10 @@ pub(super) struct Tree<'a> {
 }
 
 mod step_cut;
+#[cfg(not(target_arch = "wasm32"))]
+mod steps;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::local) use steps::Steps;
 
 type SourceFiles = [Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>; 5];
 
@@ -210,7 +214,7 @@ impl config::Tree for Tree<'_> {
 
 /// The six-source settings fold selects over `started`, recording admission
 /// under the original complete cut. Invalid or rejected content refuses the
-/// session; operational source errors cannot select a lower layer.
+/// selection; operational source errors cannot select a lower layer.
 pub(super) async fn admit(
     tree: &Tree<'_>,
     agent: AgentId,
