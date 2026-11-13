@@ -268,9 +268,9 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
         }
     }
     #[cfg(target_os = "linux")]
-    let command = r#"test "$HOME" = "$ACYCLIC_VOLUME_HOME" && test "$TMPDIR" = "$HOME/tmp" && printf scratch > "$TMPDIR/receipt""#;
+    let command = r#"test "$HOME" = "$FIXTURE_HOME" && test "$TMPDIR" = "$HOME/tmp" && printf scratch > "$TMPDIR/receipt""#;
     #[cfg(windows)]
-    let command = r#"if ($HOME -ne $env:ACYCLIC_VOLUME_HOME -or $env:HOME -ne $env:ACYCLIC_VOLUME_HOME -or $env:USERPROFILE -ne $env:ACYCLIC_VOLUME_HOME -or $env:TMPDIR -ne (Join-Path $HOME 'tmp') -or $env:TEMP -ne $env:TMPDIR -or $env:TMP -ne $env:TMPDIR) { exit 2 }; [System.IO.File]::WriteAllText((Join-Path $env:TMPDIR 'receipt'), 'scratch')"#;
+    let command = r#"if ($HOME -ne $env:FIXTURE_HOME -or $env:HOME -ne $env:FIXTURE_HOME -or $env:USERPROFILE -ne $env:FIXTURE_HOME -or $env:TMPDIR -ne (Join-Path $HOME 'tmp') -or $env:TEMP -ne $env:TMPDIR -or $env:TMP -ne $env:TMPDIR) { exit 2 }; [System.IO.File]::WriteAllText((Join-Path $env:TMPDIR 'receipt'), 'scratch')"#;
     for explicit in [false, true] {
         let mut native = invocation(&mounts.root);
         if explicit {
@@ -293,6 +293,10 @@ async fn temporary_files_use_private_home_with_default_and_explicit_grants() -> 
                 }
             }
         }
+        native.environment.insert(
+            "FIXTURE_HOME".into(),
+            workspace_hints(&mounts.environment()?)["home"].clone(),
+        );
         let result = run(
             ShellInput {
                 command: command.into(),
@@ -345,18 +349,22 @@ async fn read_only_project_uses_its_writable_volume_for_temporary_files() -> Res
         .expect("writable data projection")
         .1
         .to_path_buf();
+    let mut native = invocation(&mounts.root);
+    native.environment.insert(
+        "FIXTURE_DATA".into(),
+        workspace_hints(&mounts.environment()?)["data"].clone(),
+    );
     let result = run(
         ShellInput {
-            command:
-                r#"test "$TMPDIR" = "$ACYCLIC_VOLUME_DATA" && printf scratch > "$TMPDIR/receipt""#
-                    .into(),
+            command: r#"test "$TMPDIR" = "$FIXTURE_DATA" && printf scratch > "$TMPDIR/receipt""#
+                .into(),
             cwd: None,
             timeout_ms: None,
             background: false,
             target: None,
         },
         &mounts,
-        invocation(&mounts.root),
+        native,
         1,
         None,
         || Ok(()),
