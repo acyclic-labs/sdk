@@ -44,3 +44,25 @@ test("hosted provider bindings share the original fork and activation cut", asyn
   await sharedProviderTree(await ledgerBinding(streamProviderPort(await WasmStream.openBrowser(
     `shared-provider-${crypto.randomUUID()}`, 64, 1048576n))));
 });
+
+test("a provider from another wasm module serves cursors through the port", async () => {
+  // Each wasm-bindgen module has its own classes: same shape, distinct constructors.
+  const original = new WasmStream();
+  type Request = ReturnType<WasmStream["openProviderRequest"]>;
+  const foreign = {
+    openProviderRequest(operation: string, input: Uint8Array, preceding: Uint8Array) {
+      const request: Request = original.openProviderRequest(operation, input, preceding);
+      return {
+        async next() {
+          const value = await request.next();
+          if (value === null || value instanceof Uint8Array) return value;
+          return { next: () => value.next(), close: () => value.close(), free: () => value.free() };
+        },
+        close: () => request.close(),
+        free: () => request.free(),
+      };
+    },
+    free: () => original.free(),
+  } as unknown as Parameters<typeof streamProviderPort>[0];
+  await sharedProviderTree(await ledgerBinding(streamProviderPort(foreign)));
+});
