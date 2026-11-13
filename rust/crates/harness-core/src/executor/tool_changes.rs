@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(table[0].name, "selected");
         drop(table);
         let mut denied = budget;
-        denied.allocation_operations = 0;
+        denied.peak_allocation_bytes = 0;
         let io = PreparationIo::from_budget(denied, &cancellation)?;
         assert!(
             decode_tool_table(bytes, Some(&io), crate::wire::ErrorCode::Invalid).is_err(),
