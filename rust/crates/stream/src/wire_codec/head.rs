@@ -272,7 +272,16 @@ mod tests {
             if !response.retained.is_empty() {
                 let mut malformed = response;
                 malformed.retained[0].path.clear();
-                prop_assert_eq!(heads_from_response(malformed), Err(StreamError::InvalidResponse));
+                let error = heads_from_response(malformed).unwrap_err();
+                prop_assert_eq!(error.category(), StreamError::InvalidResponse);
+                let mut cause = std::error::Error::source(&error);
+                let mut original_path_error = false;
+                while let Some(source) = cause {
+                    original_path_error |= source.downcast_ref::<StreamError>()
+                        .is_some_and(|error| error.category() == StreamError::InvalidPath);
+                    cause = source.source();
+                }
+                prop_assert!(original_path_error, "original path validation failure was lost");
             }
             if !wire.retained.is_empty() {
                 let mut malformed = wire.clone();
