@@ -1844,23 +1844,25 @@ fn next(
     transition: &Transition,
 ) -> Result<State, Error> {
     let held = match trigger {
-        Trigger::Record { subscription, .. } => transition
-            .subscriptions
-            .iter()
-            .rev()
-            .find_map(|change| {
-                use crate::guest::SubscriptionChange;
-                match change {
-                    SubscriptionChange::Pause { id } if id == subscription => Some(true),
-                    SubscriptionChange::Resume { id } | SubscriptionChange::Remove { id }
-                        if id == subscription =>
-                    {
-                        Some(false)
+        Trigger::Record { subscription, .. } | Trigger::KeyedRecord { subscription, .. } => {
+            transition
+                .subscriptions
+                .iter()
+                .rev()
+                .find_map(|change| {
+                    use crate::guest::SubscriptionChange;
+                    match change {
+                        SubscriptionChange::Pause { id } if id == subscription => Some(true),
+                        SubscriptionChange::Resume { id } | SubscriptionChange::Remove { id }
+                            if id == subscription =>
+                        {
+                            Some(false)
+                        }
+                        _ => None,
                     }
-                    _ => None,
-                }
-            })
-            .unwrap_or(false),
+                })
+                .unwrap_or(false)
+        }
         Trigger::Alarm { .. } => false,
     };
     if held && transition.response.is_some() {

@@ -481,10 +481,17 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
 
 use std::sync::atomic::AtomicUsize;
 
-struct ApprovalPause(Package, AtomicUsize, bool);
+struct ApprovalPause(Package, AtomicUsize, bool, bool);
 impl Handler for ApprovalPause {
     fn manifest(&self) -> &Manifest {
         self.0.manifest()
+    }
+    fn subscription_key(
+        &self,
+        id: &str,
+        _: Option<&Checkpoint>,
+    ) -> Result<Option<Bytes>, crate::guest::GuestError> {
+        Ok((self.3 && id == "source").then(|| Bytes::from_static(b"selected")))
     }
     fn on_record<'a>(
         &'a self,
@@ -495,7 +502,9 @@ impl Handler for ApprovalPause {
         Box::pin(async move {
             use crate::guest::SubscriptionChange;
             self.1.fetch_add(1, Ordering::SeqCst);
-            let Trigger::Record { subscription, .. } = &delivery.trigger else {
+            let (Trigger::Record { subscription, .. } | Trigger::KeyedRecord { subscription, .. }) =
+                &delivery.trigger
+            else {
                 panic!("unexpected alarm")
             };
             let (state, change, destination, bytes) = match (
@@ -551,6 +560,7 @@ impl Handler for ApprovalPause {
 async fn pause_retains_input<P: StreamProvider + 'static>(
     provider: P,
     external_resume: bool,
+    keyed: bool,
 ) -> TestResult {
     let provider = Arc::new(provider);
     let store = Store::new(Arc::clone(&provider), root()?);
@@ -589,7 +599,20 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
         vec![],
         vec![CommitMutation::Append {
             path: source.clone(),
-            records: vec![Bytes::from_static(b"original").into()],
+            records: if keyed {
+                vec![
+                    Bytes::from_static(b"unrelated").into(),
+                    acyclic_stream::AppendRecord {
+                        value: Bytes::from_static(b"original").into(),
+                        headers: acyclic_stream::RecordHeaders::new(
+                            vec![Bytes::from_static(b"selected").into()],
+                            vec![],
+                        )?,
+                    },
+                ]
+            } else {
+                vec![Bytes::from_static(b"original").into()]
+            },
         }],
     ))?;
     store.submit(create).await?;
@@ -597,6 +620,7 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
         Package::new()?,
         AtomicUsize::new(0),
         external_resume,
+        keyed,
     ));
     let runtime = Runtime::new(
         crate::guest::Requests::default(),
@@ -682,7 +706,7 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
     let state = settled.state().ok_or("missing resumed state")?;
     assert_eq!(
         (state.cursor("source"), state.cursor("approval")),
-        (Some(1), Some(1))
+        (Some(if keyed { 2 } else { 1 }), Some(1))
     );
     assert!(!state.subscriptions()["source"].paused);
     assert_eq!(state.checkpoint().unwrap().bytes.as_ref(), b"complete");
@@ -699,12 +723,13 @@ async fn pause_retains_input<P: StreamProvider + 'static>(
 #[tokio::test]
 async fn paused_inputs_keep_their_cursor_across_restart_and_resume_from_another_input() -> TestResult
 {
-    for external in [false, true] {
-        pause_retains_input(MemoryStream::default(), external).await?;
+    for (external, keyed) in [(false, false), (true, false), (false, true), (true, true)] {
+        pause_retains_input(MemoryStream::default(), external, keyed).await?;
         let directory = tempfile::tempdir()?;
         pause_retains_input(
             LocalStream::open(directory.path(), Default::default()).await?,
             external,
+            keyed,
         )
         .await?;
     }
