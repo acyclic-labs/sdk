@@ -15,6 +15,19 @@ impl crate::runtime::Executor for Executor {
     }
 }
 
+fn assert_original_producer_loss(error: &StreamError) {
+    assert_eq!(error.category(), StreamError::Unavailable);
+    let mut cause = std::error::Error::source(error);
+    let mut original = false;
+    while let Some(source) = cause {
+        original |= source
+            .downcast_ref::<crate::completion::ProducerDropped>()
+            .is_some();
+        cause = source.source();
+    }
+    assert!(original, "completion lost its original producer-loss cause");
+}
+
 async fn cancellation_keeps_exact_submission_and_shared_outcome() -> Result<(), StreamError> {
     let provider = Arc::new(MemoryStream::default());
     let stream = Stream::new(Arc::clone(&provider), "pending")?;
@@ -203,18 +216,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
         .await
         .err()
         .ok_or("lost producer had a result")?;
-    let mut cause = std::error::Error::source(&error);
-    let mut original = false;
-    while let Some(source) = cause {
-        original |= source
-            .downcast_ref::<crate::completion::ProducerDropped>()
-            .is_some();
-        cause = source.source();
-    }
-    assert!(
-        original,
-        "completion must retain its original producer-loss cause"
-    );
+    assert_original_producer_loss(&error);
     drop(pending);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     meter.assert_refunded();
@@ -299,9 +301,6 @@ async fn append_submission_keeps_identity_and_survives_observer_cancellation()
     assert_eq!(retained.wait().await?, outcome);
     let abandoned = AppendPending::submit_task(request, futures::future::pending(), &executor);
     drop(executor.0.lock().unwrap().pop().unwrap());
-    assert!(matches!(
-        abandoned.result().await,
-        Err(StreamError::Unavailable)
-    ));
+    assert_original_producer_loss(&abandoned.result().await.unwrap_err());
     Ok(())
 }
