@@ -612,7 +612,22 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .chain(
                 ["prefix", "later", "free", "free", "free", "free"]
                     .map(|text| super::ScriptedTurn::Text(text.into())),
-            ),
+            )
+            .chain([
+                super::ScriptedTurn::Events(vec![
+                    crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::ToolCall(
+                        crate::model::ToolCall::new(
+                            "child-write".into(),
+                            "write".into(),
+                            serde_json::json!({"path":"child-result.txt","content":"ordinary child"}),
+                        ),
+                    )),
+                    crate::test_support::ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                        metadata: serde_json::json!({}),
+                    }),
+                ]),
+                super::ScriptedTurn::Text("reported".into()),
+            ]),
         )
         .with_context_capacity(super::capacity())
         .with_dispatch_observer(move |_| {
@@ -809,6 +824,16 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
                 "override must apply exactly once"
             );
         }
+        assert_eq!(
+            workspace
+                .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
+                .await
+                .expect("read the unchanged parent's plan after each continuation")
+                .value
+                .as_ref(),
+            b"after cut",
+            "continuation {operation} published into its source run"
+        );
     }
     assert_eq!(
         provider.request_count(),
@@ -825,15 +850,29 @@ async fn forced_continuation_retains_the_cut_and_applies_only_its_delta() -> Res
             .await
             .map_err(agent)?
     );
+    // Negative control: ordinary task children still hand their work back.
+    let AgentReply::Spawned { agent: worker, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: root.clone(),
+            id: crate::agent::IntentId::try_from("ordinary-child").map_err(agent)?,
+            brief: ModelContent::Text("Publish one result file".into()),
+            role: "worker".into(),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("spawn returned another reply".into()));
+    };
+    settled(&harness, &worker).await?;
     assert_eq!(
         workspace
-            .read("/plan.md", 64, WorkBudget::UNBOUNDED, &cancel)
+            .read("/child-result.txt", 64, WorkBudget::UNBOUNDED, &cancel)
             .await
-            .expect("read the unchanged parent's plan after continuation")
+            .map_err(|failure| agent(failure.error))?
             .value
             .as_ref(),
-        b"after cut"
+        b"ordinary child"
     );
+    assert_eq!(provider.request_count(), 9);
     Ok(())
 }
 

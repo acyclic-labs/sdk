@@ -577,6 +577,15 @@ impl LocalHarness {
     /// is idle, else before the parent's next command reads it.
     #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
+        // A historical continuation is an independent decision branch. Its
+        // source ancestry does not authorize publication into the source run.
+        if agent
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.continuation.is_some())
+        {
+            return Ok(());
+        }
         let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
             return Ok(());
         };
