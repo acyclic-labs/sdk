@@ -76,6 +76,7 @@ impl PreparedInput {
             while let Some(event) = events.next().await {
                 match event? {
                     crate::admission::Event::Wait(wait) => yield ModelEvent::Wait(wait),
+                    crate::admission::Event::Trace(record) => yield ModelEvent::Trace { record },
                     crate::admission::Event::Ready((count, _custody)) => yield ModelEvent::Counted { count },
                 }
             }

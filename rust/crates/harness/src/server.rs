@@ -300,18 +300,26 @@ pub async fn serve<C: Composition>(
         tonic::transport::Server::builder().add_service(StreamSessionServiceServer::new(service));
     let serving = async {
         match (listener, tls) {
-            (Listener::Tcp(listener), Some((tls, _))) => {
-                router
-                    .serve_with_incoming_shutdown(tls::incoming(listener, tls), completion_shutdown)
-                    .await
-            }
-            (Listener::Tcp(listener), None) => {
-                router
-                    .serve_with_incoming_shutdown(
-                        tonic::transport::server::TcpIncoming::from(listener),
-                        completion_shutdown,
-                    )
-                    .await
+            (Listener::Tcp(listener), tls) => {
+                // Incoming sockets bypass the router's bind-time TCP options. Stream
+                // records must leave immediately rather than waiting for a coalescing ACK.
+                let incoming =
+                    tonic::transport::server::TcpIncoming::from(listener).with_nodelay(Some(true));
+                match tls {
+                    Some((tls, _)) => {
+                        router
+                            .serve_with_incoming_shutdown(
+                                tls::incoming(incoming, tls),
+                                completion_shutdown,
+                            )
+                            .await
+                    }
+                    None => {
+                        router
+                            .serve_with_incoming_shutdown(incoming, completion_shutdown)
+                            .await
+                    }
+                }
             }
             (Listener::Local(incoming), None) => {
                 router

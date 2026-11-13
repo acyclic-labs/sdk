@@ -20,8 +20,12 @@ mod inspect;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod pending_tests;
 mod recording;
+mod run;
+pub use run::RunOutcome;
 mod transcripts;
 mod tree;
+mod tree_feed;
+pub use tree_feed::{RootCut, SupervisionFeed, TreeFeed, TreeRecord};
 mod usage;
 mod usage_query;
 use crate::{
@@ -97,6 +101,11 @@ pub struct PreparedPeerMessage {
     sender: AgentPath,
     command: AgentCommand,
 }
+
+/// A sent message whose commit the session could not decide.
+#[derive(Debug, thiserror::Error)]
+#[error("the message's commit outcome is unknown; resend it")]
+struct UnknownOutcome;
 
 /// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
 /// closed conversation, is a refusal; any other failure after the request
@@ -529,9 +538,7 @@ impl Conversation {
             Sent::Refused(reason) => Err(Error::Refused(reason)),
             // The session retains the terminal cause that left the outcome
             // undecided; report it with the outcome instead of dropping it.
-            Sent::Unknown => Err(self
-                .connection
-                .stream_failure("the message's commit outcome is unknown; resend it")),
+            Sent::Unknown => Err(self.connection.stream_failure(UnknownOutcome)),
         }
     }
 
@@ -829,6 +836,14 @@ impl Conversation {
     /// Read an inherited output with its exact committed record as proof.
     pub async fn output_text_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<String> {
         Ok(self.output(entry, Some(sequence)).await?.text)
+    }
+
+    /// Reads every output field with its original committed sequence proof.
+    ///
+    /// # Errors
+    /// Original record, file authorization, host or output decoding failures.
+    pub async fn output_at(&self, sequence: u64, entry: &ConversationEntry) -> Result<TurnOutput> {
+        self.output(entry, Some(sequence)).await
     }
 
     async fn output(&self, entry: &ConversationEntry, sequence: Option<u64>) -> Result<TurnOutput> {

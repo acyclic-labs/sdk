@@ -201,6 +201,101 @@ async fn generate(provider: &ResolvedModel) -> Result<Vec<ModelEvent>> {
     provider.generate(&prepared, dispatch).try_collect().await
 }
 
+#[tokio::test]
+async fn response_header_spans_precede_body_and_leave_cancelled_headers_unfinished() -> Result<()> {
+    use acyclic_stream::trace::{Mechanism, Outcome, SpanEvent, TraceRecord};
+    use futures::FutureExt as _;
+    for native in [false, true] {
+        for headers in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .map_err(|_| invalid("bind"))?;
+            let port = listener.local_addr().map_err(|_| invalid("addr"))?.port();
+            let (entered, received) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                read_request(&mut socket).await;
+                if headers {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 100\r\n\r\n").await.unwrap();
+                    socket.flush().await.unwrap();
+                }
+                entered.send(()).unwrap();
+                let mut byte = [0];
+                assert!(
+                    matches!(socket.read(&mut byte).await, Ok(0) | Err(_)),
+                    "dropping the original exchange must close its connection"
+                );
+            });
+            let (provider, _) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            let (request, dispatch) = super::request(&provider)?;
+            let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+            let baseline = work.live_allocation_bytes();
+            let mut events: acyclic_stream::BoxProviderStream<
+                '_,
+                Result<(ModelEvent, acyclic_fs::NativeCustody)>,
+            > = if native {
+                Box::pin(
+                    provider
+                        .generate_with_native_work(&request, dispatch, &work)?
+                        .await?
+                        .map(|event| event.map(|(event, custody)| (event, Some(custody)))),
+                )
+            } else {
+                Box::pin(
+                    provider
+                        .generate(&request, dispatch)
+                        .map(|event| event.map(|event| (event, None))),
+                )
+            };
+            let (start, custody) = events.next().await.unwrap()?;
+            let ModelEvent::Trace {
+                record:
+                    TraceRecord::V1(SpanEvent::Started {
+                        id,
+                        parent: None,
+                        name,
+                        mechanism: Mechanism::RoundTrip,
+                        at_ns,
+                        guarantee,
+                    }),
+            } = &start
+            else {
+                panic!("missing original headers start")
+            };
+            assert_eq!(name, "model.response_headers");
+            assert_eq!(guarantee.as_deref(), Some("receive_response_headers"));
+            let (id, started) = (*id, *at_ns);
+            drop((start, custody));
+            if headers {
+                let (finish, custody) = events.next().await.unwrap()?;
+                assert!(matches!(finish, ModelEvent::Trace {
+                    record: TraceRecord::V1(SpanEvent::Finished {
+                        id: finished, at_ns, bytes: None, result: Outcome::Succeeded,
+                    })
+                } if finished == id && at_ns >= started));
+                drop((finish, custody));
+            }
+            {
+                let next = events.next();
+                tokio::pin!(next);
+                tokio::select! {
+                    biased;
+                    entered = received => entered.unwrap(),
+                    _ = &mut next => panic!("exchange advanced before its held headers/body"),
+                }
+                assert!(
+                    next.now_or_never().is_none(),
+                    "unfinished exchange fabricated an event"
+                );
+            }
+            drop(events);
+            server.await.unwrap();
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
+}
+
 fn failure(error: &Error) -> Option<ModelTransportFailure> {
     match error {
         Error::ModelUnavailable { failure, .. } => Some(*failure),
@@ -590,5 +685,107 @@ async fn tls_failure_is_typed_for_shared_recovery() -> Result<()> {
     );
     assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn compatible_endpoint_refusals_cannot_echo_credentials_into_failures() -> Result<()> {
+    const ECHO: &str = r#"{"error":{"message":"rejected scripted-key"}}"#;
+    for adapter in [Adapter::Chat, Adapter::Anthropic] {
+        for native in [false, true] {
+            for status in [400, 401, 403, 408, 413, 429, 503] {
+                let retryable = matches!(status, 408 | 429 | 503);
+                let mut replies = vec![Reply::Full(status, ECHO)];
+                if retryable {
+                    replies.push(Reply::Full(403, ECHO));
+                }
+                let (port, accepted) = serve(replies).await?;
+                let (mut provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+                let config = Arc::make_mut(&mut provider.config);
+                config.adapter = adapter;
+                provider.accounting = crate::resolved::Accounting::new(adapter);
+                let error = if native {
+                    let (prepared, dispatch) = super::request(&provider)?;
+                    let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+                    let baseline = work.live_allocation_bytes();
+                    let error = {
+                        let mut stream = provider
+                            .generate_with_native_work(&prepared, dispatch, &work)?
+                            .await?;
+                        match stream.next().await {
+                            Some(Err(error)) => error,
+                            _ => panic!("refused request produced model output"),
+                        }
+                    };
+                    assert!(!format!("{error:?} {error}").contains("scripted-key"));
+                    drop(error);
+                    assert_eq!(work.live_allocation_bytes(), baseline);
+                    None
+                } else {
+                    Some(generate(&provider).await.expect_err("refused request"))
+                };
+                if let Some(error) = error {
+                    assert!(!format!("{error:?} {error}").contains("scripted-key"));
+                    assert!(
+                        error
+                            .to_string()
+                            .contains(&(if retryable { 403 } else { status }).to_string())
+                    );
+                }
+                assert_eq!(
+                    transport.sent.load(Ordering::SeqCst),
+                    1 + usize::from(retryable)
+                );
+                assert_eq!(accepted.load(Ordering::SeqCst), 1 + usize::from(retryable));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn compatible_endpoints_keep_transport_backpressure_unbounded_by_default() -> Result<()> {
+    for (adapter, body) in fixtures()
+        .into_iter()
+        .filter(|(adapter, _)| matches!(adapter, Adapter::Chat | Adapter::Anthropic))
+    {
+        for native in [false, true] {
+            let replies =
+                std::iter::repeat_with(|| Reply::Headers(429, "Retry-After: 0\r\n", "{}"))
+                    .take(8)
+                    .chain([Reply::Full(200, body)])
+                    .collect();
+            let (port, accepted) = serve(replies).await?;
+            let (mut provider, transport) = model(&format!("http://127.0.0.1:{port}/v1"))?;
+            let config = Arc::make_mut(&mut provider.config);
+            config.adapter = adapter;
+            config.retry = RetrySpec::DEFAULT;
+            provider.accounting = crate::resolved::Accounting::new(adapter);
+            if native {
+                let (prepared, dispatch) = super::request(&provider)?;
+                let work = super::native_tests::work(&acyclic_fs::CancellationToken::new())?;
+                let baseline = work.live_allocation_bytes();
+                let mut stream = provider
+                    .generate_with_native_work(&prepared, dispatch, &work)?
+                    .await?;
+                let mut completed = false;
+                while let Some(event) = stream.next().await {
+                    let (event, custody) = event?;
+                    completed |= matches!(event, ModelEvent::Completed { .. });
+                    drop((event, custody));
+                }
+                assert!(completed);
+                drop(stream);
+                assert_eq!(work.live_allocation_bytes(), baseline);
+            } else {
+                assert!(matches!(
+                    generate(&provider).await?.last(),
+                    Some(ModelEvent::Completed { .. })
+                ));
+            }
+            assert_eq!(transport.sent.load(Ordering::SeqCst), 9);
+            assert_eq!(accepted.load(Ordering::SeqCst), 9);
+        }
+    }
     Ok(())
 }

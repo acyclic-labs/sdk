@@ -139,7 +139,9 @@ async fn delayed_502_preserves_usage_and_later_turns_through_catalog_proxy() -> 
         directory.path(),
         (provider.model().clone(), provider.clone()),
     )?
-    .compaction(CompactionPolicy::Disabled);
+    .compaction(CompactionPolicy::Disabled)
+    // The proxy scripts one generation per prompt; settlement notices would add more.
+    .feedback_plugin(false);
     let harness = Arc::new(LocalHarness::open(config).await?);
     harness.agents().await?;
     let connection = harness.connect().await?;

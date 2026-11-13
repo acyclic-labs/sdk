@@ -87,7 +87,7 @@ where
     ) -> Result<(IdempotencyKey, String)> {
         let digest = operation_digest(operation_id, idempotency_key, io)?;
         let path = crate::executor::with_history_io(io, |work| {
-            // Stock publication binds JSON bytes to the original operation key
+            // Stock publication binds bytes to the original operation key
             // with one BLAKE3 suffix. The result kind precedes that suffix.
             let kind_key = idempotency_key
                 .rsplit_once(':')
@@ -106,6 +106,34 @@ where
                     ),
                     work,
                 );
+            }
+            if let Some(text) = kind_key.strip_prefix("model-live:") {
+                if let Some((dispatch, rest)) = text.split_once(':')
+                    && let Some((rest, kind)) = rest.rsplit_once(':')
+                    && let Some((rest, item)) = rest.rsplit_once(':')
+                    && let Some((_, step)) = rest.rsplit_once(':')
+                    && matches!(kind, "reply" | "reasoning" | "restart")
+                {
+                    let invalid = || {
+                        stock_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "model text identity is invalid",
+                        )
+                    };
+                    let dispatch = uuid::Uuid::parse_str(dispatch).map_err(|_| invalid())?;
+                    let step: u32 = step.parse().map_err(|_| invalid())?;
+                    let item: u64 = item.parse().map_err(|_| invalid())?;
+                    return crate::executor::preparation_format(
+                        format_args!(
+                            "{}{}/{step:010}-{dispatch}/{kind}/{item:020}-{}.txt",
+                            InternalContentClass::ModelText.prefix(),
+                            self.turn_operation(operation_id),
+                            digest.to_hex()
+                        ),
+                        work,
+                    );
+                }
             }
             if kind_key.starts_with("tool:") && kind_key.ends_with(":result") {
                 return crate::executor::preparation_format(
@@ -185,7 +213,11 @@ where
                 &path,
                 bytes,
                 media_type,
-                "execution.json",
+                if media_type.starts_with("text/") {
+                    "execution.txt"
+                } else {
+                    "execution.json"
+                },
                 Some(super::MAXIMUM_PAYLOAD_BYTES),
                 &key,
                 payload_class(&path),
@@ -277,7 +309,7 @@ where
         operation: OperationId,
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
-    ) -> Result<Option<ModelEvent>> {
+    ) -> Result<(Option<ModelEvent>, Option<u64>)> {
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)
@@ -290,6 +322,36 @@ where
         let result = async {
             let io = check_io;
             let refs = match event {
+                ExecutionEvent::Progress { publication } => {
+                    crate::executor::with_history_io(io, |work| publication.validate(work))?;
+                    use crate::resources::ResourceKind;
+                    if !matches!(
+                        publication.kind(),
+                        ResourceKind::Generation
+                            | ResourceKind::Artifact
+                            | ResourceKind::Checkpoint
+                            | ResourceKind::Context
+                    ) && !(publication.kind() == ResourceKind::Stream
+                        && publication.version().is_some())
+                    {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "progress must name an immutable publication",
+                        ));
+                    }
+                    [None, None, None]
+                }
+                ExecutionEvent::NativeCapture { receipt } => {
+                    if receipt.volume() != &self.volume {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "native capture belongs to another journal",
+                        ));
+                    }
+                    [Some(receipt), None, None]
+                }
                 ExecutionEvent::ConversationItem {
                     envelope: projection,
                     ..
@@ -312,6 +374,7 @@ where
                 | ExecutionEvent::ModelInline { .. }
                 | ExecutionEvent::ModelWait { .. }
                 | ExecutionEvent::ModelStopped { .. }
+                | ExecutionEvent::ModelOutput { .. }
                 | ExecutionEvent::ToolFailed { .. } => [None, None, None],
             };
             let mut model = match event {
@@ -384,37 +447,14 @@ where
                     }
                 }
                 if matches!(event, ExecutionEvent::Model { .. }) {
-                    if reference.descriptor().media_type() != "application/json" {
-                        return Err(canonical_boundary(
-                            io,
-                            crate::wire::ErrorCode::Storage,
-                            "model observation is not JSON",
-                        ));
-                    }
-                    model = Some(match io {
-                        Some(io) => {
-                            let parsed = io.decode(
-                                std::marker::PhantomData::<ModelEvent>,
-                                bytes,
-                                crate::wire::ErrorCode::Storage,
-                            )?;
-                            let _canonical_hold;
-                            let canonical =
-                                io.encode(&parsed.0, super::MAXIMUM_PAYLOAD_BYTES, true)?;
-                            _canonical_hold = io.guard_bytes(&canonical)?;
-                            if canonical.as_ref() != bytes {
-                                return Err(canonical_boundary(
-                                    Some(io),
-                                    crate::wire::ErrorCode::Storage,
-                                    "execution journal JSON is not canonical",
-                                ));
-                            }
-                            crate::filesystem::retain_decoded(parsed)?
-                        }
-                        None => decode_json::<ModelEvent>(bytes, None)?.0,
-                    });
+                    model = Some(crate::executor::decode_model_payload(
+                        reference.descriptor().media_type(),
+                        bytes,
+                        io,
+                    )?);
                 }
             }
+            let mut usd_nanos = None;
             if let ExecutionEvent::Model {
                 step,
                 purpose,
@@ -446,12 +486,31 @@ where
                     })?,
                     io,
                 )?;
+                let price = self.run_admission.as_ref().and_then(|admission| {
+                    admission
+                        .value
+                        .prices
+                        .get(&record.0.provider)?
+                        .get(&record.0.model)
+                });
+                usd_nanos = record
+                    .0
+                    .estimate(price)
+                    .map_err(|_| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Invalid,
+                            "usage price differs from its admitted binding",
+                        )
+                    })?
+                    .estimated_cost
+                    .token_nano_units;
             }
-            Ok(model)
+            Ok((model, usd_nanos))
         }
         .await;
         #[cfg(not(target_arch = "wasm32"))]
-        if let (Ok(model), Some(recheck), Some(io)) = (&result, recheck, io) {
+        if let (Ok((model, _)), Some(recheck), Some(io)) = (&result, recheck, io) {
             let held = model
                 .as_ref()
                 .map_or(Ok(0), ModelEvent::logical_owned_bytes)?;
@@ -647,6 +706,8 @@ pub(super) fn payload_class(path: &str) -> InternalContentClass {
         InternalContentClass::ToolResult
     } else if path.starts_with(InternalContentClass::Summary.prefix()) {
         InternalContentClass::Summary
+    } else if path.starts_with(InternalContentClass::ModelText.prefix()) {
+        InternalContentClass::ModelText
     } else {
         InternalContentClass::Execution
     }

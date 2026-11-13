@@ -8,13 +8,32 @@ pub use resource::{stream_path, stream_resource, stream_resource_matches, valida
 mod framing;
 pub use framing::{FrameDecoder, encode_grpc_frame};
 
-/// Finite canonical Actors response plus its enclosing product result. The
-/// same bound applies to every finite one-shot reply, including a children page.
-pub const MAX_ACTOR_CALL_REPLY_BYTES: usize = crate::MAX_COMMAND_BYTES + 128;
-
 /// `SessionClosed.code` of a finite channel that delivered its whole range.
 /// It is the only non-error close code; any other code is a [`StreamError`].
 pub const END_CODE: &str = "end";
+
+/// Decode a channel's category together with the diagnostic its owner sent.
+/// A close without an additional message uses its canonical category text.
+#[must_use]
+pub fn closed_error(closed: &wire::SessionClosed) -> StreamError {
+    let category = StreamError::from_session_close(&closed.code);
+    let canonical = tonic::Status::from(&category);
+    if closed.message.is_empty() || closed.message == canonical.message() {
+        return category;
+    }
+    acyclic_auth::refusal::Refusal::capture(
+        canonical.code() as i32,
+        &closed.message,
+        b"",
+        &http::HeaderMap::new(),
+        super::status::canonical(&category),
+        None,
+    )
+    .map_or_else(
+        || category.clone(),
+        |refusal| category.clone().with_refusal(refusal),
+    )
+}
 
 /// One input frame on its original call generation. No total length or EOF
 /// is inferred from the data; only the ordered input terminal closes it.
@@ -59,7 +78,7 @@ pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> 
         .map_err(|_| StreamError::InvalidResponse)?;
     usize::try_from(u64::from_le_bytes(bytes))
         .ok()
-        .filter(|total| *total > 0 && *total <= MAX_ACTOR_CALL_REPLY_BYTES)
+        .filter(|total| *total > 0)
         .ok_or(StreamError::InvalidResponse)
 }
 

@@ -106,7 +106,7 @@ where
     /// Publishes pending authored effects with an unrestricted permit.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         let work = self.native_work()?;
-        self.sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
+        self.sync_with_permit(PublicationPermit::Unrestricted, &work, None, |_| {
             std::future::ready(Ok::<(), MountLifecycleError>(()))
         })
         .await
@@ -115,10 +115,14 @@ where
     }
 
     /// Publishes through the original allowance and retains the genuine SDK ACK.
+    /// A caller-selected operation records even an empty publication and replays
+    /// only that original receipt; pending later edits belong to another operation.
+    /// With no operation, a clean sync does not append a DATA record.
     pub async fn sync_with_permit<F, Fut, E>(
         &self,
         permit: PublicationPermit,
         work: &NativeMaterializationWork,
+        operation: Option<crate::OperationId>,
         before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
@@ -148,6 +152,7 @@ where
                     work,
                     work.cancellation(),
                     &mut acknowledged,
+                    operation,
                     before_publication,
                 )
                 .await

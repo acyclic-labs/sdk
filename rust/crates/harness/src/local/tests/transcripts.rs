@@ -89,7 +89,7 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
             assert!(tail > 0, "the child committed a conversation");
             let entries = saved.entries(0, tail).await?;
             let entry = entries.last().expect("saved child conversation");
-            assert!(!saved.output_text(entry).await?.is_empty());
+            assert!(!saved.output_text_at(tail - 1, entry).await?.is_empty());
             paths.push(child);
         }
         Ok::<_, Error>(paths)
@@ -150,11 +150,20 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
     let inspections = conversation.inspect_tree();
     futures::pin_mut!(inspections);
     let mut aggregate = crate::executor::ToolUsage::default();
+    // The index records each role's selection (role policy wins, otherwise
+    // the parent's); the fixture catalog serves every selection by one binding.
+    let mut selected = crate::templates::root()?.model;
+    let worker = crate::templates::seed_model("worker")?;
     for (path, mapping) in paths.into_iter().zip(index) {
-        let original_usage = &usage
-            .iter()
-            .find(|row| row["usage"]["agent_path"] == path.as_str())
-            .expect("each agent has an original model call")["usage"];
+        assert!(
+            usage
+                .iter()
+                .any(|row| row["usage"]["agent_path"] == path.as_str()),
+            "each agent has an original model call"
+        );
+        let model = selected.clone().expect("every role selects a model");
+        selected = crate::templates::resolve_model(worker.as_deref(), selected.as_deref())
+            .map(str::to_owned);
         assert_eq!(
             mapping,
             json!({
@@ -163,7 +172,7 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
                 "agent_path": path.as_str(),
                 "parent": path.parent().map(|parent| parent.id()),
                 "role": if path.parent().is_none() { "orchestrator" } else { "worker" },
-                "model": format!("{}/{}", original_usage["provider"].as_str().unwrap(), original_usage["model"].as_str().unwrap()),
+                "model": model,
                 "topology": null,
             })
         );

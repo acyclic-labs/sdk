@@ -200,6 +200,28 @@ fn capture_filesystem_records(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-filesystem-publications") {
+        let seeds = acyclic_fs::kernel::publication_codec_fuzz::seeds()?;
+        let names = seeds
+            .iter()
+            .map(|(name, _)| format!("filesystem_pages/{name}"))
+            .collect::<std::collections::HashSet<_>>();
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !names.contains(line.split('\t').next().unwrap_or(line)))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        for (name, bytes) in seeds {
+            save(
+                "filesystem_pages",
+                name,
+                &bytes,
+                "filesystem::kernel publication v5 writer; fixed original evidence reference",
+                &mut manifest,
+            )?;
+        }
+        return finish_selected(&manifest, |name| names.contains(name));
+    }
     if std::env::args().any(|arg| arg == "--only-filesystem-records") {
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
         let names = capture_filesystem_records(&mut manifest)?;
@@ -265,8 +287,10 @@ fn capture() -> Result<(), Box<dyn Error>> {
     }
     if std::env::args().any(|arg| arg == "--only-actors") {
         let prefix = "actor_codecs/";
+        let selected =
+            std::env::args().find_map(|arg| arg.strip_prefix("--actor-seed=").map(str::to_owned));
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
-        capture_actors(&mut manifest)?;
+        capture_actors_selected(&mut manifest, selected.as_deref())?;
         return finish_latest(&manifest, prefix);
     }
     if std::env::args().any(|arg| arg == "--only-resources") {
@@ -1145,16 +1169,29 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
 /// Actor codec seeds and the generated guest wire declarations, so every
 /// Actors capture regenerates both from the production encoders.
 fn capture_actors(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    capture_actors_selected(manifest, None)
+}
+
+fn capture_actors_selected(
+    manifest: &mut String,
+    selected: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
     std::fs::write("corpus/actor-guest.ts", acyclic_actors::guest::typescript())?;
+    let mut found = false;
     for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
-        // Runtime clocks and commit identities are original captured context,
-        // not fields to normalize. A fresh packet extends the retained corpus.
-        let name = if name.starts_with("socket-input-") {
-            format!("{name}-{}", hex::encode(Sha256::digest(&bytes)))
-        } else {
-            name.to_owned()
-        };
-        save("actor_codecs", &name, &bytes, producer, manifest)?;
+        if selected.is_none_or(|selected| selected == name) {
+            // Preserve original runtime clock and commit context across captures.
+            let name = if name.starts_with("socket-input-") {
+                format!("{name}-{}", hex::encode(Sha256::digest(&bytes)))
+            } else {
+                name.to_owned()
+            };
+            save("actor_codecs", &name, &bytes, producer, manifest)?;
+            found = true;
+        }
+    }
+    if !found {
+        return Err("selected Actor producer seed does not exist".into());
     }
     Ok(())
 }

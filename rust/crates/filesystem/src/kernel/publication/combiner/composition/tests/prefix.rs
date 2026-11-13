@@ -305,6 +305,7 @@ async fn sweep_prepared_prefix(
         fs.objects()
             .flush_before_publish(
                 crate::PublicationScope {
+                    related_objects: &[],
                     objects: &[orphan_id],
                     proven_at: 0,
                 },

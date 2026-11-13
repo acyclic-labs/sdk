@@ -38,8 +38,8 @@ const require = createRequire(import.meta.url);
 const dependencyRoots = new Map([
   ["/rust/crates/conformance/cloudflare/", resolve(root, "../../../rust/crates/conformance/cloudflare")],
   ["/stream/", resolve(root, "../stream")],
-  ["/actors/", resolve(root, "../actors")],
   ["/auth/", resolve(root, "../auth")],
+  ["/core/", resolve(root, "../core")],
   ["/harness/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],
   ["/harness/", resolve(root, "../harness")],
   ["/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],

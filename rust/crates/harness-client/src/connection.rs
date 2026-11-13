@@ -6,6 +6,9 @@ pub const DEFAULT_ENDPOINT: &str = "https://swarm.cloud.acyclic.dev";
 pub const ENDPOINT_ENV: &str = "ACYCLIC_ENDPOINT";
 /// Account API credential shared with other Cloud products.
 pub const CREDENTIAL_ENV: &str = "ACYCLIC_API_KEY";
+/// Path of a PEM CA bundle a TLS endpoint is verified against instead of the
+/// platform roots, for a private or self-hosted endpoint.
+pub const CA_FILE_ENV: &str = "ACYCLIC_CA_FILE";
 
 /// Configuration refusal before a transport is constructed. Diagnostics never
 /// contain endpoint input or credentials.
@@ -17,6 +20,8 @@ pub enum ConnectionConfigError {
     MissingCredential,
     /// The selected credential fails the shared opaque credential contract.
     InvalidCredential,
+    /// The selected CA file cannot be read or is empty.
+    InvalidCaFile,
 }
 
 impl ConnectionConfigError {
@@ -27,6 +32,7 @@ impl ConnectionConfigError {
             Self::InvalidEndpoint => "client_invalid_endpoint",
             Self::MissingCredential => "client_missing_credential",
             Self::InvalidCredential => "client_invalid_credential",
+            Self::InvalidCaFile => "client_invalid_ca_file",
         }
     }
 }
@@ -56,6 +62,7 @@ pub struct ConnectionOptions {
     endpoint: String,
     transport: EndpointTransport,
     credential: String,
+    ca_certificate: Option<Vec<u8>>,
 }
 
 impl std::fmt::Debug for ConnectionOptions {
@@ -82,6 +89,11 @@ impl ConnectionOptions {
     #[must_use]
     pub fn credential(&self) -> &str {
         &self.credential
+    }
+    /// PEM CA bundle that alone verifies a TLS endpoint, when one is selected.
+    #[must_use]
+    pub fn ca_certificate(&self) -> Option<&[u8]> {
+        self.ca_certificate.as_deref()
     }
 
     /// The credential's signed capability envelope, for in-band session
@@ -121,12 +133,26 @@ impl ConnectionOptions {
         } else {
             None
         };
-        resolve_connection_options(
+        let mut options = resolve_connection_options(
             endpoint,
             credential,
             environment_endpoint.as_deref(),
             environment_credential.as_deref(),
-        )
+        )?;
+        options.ca_certificate = std::env::var_os(CA_FILE_ENV)
+            .map(|path| read_ca_file(path.as_ref()))
+            .transpose()?;
+        Ok(options)
+    }
+}
+
+/// The CA bundle at `path`; an unreadable or empty file is refused rather than
+/// falling back to the platform roots.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_ca_file(path: &std::path::Path) -> Result<Vec<u8>, ConnectionConfigError> {
+    match std::fs::read(path) {
+        Ok(pem) if !pem.is_empty() => Ok(pem),
+        _ => Err(ConnectionConfigError::InvalidCaFile),
     }
 }
 
@@ -164,6 +190,7 @@ pub fn resolve_connection_options(
         endpoint: parsed.as_str().trim_end_matches('/').to_owned(),
         transport,
         credential: credential.to_owned(),
+        ca_certificate: None,
     })
 }
 
@@ -246,6 +273,23 @@ mod tests {
             Some(ConnectionConfigError::InvalidCredential)
         );
         assert!(!format!("{explicit:?}").contains("explicit-key"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_ca_file_is_read_whole_and_never_falls_back() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let bundle = directory.path().join("ca.pem");
+        std::fs::write(&bundle, b"-----BEGIN CERTIFICATE-----")?;
+        assert_eq!(read_ca_file(&bundle)?, b"-----BEGIN CERTIFICATE-----");
+        let empty = directory.path().join("empty.pem");
+        std::fs::write(&empty, b"")?;
+        for refused in [empty, directory.path().join("absent.pem")] {
+            assert_eq!(
+                read_ca_file(&refused).err(),
+                Some(ConnectionConfigError::InvalidCaFile)
+            );
+        }
         Ok(())
     }
 }

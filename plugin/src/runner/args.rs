@@ -92,6 +92,10 @@ pub struct Args {
     /// Explicit provider credentials file.
     #[arg(global = true, long)]
     pub credentials: Option<PathBuf>,
+    /// Read provider API keys only from the host process environment, including
+    /// <PROVIDER>_API_KEY for custom catalog entries. No keychain or login reads.
+    #[arg(global = true, long, conflicts_with = "credentials")]
+    pub environment_credentials: bool,
     /// Root directory for user settings discovery.
     #[arg(global = true, long)]
     pub settings_root: Option<PathBuf>,
@@ -197,7 +201,8 @@ pub struct Args {
     pub inline: bool,
     /// Drive the agent tree an endpoint serves instead of this machine's
     /// harness: the given URL, else `ACYCLIC_ENDPOINT`, else the managed
-    /// default, with `ACYCLIC_API_KEY` as the credential.
+    /// default, with `ACYCLIC_API_KEY` as the credential. `ACYCLIC_CA_FILE`
+    /// names a PEM CA bundle that replaces the platform roots.
     #[arg(global = true, long, num_args = 0..=1, conflicts_with = "host_workspace")]
     pub endpoint: Option<Option<String>>,
     /// Optional operation in place of the default conversation.
@@ -208,6 +213,24 @@ pub struct Args {
 impl Args {
     /// Normalize the exec shorthand before validating its input identity.
     pub fn prepare_input(&mut self) -> Result<(), &'static str> {
+        if matches!(
+            self.command,
+            Some(Command::Run { goal: Some(_), .. } | Command::Serve(_))
+        ) {
+            if self.credentials.is_some() {
+                return Err(
+                    "unattended execution reads provider keys from the process environment; remove --credentials",
+                );
+            }
+            self.environment_credentials = true;
+        }
+        if matches!(
+            self.command,
+            Some(Command::Run { goal: Some(_), .. } | Command::Supervise { .. })
+        ) && (self.prompt.is_some() || self.input_format != InputFormat::Text)
+        {
+            return Err("goal execution and supervision accept no prompt or JSONL input");
+        }
         if matches!(self.command, Some(Command::Send { .. })) {
             if self.endpoint.is_none() || self.operation.is_none() {
                 return Err(
@@ -260,7 +283,7 @@ impl Args {
         if self.fork_from.is_some()
             && !matches!(
                 self.command,
-                None | Some(Command::Run | Command::Exec { .. })
+                None | Some(Command::Run { .. } | Command::Exec { .. })
             )
         {
             return Err(
@@ -320,7 +343,7 @@ impl Args {
         if self.output_format == OutputFormat::Jsonl
             && self.input_format == InputFormat::Text
             && self.prompt.is_none()
-            && matches!(self.command, None | Some(Command::Run))
+            && matches!(self.command, None | Some(Command::Run { goal: None, .. }))
         {
             return Err(
                 "event input: no task or JSONL input; recovery: acyclic run --output-format jsonl --operation OPERATION --input-format jsonl",
@@ -333,7 +356,7 @@ impl Args {
         if self.transcripts.is_some()
             && !matches!(
                 self.command,
-                None | Some(Command::Run | Command::Exec { .. } | Command::Doctor)
+                None | Some(Command::Run { .. } | Command::Exec { .. } | Command::Doctor)
             )
         {
             return Err(
@@ -345,7 +368,7 @@ impl Args {
             && (self.host_workspace
                 || !matches!(
                     self.command,
-                    None | Some(Command::Run | Command::Exec { .. } | Command::Doctor)
+                    None | Some(Command::Run { .. } | Command::Exec { .. } | Command::Doctor)
                 ))
         {
             return Err(
@@ -483,8 +506,21 @@ impl Args {
 /// Operations accepted by the shipping command-line parser.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run the GraphCoder preset through the shared conversation driver.
-    Run,
+    /// Run the shared file-driven goal continuation until goal or terminal signal.
+    Run {
+        /// UTF-8 Markdown goal; plain Markdown starts active.
+        #[arg(long, requires = "policy", conflicts_with = "prompt")]
+        goal: Option<PathBuf>,
+        /// Version-one supervision policy with owner-configured reservations.
+        #[arg(long, requires = "goal")]
+        policy: Option<PathBuf>,
+    },
+    /// Follow every admitted session's lifecycle and supervision source stream.
+    Supervise {
+        /// Version-one JSONL events on stdout, one original event per line.
+        #[arg(long, required = true)]
+        json: bool,
+    },
     /// Attach the terminal to an existing canonical agent path.
     Attach { path: String },
     /// Execute through the same conversation driver used by prompt mode.
@@ -727,6 +763,42 @@ mod tests {
         assert!(run.no_compaction);
         assert!(run.no_peer);
         assert_eq!(run.prompt.as_deref(), Some("task"));
+        assert!(
+            !run.environment_credentials,
+            "ordinary runs retain credential selection"
+        );
+        let mut credentialed =
+            Args::try_parse_from(["acyclic", "run", "--credentials", "keys.json", "-p", "task"])
+                .unwrap();
+        credentialed.prepare_input().unwrap();
+        assert!(!credentialed.environment_credentials);
+        let mut goal = Args::try_parse_from([
+            "acyclic",
+            "run",
+            "--goal",
+            "GOAL.md",
+            "--policy",
+            "policy.json",
+        ])
+        .unwrap();
+        goal.prepare_input().unwrap();
+        assert!(goal.environment_credentials);
+        for command in [
+            vec!["run", "--goal", "GOAL.md", "--policy", "policy.json"],
+            vec!["supervise", "--json"],
+        ] {
+            for input in [vec!["-p", "discarded"], vec!["--input-format", "jsonl"]] {
+                match Args::try_parse_from(
+                    ["acyclic"]
+                        .into_iter()
+                        .chain(command.iter().copied())
+                        .chain(input),
+                ) {
+                    Ok(mut args) => assert!(args.prepare_input().is_err()),
+                    Err(_) => {}
+                }
+            }
+        }
 
         let mut attach =
             Args::try_parse_from(["acyclic", "attach", "harness/agents/root"]).unwrap();

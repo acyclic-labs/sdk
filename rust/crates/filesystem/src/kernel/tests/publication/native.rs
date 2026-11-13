@@ -253,6 +253,8 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
         acyclic_stream::OwnedBytes::from_vec_with_guard(data, custody, original.runtime_meter())
             .expect("fresh evidence has fully initialized unique backing");
     let intent = PublicationIntent {
+        original_evidence_reference: None,
+        original_evidence_custody: None,
         preconditions: None,
         operation_context: Some(Digest::from_bytes([59; 32])),
         original_evidence: Some(evidence),
@@ -322,9 +324,40 @@ async fn native_publication_lost_ack_reopens_original_without_resealing_or_secon
             None,
             &mut accounting,
         )?;
-        assert_eq!(
-            decoded.original_evidence,
-            Some(b"immutable original operation data".as_slice())
+        let reference = decoded
+            .original_evidence
+            .ok_or("missing original evidence")?;
+        let body = crate::kernel::read_blob_range_with_accounting(
+            &objects,
+            reference.root,
+            crate::ByteRange {
+                offset: 0,
+                length: reference.bytes,
+            },
+            limits().decode,
+            &mut accounting,
+            &cancellation,
+            true,
+        )
+        .await?;
+        assert_eq!(body.bytes.as_ref(), b"immutable original operation data");
+        crate::kernel::verify_original_publication_evidence(
+            reference,
+            &body.bytes,
+            &mut accounting,
+        )?;
+        let changed = OriginalEvidence {
+            digest: Digest::ZERO,
+            ..reference
+        };
+        assert!(
+            crate::kernel::verify_original_publication_evidence(
+                changed,
+                &body.bytes,
+                &mut accounting
+            )
+            .is_err(),
+            "changed original identity was admitted"
         );
         let (payload, fingerprint) = construct_publication_commit(
             request,

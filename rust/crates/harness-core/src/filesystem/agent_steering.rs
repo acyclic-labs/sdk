@@ -40,7 +40,9 @@ pub(super) struct FilesystemBoundary<P: ?Sized, A: 'static, O: 'static> {
     pub agent: AgentState,
     operation: OperationId,
     pub inbox: u64,
+    initial_through: u64,
     pub files: Arc<AgentInternalFiles<A, O>>,
+    journal_reader: Arc<FilesystemContentVerifier<A, O>>,
     pub writer: Arc<dyn ContentPublisher>,
     maximum: Option<u64>,
     admitted: Mutex<Admitted>,
@@ -63,9 +65,9 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
         issuer: RuntimeAuthority,
         admission: TurnAdmission,
         agent: AgentState,
-        operation: OperationId,
-        inbox: u64,
+        identity: (OperationId, u64, u64),
         files: Arc<AgentInternalFiles<A, O>>,
+        journal_reader: Arc<FilesystemContentVerifier<A, O>>,
         writer: Arc<dyn ContentPublisher>,
         maximum: Option<u64>,
     ) -> Self {
@@ -75,9 +77,11 @@ impl<P: ?Sized, A: 'static, O: 'static> FilesystemBoundary<P, A, O> {
             issuer,
             admission,
             agent,
-            operation,
-            inbox,
+            operation: identity.0,
+            inbox: identity.1,
+            initial_through: identity.2,
             files,
+            journal_reader,
             writer,
             maximum,
             admitted: Mutex::default(),
@@ -113,8 +117,10 @@ where
                 .unwrap_or_else(|| self.inbox.saturating_add(1).max(self.agent.steered_through))
         };
         // Preparation may publish source deltas behind other arrivals. Include
-        // their ordered prefix, but do not replace the turn's original frozen
-        // notice frontier with unrelated arrivals before the first dispatch.
+        // their ordered prefix and the inbox cut captured for this first request.
+        // A paused actor has not ingested queued inputs yet; its first request
+        // still admits that committed prefix. Later arrivals wait for the next
+        // boundary, and replay uses ContextPrepared's exact original cut.
         // Replay always uses ContextPrepared's exact original cut.
         let until = match frozen {
             Some(cut) => crate::agent::BoundaryEnd::Exact(cut.through),
@@ -124,6 +130,7 @@ where
                     .map_err(|_| Error::Storage("steering admission lock poisoned".into()))?
                     .prepared_sources
                     .unwrap_or(from)
+                    .max(self.initial_through)
                     .max(from),
             ),
             None => crate::agent::BoundaryEnd::Open,
@@ -174,9 +181,25 @@ where
             }
             let content = crate::agent::model_input_at(&self.agent.path, inbox, &input.input)
                 .map_err(Error::from)?;
+            // Notice envelopes retain host custody; their described paths
+            // never enter the agent's content grants.
+            if waking_notice {
+                let content =
+                    crate::agent::expand_attachments(content, self.journal_reader.as_ref()).await?;
+                let ModelContent::Part(ModelContentPart::Notices { notices: events }) = content
+                else {
+                    return Err(Error::Invalid(
+                        "staged steering Notice lost its event block".into(),
+                    ));
+                };
+                for notice in events {
+                    notices
+                        .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
+                        .push(notice)?;
+                }
+                continue;
+            }
             let external = content.file_refs().cloned().collect::<Vec<_>>();
-            // Staged inputs retain the original exact-file admission. Notice
-            // JSON itself carries no authority to the paths it describes.
             if external.is_empty() {
                 messages.push(ModelMessage {
                     role: ModelRole::User,
@@ -206,20 +229,6 @@ where
                 None,
             )?;
             let mut content = crate::agent::expand_attachments(content, &*reader).await?;
-            if waking_notice {
-                let ModelContent::Part(ModelContentPart::Notices { notices: events }) = content
-                else {
-                    return Err(Error::Invalid(
-                        "staged steering Notice lost its event block".into(),
-                    ));
-                };
-                for notice in events {
-                    notices
-                        .get_or_insert_with(|| NoticeBlocks::new(self.maximum))
-                        .push(notice)?;
-                }
-                continue;
-            }
             // The envelope delegates its validated immutable contents, not its
             // own exact-file grant. Derive those files under the same original
             // admission; an admitted caller's ceiling remains unchanged.

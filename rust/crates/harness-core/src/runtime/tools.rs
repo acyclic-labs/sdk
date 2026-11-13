@@ -347,6 +347,7 @@ pub struct ToolContext {
     pub(super) call_id: String,
     #[doc(hidden)]
     pub model_turn: (OperationId, u32),
+    pub(crate) output_activity: bool,
     pub(crate) execution_target: Option<Arc<Target>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
@@ -365,6 +366,7 @@ impl ToolContext {
             // A directly issued call owns a standalone turn. The stock executor
             // binds model-issued calls to their enclosing execution and step.
             model_turn: (operation_id, 0),
+            output_activity: false,
             execution_target: None,
             #[cfg(not(target_arch = "wasm32"))]
             execution_grant: None,
@@ -493,7 +495,7 @@ impl ToolContext {
         operation_id: OperationId,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        self.observe_once(self.task().tool_content(None), operation_id, io)
+        self.observe_tool_source_file_once(operation_id, None, None, io)
             .await
     }
 
@@ -519,7 +521,34 @@ impl ToolContext {
         let destination = replacement_path
             .map(|path| writer.destination(source_volume, path, io))
             .transpose()?;
-        self.task()
+        if let Some((volume, path)) = &destination {
+            let (receipt, retained) = self.observe_tool_changes(operation_id, volume, io).await?;
+            let Some(receipt) = receipt else {
+                return Ok((None, retained));
+            };
+            let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+            if receipt.members.len() != 1 {
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "replacement receipt is not one original update",
+                ));
+            }
+            if receipt.members[0].path() != path.as_ref() {
+                drop(receipt);
+                drop(hold);
+                return Ok((None, 0));
+            }
+            self.published_changes(operation_id, volume, &receipt, io)
+                .await?;
+            if let Some(hold) = hold {
+                hold.into_retained()?;
+            }
+            let (file, retained) = Self::replacement_file(receipt, retained, io)?;
+            return Ok((Some(file), retained));
+        }
+        let output = self
+            .task()
             .observe_bound_file_once(
                 binding,
                 operation_id,
@@ -529,7 +558,15 @@ impl ToolContext {
                 io,
                 self.effective_scope(),
             )
-            .await
+            .await?;
+        let hold = io.map(|io| io.guard_owned(output.1)).transpose()?;
+        if let Some(file) = &output.0 {
+            self.published_file(operation_id, file, io).await?;
+        }
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok(output)
     }
 
     async fn observe_once(
@@ -726,6 +763,21 @@ impl ToolContext {
                 ));
             }
         }
+        if changes.iter().any(|change| {
+            !matches!(
+                change,
+                crate::conversation::ContentChange::DeleteExpected { .. }
+                    | crate::conversation::ContentChange::DeleteAt { .. }
+                    | crate::conversation::ContentChange::Delete { .. }
+            )
+        }) && !content.reader.supports_read(volume, io)?
+        {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original content reader has no bounded engine",
+            ));
+        }
         writer.supports_stage(io)?;
         let (files, hold) = writer
             .stage_changes(
@@ -864,6 +916,48 @@ impl ToolContext {
         Ok((files, retained))
     }
 
+    /// Records authored progress from an authenticated original conditional
+    /// receipt. Producers call this before returning or recovering their
+    /// terminal result. Derived/control output must not enter this boundary.
+    pub async fn published_changes(
+        &self,
+        operation: OperationId,
+        volume: &VolumeRef,
+        changes: &crate::conversation::ContentChanges,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        if let Some(journal) = &self.task.journal {
+            journal
+                .published_progress(
+                    self.turn_id(),
+                    operation,
+                    crate::executor::ProgressPublication::Changes { volume, changes },
+                    io,
+                )?
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn published_file(
+        &self,
+        operation: OperationId,
+        file: &FileRef,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        if let Some(journal) = &self.task.journal {
+            journal
+                .published_progress(
+                    self.turn_id(),
+                    operation,
+                    crate::executor::ProgressPublication::File(file),
+                    io,
+                )?
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Publishes a file tool's new file once where the task's commands
     /// write, under the effective tool scope and caller IO limits.
     pub async fn stage_tool_file_once(
@@ -876,16 +970,23 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
         let (binding, path) = self.task().tool_publication_path(path, io)?;
-        self.stage_once(
-            binding,
-            operation_id,
-            path,
-            bytes,
-            media_type,
-            display_name,
-            io,
-        )
-        .await
+        let output = self
+            .stage_once(
+                binding,
+                operation_id,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                io,
+            )
+            .await?;
+        let hold = io.map(|io| io.guard_owned(output.1)).transpose()?;
+        self.published_file(operation_id, &output.0, io).await?;
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok(output)
     }
 
     #[allow(
@@ -925,19 +1026,65 @@ impl ToolContext {
         bytes: &[u8],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
-        let task = self.task();
-        task.stage_bound_file(
-            task.content_binding(Some(source.volume())),
-            operation_id,
-            source.path(),
-            bytes,
-            source.descriptor().media_type(),
-            source.display_name(),
-            super::content_write::ContentPublication::Replacement(source),
-            self.effective_scope(),
-            io,
-        )
-        .await
+        let (receipt, retained) = self
+            .stage_tool_changes(
+                operation_id,
+                source.volume(),
+                &[crate::conversation::ContentChange::UpdateExpected { source, bytes }],
+                io,
+            )
+            .await?;
+        let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+        self.published_changes(operation_id, source.volume(), &receipt, io)
+            .await?;
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Self::replacement_file(receipt, retained, io)
+    }
+
+    /// Move the sole replacement out of its original batch, releasing only
+    /// the batch's discarded storage on the same allocation ledger.
+    fn replacement_file(
+        receipt: crate::conversation::ContentChanges,
+        retained: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, u64)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut hold = io.map(|io| io.guard_owned(retained)).transpose()?;
+        let crate::conversation::ContentChanges {
+            generation,
+            mut members,
+            ..
+        } = receipt;
+        if members.len() != 1 {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "replacement receipt is not one original update",
+            ));
+        }
+        let Some(crate::conversation::ContentChangeResult::Updated(file)) = members.pop() else {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Storage,
+                "replacement receipt is not an original update",
+            ));
+        };
+        drop(members);
+        drop(generation);
+        #[cfg(not(target_arch = "wasm32"))]
+        let retained = if let Some(hold) = &mut hold {
+            hold.substitute(file.logical_owned_bytes()?)?;
+            hold.bytes()
+        } else {
+            0
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        Ok((file, retained))
     }
 
     /// Resolves one public path through the exact workspace's read policy.

@@ -292,15 +292,13 @@ impl<
         operation: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        let state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        if state.source != self.binding_source(&state, ctx).await? {
-            return Err(LazyWorkspaceError::StaleSource);
-        }
+        let (mut state, source) = self
+            .recorded_binding(|| LazyWorkspaceError::NotFound, ctx)
+            .await?;
         if let Some(pending) = &state.pending_remove {
+            if state.source != source {
+                return Err(LazyWorkspaceError::StaleSource);
+            }
             return if matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
                 && state.overlay == pending.prepared_overlay
             {
@@ -309,6 +307,8 @@ impl<
                 Err(LazyWorkspaceError::Concurrent)
             };
         }
+        // This mutation, rather than a preceding read, owns the epoch update.
+        state.source = source;
         let mut overlay = state.overlay;
         let mut authored = None;
         for path in paths.iter().chain(selected) {

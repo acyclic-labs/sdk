@@ -231,6 +231,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
         }
         let snapshot = self.provider.snapshot(provider_source, query, ctx).await?;
         ctx.check()?;
+        self.provider_source(source)?;
         Ok((cut, snapshot))
     }
 }
@@ -277,6 +278,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
                 .snapshot(provider_source, ViewQuery::Lookup(path), &mut ctx)
                 .await?;
             ctx.check()?;
+            self.provider_source(&source)?;
             let mut node = self.view.lookup(cut, &snapshot, path, &mut ctx)?;
             if let Some(node) = &mut node {
                 node.version = self.version(&source, cut, path, &mut ctx)?;
@@ -335,6 +337,7 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Deman
                 )
                 .await?;
             ctx.check()?;
+            self.provider_source(&source)?;
             let mut page =
                 self.view
                     .nodes(cut, &snapshot, directory, cursor, maximum_entries, &mut ctx)?;

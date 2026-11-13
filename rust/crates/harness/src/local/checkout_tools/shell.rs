@@ -131,6 +131,19 @@ impl CheckoutTools {
         )
         .await?;
         if let Some(started) = started {
+            if let Err(error) = context
+                .record_native_progress(
+                    crate::runtime::NativeCaptureEvidence::Pending {
+                        operation: super::capture::capture_operation(operation, 1),
+                    },
+                    None,
+                )
+                .await
+            {
+                control.stop();
+                let _ = completion.await;
+                return Err(error);
+            }
             let directory = format!("tools/{}/{}", context.turn_id(), operation);
             let cancel = native_spill.trim_end_matches(".log").to_owned() + ".cancel";
             let mut result = ToolResult {
@@ -175,6 +188,9 @@ impl CheckoutTools {
         } else {
             completion.await?
         };
+        // The native capture future owns and reaps the complete process tree.
+        // Publish that fact before checkout capture or result presentation.
+        files.completed().await?;
         let state = match state {
             Some(state) => state,
             None => lock_owned(StateArc::clone(&self.state)).await,

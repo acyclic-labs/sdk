@@ -177,6 +177,27 @@ fn token(path: &str, change: impl Fn(&mut Block)) -> Vec<u8> {
 }
 
 #[test]
+fn credential_capacity_counts_live_entries_not_slot_numbers() {
+    let authority = authority(State::new());
+    let mut slots = authority::Slots::default();
+    let credential = token("records", |_| {});
+    authority
+        .register(&mut slots, u32::MAX, &credential, 1)
+        .unwrap();
+    // Renewal spends no additional reservation; another live identity does.
+    authority
+        .register(&mut slots, u32::MAX, &credential, 1)
+        .unwrap();
+    assert!(matches!(
+        authority.register(&mut slots, 0, &credential, 1),
+        Err(StreamError::Capacity)
+    ));
+    // Clearing remains possible with no available registration capacity.
+    authority.register(&mut slots, u32::MAX, &[], 0).unwrap();
+    authority.register(&mut slots, 0, &credential, 1).unwrap();
+}
+
+#[test]
 fn declared_method_credentials_match_session_admission() {
     use crate::StreamMethod;
     use acyclic_auth::action::Action;
@@ -514,10 +535,6 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         bind(&auth, &slots, "other"),
         Err(Rejection::Forbidden)
     ));
-    assert_eq!(
-        auth.register(&mut slots, 2, &bytes, 2),
-        Err(StreamError::Capacity)
-    );
     let mut forged = bytes.clone();
     if let Some(byte) = forged.get_mut(20) {
         *byte ^= 1;

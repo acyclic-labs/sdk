@@ -1,10 +1,10 @@
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{EncodeWorkStep, Encoder};
-const SNAPSHOT_VERSION: u16 = 4;
-const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v4\0";
+const SNAPSHOT_VERSION: u16 = 5;
+const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v5\0";
 #[cfg(not(target_arch = "wasm32"))]
-const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v3\0";
+const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v4\0";
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn publication_evidence(
@@ -18,7 +18,7 @@ pub(crate) fn publication_evidence(
             + if matches!(context, NativeSnapshotContext::Authored { .. }) {
                 0
             } else {
-                64 + match &context {
+                128 + match &context {
                     NativeSnapshotContext::Lazy(cut)
                     | NativeSnapshotContext::Selected { cut, .. } => cut.source.encoded_len(),
                     NativeSnapshotContext::Authored { .. } => 0,
@@ -79,6 +79,8 @@ pub(crate) fn publication_evidence(
             cut.source.encode(|part| encoder.fixed(part));
             encoder.fixed(&cut.overlay.into_bytes());
             encoder.fixed(&cut.shadows.into_bytes());
+            encoder.fixed(&cut.prior_overlay.into_bytes());
+            encoder.fixed(&cut.prior_shadows.into_bytes());
         }
         if let NativeSnapshotContext::Selected { input, .. } = context {
             encoder.fixed(input.as_bytes());
@@ -174,6 +176,10 @@ pub(super) fn decode_publication_context(
                     source: SourceReference::decode(&mut decoder, &mut observe)?,
                     overlay: LazyOverlayId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
                     shadows: LazyShadowId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
+                    prior_overlay: LazyOverlayId(
+                        decoder.fixed::<32, crate::FsError>(&mut observe)?,
+                    ),
+                    prior_shadows: LazyShadowId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
                 };
                 if kind == 2 {
                     NativeSnapshotContext::Selected {

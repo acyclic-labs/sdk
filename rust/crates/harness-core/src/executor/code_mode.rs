@@ -241,10 +241,7 @@ impl StockExecution<'_> {
             })?;
             stock_vec_push(
                 messages,
-                ModelMessage {
-                    role: ModelRole::System,
-                    content: ModelContent::Text(stock_string_copy(text, self.io)?),
-                },
+                super::tool_hooks::hook_context(stock_string_copy(text, self.io)?),
                 self.io,
             )?;
         }
@@ -363,6 +360,12 @@ impl StockExecution<'_> {
                         let input_bytes = call.arguments.value.len();
                         let result = self.js_call(journal, identity, parent, ordinal, &call, &mut inner_context).await?;
                         let result = match result {
+                            ExecutionProgress::Controlled(control) => {
+                                stop.0.cancel();
+                                drop(call);
+                                let _ = worker.await;
+                                return Ok(ExecutionProgress::Controlled(control));
+                            }
                             ExecutionProgress::Ready(result) => result,
                             ExecutionProgress::Pending(operation) => {
                                 stop.0.cancel();
@@ -482,10 +485,7 @@ impl StockExecution<'_> {
                 };
                 stock_vec_push(
                     hook_context,
-                    ModelMessage {
-                        role: ModelRole::System,
-                        content: ModelContent::Text(stock_string_copy(&text, self.io)?),
-                    },
+                    super::tool_hooks::hook_context(stock_string_copy(&text, self.io)?),
                     self.io,
                 )?;
                 stock_vec_push(&mut context, Value::String(text), self.io)?;
@@ -585,6 +585,9 @@ impl StockExecution<'_> {
         .await?
         {
             ExecutionProgress::Ready(receipt) => receipt,
+            ExecutionProgress::Controlled(control) => {
+                return Ok(ExecutionProgress::Controlled(control));
+            }
             ExecutionProgress::Pending(operation) => {
                 return Ok(ExecutionProgress::Pending(operation));
             }

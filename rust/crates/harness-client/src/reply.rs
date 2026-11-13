@@ -1,6 +1,6 @@
 //! One frontend control result, independent of the endpoint's hosting backend.
 
-use crate::{AgentCommand, CommandError, MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES};
+use crate::{AgentCommand, CommandError, MAX_READ_BYTES};
 use acyclic_harness_core::{
     agent::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
@@ -13,14 +13,6 @@ use acyclic_stream::{CommitRequest, wire_codec};
 use base64::Engine as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-
-/// The canonical commit can be larger than a displayed page. The session carrier
-/// must credit/chunk this bounded envelope, never discard an uncertain request.
-pub const MAX_AGENT_REPLY_BYTES: usize = acyclic_stream::MAX_COMMAND_BYTES + 128;
-
-/// A refusal's reason is the host error's own text, cut at a character
-/// boundary to this many bytes so a refusal always fits its envelope.
-pub const MAX_REFUSAL_REASON_BYTES: usize = 4096;
 
 /// Child discovery carries status at the page cut, without another follow.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -284,7 +276,7 @@ pub enum AgentControlFailure {
     Refused {
         /// Stable classification supplied by the host.
         code: String,
-        /// Original host diagnostic, bounded when decoding a wire reply.
+        /// Complete original host diagnostic, preserved when decoding a wire reply.
         reason: String,
     },
     /// The exact original request; presentation must not replace this with prose.
@@ -309,18 +301,6 @@ fn refusal(code: &str, reason: &str) -> String {
     } else {
         reason.to_owned()
     }
-}
-
-/// `text` cut to at most [`MAX_REFUSAL_REASON_BYTES`] at a character boundary.
-fn bounded_reason(mut text: String) -> String {
-    if text.len() > MAX_REFUSAL_REASON_BYTES {
-        let mut end = MAX_REFUSAL_REASON_BYTES;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-    }
-    text
 }
 
 // One binary envelope is shared by in-process and network session adapters.
@@ -350,16 +330,15 @@ mod envelope {
 /// allocating either body or envelope. Page credit includes this wire framing.
 pub fn encoded_agent_reply_size(json_bytes: u64) -> Result<u64, CommandError> {
     let length = usize::try_from(json_bytes).map_err(|_| CommandError::Capacity)?;
-    if length > MAX_AGENT_COMMAND_BYTES {
-        return Err(CommandError::Capacity);
-    }
     let framing = Envelope {
         value: Some(envelope::Value::Reply(Vec::new())),
         reason: None,
     }
     .encoded_len()
         - prost::length_delimiter_len(0);
-    Ok(json_bytes + (framing + prost::length_delimiter_len(length)) as u64)
+    json_bytes
+        .checked_add((framing + prost::length_delimiter_len(length)) as u64)
+        .ok_or(CommandError::Capacity)
 }
 
 /// Encode by borrowing the host's result. Capacity/encoding refusal leaves the
@@ -371,11 +350,7 @@ pub fn encode_agent_reply(
     use envelope::Value;
     let mut reason = None;
     let value = match result {
-        Ok(reply) => {
-            let mut writer = ReplyWriter(Vec::new());
-            serde_json::to_writer(&mut writer, reply).map_err(|_| CommandError::Capacity)?;
-            Value::Reply(writer.0)
-        }
+        Ok(reply) => Value::Reply(serde_json::to_vec(reply).map_err(|_| CommandError::Invalid)?),
         Err(AgentError::Unknown(request)) => {
             if request.wire_encoded_len() > acyclic_stream::MAX_COMMAND_BYTES {
                 return Err(CommandError::Capacity);
@@ -383,7 +358,7 @@ pub fn encode_agent_reply(
             Value::Unknown(wire_codec::commit_to_wire(request))
         }
         Err(error) => {
-            reason = Some(bounded_reason(error.to_string()));
+            reason = Some(error.to_string());
             Value::Refused(error.code().to_owned())
         }
     };
@@ -391,29 +366,19 @@ pub fn encode_agent_reply(
         value: Some(value),
         reason,
     };
-    let encoded_len = match &envelope.value {
-        Some(Value::Reply(bytes)) => usize::try_from(encoded_agent_reply_size(bytes.len() as u64)?)
-            .map_err(|_| CommandError::Capacity)?,
-        _ => envelope.encoded_len(),
-    };
-    if encoded_len > MAX_AGENT_REPLY_BYTES {
-        return Err(CommandError::Capacity);
-    }
+    let encoded_len = envelope.encoded_len();
     if let Ok(reply) = result {
         validate_reply(reply, command, encoded_len)?;
     }
     Ok(envelope.encode_to_vec())
 }
 
-/// Decode only a bounded complete result, checked against the original command.
+/// Decode a complete result, checked against the original command.
 /// A malformed wire result is distinct from a definitive host refusal.
 pub fn decode_agent_reply(
     bytes: &[u8],
     command: &AgentCommand,
 ) -> Result<Result<AgentReply, AgentControlFailure>, CommandError> {
-    if bytes.len() > MAX_AGENT_REPLY_BYTES {
-        return Err(CommandError::Capacity);
-    }
     let envelope_len = bytes.len();
     let envelope = Envelope::decode(bytes).map_err(|_| CommandError::Invalid)?;
     // The one Rust encoder is the protocol authority. Reject duplicate/unknown
@@ -422,11 +387,7 @@ pub fn decode_agent_reply(
         return Err(CommandError::Invalid);
     }
     let reason = envelope.reason;
-    if reason
-        .as_ref()
-        .is_some_and(|reason| reason.len() > MAX_REFUSAL_REASON_BYTES)
-        || (reason.is_some() && !matches!(envelope.value, Some(envelope::Value::Refused(_))))
-    {
+    if reason.is_some() && !matches!(envelope.value, Some(envelope::Value::Refused(_))) {
         return Err(CommandError::Invalid);
     }
     match envelope.value.ok_or(CommandError::Invalid)? {
@@ -459,7 +420,6 @@ pub fn decode_agent_reply(
         }
         envelope::Value::Refused(code) => {
             if code.is_empty()
-                || code.len() > 128
                 || code == "agent_unknown"
                 || !code
                     .bytes()
@@ -473,9 +433,6 @@ pub fn decode_agent_reply(
             }))
         }
         envelope::Value::Reply(bytes) => {
-            if bytes.len() > MAX_AGENT_COMMAND_BYTES {
-                return Err(CommandError::Capacity);
-            }
             let reply: AgentReply =
                 serde_json::from_slice(&bytes).map_err(|_| CommandError::Invalid)?;
             validate_reply(&reply, command, envelope_len)?;
@@ -508,19 +465,13 @@ fn validate_reply(
             AgentReply::ClientFiles { snapshot },
             AgentCommand::ClientFiles {
                 agent,
-                session,
+                root,
                 paths,
                 after,
+                ..
             },
         ) => {
-            return validate_files(snapshot, paths, after.as_ref(), |file| {
-                acyclic_harness_core::client_files::volume(
-                    file.volume().provider().clone(),
-                    agent,
-                    *session,
-                )
-                .is_ok_and(|volume| &volume == file.volume())
-            });
+            return validate_files(snapshot, paths, after.as_ref(), *root, agent);
         }
         (
             AgentReply::ClientFiles { snapshot },
@@ -530,14 +481,13 @@ fn validate_reply(
                 after,
             },
         ) => {
-            return validate_files(snapshot, paths, after.as_ref(), |file| {
-                // Binding roles do not prescribe a volume name.
-                file.volume().class() == VolumeClass::AgentPrivate
-                    && file.volume().owner()
-                        == &VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-                            agent.id_bytes(),
-                        ))
-            });
+            return validate_files(
+                snapshot,
+                paths,
+                after.as_ref(),
+                acyclic_harness_core::client_files::FileRoot::Private {},
+                agent,
+            );
         }
         (
             AgentReply::FilePreviews { snapshot },
@@ -1064,22 +1014,6 @@ fn validate_diff_page(
     Ok(())
 }
 
-struct ReplyWriter(Vec<u8>);
-
-impl std::io::Write for ReplyWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAX_AGENT_COMMAND_BYTES - self.0.len() {
-            return Err(std::io::Error::other("client reply capacity exceeded"));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1140,8 +1074,7 @@ mod tests {
             refused.to_string().contains("Unknown command: /marke"),
             "{refused}"
         );
-        // Negative controls: a reason beside a reply, or past its bound, is
-        // malformed rather than shown.
+        // A reason beside a successful reply is malformed.
         let reply = Envelope {
             value: Some(envelope::Value::Reply(b"{}".to_vec())),
             reason: Some("stray".into()),
@@ -1151,18 +1084,9 @@ mod tests {
             decode_agent_reply(&reply, &AgentCommand::Root {}),
             Err(CommandError::Invalid)
         ));
-        let oversized = Envelope {
-            value: Some(envelope::Value::Refused("agent_turn_error".into())),
-            reason: Some("x".repeat(MAX_REFUSAL_REASON_BYTES + 1)),
-        }
-        .encode_to_vec();
-        assert!(matches!(
-            decode_agent_reply(&oversized, &AgentCommand::Root {}),
-            Err(CommandError::Invalid)
-        ));
-        // A long host error is cut to the bound at a character boundary.
+        let message = "é".repeat(5000);
         let long = Err(AgentError::Turn(Box::new(
-            acyclic_harness_core::Error::Invalid("\u{e9}".repeat(MAX_REFUSAL_REASON_BYTES)),
+            acyclic_harness_core::Error::Invalid(message.clone()),
         )));
         let bytes = encode_agent_reply(&long, &AgentCommand::Root {})?;
         let Err(AgentControlFailure::Refused { reason, .. }) =
@@ -1170,7 +1094,73 @@ mod tests {
         else {
             return Err("a long refusal decoded as another result".into());
         };
-        assert!(reason.len() <= MAX_REFUSAL_REASON_BYTES && !reason.is_empty());
+        assert!(reason.ends_with(&message));
+        Ok(())
+    }
+
+    #[test]
+    fn read_ranges_preserve_complete_bytes_and_refuse_false_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let agent =
+            AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
+        let command = |offset| AgentCommand::Read {
+            agent: agent.clone(),
+            target: crate::ReadTarget::ToolOutput {
+                path: "output".into(),
+                at: None,
+            },
+            offset,
+        };
+        let chunk = usize::try_from(MAX_READ_BYTES)?;
+        let original: Vec<_> = (0..chunk * 2 + 1)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let length = original.len() as u64;
+        let mut collected = Vec::new();
+        for range in original.chunks(chunk) {
+            let request = command(collected.len() as u64);
+            let encoded = encode_agent_reply(&Ok(AgentReply::read(range, length)), &request)?;
+            let reply = decode_agent_reply(&encoded, &request)??;
+            let (decoded, extent) = reply.content()?;
+            assert_eq!(extent, length);
+            collected.extend_from_slice(&decoded);
+        }
+        assert_eq!(collected, original);
+        for offset in [0, MAX_READ_BYTES, length - 1, length, length + 1] {
+            let request = command(offset);
+            let reply = AgentReply::read(&[], length);
+            // Exercise incoming bytes independently of the canonical encoder:
+            // a false EOF must be refused on either side of the shared codec.
+            let incoming = Envelope {
+                value: Some(envelope::Value::Reply(serde_json::to_vec(&reply)?)),
+                reason: None,
+            }
+            .encode_to_vec();
+            if offset == length {
+                let encoded = encode_agent_reply(&Ok(reply), &request)?;
+                assert_eq!(encoded, incoming);
+                assert_eq!(
+                    decode_agent_reply(&incoming, &request)??.content()?,
+                    (vec![], length)
+                );
+            } else {
+                assert!(matches!(
+                    encode_agent_reply(&Ok(reply), &request),
+                    Err(CommandError::Invalid)
+                ));
+                assert!(matches!(
+                    decode_agent_reply(&incoming, &request),
+                    Err(CommandError::Invalid)
+                ));
+            }
+        }
+        assert!(matches!(
+            encode_agent_reply(
+                &Ok(AgentReply::read(&original[..chunk + 1], length)),
+                &command(0)
+            ),
+            Err(CommandError::Invalid)
+        ));
         Ok(())
     }
 
@@ -1873,20 +1863,118 @@ mod tests {
         );
         Ok(())
     }
+    #[test]
+    fn retained_client_file_captures_remain_positive_decoder_inputs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (name, bytes, query) in [
+            (
+                "committed-snapshot",
+                include_bytes!("../../../fuzz/corpus/client_files/committed-snapshot").as_slice(),
+                false,
+            ),
+            (
+                "conditional-publication",
+                include_bytes!("../../../fuzz/corpus/client_files/conditional-publication")
+                    .as_slice(),
+                false,
+            ),
+            (
+                "stream-query-snapshot",
+                include_bytes!("../../../fuzz/corpus/client_files/stream-query-snapshot")
+                    .as_slice(),
+                true,
+            ),
+        ] {
+            let split = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or("capture has no reply separator")?;
+            let command = crate::PreparedCommand::decode_whole(&bytes[..split])?;
+            let reply = decode_agent_reply(&bytes[split + 1..], &command)??;
+            match (command, reply) {
+                (AgentCommand::ClientFiles { .. }, AgentReply::ClientFiles { snapshot }) => {
+                    if query {
+                        assert!(
+                            snapshot.files.values().flatten().any(|file| matches!(
+                                file.source,
+                                acyclic_harness_core::client_files::FileSource::Query { .. }
+                            )),
+                            "{name} lost its positive stream query"
+                        );
+                    }
+                }
+                (
+                    AgentCommand::PublishClientFiles { .. },
+                    AgentReply::ClientFilesPublished { .. },
+                ) => {}
+                _ => panic!("{name} decoded as another operation"),
+            }
+        }
+        let invalid = include_bytes!("../../../fuzz/corpus/client_files/mismatched-reply-path");
+        let split = invalid
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or("negative capture has no reply separator")?;
+        let command = crate::PreparedCommand::decode_whole(&invalid[..split])?;
+        assert!(
+            decode_agent_reply(&invalid[split + 1..], &command).is_err(),
+            "mismatched authored reply path was admitted"
+        );
+        Ok(())
+    }
 }
 
 fn validate_files(
     snapshot: &acyclic_harness_core::client_files::ClientFiles,
     paths: &[String],
-    after: Option<&acyclic_harness_core::resources::GenerationRef>,
-    owns: impl Fn(&acyclic_harness_core::conversation::FileRef) -> bool,
+    after: Option<&acyclic_harness_core::client_files::FileCut>,
+    root: acyclic_harness_core::client_files::FileRoot,
+    agent: &AgentPath,
 ) -> Result<(), CommandError> {
-    if after != Some(&snapshot.generation)
+    use acyclic_harness_core::client_files::{FileRoot, FileSource};
+    let selected = match root {
+        FileRoot::ClientSession { session } => acyclic_harness_core::client_files::volume(
+            snapshot.volume.provider().clone(),
+            agent,
+            session,
+        )
+        .is_ok_and(|volume| volume == snapshot.volume),
+        FileRoot::Private {} => {
+            snapshot.volume.class() == VolumeClass::AgentPrivate
+                && snapshot.volume.owner()
+                    == &VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                        agent.id_bytes(),
+                    ))
+        }
+        FileRoot::Home {} => true, // Original admitted binding is host-resolved.
+    };
+    if snapshot.root == root
+        && selected
+        && snapshot.cut.version == 1
+        && after.is_none_or(|after| !after.same_inputs(&snapshot.cut))
         && snapshot.files.len() == paths.len()
         && paths.iter().all(|path| {
             snapshot.files.get(path).is_some_and(|file| {
-                file.as_ref()
-                    .is_none_or(|file| file.file.path() == path && owns(&file.file))
+                file.as_ref().is_none_or(|file| {
+                    let provenance = match &file.source {
+                        FileSource::Authored { file } => {
+                            file.path() == path && file.volume() == &snapshot.volume
+                        }
+                        FileSource::Query { view, input, .. } => {
+                            !view.is_empty()
+                                && snapshot
+                                    .cut
+                                    .queries
+                                    .get(&input.stream)
+                                    .is_some_and(|through| input.sequence < *through)
+                        }
+                    };
+                    provenance
+                        && file
+                            .descriptor()
+                            .verify(file.text.as_bytes(), &mut None)
+                            .is_ok()
+                })
             })
         })
     {

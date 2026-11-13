@@ -6,6 +6,107 @@ use acyclic_stream::{
 use futures::channel::oneshot;
 use std::sync::Mutex;
 
+struct SelfPausing {
+    package: Package,
+    calls: AtomicUsize,
+    retain: bool,
+}
+
+impl Handler for SelfPausing {
+    fn retain_paused(&self, _: &ActorReference, _: Option<&Checkpoint>) -> bool {
+        self.retain
+    }
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        async move {
+            let mut transition = self
+                .package
+                .on_record(delivery, checkpoint, cancellation)
+                .await?;
+            transition.pause = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+            // Exercise the same admission decision through the guest boundary.
+            crate::guest::wire::decode_transition(&crate::guest::wire::encode_transition(
+                &transition,
+            )?)
+        }
+        .boxed()
+    }
+}
+
+#[tokio::test]
+async fn self_pause_commits_output_and_checkpoint_before_parking_queued_input() -> TestResult {
+    for retain in [true, false] {
+        self_pause_retention(retain).await?;
+    }
+    Ok(())
+}
+
+async fn self_pause_retention(retain: bool) -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "self-pause", &[b"emit", b"emit"]).await?;
+    let handler = Arc::new(SelfPausing {
+        package: Package::new()?,
+        calls: AtomicUsize::new(0),
+        retain,
+    });
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    runtime.track(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    let parked = runtime.store.load(&address).await?;
+    assert_eq!(parked.state().map(State::paused), Some(true));
+    assert_eq!(
+        parked.state().and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
+    assert_eq!(records(&*provider, "out/self-pause").await?.len(), 1);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.slot(&address).is_some(), retain);
+
+    // Reopening cannot admit the queued source while the pause is durable.
+    drop(runtime);
+    let reopened = Runtime::new(
+        crate::guest::Requests::default(),
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    reopened.track(address.clone())?;
+    reopened.drain_actor(&address).await?;
+    assert_eq!(reopened.store.load(&address).await?.anchor, parked.anchor);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(reopened.slot(&address).is_some(), retain);
+    if !retain {
+        // An event-owned owner resume loads the durable paused state and
+        // publishes its ordinary activation; eviction loses no queued input.
+        reopened.track(address.clone())?;
+    }
+    reopened.pause(&address, false).await?;
+    reopened.drain_actor(&address).await?;
+    let resumed = reopened.store.load(&address).await?;
+    assert_eq!(resumed.state().map(State::paused), Some(false));
+    assert_eq!(
+        resumed.state().and_then(|state| state.cursor("inbox")),
+        Some(2)
+    );
+    assert_eq!(records(&*provider, "out/self-pause").await?.len(), 2);
+    assert_eq!(handler.calls.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
 /// The pause gate must fence the next delivery without cancelling the current
 /// one. Use the original delivery and pause locks, with a real committed output.
 #[tokio::test]

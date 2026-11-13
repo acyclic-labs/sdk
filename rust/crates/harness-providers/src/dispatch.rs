@@ -201,21 +201,19 @@ pub(crate) fn request_headers(
     key: Option<&str>,
     account: Option<&str>,
 ) -> BTreeMap<String, String> {
-    let headers = headers(provider, key, account, true);
+    let mut headers = headers(provider, key, account, true);
+    // Every attempt of a model step names its journal dispatch, so a relay's
+    // or provider's request log joins the step's usage record exactly.
+    headers.retain(|name, _| !name.eq_ignore_ascii_case("x-client-request-id"));
+    headers.insert(
+        "x-client-request-id".into(),
+        format!("{}-{}", dispatch.operation_id, dispatch.step),
+    );
     #[cfg(not(target_arch = "wasm32"))]
-    let headers = {
-        let mut headers = headers;
-        if provider.codex_login.is_some() {
-            headers.insert("session-id".into(), dispatch.operation_id.to_string());
-            headers.insert("thread-id".into(), dispatch.operation_id.to_string());
-            headers.insert(
-                "x-client-request-id".into(),
-                format!("{}-{}", dispatch.operation_id, dispatch.step),
-            );
-        }
-        headers
-    };
-    let _ = dispatch;
+    if provider.codex_login.is_some() {
+        headers.insert("session-id".into(), dispatch.operation_id.to_string());
+        headers.insert("thread-id".into(), dispatch.operation_id.to_string());
+    }
     headers
 }
 
@@ -325,6 +323,8 @@ impl GenerationAttempt {
                     match events.next().await {
                         Some(Ok(crate::admission::Event::Wait(wait))) =>
                             yield Exchange::Observation(ModelEvent::Wait(wait)),
+                        Some(Ok(crate::admission::Event::Trace(record))) =>
+                            yield Exchange::Observation(ModelEvent::Trace { record }),
                         Some(Ok(crate::admission::Event::Ready(response))) => break Ok(response),
                         Some(Err(error)) => break Err(error),
                         None => break Err(invalid("model send ended without a response")),

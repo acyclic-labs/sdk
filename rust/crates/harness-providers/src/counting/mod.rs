@@ -251,6 +251,7 @@ pub(crate) fn send_count<'a>(
         while let Some(event) = events.next().await {
             match event? {
                 Event::Wait(wait) => yield Event::Wait(wait),
+                Event::Trace(record) => yield Event::Trace(record),
                 Event::Ready(tokens) => {
                     count.input_tokens = tokens;
                     yield Event::Ready((count, count_custody));
@@ -321,6 +322,7 @@ fn exchange_count<'a>(
             loop {
                 match events.next().await {
                     Some(Ok(Event::Wait(wait))) => yield Event::Wait(wait),
+                    Some(Ok(Event::Trace(record))) => yield Event::Trace(record),
                     Some(Ok(Event::Ready(response))) => break Ok(response),
                     Some(Err(error)) => break Err(error),
                     None => break Err(crate::invalid("count send ended without a response")),

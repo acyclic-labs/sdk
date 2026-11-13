@@ -12,13 +12,12 @@ diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/
 diff --git a/rust/crates/harness-core/src/executor/dispatch.rs b/rust/crates/harness-core/src/executor/dispatch.rs
 --- a/rust/crates/harness-core/src/executor/dispatch.rs
 +++ b/rust/crates/harness-core/src/executor/dispatch.rs
-@@ -623,7 +623,5 @@ impl<'a> StockExecution<'a> {
+@@ -623,6 +623,4 @@ impl<'a> StockExecution<'a> {
                              sampling,
                              tokens: super::model_usage::ModelTokenUsage::reported(metadata),
 -                            started_at: clock.started_at(),
 -                            completed_at,
                              latency_ns,
-                             #[cfg(feature = "research")]
                              provider_request_id: metadata["provider_request_id"].as_str(),
 diff --git a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs b/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
 --- a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs

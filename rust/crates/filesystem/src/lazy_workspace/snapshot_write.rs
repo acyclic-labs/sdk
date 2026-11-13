@@ -146,6 +146,8 @@ impl<
                 source: basis.source.clone(),
                 overlay: basis.overlay,
                 shadows: basis.shadows,
+                prior_overlay: basis.overlay,
+                prior_shadows: basis.shadows,
             },
             input,
         };

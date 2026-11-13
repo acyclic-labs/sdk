@@ -12,7 +12,7 @@ use acyclic_harness::{
     filesystem::{Grants, PRIVATE_VOLUME, TurnLimits},
     hosting::{Bound, Placement, RootRequest, Runtime, Serving, Turns, VerifiedCaller},
     local::{Connection, Event, agent_conversation::Conversation},
-    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     preset::Preset,
     resources::ProviderRef,
     server::{Hosted, ServerConfig},
@@ -161,7 +161,11 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
         let turns = Turns {
             executors: Arc::new(acyclic_harness_core::filesystem::StockExecutors::new(
                 (
-                    Model::new("conformance".into(), "answer".into(), "1".into())?,
+                    acyclic_harness_core::model::Model::new(
+                        "fixture".into(),
+                        "test".into(),
+                        "1".into(),
+                    )?,
                     Arc::new(Answer),
                 ),
                 ToolRegistry::default(),

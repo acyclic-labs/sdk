@@ -348,7 +348,7 @@ async fn run_inner(
         || !args.local_service
             && matches!(
                 args.command,
-                None | Some(Command::Run | Command::Exec { .. })
+                None | Some(Command::Run { .. } | Command::Exec { .. })
             )
         || args.agent.is_some()
         || args.new_session
@@ -359,6 +359,7 @@ async fn run_inner(
             Some(
                 Command::Sessions(_)
                     | Command::Inspect(_)
+                    | Command::Supervise { .. }
                     | Command::NewSession { .. }
                     | Command::Name { .. }
                     | Command::Rename { .. }
@@ -384,8 +385,16 @@ async fn run_inner(
             )
             .await;
         }
-        if matches!(args.command, Some(Command::Inspect(_))) {
-            return Err("inspect requires an existing session service; select --workspace PATH or --endpoint ADDRESS for its owner".into());
+        if matches!(
+            args.command,
+            Some(Command::Inspect(_) | Command::Supervise { .. })
+        ) {
+            let command = if matches!(args.command, Some(Command::Inspect(_))) {
+                "inspect"
+            } else {
+                "supervise"
+            };
+            return Err(format!("{command} requires an existing session service; select --workspace PATH or --endpoint ADDRESS for its owner").into());
         }
         Some(directory)
     } else {
@@ -418,10 +427,13 @@ async fn run_inner(
         let directory = acyclic_harness::local::service::Directory::for_config(&config)?;
         let owner = directory
             .own()?
-            .with_configuration(std::collections::BTreeMap::from([(
-                "catalog".into(),
-                catalog,
-            )]));
+            .with_configuration(std::collections::BTreeMap::from([
+                ("catalog".into(), catalog),
+                (
+                    "credential-mode".into(),
+                    credential_mode(args.environment_credentials),
+                ),
+            ]));
         let signal = ready
             .take()
             .ok_or("local service requires its readiness channel")?;
@@ -575,6 +587,13 @@ fn owner_arguments(args: &Args) -> Vec<OwnerArgument> {
         ),
         reusable: args.workspace_mounting == args::Mounting::Auto,
     });
+    if args.environment_credentials {
+        arguments.push(OwnerArgument {
+            flag: "--environment-credentials",
+            value: None,
+            reusable: true,
+        });
+    }
     if args.default_config {
         arguments.push(OwnerArgument {
             flag: "--default-config",
@@ -614,21 +633,26 @@ fn catalog_identity(registry: &Registry) -> Result<[u8; 32], Box<dyn std::error:
     .as_bytes())
 }
 
+fn credential_mode(environment: bool) -> [u8; 32] {
+    *blake3::hash(if environment {
+        b"environment"
+    } else {
+        b"configured"
+    })
+    .as_bytes()
+}
+
 async fn require_existing_owner(
     args: &Args,
     directory: &acyclic_harness::local::service::Directory,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let catalog = if args.catalog.is_some() {
-        directory.configuration().await?.get("catalog").copied()
-    } else {
-        None
-    };
-    require_owner_arguments(args, catalog)
+    let configuration = directory.configuration().await?;
+    require_owner_arguments(args, &configuration)
 }
 
 fn require_owner_arguments(
     args: &Args,
-    catalog: Option<[u8; 32]>,
+    configuration: &std::collections::BTreeMap<String, [u8; 32]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &args.catalog {
         // Compare the effective catalog without resolving model credentials.
@@ -636,9 +660,14 @@ fn require_owner_arguments(
         // a file which may have changed after startup.
         let mut requested = Registry::new(Credentials::explicit(Default::default()))?;
         requested.load_catalog(path)?;
-        if catalog != Some(catalog_identity(&requested)?) {
+        if configuration.get("catalog").copied() != Some(catalog_identity(&requested)?) {
             return Err("an existing local owner has a different --catalog; recovery: choose a fresh --host-state-directory".into());
         }
+    }
+    if args.environment_credentials
+        && configuration.get("credential-mode").copied() != Some(credential_mode(true))
+    {
+        return Err("an existing local owner has another credential mode; recovery: choose a fresh --host-state-directory".into());
     }
     if let Some(argument) = owner_arguments(args)
         .into_iter()
@@ -665,15 +694,21 @@ mod owner_arguments_tests {
         let mut registry = Registry::new(Credentials::explicit(Default::default()))?;
         registry.load_catalog(catalog.path())?;
         let admitted = catalog_identity(&registry)?;
-        require_owner_arguments(&args, Some(admitted))?;
-        assert!(require_owner_arguments(&args, None).is_err());
+        require_owner_arguments(
+            &args,
+            &std::collections::BTreeMap::from([("catalog".into(), admitted)]),
+        )?;
+        assert!(require_owner_arguments(&args, &Default::default()).is_err());
 
         // Equality is of the loaded configuration, not its pathname or JSON
         // formatting. No credentials or provider requests are needed to attach.
         let equivalent = tempfile::NamedTempFile::new()?;
         std::fs::write(equivalent.path(), b"{\n}\n")?;
         args.catalog = Some(equivalent.path().to_owned());
-        require_owner_arguments(&args, Some(admitted))?;
+        require_owner_arguments(
+            &args,
+            &std::collections::BTreeMap::from([("catalog".into(), admitted)]),
+        )?;
 
         let mut changed = registry.catalog()["openai"].as_ref().clone();
         changed.base_url = "https://different.example/v1".into();
@@ -681,7 +716,13 @@ mod owner_arguments_tests {
             equivalent.path(),
             serde_json::to_vec(&serde_json::json!({"openai": changed}))?,
         )?;
-        assert!(require_owner_arguments(&args, Some(admitted)).is_err());
+        assert!(
+            require_owner_arguments(
+                &args,
+                &std::collections::BTreeMap::from([("catalog".into(), admitted)])
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -701,7 +742,7 @@ mod owner_arguments_tests {
             argv.extend(["exec", "task"]);
             let args = Args::try_parse_from(argv)?;
             assert!(
-                require_owner_arguments(&args, None).is_err(),
+                require_owner_arguments(&args, &Default::default()).is_err(),
                 "{flag} must not disappear"
             );
             let forwarded = service_arguments(&args);
@@ -716,6 +757,20 @@ mod owner_arguments_tests {
                 );
             }
         }
+        let environment =
+            Args::try_parse_from(["graphcoder", "--environment-credentials", "exec", "task"])?;
+        assert!(
+            service_arguments(&environment)
+                .iter()
+                .any(|arg| arg == "--environment-credentials")
+        );
+        let compatible =
+            std::collections::BTreeMap::from([("credential-mode".into(), credential_mode(true))]);
+        require_owner_arguments(&environment, &compatible)?;
+        assert!(require_owner_arguments(&environment, &Default::default()).is_err());
+        let configured =
+            std::collections::BTreeMap::from([("credential-mode".into(), credential_mode(false))]);
+        assert!(require_owner_arguments(&environment, &configured).is_err());
         let mut args = Args::try_parse_from([
             "graphcoder",
             "--model",
@@ -727,7 +782,7 @@ mod owner_arguments_tests {
         ])?;
         // These fixtures have no owner catalog override, including via environment.
         args.catalog = None;
-        require_owner_arguments(&args, None)?;
+        require_owner_arguments(&args, &Default::default())?;
         assert!(
             !service_arguments(&args)
                 .iter()
@@ -907,6 +962,23 @@ async fn connected(
     } else {
         connection
     };
+    if matches!(args.command, Some(Command::Supervise { .. })) {
+        let mut feed = if args.agent.is_some() {
+            connection.supervision().await?
+        } else {
+            connection.supervision_sessions().await?
+        };
+        let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+        loop {
+            let event = feed.next().await?;
+            // Output custody uses the agent identity when this event belongs
+            // to owner controls outside any run. The public event keeps run=null.
+            let task = event
+                .run
+                .unwrap_or_else(|| OperationId::from_bytes(event.agent.id_bytes()));
+            headless::write_event(&mut output, task, &event).await?;
+        }
+    }
     if !peer_choice_applied {
         connection
             .require_execution(args.model.as_deref(), args.no_compaction)
@@ -919,6 +991,61 @@ async fn connected(
                 args.topology.as_deref().unwrap_or("swarm"),
             )?)
             .await?;
+    }
+    if let Some(Command::Run {
+        goal: Some(goal),
+        policy: Some(policy),
+    }) = &args.command
+    {
+        let goal = String::from_utf8(acyclic_harness::local::read_regular_file(goal)?)?;
+        let policy: acyclic_harness::supervision::Policy =
+            serde_json::from_slice(&acyclic_harness::local::read_regular_file(policy)?)?;
+        let operation = args
+            .operation
+            .as_ref()
+            .map(|value| OperationId::parse(value))
+            .transpose()?
+            .unwrap_or_else(OperationId::new);
+        let conversation = Conversation::open(connection);
+        let result = conversation
+            .run_until_goal(operation, &goal, &policy)
+            .await?;
+        let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
+        headless::write_event(
+            &mut output,
+            operation,
+            &serde_json::json!({"version":1,"operation":operation,"result":&result}),
+        )
+        .await?;
+        use acyclic_harness::{
+            goal::GoalStatus,
+            local::agent_conversation::RunOutcome,
+            supervision::{Action, Kind},
+        };
+        let code = match &result {
+            RunOutcome::Goal { goal } if goal.status == GoalStatus::Done => return Ok(()),
+            RunOutcome::Goal { .. } => 28,
+            RunOutcome::Terminal {
+                signal: Some(signal),
+                ..
+            } => match signal {
+                Kind::RepeatFailure => 20,
+                Kind::ValidationLoop => 21,
+                Kind::NoProgress => 22,
+                Kind::Stuck => 23,
+                Kind::LoopOutput => 24,
+                Kind::Spend => 25,
+            },
+            RunOutcome::Terminal {
+                action: Action::Pause,
+                ..
+            } => 26,
+            RunOutcome::Terminal { .. } => 27,
+        };
+        return Err(Box::new(Exit::new(
+            std::num::NonZeroU8::new(code).ok_or("zero terminal status")?,
+            serde_json::to_string(&result)?,
+        )));
     }
     if let Some(Command::History(page)) = &args.command {
         let page = acyclic_harness::client::AgentPageRequest::new(

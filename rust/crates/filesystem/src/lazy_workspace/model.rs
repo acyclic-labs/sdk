@@ -143,8 +143,32 @@ impl LazyShadowId {
     }
 }
 
-/// Persistent treap mapping a source-derived identity to its latest authored record.
+/// Canonical immutable file data retained by an identity index.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LazyStoredRecord {
+    /// Canonically encoded file record.
+    pub record: Vec<u8>,
+    /// Authenticated scalar metadata.
+    pub metadata: crate::WorkspaceMetadata,
+}
+
+/// Original materialized bytes of one exact source observation. Retaining this
+/// value does not install an authored override in the live namespace.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LazySourceRecord {
+    /// Original source identity and epoch.
+    pub source: SourceReference,
+    /// Original immutable node version.
+    pub version: SourceVersion,
+    /// Materialized original content and metadata.
+    pub content: LazyStoredRecord,
+}
+
+/// Persistent treap retaining authored identities and exact source before-images.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub enum LazyShadow {
     /// Shared empty index root.
     #[default]
@@ -155,10 +179,10 @@ pub enum LazyShadow {
         file_id: FileId,
         /// Deterministic treap priority.
         priority: u64,
-        /// Canonically encoded immutable file record.
-        record: Vec<u8>,
-        /// Projected scalar metadata authenticated with the record.
-        metadata: crate::WorkspaceMetadata,
+        /// Latest authored record, absent for a source-only before-image.
+        authored: Option<LazyStoredRecord>,
+        /// Original source content retained independently of authored overrides.
+        observed: Option<LazySourceRecord>,
         /// Identities ordered before this one.
         left: LazyShadowId,
         /// Identities ordered after this one.
@@ -271,7 +295,7 @@ pub struct LazyForkOrigin {
 }
 
 impl LazyWorkspaceState {
-    /// Current persisted lazy-state format, with explicit subtree completion.
+    /// Current persisted lazy-state format, with subtree completion and source before-images.
     pub const SCHEMA_VERSION: u32 = 12;
 
     /// Constructs the state represented by an immutable cut.

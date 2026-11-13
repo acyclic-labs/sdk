@@ -26,18 +26,15 @@ pub enum SessionsScope {
     Peers,
 }
 
-/// Most bytes a binding's routing adds to a command frame in its invocation.
+/// Space reserved for routing beside one command frame in its invocation.
 const MAX_ROUTING_BYTES: usize = 64 * 1024;
 /// One command frame: the encoded bytes one invocation carries beside its
 /// routing, within the session's one-frame bound. A larger command is not
 /// refused; [`PreparedCommand::new`] stages it in parts of one frame each, so
 /// this bounds only what the host decodes at once.
 pub const MAX_COMMAND_BYTES: usize = acyclic_stream::MAX_COMMAND_BYTES - MAX_ROUTING_BYTES;
-/// Most bytes one [`AgentCommand::Read`] returns; its encoded reply stays
-/// within the reply budget.
+/// Chunk size of one [`AgentCommand::Read`] response.
 pub const MAX_READ_BYTES: u64 = 32 * 1024;
-/// Longest tool-output path a read names.
-const MAX_READ_PATH_BYTES: usize = 1024;
 
 /// Requested page custody. Both ceilings are enforced by the host before it
 /// returns a page; the cursor binds the exact query, authorization and cut.
@@ -81,12 +78,7 @@ impl Default for AgentPageRequest {
 impl AgentPageRequest {
     /// Validate finite page ceilings and retain the host's opaque cursor intact.
     pub fn new(items: u32, bytes: u32, cursor: Option<String>) -> Result<Self, CommandError> {
-        if items == 0
-            || items > 128
-            || bytes == 0
-            || u64::from(bytes) > MAX_COMMAND_BYTES as u64
-            || cursor.as_ref().is_some_and(|cursor| cursor.is_empty())
-        {
+        if items == 0 || bytes == 0 || cursor.as_ref().is_some_and(|cursor| cursor.is_empty()) {
             return Err(CommandError::Capacity);
         }
         Ok(Self {
@@ -246,29 +238,33 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
-    /// Snapshot explicit paths in a named client session; wait on its original
+    /// Snapshot explicit paths under an agent file root; wait on its original
     /// filesystem publication producer when `after` is still current.
     ClientFiles {
         /// Agent selected within the authenticated tree.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
-        /// Stable UI-session identity within that agent.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        session: acyclic_harness_core::OperationId,
+        /// Original private/home binding or a named client session.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        root: acyclic_harness_core::client_files::FileRoot,
+        /// Select this protected original publication instead of writable paths.
+        #[serde(default)]
+        #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+        publication: Option<acyclic_harness_core::OperationId>,
         /// Distinct relative file paths; no directory scan is performed.
         paths: Vec<String>,
-        /// Wait for a generation different from this committed snapshot.
+        /// Wait for a different authored/query input vector.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
-        after: Option<acyclic_harness_core::resources::GenerationRef>,
+        after: Option<acyclic_harness_core::client_files::FileCut>,
     },
-    /// Atomic conditional publication to that same session volume.
+    /// Atomic conditional publication to that same agent file root.
     PublishClientFiles {
         /// Agent selected within the authenticated tree.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
-        /// Stable UI-session identity within that agent.
-        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-        session: acyclic_harness_core::OperationId,
+        /// Original private/home binding or a named client session.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
+        root: acyclic_harness_core::client_files::FileRoot,
         /// Caller-retained identity of this conditional publication.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation: acyclic_harness_core::OperationId,
@@ -285,7 +281,7 @@ pub enum AgentCommand {
         paths: Vec<String>,
         /// Wait on the original filesystem producer after this generation.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
-        after: Option<acyclic_harness_core::resources::GenerationRef>,
+        after: Option<acyclic_harness_core::client_files::FileCut>,
     },
     /// Read bounded text prefixes at one live agent-file snapshot.
     AgentFilePreviews {
@@ -699,10 +695,20 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::ClientFiles {
+                publication: Some(_),
+                after: Some(_),
+                ..
+            } => Err(CommandError::Invalid),
             Self::SetPeerMembership { agent, .. } if agent.parent().is_some() => {
                 Err(CommandError::Invalid)
             }
             Self::NameSession { name, .. } | Self::ResolveSession { name } if name.is_empty() => {
+                Err(CommandError::Invalid)
+            }
+            Self::ClientFiles { after, .. } | Self::AgentFiles { after, .. }
+                if after.as_ref().is_some_and(|cut| cut.version != 1) =>
+            {
                 Err(CommandError::Invalid)
             }
             Self::ClientFiles { paths, .. }
@@ -735,6 +741,9 @@ impl AgentCommand {
                 }
                 let mut unique = std::collections::BTreeSet::new();
                 for change in changes {
+                    if change.text.is_none() && change.expected.is_none() {
+                        return Err(CommandError::Invalid);
+                    }
                     if !unique.insert(&change.path) {
                         return Err(CommandError::Invalid);
                     }
@@ -824,7 +833,6 @@ impl AgentCommand {
                 target: ReadTarget::ToolOutput { path, .. },
                 ..
             } if path.is_empty()
-                || path.len() > MAX_READ_PATH_BYTES
                 || path
                     .split('/')
                     .any(|part| part.is_empty() || part == "." || part == "..") =>
@@ -1156,13 +1164,22 @@ mod tests {
     }
 
     #[test]
-    fn opaque_page_and_finite_defaults_survive_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let page: AgentPageRequest = serde_json::from_str(r#"{"cursor":"cut/opaque+token="}"#)?;
-        assert_eq!(page.items(), 32);
-        assert_eq!(page.bytes(), 32 * 1024);
-        assert_eq!(page.cursor(), Some("cut/opaque+token="));
-        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"items":0}"#).is_err());
-        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"bytes":4294967295}"#).is_err());
+    fn page_capacity_retains_opaque_cursors_and_refuses_empty_pages()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let original = serde_json::json!({
+            "items": u32::MAX,
+            "bytes": u32::MAX,
+            "cursor": "cut/opaque+token="
+        });
+        let page: AgentPageRequest = serde_json::from_value(original.clone())?;
+        assert_eq!(serde_json::to_value(page)?, original);
+        for invalid in [
+            serde_json::json!({"items": 0}),
+            serde_json::json!({"bytes": 0}),
+            serde_json::json!({"cursor": ""}),
+        ] {
+            assert!(serde_json::from_value::<AgentPageRequest>(invalid).is_err());
+        }
         Ok(())
     }
 

@@ -104,6 +104,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         subscription: wire::SessionSubscription,
         channels: usize,
     ) -> Result<Admission, StreamError> {
+        let failure = self
+            .calls
+            .as_ref()
+            .and_then(|owner| owner.failure(&subscription));
         let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
         let identity = channel;
@@ -317,6 +321,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
             _ => return Err(StreamError::Unsupported),
         };
+        if let Some(failure) = failure {
+            let failed = resources::terminal(failure, identity);
+            terminal = Some(match terminal {
+                Some(original) => Box::pin(stream::select(original, failed)) as Source,
+                None => failed,
+            });
+        }
         Ok(Admission::Open(Box::new(Opened {
             identity,
             channel: Channel::opened(

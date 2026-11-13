@@ -320,8 +320,12 @@ impl TurnExecutors for StockExecutors {
     fn question_plugin(&self) -> bool {
         self.question_plugin
     }
-    fn model_selection(&self) -> Option<String> {
-        Some(format!("{}/{}", self.model.provider, self.model.name))
+    fn model_selection(&self) -> Result<Option<String>> {
+        crate::templates::root_model(
+            &format!("{}/{}", self.model.provider, self.model.name),
+            self.models.as_deref(),
+        )
+        .map(Some)
     }
 
     fn settle<'a>(

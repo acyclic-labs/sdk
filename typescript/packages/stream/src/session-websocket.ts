@@ -1,4 +1,4 @@
-import { credentialProvider, credentialStream, resolveCredential, type CredentialProvider } from "@acyclic-labs/auth/credential";
+import { credentialProvider, credentialStream, resolveCredential, websocketCredential, type CredentialProvider } from "@acyclic-labs/auth/credential";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionQueue } from "./session-queue.js";
 import type { SessionConnect } from "./session.js";
@@ -16,7 +16,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
     const unwatch = (): void => { if (watching) { watching = false; watch?.close(); } };
     try {
       const lease = await resolveCredential(provider, sourceSignal);
-      const credential = btoa(String.fromCharCode(...new TextEncoder().encode(lease.token()))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+      const credential = websocketCredential(lease.token());
       const base = new URL(node?.endpoint ?? endpoint);
       if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new StreamError("configuration", "session node must be an authenticated HTTPS endpoint");
       if (!base.pathname.endsWith("/")) base.pathname += "/";
@@ -24,7 +24,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
       url.protocol = "wss:";
       lease.check();
       sourceSignal.throwIfAborted();
-      const socket = factory(url.href, ["acyclic.session.v1", `acyclic.bearer.${credential}`]);
+      const socket = factory(url.href, ["acyclic.session.v1", credential]);
       socket.binaryType = "arraybuffer";
       const incoming = new SessionQueue<Uint8Array>(StreamLimit.MAX_ITEMS);
       let closed = false;

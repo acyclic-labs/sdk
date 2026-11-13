@@ -64,7 +64,15 @@ async fn cancelling_current_input_preserves_a_newer_queued_prompt() -> Result<()
     );
     let next = observed.settled(queued).await?;
     assert_eq!(next.outcome, crate::agent::TurnOutcome::Completed);
-    assert_eq!(client.output_text(&next).await?, "queued prompt survived");
+    let sequence = observed
+        .observer
+        .seen()
+        .checked_sub(1)
+        .expect("settled entry advanced the conversation cursor");
+    assert_eq!(
+        client.output_text_at(sequence, &next).await?,
+        "queued prompt survived"
+    );
     Ok(())
 }
 
@@ -1050,7 +1058,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert!(client.turn(0, &output_only).await.is_err());
     assert_eq!(client.output_text(&output_only).await?, "done");
     output_only.output = absent(&entry.output)?;
-    assert!(client.output_text(&output_only).await.is_err());
+    assert!(client.output_text_at(0, &output_only).await.is_err());
     // The same live query started before this input. Its exact completion
     // replaces the original admission, rather than counting another call.
     while inspection.snapshot().usage.completed == 0 {
@@ -1064,10 +1072,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         inspection.snapshot().waits.elapsed_ns(),
         Some(2_007_000_000)
     );
-    assert_eq!(
-        inspection.snapshot().model,
-        Some(("morph", "morph-kimik31"))
-    );
+    assert_eq!(inspection.snapshot().model, Some(("scripted", "test")));
     assert_eq!(inspection.snapshot().open_children, Some(0));
     assert_eq!(
         inspection.snapshot().context,
@@ -1093,7 +1098,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         "inspection must retain the original monotonic duration"
     );
     assert_eq!(
-        &inspection.snapshot().providers["morph"],
+        &inspection.snapshot().providers["scripted"],
         inspection.snapshot().usage,
         "the admitted provider must receive the same original contribution"
     );
@@ -1138,12 +1143,21 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         }
         assert!(encode_agent_reply(&reply, &command).is_err());
     }
-    // A client reads the settled output from the root's private volume.
-    let output = harness
-        .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
-        .await?;
-    assert!(!output.is_empty());
+    // Journal output requires its committed conversation proof.
+    let denied = async {
+        harness
+            .client_reader()?
+            .read(
+                &entry.output,
+                entry.output.descriptor().byte_length(),
+                None,
+                None,
+            )?
+            .await
+    }
+    .await
+    .expect_err("a raw reader admitted journal output");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
     // The same authenticated connection queries an original status cut; a
     // caller cannot choose a foreign owner or invent a missing status record.
     let (samples, next) = client
@@ -1176,9 +1190,16 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     ))
     .await
     .map_err(agent)?;
+    let state = agents.state(&root).await.map_err(agent)?;
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+        .ok_or_else(|| Error::NotFound("private workspace".into()))?
+        .volume()?;
     let private = filesystem
         .open_workspace(
-            entry.output.volume().storage_name(&mut None)?,
+            private.storage_name(&mut None)?,
             acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -1344,12 +1365,6 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     assert!(
         client
-            .read_private_range(".system/record", &first.generation, 0)
-            .await
-            .is_err()
-    );
-    assert!(
-        client
             .read_private_range("directory-a", &first.generation, length + 1)
             .await
             .is_err()
@@ -1366,7 +1381,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .ok_or_else(|| Error::NotFound("visible cut".into()))?
             .map_err(agent)?
             .generation,
-        snapshot.generation
+        snapshot.cut.generation
     );
     assert!(snapshot.files["absent-row"].is_none());
     assert_eq!(
@@ -1376,7 +1391,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .text,
         "changed after selection"
     );
-    let waiting = client.agent_files(paths.clone(), Some(snapshot.generation.clone()));
+    let waiting = client.agent_files(paths.clone(), Some(snapshot.cut.clone()));
     futures::pin_mut!(waiting);
     assert!(
         futures::poll!(waiting.as_mut()).is_pending(),
@@ -1395,12 +1410,12 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
             .ok_or_else(|| Error::NotFound("published visible cut".into()))?
             .map_err(agent)?
             .generation,
-        updated.generation
+        updated.cut.generation
     );
     visible.retain(std::iter::empty(), 0);
     assert!(visible.snapshot(&root).is_none());
     assert!(futures::poll!(futures::future::poll_fn(|cx| visible.poll_changed(cx))).is_pending());
-    assert_ne!(updated.generation, snapshot.generation);
+    assert_ne!(updated.cut.generation, snapshot.cut.generation);
     assert_eq!(
         updated.files["directory-a"]
             .as_ref()
@@ -1439,238 +1454,6 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     ) {
         inspection.advance().await?;
     }
-    Ok(())
-}
-
-/// The model's real channel owns progress; dropping it must close the same
-/// Session that carries the local commands and follows, retaining queued input.
-#[tokio::test]
-async fn lost_model_producer_closes_local_session_without_settling_input() -> Result<()> {
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    };
-    use tokio::sync::oneshot;
-
-    let directory = tempfile::tempdir().map_err(agent)?;
-    let project = volume(directory.path()).await?;
-    let (entered, entering) = oneshot::channel();
-    let (producer, result) = oneshot::channel::<()>();
-    let gate = Mutex::new(Some((entered, result)));
-    let warming = AtomicBool::new(true);
-    let provider = ScriptedModelProvider::new([
-        super::ScriptedTurn::Text("ready".into()),
-        super::ScriptedTurn::Events(Vec::new()),
-    ])
-    .with_context_capacity(super::capacity())
-    .with_dispatch_observer(move |_| {
-        let warming = warming.swap(false, Ordering::SeqCst);
-        let gate = (!warming).then(|| gate.lock().unwrap().take()).flatten();
-        Box::pin(async move {
-            if warming {
-                return Ok(());
-            }
-            let (entered, result) = gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
-            let _ = entered.send(());
-            result
-                .await
-                .map_err(|_| Error::Storage("model producer closed".into()))?;
-            Err(Error::Invalid("model gate unexpectedly released".into()))
-        })
-    });
-    let harness = Arc::new(
-        super::open_scripted(
-            volume_config(directory.path(), project, Arc::new(provider))?
-                .compaction(crate::context::CompactionPolicy::Disabled),
-        )
-        .await?,
-    );
-    let connection = harness.connect().await?;
-    let client = Conversation::open(connection.clone());
-    // Create the conversation through its actual first turn before testing
-    // out-of-range follows: an absent stream intentionally waits for creation.
-    let mut warmup_events = client.observe(None).await?;
-    let warmup = client.send("warmup", "hello").await?;
-    assert!(matches!(
-        client.settle("warmup", warmup, &mut warmup_events).await?,
-        crate::local::agent_conversation::Settlement::Reply(crate::agent::Reply::Answered { .. })
-    ));
-    let mut events = client.observe(Some(0)).await?;
-    let inbox = client.send("lost-producer", "hello").await?;
-    model_dispatch_before_settlement(&harness, connection.root(), async {
-        entering.await.map_err(agent)
-    })
-    .await?;
-    // Same canonical agent, different original authenticated Session. Refusal
-    // must precede even the reply query, without consuming the other follow.
-    let other = conversation(&harness).await?;
-    let mut unrelated = other.observe(Some(0)).await?;
-    {
-        let invalid = client.settle("lost-producer", inbox, &mut unrelated);
-        tokio::pin!(invalid);
-        let observed = futures::poll!(&mut invalid);
-        assert!(
-            matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(reason))) if reason.contains("observer from the original connection")),
-            "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
-        );
-    }
-    // Retain another observer on the original connection. Its first failed
-    // opening retires only that follow; the other selected follows remain.
-    // A future live cursor is valid and waits, so it cannot provoke retirement.
-    let mut retired = client.replay(&acyclic_harness_client::EventProjection::new(
-        "retired-source".into(),
-    ))?;
-    let root = connection.root().clone();
-    let settling = settled(&harness, &root);
-    tokio::pin!(settling);
-    assert!(
-        futures::poll!(&mut settling).is_pending(),
-        "live runtime must retain settlement"
-    );
-    let mut usage = client.usage_query();
-    while !usage.synchronized() {
-        usage.advance().await?;
-    }
-    assert_eq!(usage.totals().calls, 2);
-    assert_eq!(usage.totals().completed, 1);
-    let before = usage.totals().clone();
-    let fenced = client.wait_current_input();
-    tokio::pin!(fenced);
-    assert!(
-        futures::poll!(&mut fenced).is_pending(),
-        "captured input must remain pending while its producer is live"
-    );
-    let waiting = client.settle("lost-producer", inbox, &mut events);
-    tokio::pin!(waiting);
-    assert!(
-        futures::poll!(&mut waiting).is_pending(),
-        "live producer must retain the wait"
-    );
-    let runtime = &harness.agents.get().unwrap().runtime;
-    let admission = runtime.admit(std::future::pending::<Result<()>>());
-    tokio::pin!(admission);
-    assert!(
-        futures::poll!(&mut admission).is_pending(),
-        "live runtime must retain in-flight admission"
-    );
-    let usage_result = {
-        let advancing = usage.advance();
-        tokio::pin!(advancing);
-        assert!(
-            futures::poll!(&mut advancing).is_pending(),
-            "quiet live usage must wait at its retained frontier"
-        );
-        drop(producer);
-        advancing.await
-    };
-    assert!(
-        matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "usage lost the runtime cause: {usage_result:?}"
-    );
-    let fenced = fenced.await;
-    assert!(
-        matches!(&fenced, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "input fence lost the runtime cause: {fenced:?}"
-    );
-    let admitted = futures::poll!(&mut admission);
-    assert!(
-        matches!(&admitted, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
-        "in-flight admission lost the runtime cause: {admitted:?}"
-    );
-    assert_eq!(
-        usage.totals(),
-        &before,
-        "source loss changed the admitted projection"
-    );
-    // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
-    let observed = futures::poll!(&mut waiting);
-    assert!(
-        matches!(&observed, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
-        "public settlement retained its lost model producer: {observed:?}"
-    );
-    let hosted = harness.agents.get().unwrap();
-    assert!(
-        matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
-    );
-    loop {
-        match retired.next_projected().await {
-            Err(Error::Storage(reason)) => {
-                assert!(
-                    reason.contains("model producer closed"),
-                    "retired follow lost the runtime cause: {reason}"
-                );
-                break;
-            }
-            Err(error) => return Err(error),
-            Ok((event, _)) => {
-                event?;
-            }
-        }
-    }
-    let invalid = client.settle("lost-producer", inbox, &mut retired);
-    tokio::pin!(invalid);
-    assert!(
-        matches!(
-            futures::poll!(&mut invalid),
-            std::task::Poll::Ready(Err(Error::Invalid(_)))
-        ),
-        "settlement admitted a retired original follow or performed I/O before refusal"
-    );
-    let settled = futures::poll!(&mut settling);
-    assert!(
-        matches!(&settled, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
-        "settlement bypassed the original runtime terminal event: {settled:?}"
-    );
-    assert!(
-        harness.agent_stream.as_ref().unwrap().failure().is_none(),
-        "the Session's runtime failure must not be invented as a provider failure"
-    );
-    assert!(
-        matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "commands must retain the same runtime cause"
-    );
-    assert_eq!(
-        hosted
-            .agents()
-            .reply(
-                hosted.root(),
-                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
-                inbox
-            )
-            .await
-            .map_err(agent)?,
-        crate::agent::Reply::Pending,
-        "failed input stays recoverable"
-    );
-    assert_eq!(
-        records(
-            hosted.agents().provider(),
-            hosted.root().conversation().map_err(agent)?
-        )
-        .await?
-        .len(),
-        1,
-        "failed input appended another conversation entry"
-    );
-    assert!(
-        matches!(harness.connect().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "late clients must retain the original runtime cause"
-    );
-    // Both admitted calls outlive the runtime. Only the warm-up completed;
-    // losing the second producer must preserve its distinct unfinished call.
-    let mut exported = Vec::new();
-    client
-        .observation()
-        .await?
-        .write_usage_jsonl(&mut exported)
-        .await?;
-    let rows = serde_json::Deserializer::from_slice(&exported)
-        .into_iter::<crate::executor::ModelUsageProjection<'_>>()
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(agent)?;
-    assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
-    assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
-    assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
     Ok(())
 }
 
@@ -1811,27 +1594,20 @@ async fn session_and_subtree_prices_replay_and_preserve_unfinished_provider_work
         ])
     };
     let prices = Arc::new(ModelPrices::from_jsonl(
-        &["morph-kimik31", "morph-dsv41flash"]
-            .into_iter()
-            .map(|name| {
-                serde_json::to_string(&ModelPriceRecord {
-                    version: 1,
-                    revision: "chosen-price-1".into(),
-                    provider: "morph".into(),
-                    model: name.into(),
-                    effective_at: 1,
-                    currency: "USD".into(),
-                    input_nano_units_per_million: Some(1_000_000),
-                    output_nano_units_per_million: Some(2_000_000),
-                    cached: TokenPrice::Included,
-                    cache_write: TokenPrice::Included,
-                    reasoning: TokenPrice::Included,
-                })
-                .map_err(agent)
-            })
-            .collect::<Result<Vec<_>>>()?
-            .join("\n")
-            .into_bytes(),
+        &serde_json::to_vec(&ModelPriceRecord {
+            version: 1,
+            revision: "chosen-price-1".into(),
+            provider: "scripted".into(),
+            model: "test".into(),
+            effective_at: 1,
+            currency: "USD".into(),
+            input_nano_units_per_million: Some(1_000_000),
+            output_nano_units_per_million: Some(2_000_000),
+            cached: TokenPrice::Included,
+            cache_write: TokenPrice::Included,
+            reasoning: TokenPrice::Included,
+        })
+        .map_err(agent)?,
     )?);
     let provider = super::scripted([
         completed(100, 20),
@@ -5472,5 +5248,554 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     assert_ne!(latest, frontier);
     let delivered: serde_json::Value = serde_json::from_slice(&bytes).map_err(agent)?;
     assert_eq!(delivered["sent"], 3);
+    Ok(())
+}
+
+/// A failed delivery retains its original input while the shared Session
+/// continues to serve healthy siblings and the parent.
+#[tokio::test]
+async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(
+                directory.path(),
+                volume(directory.path()).await?,
+                super::scripted([
+                    super::ScriptedTurn::Text("child done".into()),
+                    super::ScriptedTurn::Text("sibling done".into()),
+                    super::ScriptedTurn::Text("parent still running".into()),
+                ]),
+            )?
+            .without_default_tools()
+            .workspace_mounting(crate::local::WorkspaceMounting::Physical)
+            .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let connection = harness.connect().await?;
+    let root = connection.root().clone();
+    let (agents, _) = harness.agents().await?;
+    for id in ["failed-child", "healthy-sibling"] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(id).map_err(agent)?,
+                brief: crate::model::ModelContent::Text(id.into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("child spawn refused".into()));
+        };
+        let entries = settled(&harness, &child).await?;
+        assert_eq!(entries.len(), 1);
+        let entry = crate::agent::ConversationEntry::decode(&entries[0]).map_err(agent)?;
+        assert!(matches!(
+            entry.outcome,
+            crate::agent::TurnOutcome::Completed
+        ));
+        if id == "failed-child" {
+            // A malformed retained input cannot enter a failure transition.
+            // It must remain unconsumed, without stopping the serving loop.
+            let store = crate::agent::actor_store(agents.provider()).map_err(agent)?;
+            let actor = agents.actor(&child).map_err(agent)?;
+            let selected = connection.select(child.clone()).await?;
+            let status_tail = agents
+                .provider()
+                .tail(child.status().map_err(agent)?)
+                .await
+                .map_err(agent)?;
+            let mut events =
+                crate::local::Observer::open(&selected, entries.len() as u64, status_tail)?;
+            let lost = events.next();
+            tokio::pin!(lost);
+            assert!(futures::poll!(&mut lost).is_pending());
+            let inbox = child.inbox().map_err(agent)?;
+            let input = crate::agent::inbox_tail(&**agents.provider(), &child)
+                .await
+                .map_err(agent)?;
+            let committed = agents
+                .provider()
+                .commit(acyclic_stream::CommitRequest {
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+                    deadline_unix_millis: None,
+                    effects: vec![
+                        acyclic_stream::CommitEffect::hard(
+                            vec![acyclic_stream::CommitCondition::Tail {
+                                path: inbox.clone(),
+                                expected: input,
+                            }],
+                            vec![acyclic_stream::CommitMutation::Append {
+                                path: inbox,
+                                records: vec![
+                                    bytes::Bytes::from_static(b"invalid-agent-record").into(),
+                                ],
+                            }],
+                        ),
+                        store.activation(&actor).map_err(agent)?,
+                    ],
+                })
+                .await
+                .map_err(agent)?;
+            assert!(matches!(
+                committed,
+                acyclic_stream::CommitOutcome::Committed(_)
+            ));
+            assert!(matches!(
+                agents.runtime().complete().await,
+                Err(acyclic_actors::local::Error::CompletionFailed(_))
+            ));
+            assert!(
+                !agents
+                    .input_progress(&child, input)
+                    .await
+                    .map_err(agent)?
+                    .settled
+            );
+            let cause = agents
+                .runtime()
+                .delivery_failure(&actor)
+                .map_err(agent)?
+                .await
+                .to_string();
+            let original = format!("{cause:?}");
+            let status_failure = match selected
+                .session
+                .follow_records(acyclic_stream::FollowRequest::new(
+                    child.status().map_err(agent)?,
+                    status_tail,
+                ))
+                .await
+            {
+                Err(error) => error,
+                Ok(mut statuses) => statuses
+                    .try_next()
+                    .await
+                    .expect_err("failed actor kept its status-only follow"),
+            };
+            assert!(
+                status_failure.to_string().contains(&original),
+                "{status_failure}"
+            );
+            let lost = lost
+                .await
+                .err()
+                .ok_or_else(|| Error::Invalid("failed child kept a live follow".into()))?;
+            assert!(lost.to_string().contains(&original), "{lost}");
+            let child = Conversation::open(selected);
+            let fenced =
+                child.wait_current_input().await.err().ok_or_else(|| {
+                    Error::Invalid("failed child settled its original input".into())
+                })?;
+            assert!(fenced.to_string().contains(&original), "{fenced}");
+        }
+        let runtime = &harness.agents.get().unwrap().runtime;
+        assert!(runtime.failure().is_none());
+        assert!(futures::poll!(core::pin::pin!(runtime.completion())).is_pending());
+        assert!(matches!(
+            connection.execute(&AgentCommand::Root {}).await?,
+            AgentReply::Root { .. }
+        ));
+        harness.connect().await?;
+    }
+    let mut observed = ObservedConversation::open(&harness).await?;
+    let inbox = observed
+        .conversation
+        .send("parent-after-failure", "continue")
+        .await?;
+    let entry = observed.settled(inbox).await?;
+    assert!(matches!(
+        entry.outcome,
+        crate::agent::TurnOutcome::Completed
+    ));
+    Ok(())
+}
+
+/// A lost model producer must fail its original actor waiters, preserving the
+/// queued input and the shared serving loop for unrelated work.
+#[tokio::test]
+async fn lost_model_producer_fails_actor_waiters_without_settling_input() -> Result<()> {
+    lost_model_producer(false).await
+}
+
+#[tokio::test]
+async fn served_lost_model_producer_preserves_actor_failure() -> Result<()> {
+    lost_model_producer(true).await
+}
+
+async fn lost_model_producer(wire: bool) -> Result<()> {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tokio::sync::oneshot;
+
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let (entered, entering) = oneshot::channel();
+    let (producer, result) = oneshot::channel::<()>();
+    let gate = Mutex::new(Some((entered, result)));
+    let warming = AtomicBool::new(true);
+    let provider = ScriptedModelProvider::new([
+        super::ScriptedTurn::Text("ready".into()),
+        super::ScriptedTurn::Events(Vec::new()),
+    ])
+    .with_context_capacity(super::capacity())
+    .with_dispatch_observer(move |_| {
+        let warming = warming.swap(false, Ordering::SeqCst);
+        let gate = (!warming).then(|| gate.lock().unwrap().take()).flatten();
+        Box::pin(async move {
+            if warming {
+                return Ok(());
+            }
+            let (entered, result) = gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
+            let _ = entered.send(());
+            result
+                .await
+                .map_err(|_| Error::Storage("model producer closed".into()))?;
+            Err(Error::Invalid("model gate unexpectedly released".into()))
+        })
+    });
+    let harness = Arc::new(
+        super::open_scripted(
+            volume_config(directory.path(), project, Arc::new(provider))?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let mut transport = None;
+    let connection = if wire {
+        harness.agents().await?;
+        let hosted = harness
+            .agents
+            .get()
+            .ok_or_else(|| Error::Invalid("agents not admitted".into()))?;
+        let server = Arc::clone(hosted.server());
+        let credential = server
+            .bound()
+            .client_credential(server.root(), server.resource(), harness.clock.clone())
+            .await
+            .map_err(agent)?;
+        let credential = acyclic_auth::credential::capability_text(&credential.credential);
+        let changes = server.bound().changes().map_err(agent)?;
+        let composition = crate::server::Hosted::new(
+            server,
+            harness.clock.clone(),
+            harness.clone(),
+            Some(Arc::new(changes)),
+        )
+        .with_completion(hosted.runtime.completion());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(agent)?;
+        let (ready, endpoint) = oneshot::channel();
+        let (stop, stopped) = oneshot::channel();
+        let serving = tokio::spawn(crate::server::serve(
+            listener,
+            crate::server::ServerConfig::new(composition),
+            move |endpoint| {
+                let _ = ready.send(endpoint.endpoint.clone());
+            },
+            async {
+                let _ = stopped.await;
+            },
+        ));
+        let endpoint = endpoint.await.map_err(agent)?;
+        transport = Some((stop, serving));
+        let options =
+            acyclic_harness_client::ConnectionOptions::from_env(Some(&endpoint), Some(&credential))
+                .map_err(agent)?;
+        crate::local::Connection::connect(&options).await?
+    } else {
+        harness.connect().await?
+    };
+    assert_lost_model_producer(harness, connection, entering, producer, wire).await?;
+    if let Some((stop, serving)) = transport {
+        let _ = stop.send(());
+        eprintln!("producer-loss wire={wire}: stopping server");
+        serving.await.map_err(agent)??;
+    }
+    Ok(())
+}
+
+// Returning releases every client and live follow before graceful HTTP/2
+// shutdown, which must otherwise wait for these active Sessions indefinitely.
+async fn assert_lost_model_producer(
+    harness: Arc<LocalHarness>,
+    connection: crate::local::Connection,
+    entering: tokio::sync::oneshot::Receiver<()>,
+    producer: tokio::sync::oneshot::Sender<()>,
+    wire: bool,
+) -> Result<()> {
+    fn exchange_failure<T: std::fmt::Debug>(result: &Result<T>, operation: &str) {
+        let Err(error @ Error::Exchange { .. }) = result else {
+            panic!("{operation} lost its typed exchange: {result:?}");
+        };
+        assert_eq!(error.code(), crate::wire::ErrorCode::Storage);
+        let mut source = std::error::Error::source(error);
+        while let Some(cause) = source {
+            if cause.to_string().contains("model producer closed") {
+                return;
+            }
+            source = cause.source();
+        }
+        panic!("{operation} lost the original producer cause: {error:?}");
+    }
+
+    let client = Conversation::open(connection.clone());
+    // Create the conversation through its actual first turn before testing
+    // out-of-range follows: an absent stream intentionally waits for creation.
+    let mut warmup_events = client.observe(None).await?;
+    let warmup = client.send("warmup", "hello").await?;
+    assert!(matches!(
+        client.settle("warmup", warmup, &mut warmup_events).await?,
+        crate::local::agent_conversation::Settlement::Reply(crate::agent::Reply::Answered { .. })
+    ));
+    let mut events = client.observe(Some(0)).await?;
+    let inbox = client.send("lost-producer", "hello").await?;
+    model_dispatch_before_settlement(&harness, connection.root(), async {
+        entering.await.map_err(agent)
+    })
+    .await?;
+    eprintln!("producer-loss wire={wire}: failed call admitted");
+    // Same canonical agent, different original authenticated Session. Refusal
+    // must precede even the reply query, without consuming the other follow.
+    let other = conversation(&harness).await?;
+    let mut unrelated = other.observe(Some(0)).await?;
+    {
+        let invalid = client.settle("lost-producer", inbox, &mut unrelated);
+        tokio::pin!(invalid);
+        let observed = futures::poll!(&mut invalid);
+        assert!(
+            matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(reason))) if reason.contains("observer from the original connection")),
+            "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
+        );
+    }
+    // Retain another observer on the original connection. Its first failed
+    // opening retires only that follow; the other selected follows remain.
+    // A future live cursor is valid and waits, so it cannot provoke retirement.
+    let mut retired = client.replay(&acyclic_harness_client::EventProjection::new(
+        "retired-source".into(),
+    ))?;
+    let root = connection.root().clone();
+    let settling = settled(&harness, &root);
+    tokio::pin!(settling);
+    assert!(
+        futures::poll!(&mut settling).is_pending(),
+        "live runtime must retain settlement"
+    );
+    let mut usage = client.usage_query();
+    while !usage.synchronized() {
+        usage.advance().await?;
+    }
+    assert_eq!(usage.totals().calls, 2);
+    assert_eq!(usage.totals().completed, 1);
+    let before = usage.totals().clone();
+    let fenced = client.wait_current_input();
+    tokio::pin!(fenced);
+    assert!(
+        futures::poll!(&mut fenced).is_pending(),
+        "captured input must remain pending while its producer is live"
+    );
+    let waiting = client.settle("lost-producer", inbox, &mut events);
+    tokio::pin!(waiting);
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "live producer must retain the wait"
+    );
+    let runtime = &harness.agents.get().unwrap().runtime;
+    let admission = runtime.admit(std::future::pending::<Result<()>>());
+    tokio::pin!(admission);
+    assert!(
+        futures::poll!(&mut admission).is_pending(),
+        "live runtime must retain in-flight admission"
+    );
+    let usage_result = {
+        let advancing = usage.advance();
+        tokio::pin!(advancing);
+        assert!(
+            futures::poll!(&mut advancing).is_pending(),
+            "quiet live usage must wait at its retained frontier"
+        );
+        eprintln!("producer-loss wire={wire}: dropping model producer");
+        drop(producer);
+        advancing.await
+    };
+    let usage_result: Result<bool> = match usage_result {
+        Err(error) => Err(error),
+        Ok(_) => loop {
+            // Journal-only lifecycle records can advance a page without
+            // changing visible totals. Consume those original pages;
+            // the quiet continuation waits on the producer's event.
+            if let Err(error) = usage.advance().await {
+                break Err(error);
+            }
+        },
+    };
+    eprintln!("producer-loss wire={wire}: usage terminal");
+    exchange_failure(&usage_result, "usage");
+    let fenced = fenced.await;
+    eprintln!("producer-loss wire={wire}: input fence terminal");
+    exchange_failure(&fenced, "input fence");
+    let admitted = futures::poll!(&mut admission);
+    assert!(
+        admitted.is_pending(),
+        "actor failure closed unrelated runtime admission: {admitted:?}"
+    );
+    assert_eq!(
+        usage.totals(),
+        &before,
+        "source loss changed the admitted projection"
+    );
+    // Only the failed actor's live subscriptions report its original failure.
+    let observed = waiting.await;
+    eprintln!("producer-loss wire={wire}: public settlement terminal");
+    exchange_failure(&observed, "public settlement");
+    let hosted = harness.agents.get().unwrap();
+    assert!(futures::poll!(core::pin::pin!(hosted.runtime.completion())).is_pending());
+    loop {
+        match retired.next_projected().await {
+            Err(error) => {
+                exchange_failure(&Err::<(), _>(error), "retired follow");
+                break;
+            }
+            Ok((event, _)) => {
+                event?;
+            }
+        }
+    }
+    let invalid = client.settle("lost-producer", inbox, &mut retired);
+    eprintln!("producer-loss wire={wire}: replay terminal");
+    tokio::pin!(invalid);
+    assert!(
+        matches!(
+            futures::poll!(&mut invalid),
+            std::task::Poll::Ready(Err(Error::Invalid(_)))
+        ),
+        "settlement admitted a retired original follow or performed I/O before refusal"
+    );
+    let settled = settling.await;
+    eprintln!("producer-loss wire={wire}: direct settlement terminal");
+    assert!(
+        matches!(&settled, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "settlement bypassed the original runtime terminal event: {settled:?}"
+    );
+    assert!(
+        harness.agent_stream.as_ref().unwrap().failure().is_none(),
+        "the Session's runtime failure must not be invented as a provider failure"
+    );
+    assert!(
+        matches!(
+            connection
+                .execute(&acyclic_harness_client::AgentCommand::Root {})
+                .await?,
+            acyclic_harness_client::AgentReply::Root { .. }
+        ),
+        "actor failure closed the shared command session"
+    );
+    assert_eq!(
+        hosted
+            .agents()
+            .reply(
+                hosted.root(),
+                &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                inbox
+            )
+            .await
+            .map_err(agent)?,
+        crate::agent::Reply::Pending,
+        "failed input stays recoverable"
+    );
+    assert_eq!(
+        records(
+            hosted.agents().provider(),
+            hosted.root().conversation().map_err(agent)?
+        )
+        .await?
+        .len(),
+        1,
+        "failed input appended another conversation entry"
+    );
+    assert!(
+        harness.connect().await.is_ok(),
+        "actor failure refused a new command session"
+    );
+    // Both admitted calls outlive the failed delivery. Only the warm-up completed;
+    // losing the second producer must preserve its distinct unfinished call.
+    let mut exported = Vec::new();
+    eprintln!("producer-loss wire={wire}: exporting saved usage");
+    client
+        .observation()
+        .await?
+        .write_usage_jsonl(&mut exported)
+        .await?;
+    let rows = serde_json::Deserializer::from_slice(&exported)
+        .into_iter::<crate::executor::ModelUsageProjection<'_>>()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(agent)?;
+    assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
+    assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
+    assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
+    eprintln!("producer-loss wire={wire}: reading saved queries");
+    // A later failed delivery cannot revoke the warm-up's committed results,
+    // including queries whose caller permits waiting for new progress.
+    hosted
+        .agents()
+        .wait_for_input(&root, warmup)
+        .await
+        .map_err(agent)?;
+    for command in [
+        acyclic_harness_client::AgentCommand::Usage {
+            agent: root.clone(),
+            input: warmup,
+            after: 0,
+            wait: true,
+            observed_children: Some(0),
+        },
+        acyclic_harness_client::AgentCommand::Events {
+            agent: root.clone(),
+            input: warmup,
+            after: 0,
+            wait: true,
+        },
+    ] {
+        match connection.execute(&command).await? {
+            acyclic_harness_client::AgentReply::Usage {
+                page: Some(_),
+                settled: true,
+                ..
+            }
+            | acyclic_harness_client::AgentReply::Events {
+                page: Some(_),
+                settled: true,
+                ..
+            } => {}
+            other => {
+                return Err(Error::Invalid(format!(
+                    "saved warm-up result lost: {other:?}"
+                )));
+            }
+        }
+    }
+    // Client::read is a bounded Follow on the same physical Session. Its
+    // terminal must not inherit the failed live producer's diagnostic.
+    let mut saved = connection
+        .session
+        .read(ReadRequest {
+            path: root.conversation().map_err(agent)?,
+            from: 0,
+            limit: 1,
+            key: None,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(agent)?;
+    assert!(saved.try_next().await.map_err(agent)?.is_some());
+    assert!(saved.try_next().await.map_err(agent)?.is_none());
+    eprintln!("producer-loss wire={wire}: bounded saved read complete");
+
     Ok(())
 }

@@ -15,6 +15,9 @@ and remote attachment keep their independent workspace until explicitly merged.
 With no task, closing stdin exits; unexpected text is refused with a recovery
 command. Text stdin otherwise answers pending approvals.
 
+For unattended goals, `acyclic run --goal FILE --policy FILE` uses the shared
+[supervision files, controls and JSON event feed](../docs/harness-supervision.md).
+
 An external client can append peer input to an existing session with
 `acyclic --endpoint ADDRESS --operation MESSAGE_ID send --from SENDER RECIPIENT 'MESSAGE'`.
 Sender and recipient accept a canonical root path, session ID or exact alias.

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::{assert_requests, testing::Counted};
+use acyclic_stream::{AppendRequest, assert_requests, testing::Counted};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct PhysicalCut {
@@ -53,6 +53,8 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     observation_work().await?;
     alarm_replacement().await?;
     alarm_publication_wakes().await?;
+    source_alarm_publication().await?;
+    source_control_publication().await?;
     futures::try_join!(
         publication_and_reopen(),
         physical_loss(0),
@@ -1195,6 +1197,189 @@ async fn alarm_replacement() -> TestResult {
         ),
         Err(Error::Conflict)
     ));
+    Ok(())
+}
+
+async fn source_alarm_publication() -> TestResult {
+    for refuse_source in [false, true] {
+        let provider = Arc::new(Counted::new(MemoryStream::default()));
+        let store = Store::new(provider.clone(), state_root()?);
+        let address = actor("source-alarm")?;
+        place(&store, &address).await?;
+        let before = store.load(&address).await?;
+        let replay_cut = store.load(&address).await?;
+        let original_anchor = before.anchor;
+        let wakes = provider.tail(store.root().clone()).await?;
+        let source = StreamPath::new("source/output")?;
+        let prepare = |snapshot| -> Result<PreparedPublish, Error> {
+            let mut binding = store.bind_state(snapshot, 1)?;
+            binding.transaction(|state| {
+                state.put("output-cut".into(), Bytes::from_static(b"activity"));
+                state.alarm(Some(10))
+            })?;
+            let mut prepared = binding.prepare_flush(key("source/rearm")?)?;
+            prepared.join(CommitEffect::hard(
+                vec![CommitCondition::Absent {
+                    path: source.clone(),
+                }],
+                vec![CommitMutation::Append {
+                    path: source.clone(),
+                    records: vec![Bytes::from_static(b"activity").into()],
+                }],
+            ))?;
+            Ok(prepared)
+        };
+        let prepared = assert_requests!(provider, prepare(before), control = 0, data = 0)?;
+        if refuse_source {
+            provider
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: vec![Bytes::from_static(b"competing source").into()],
+                    if_tail: None,
+                    idempotency_key: key("source/competing")?,
+                })
+                .await?;
+        }
+        let result = assert_requests!(
+            provider,
+            store.submit_retained(prepared).await,
+            control = 0,
+            data = 1
+        );
+        let snapshot = store.load(&address).await?;
+        if refuse_source {
+            assert!(matches!(result, Err(Error::Conflict)));
+            assert_eq!(snapshot.anchor, original_anchor);
+            assert_eq!(
+                provider.tail(store.root().clone()).await?,
+                wakes,
+                "a refused activity record must not rearm or wake its actor"
+            );
+        } else {
+            let accepted = result?.ok_or("missing source publication receipt")?;
+            assert_eq!(
+                snapshot.state().ok_or("missing state")?.alarm().pending(),
+                Some(10)
+            );
+            let mut records = provider
+                .read(ReadRequest {
+                    path: source.clone(),
+                    from: 0,
+                    limit: 1,
+                    key: None,
+                    at_least: Default::default(),
+                })
+                .await?;
+            let output = records.try_next().await?.ok_or("missing original output")?;
+            assert_eq!(
+                Some(output.commit_id),
+                accepted.anchor,
+                "activity and the new deadline must share the source commit"
+            );
+            assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+            let replay = store
+                .submit_retained(prepare(replay_cut)?)
+                .await?
+                .ok_or("missing replay")?;
+            assert_eq!(replay.anchor, accepted.anchor);
+            assert_eq!(
+                provider.tail(source).await?,
+                1,
+                "replay duplicated activity"
+            );
+            assert_eq!(
+                provider.tail(store.root().clone()).await?,
+                wakes + 1,
+                "replay duplicated the deadline activation"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn source_control_publication() -> TestResult {
+    for paused in [false, true] {
+        for refuse_source in [false, true] {
+            let provider = Arc::new(Counted::new(MemoryStream::default()));
+            let store = Store::new(provider.clone(), state_root()?);
+            let address = actor("source-control")?;
+            place(&store, &address).await?;
+            if !paused {
+                let original = store.load(&address).await?;
+                store
+                    .set_paused(&original, 1, true, key("source/initial-pause")?)
+                    .await?;
+            }
+            let before = store.load(&address).await?;
+            let replay_cut = store.load(&address).await?;
+            let original_anchor = before.anchor;
+            let wakes = provider.tail(store.root().clone()).await?;
+            let source = StreamPath::new("source/control")?;
+            let prepare = |snapshot: &Snapshot| -> Result<PreparedPublish, Error> {
+                let mut publication =
+                    store.prepare_paused(snapshot, 1, paused, key("source/control")?)?;
+                publication.join(CommitEffect::hard(
+                    vec![CommitCondition::Absent {
+                        path: source.clone(),
+                    }],
+                    vec![CommitMutation::Append {
+                        path: source.clone(),
+                        records: vec![Bytes::from_static(b"owner decision").into()],
+                    }],
+                ))?;
+                Ok(publication)
+            };
+            let prepared = assert_requests!(provider, prepare(&before), control = 0, data = 0)?;
+            if refuse_source {
+                provider
+                    .append(AppendRequest {
+                        path: source.clone(),
+                        records: vec![Bytes::from_static(b"competing source").into()],
+                        if_tail: None,
+                        idempotency_key: key("source/control-competitor")?,
+                    })
+                    .await?;
+            }
+            let result = assert_requests!(
+                provider,
+                store.submit_retained(prepared).await,
+                control = 0,
+                data = 1
+            );
+            let observed = store.load(&address).await?;
+            if refuse_source {
+                assert!(matches!(result, Err(Error::Conflict)));
+                assert_eq!(observed.anchor, original_anchor);
+                assert_eq!(observed.state().ok_or("no actor")?.paused(), !paused);
+                assert_eq!(provider.tail(store.root().clone()).await?, wakes);
+            } else {
+                let accepted = result?.ok_or("missing control receipt")?;
+                assert_eq!(observed.state().ok_or("no actor")?.paused(), paused);
+                let mut records = provider
+                    .read(ReadRequest {
+                        path: source.clone(),
+                        from: 0,
+                        limit: 1,
+                        key: None,
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                let original = records
+                    .try_next()
+                    .await?
+                    .ok_or("missing original control")?;
+                assert_eq!(Some(original.commit_id), accepted.anchor);
+                assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+                let replay = store
+                    .submit_retained(prepare(&replay_cut)?)
+                    .await?
+                    .ok_or("missing replay")?;
+                assert_eq!(replay.anchor, accepted.anchor);
+                assert_eq!(provider.tail(source).await?, 1);
+                assert_eq!(provider.tail(store.root().clone()).await?, wakes + 1);
+            }
+        }
+    }
     Ok(())
 }
 

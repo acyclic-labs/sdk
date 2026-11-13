@@ -6,6 +6,43 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Read the last authenticated observation at a fixed original stream cut:
+    /// one checkpoint tail, its signed record and its atomic anchor. History
+    /// length cannot increase this query's read count. An absent
+    /// execution has no activity; it never inherits an earlier turn's progress.
+    pub async fn activity(
+        &self,
+        operation: OperationId,
+        clock: &dyn acyclic_actors::local::Clock,
+    ) -> Result<Option<crate::executor::ExecutionActivity>> {
+        self.require_operation(operation, None)?;
+        Ok(self
+            .checkpoint_cut(operation, None, |record| {
+                let observation = observations::decode_observation(&record.value, None)?;
+                if observation.operation_id != operation
+                    || observation.turn_operation != self.turn_operation(operation)
+                {
+                    return Err(Error::Storage(
+                        "execution activity identity is invalid".into(),
+                    ));
+                }
+                Ok(crate::executor::ExecutionActivity {
+                    sequence: record.sequence.checked_add(1).ok_or_else(|| {
+                        Error::Storage("execution activity sequence overflows".into())
+                    })?,
+                    step: observation.event.step(),
+                    committed_at_micros: Some(record.committed_at_micros),
+                    age_ms: Some(
+                        clock
+                            .now_unix_ms()
+                            .saturating_sub(record.committed_at_micros / 1000),
+                    ),
+                })
+            })
+            .await?
+            .map(|(_, _, activity)| activity))
+    }
+
     /// Original append continuation of this admitted private journal. The
     /// hosting query retains it internally; it grants no public Stream access.
     pub(in crate::filesystem) fn follow(
@@ -260,6 +297,7 @@ where
                     } else {
                         self.verify_event_refs_with_io(operation_id, &observation.event, io)
                             .await?
+                            .0
                     };
                     let _model_hold = if retain_models {
                         None

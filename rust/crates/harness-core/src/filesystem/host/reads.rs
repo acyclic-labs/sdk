@@ -74,7 +74,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &workspace,
             &generation,
             grant.policy_scope(),
-            None,
+            ceiling,
             io,
         )
         .await?;
@@ -126,6 +126,42 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return self.private_generation_ref(cut, expected_generation, io);
         }
         self.generation_ref_id(selected.generation.id(), access.io)
+    }
+
+    /// Reads no-follow metadata at the selected private generation without
+    /// loading file contents. Only path absence returns `None`; directory
+    /// authority, caller ceilings and both policy owners are checked as for
+    /// a private range read, including on an absent path.
+    pub async fn stat_private_path(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        access: crate::conversation::ContentAccess<'_, '_>,
+    ) -> Result<Option<acyclic_fs::WorkspaceStat>> {
+        let temporary;
+        let io = if let Some(io) = access.io {
+            io
+        } else {
+            temporary = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &temporary
+        };
+        let selected = self
+            .select_private_read(volume, grant, path, expected_generation, access.ceiling, io)
+            .await?;
+        let requested = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{path}"), work)
+        })?;
+        let _requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        let stat = io.sdk_if_present(
+            selected
+                .generation
+                .stat(&requested, io, io.cancellation())
+                .await,
+        )?;
+        selected.recheck(grant, io).await?;
+        Ok(stat)
     }
 
     /// Resolves a host-owned immutable publication, then uses the same selected
@@ -238,9 +274,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         &self,
         reference: &FileRef,
         grant: &ContentGrant,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        let maximum_bytes = maximum_bytes
+            .into()
+            .unwrap_or(reference.descriptor().byte_length());
         grant.require_file_read(reference, io)?;
         let temporary = PreparationIo::temporary(io)?;
         let io = temporary.as_ref().or(io);
@@ -389,9 +428,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation_if_present(&generation, &requested.0, maximum_bytes, io)
-            .await
-            .map_err(path_read_refusal)?;
+        let bytes = read_generation_optional(&generation, &requested.0, maximum_bytes, io).await?;
         let selected = if let Some(bytes) = bytes {
             let bytes_hold = io.guard_bytes(&bytes)?;
             let bytes = (bytes, bytes_hold);
@@ -469,9 +506,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 length,
             ));
         }
-        let stat = io
-            .sdk(generation.stat(&requested, io, io.cancellation()).await)
-            .map_err(path_read_refusal)?;
+        let (stat, recorded) = generation.stat(&requested, io, io.cancellation()).await;
+        let stat = io.sdk((Ok::<_, Error>(stat), recorded))?;
+        let stat = stat.map_err(path_read_refusal)?;
         let length = match (stat.kind, stat.logical_bytes) {
             (acyclic_fs::kernel::FileKind::Regular, Some(length)) => length,
             _ => {
@@ -499,7 +536,88 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         selected.recheck(grant, io).await?;
         drop(requested_hold);
         let selected_id = self.generation_ref_id(generation.id(), Some(io))?;
-        Ok((chunk.bytes, selected_id, length))
+        Ok((io.retain_read_bytes(chunk.bytes)?, selected_id, length))
+    }
+
+    /// Read only newly appended bytes after an immutable admitted generation.
+    /// The primitive compares the old prefix by shared chunks; neither the old
+    /// file nor its hash is copied into an actor checkpoint or re-read in full.
+    pub(in crate::filesystem) async fn read_private_append(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        generation: &GenerationRef,
+        original: Option<&GenerationRef>,
+        maximum_delta: Option<u64>,
+        access: crate::conversation::ContentAccess<'_, '_>,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+        let temporary;
+        let io = if let Some(io) = access.io {
+            io
+        } else {
+            temporary = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &temporary
+        };
+        let selected = self
+            .select_private_read(volume, grant, path, Some(generation), access.ceiling, io)
+            .await?;
+        let requested = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{path}"), work)
+        })?;
+        let _path_hold = io.guard_owned(requested.capacity() as u64)?;
+        let Some(stat) = io.sdk_if_present(
+            selected
+                .generation
+                .stat(&requested, io, io.cancellation())
+                .await,
+        )?
+        else {
+            selected.recheck(grant, io).await?;
+            return Ok(None);
+        };
+        let length = stat
+            .logical_bytes
+            .filter(|_| stat.kind == acyclic_fs::kernel::FileKind::Regular)
+            .ok_or_else(|| crate::Error::tool_rejected("append source is not a regular file"))?;
+        let prefix = if let Some(original) = original {
+            let original = self
+                .generation(&selected.workspace, original, Some(io))
+                .await?;
+            let stat = io.sdk(original.stat(&requested, io, io.cancellation()).await)?;
+            let bytes = stat
+                .logical_bytes
+                .filter(|_| stat.kind == acyclic_fs::kernel::FileKind::Regular)
+                .ok_or_else(|| {
+                    crate::Error::tool_rejected("admitted append source is not a regular file")
+                })?;
+            if !io.sdk(
+                selected
+                    .generation
+                    .matches_content_prefix(&original, &requested, bytes, io, io.cancellation())
+                    .await,
+            )? {
+                return Err(crate::Error::tool_rejected(
+                    "append changed its admitted prefix",
+                ));
+            }
+            bounded_io::retain(&original, Some(io)).await?;
+            bytes
+        } else {
+            0
+        };
+        let delta = length
+            .checked_sub(prefix)
+            .filter(|delta| maximum_delta.is_none_or(|maximum| *delta <= maximum))
+            .ok_or_else(|| crate::Error::tool_rejected("append delta exceeds admitted capacity"))?;
+        let chunk = io.sdk(
+            selected
+                .generation
+                .read_range(&requested, prefix, delta, io, io.cancellation())
+                .await,
+        )?;
+        selected.recheck(grant, io).await?;
+        io.retain_read_bytes(chunk.bytes).map(Some)
     }
 
     /// Reads a finite private prefix at an explicitly pinned generation.
@@ -741,27 +859,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 }
 // Only the selected user path is classified here. Metadata, backing storage,
 // cancellation and accounting failures retain their original terminal cause.
-fn path_read_refusal(error: Error) -> Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Error::NativeWorkspace { source, .. } = &error {
-        let (code, reason) = match source.as_ref() {
-            WorkspaceError::NotFound => (
-                crate::wire::ErrorCode::NotFound,
-                crate::conversation::SELECTED_FILE_MISSING,
-            ),
-            WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
-                crate::wire::ErrorCode::Invalid,
-                "selected path is not a regular file",
-            ),
-            WorkspaceError::ReadLimitExceeded => (
-                crate::wire::ErrorCode::Invalid,
-                "selected file exceeds the admitted read bound",
-            ),
-            _ => return error,
-        };
-        return Error::ToolRejected { code, reason };
-    }
-    error
+fn path_read_refusal(error: WorkspaceError) -> Error {
+    let (code, reason) = match error {
+        WorkspaceError::NotFound => (
+            crate::wire::ErrorCode::NotFound,
+            crate::conversation::SELECTED_FILE_MISSING,
+        ),
+        WorkspaceError::NotRegularFile | WorkspaceError::IsDirectory => (
+            crate::wire::ErrorCode::Invalid,
+            "selected path is not a regular file",
+        ),
+        WorkspaceError::ReadLimitExceeded => (
+            crate::wire::ErrorCode::Invalid,
+            "selected file exceeds the admitted read bound",
+        ),
+        error => return error.into(),
+    };
+    Error::ToolRejected { code, reason }
 }
 
 // An absent application policy reads the immutable file's own extent through
@@ -784,19 +898,23 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     io.retain_read_bytes(bytes)
 }
 
-pub(in crate::filesystem) async fn read_generation_if_present<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
+async fn read_generation_optional<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: Option<u64>,
     io: &PreparationIo,
 ) -> Result<Option<acyclic_stream::OwnedBytes>> {
     io.remaining()?;
-    io.sdk_if_present(generation.read(path, maximum, io, io.cancellation()).await)?
-        .map(|bytes| io.retain_read_bytes(bytes))
-        .transpose()
+    let (result, recorded) = generation.read(path, maximum, io, io.cancellation()).await;
+    // Check the original accounting outcome before classifying or allocating
+    // a converted error. File-input refusals cannot replace a ledger failure.
+    let result = io.sdk((Ok::<_, Error>(result), recorded))?;
+    let result = match result {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(WorkspaceError::NotFound) => Ok(None),
+        Err(error) => Err(path_read_refusal(error)),
+    };
+    result?.map(|bytes| io.retain_read_bytes(bytes)).transpose()
 }
 
 use crate::executor::stock_boundary;

@@ -40,6 +40,7 @@ mod checkout;
 mod commit;
 mod conditions;
 mod content;
+mod content_progress;
 mod diff;
 mod errors;
 mod extents;

@@ -103,7 +103,7 @@ async fn turn(
     if entry.input.context().is_some() {
         return Ok(Vec::new());
     }
-    let turn = conversation.turn_at(sequence, entry).await?;
+    let turn = conversation.turn(sequence, entry).await?;
     let mut blocks = Vec::new();
     blocks.extend(turn.prompt.map(|text| prompt(&entry.input, text)));
     blocks.extend(work(turn.tools, turn.answer));
@@ -204,6 +204,28 @@ enum Outcome {
 }
 
 impl View {
+    async fn submit_feedback(
+        &mut self,
+        ui: &mut session::Session,
+        conversation: &Conversation,
+        input: &mut PromptInput,
+        text: &str,
+    ) {
+        match ui.save_feedback(conversation, text).await {
+            Ok(()) => {
+                self.notice = Some(format!(
+                    "Feedback saved to feedback.json ({} this session)",
+                    ui.feedback.len()
+                ));
+            }
+            Err(error) => {
+                self.notice = Some(format!("Feedback save not confirmed: {error}"));
+                self.prompt = Some(Prompt::Feedback);
+                input.editor = Editor::new(text);
+            }
+        }
+    }
+
     async fn cancel(&mut self, conversation: &Conversation) -> Result<(), Failure> {
         self.cancelling = conversation.cancel().await?;
         Ok(())
@@ -298,6 +320,8 @@ struct View {
     /// Advanced by a clear, so a page read before it is not shown.
     epoch: u64,
     search: Option<(String, usize)>,
+    /// An older match is selected only after the preceding pages arrive.
+    finding: Option<String>,
     /// The one prompt the view itself opened. The next submission answers
     /// it before anything else, a waiting approval included, and it hides
     /// that approval while open: one prompt is visible at a time, and every
@@ -446,7 +470,7 @@ impl View {
         seen: u64,
     ) -> Result<(), Failure> {
         match event {
-            Event::Turn(entry) => {
+            Event::Turn { sequence, entry } => {
                 self.pending_dirty = true;
                 self.observe_settled_before(entry.inbox.saturating_add(1));
                 if let Some(action) = checkpoint(&entry) {
@@ -459,6 +483,8 @@ impl View {
                             self.top = seen;
                             self.floor = seen;
                             self.epoch += 1;
+                            self.search = None;
+                            self.finding = None;
                         }
                     }
                     self.outcome = Outcome::Settled;
@@ -481,13 +507,7 @@ impl View {
                     .map(|at| self.pending.remove(at).1);
                 // A turn's text is its committed entry's, a cancelled one's
                 // too, whichever of it and its status arrived first.
-                let turn = conversation
-                    .turn_at(
-                        seen.checked_sub(1)
-                            .ok_or("turn has no committed sequence")?,
-                        &entry,
-                    )
-                    .await?;
+                let turn = conversation.turn(sequence, &entry).await?;
                 if let Some(text) = sent.or(turn.prompt) {
                     let (kind, text) = prompt(&entry.input, text);
                     self.transcript.push(kind, &text);
@@ -723,12 +743,12 @@ impl View {
     /// least one row, so one read fills the shown rows whatever their size.
     fn older_page(&self, page: usize) -> Option<u64> {
         let above = self.transcript.len().saturating_sub(self.back + page);
-        (self.top > self.floor && above < page.saturating_mul(2))
+        (self.top > self.floor && (self.finding.is_some() || above < page.saturating_mul(2)))
             .then(|| self.top.saturating_sub(page as u64).max(self.floor))
     }
 
     /// Keep the saved search hit on the same row of text as older rows arrive.
-    fn prepend(&mut self, older: Older) {
+    fn prepend(&mut self, older: Older, page: usize) {
         if older.epoch != self.epoch {
             return;
         }
@@ -740,22 +760,37 @@ impl View {
         if older.cleared {
             self.floor = older.from;
         }
+        self.continue_find(added, page);
     }
 
     /// Find the preceding hit, wrapping to the newest after the oldest.
     fn find(&mut self, query: &str, page: usize) {
+        if query.is_empty() {
+            self.finding = None;
+            return;
+        }
         let before = self
             .search
             .as_ref()
             .filter(|(previous, _)| previous == query)
             .map_or(self.transcript.len(), |(_, row)| *row);
-        if let Some(row) = self
-            .transcript
-            .find(query, before)
-            .or_else(|| self.transcript.find(query, self.transcript.len()))
-        {
+        self.finding = Some(query.to_owned());
+        self.continue_find(before, page);
+    }
+
+    fn continue_find(&mut self, before: usize, page: usize) {
+        let Some(query) = self.finding.as_ref() else {
+            return;
+        };
+        if let Some(row) = self.transcript.find(query, before).or_else(|| {
+            (self.top == self.floor)
+                .then(|| self.transcript.find(query, self.transcript.len()))
+                .flatten()
+        }) {
             self.back = self.transcript.len().saturating_sub(row + page);
-            self.search = Some((query.to_owned(), row));
+            self.search = self.finding.take().map(|query| (query, row));
+        } else if self.top == self.floor {
+            self.finding = None;
         }
     }
 
@@ -1021,7 +1056,7 @@ async fn run_current(
     }
     let mut files_future = std::pin::pin!(session::follow(
         Arc::clone(&conversation),
-        ui.snapshot.generation.clone()
+        ui.snapshot.cut.clone()
     ));
     let mut usage_prices = Arc::clone(&ui.prices);
     let mut usage_future = std::pin::pin!(Some(usage(
@@ -1356,10 +1391,11 @@ async fn run_current(
             } => {
                 older_future.set(None);
                 match read {
-                    Ok(older) => view.prepend(older),
+                    Ok(older) => view.prepend(older, page),
                     Err(error) => {
                         // The rows shown stay; nothing older is read again.
                         view.floor = view.top;
+                        view.finding = None;
                         view.notice = refusal(format_args!("Older turns unavailable: {error}"));
                     }
                 }
@@ -1388,7 +1424,7 @@ async fn run_current(
             }
             event = events.next() => {
                 let event = event?;
-                let settled = matches!(&event, Event::Turn(_));
+                let settled = matches!(&event, Event::Turn { .. });
                 if matches!(event, Event::Delta) {
                     events.absorb().await?;
                     // Another client can start a turn while this view is idle.
@@ -1544,21 +1580,8 @@ async fn run_current(
                                 // it takes this answer, never the approval.
                                 match view.prompt.take() {
                                     Some(Prompt::Feedback) => {
-                                        let saved = ui.save_feedback(&conversation, &text).await;
+                                        view.submit_feedback(&mut ui, &conversation, &mut input, &text).await;
                                         files_changed = true;
-                                        match saved {
-                                            Ok(()) => {
-                                                view.notice = Some(format!(
-                                                    "Feedback saved to feedback.json ({} this session)",
-                                                    ui.feedback.len()
-                                                ));
-                                            }
-                                            Err(error) => {
-                                                view.notice = Some(format!("Feedback save not confirmed: {error}"));
-                                                view.prompt = Some(Prompt::Feedback);
-                                                input.editor = Editor::new(ui.feedback_draft().unwrap_or(&text));
-                                            }
-                                        }
                                         continue;
                                     }
                                     Some(Prompt::StopOrDetach) => {
@@ -1915,7 +1938,7 @@ async fn run_current(
             // committed projection before advancing either path's follow cut.
             files_future.set(session::follow(
                 Arc::clone(&conversation),
-                ui.snapshot.generation.clone(),
+                ui.snapshot.cut.clone(),
             ));
         }
     }
@@ -2047,7 +2070,7 @@ mod tests {
         let mut idle = false;
         while !answered || !idle {
             let event = completed_events.next().await?;
-            answered |= matches!(&event, Event::Turn(entry)
+            answered |= matches!(&event, Event::Turn { entry, .. }
                 if entry.inbox == completed && entry.outcome == TurnOutcome::Completed);
             idle |= matches!(&event, Event::Status(status)
                 if status.conversation >= 3 && matches!(status.phase, Phase::Idle));
@@ -2140,6 +2163,7 @@ mod tests {
                 ScriptedTurn::Text("before".into()),
                 ScriptedTurn::Text("after".into()),
                 ScriptedTurn::Text("fork ready".into()),
+                ScriptedTurn::Text("child settlement observed".into()),
             ])
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
@@ -2156,6 +2180,7 @@ mod tests {
                     ),
                 )?
                 .without_user_settings()
+                .feedback_plugin(false)
                 .state_directory(directory.path().join("state"))
                 .workspace_mounting(WorkspaceMounting::Physical)
                 .compaction(CompactionPolicy::Disabled),
@@ -2176,10 +2201,13 @@ mod tests {
         };
         let forked = conversation.select(child).await?;
         forked.wait_current_input().await?;
+        // The child's committed settlement wakes its parent. Fence that
+        // input too, so restoration cannot be blamed for its model turn.
+        conversation.wait_current_input().await?;
         let inherited = forked.entries(0, 1).await?;
         assert!(
-            forked.turn(&inherited[0]).await.is_err(),
-            "an inherited file needs its original conversation proof"
+            forked.turn(1, &inherited[0]).await.is_err(),
+            "a different conversation sequence cannot authorize an inherited file"
         );
         let page = older(Arc::clone(&forked), 0, 0, 1).await?;
         assert_eq!(
@@ -2265,6 +2293,11 @@ mod tests {
                 );
             }
         }
+        assert_eq!(
+            provider.request_count(),
+            4,
+            "task, fork initialization and parent settlement must finish before restoration"
+        );
         drop(events);
         let (mut events, phase) = conversation.observe_current().await?;
         let mut view = View {
@@ -2287,7 +2320,7 @@ mod tests {
             let mut turn = false;
             while !turn {
                 let event = events.next().await?;
-                turn |= matches!(&event, Event::Turn(entry) if entry.inbox == inbox);
+                turn |= matches!(&event, Event::Turn { entry, .. } if entry.inbox == inbox);
                 view.apply(&conversation, event, events.seen()).await?;
             }
             assert!(!view.busy());
@@ -2303,7 +2336,7 @@ mod tests {
         }
         assert_eq!(
             provider.request_count(),
-            3,
+            4,
             "restoration must not redispatch the model"
         );
         Ok(())
@@ -2311,7 +2344,10 @@ mod tests {
 
     #[test]
     fn search_visits_each_older_match_across_prepended_pages() {
-        let mut view = View::default();
+        let mut view = View {
+            top: 3,
+            ..View::default()
+        };
         view.rows(16);
         view.transcript.push(BlockKind::Prompt, "match newest\nend");
         view.find("match", 1);
@@ -2323,13 +2359,16 @@ mod tests {
             ),
             (0, "match earliest\npadding", "match oldest"),
         ] {
-            view.prepend(Older {
-                epoch: view.epoch,
-                from,
-                cleared: false,
-                blocks: vec![(BlockKind::Prompt, text.into())],
-            });
             view.find("match", 1);
+            view.prepend(
+                Older {
+                    epoch: view.epoch,
+                    from,
+                    cleared: false,
+                    blocks: vec![(BlockKind::Prompt, text.into())],
+                },
+                1,
+            );
             let row = view.search.as_ref().unwrap().1;
             assert!(view.transcript.rows(16)[row].to_string().contains(expected));
             assert_eq!(view.back, view.transcript.len() - row - 1);
@@ -2340,6 +2379,42 @@ mod tests {
             assert!(view.transcript.rows(16)[row].to_string().contains(expected));
             assert_eq!(view.back, view.transcript.len() - row - 1);
         }
+        let mut unseen = View {
+            top: 2,
+            ..View::default()
+        };
+        unseen.rows(16);
+        unseen.transcript.push(BlockKind::Prompt, "newest\nend");
+        unseen.find("buried", 1);
+        for (from, text) in [(1, "older without a hit"), (0, "buried oldest")] {
+            assert_eq!(unseen.older_page(1), Some(from));
+            unseen.prepend(
+                Older {
+                    epoch: unseen.epoch,
+                    from,
+                    cleared: false,
+                    blocks: vec![(BlockKind::Prompt, text.into())],
+                },
+                1,
+            );
+            if from == 1 {
+                unseen.find("", 1);
+                assert_eq!(unseen.older_page(1), None);
+                unseen.find("buried", 1);
+            }
+        }
+        let row = unseen
+            .search
+            .as_ref()
+            .expect("retained match was not found")
+            .1;
+        assert!(
+            unseen.transcript.rows(16)[row]
+                .to_string()
+                .contains("buried oldest")
+        );
+        unseen.find("absent", 1);
+        assert!(unseen.finding.is_none());
     }
 
     #[test]
@@ -2597,7 +2672,7 @@ mod tests {
                 },
             )
             .await?;
-            view.apply(&conversation, Event::Turn(entry), sequence + 1)
+            view.apply(&conversation, Event::Turn { sequence, entry }, sequence + 1)
                 .await?;
             let failure = view.exit().expect_err("old turn replaced terminal failure");
             assert_eq!(failure.to_string(), message);

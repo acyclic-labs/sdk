@@ -110,6 +110,7 @@ struct State {
     reconciliations: Vec<ModelDispatch>,
 }
 
+type ReconciliationObserver = dyn Fn(ModelDispatch) -> Result<()> + Send + Sync;
 type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + Send + Sync;
 type ContentReader = (
     Arc<dyn crate::conversation::ContentResidencyVerifier>,
@@ -123,6 +124,7 @@ pub struct ScriptedModelProvider {
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
     dispatch_observer: Option<Arc<dyn DispatchObserver>>,
+    reconciliation_observer: Option<Arc<ReconciliationObserver>>,
     reads_content: bool,
     content: Option<ContentReader>,
 }
@@ -142,6 +144,7 @@ impl ScriptedModelProvider {
             }),
             token_counter: Some(Arc::new(serialized_tokens)),
             dispatch_observer: None,
+            reconciliation_observer: None,
             reads_content: false,
             content: None,
         }
@@ -194,6 +197,18 @@ impl ScriptedModelProvider {
         + 'static,
     ) -> Self {
         self.dispatch_observer = Some(Arc::new(observer));
+        self
+    }
+
+    /// Checks a reconciliation atomically before consuming its scripted reply.
+    /// An error leaves the reply available. Runs under the state lock: the
+    /// synchronous observer must not re-enter this provider.
+    #[must_use]
+    pub fn with_reconciliation_observer(
+        mut self,
+        observer: impl Fn(ModelDispatch) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.reconciliation_observer = Some(Arc::new(observer));
         self
     }
 
@@ -347,6 +362,7 @@ impl ModelProvider for ScriptedModelProvider {
                 capacity: self.capacity,
                 token_counter: self.token_counter.clone(),
                 dispatch_observer: self.dispatch_observer.clone(),
+                reconciliation_observer: self.reconciliation_observer.clone(),
                 reads_content: true,
                 content: Some((reader, maximum_bytes)),
             }) as Arc<dyn ModelProvider>
@@ -416,6 +432,9 @@ impl ModelProvider for ScriptedModelProvider {
                 return Err(Error::Conflict(
                     "scripted reconciliation dispatch was not generated".into(),
                 ));
+            }
+            if let Some(observer) = &self.reconciliation_observer {
+                observer(dispatch)?;
             }
             let reply = state
                 .recoveries

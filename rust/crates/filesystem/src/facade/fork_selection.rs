@@ -178,6 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .await?;
                     lookup
                 };
+                directory.retire(accounting)?;
                 let original = lookup.record.ok_or(WorkspaceError::NotFound)?;
                 if original.kind != FileKind::Directory {
                     return Err(WorkspaceError::NotDirectory);
@@ -207,9 +208,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         .components()
                         .get(depth)
                         .ok_or(WorkspaceError::JoinLimit)?;
-                    if path.value.depth() > depth + 1 {
-                        selection_push(&mut pending, (group, depth + 1), accounting)?;
-                    }
                     let (child, allocation) = path.value.prefix_with_accounting(
                         depth + 1,
                         config.limits,
@@ -232,6 +230,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     };
                     child.retire(accounting)?;
                     let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
+                    if path.value.depth() > depth + 1 {
+                        if record.kind != FileKind::Directory {
+                            return Err(WorkspaceError::NotDirectory);
+                        }
+                        selection_push(&mut pending, (group, depth + 1), accounting)?;
+                    }
                     let (name, mut allocation) =
                         name.clone_with_accounting(accounting, cancellation)?;
                     let bytes = name.retained_bytes() as u64;
@@ -251,7 +255,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                         accounting,
                     )?;
                 }
-                directory.retire(accounting)?;
                 let entries = if mutations.value.is_empty() {
                     empty
                 } else {

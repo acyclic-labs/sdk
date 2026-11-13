@@ -105,10 +105,48 @@ impl Handler for FencedHandler {
         self.package.handler.manifest()
     }
 
-    fn publication_conditions(&self) -> Vec<acyclic_stream::CommitCondition> {
-        let mut conditions = self.package.handler.publication_conditions();
+    fn publication_conditions(
+        &self,
+        actor: &crate::addressing::ActorReference,
+    ) -> Vec<acyclic_stream::CommitCondition> {
+        let mut conditions = self.package.handler.publication_conditions(actor);
         conditions.push(self.fence.condition());
         conditions
+    }
+
+    fn admission_class(
+        &self,
+        actor: &crate::addressing::ActorReference,
+    ) -> crate::guest::AdmissionClass {
+        self.package.handler.admission_class(actor)
+    }
+
+    fn external_subscriptions(&self) -> &[String] {
+        self.package.handler.external_subscriptions()
+    }
+
+    fn retain_paused(
+        &self,
+        actor: &crate::addressing::ActorReference,
+        checkpoint: Option<&Checkpoint>,
+    ) -> bool {
+        self.package.handler.retain_paused(actor, checkpoint)
+    }
+
+    fn ordered_subscriptions(&self) -> &[String] {
+        self.package.handler.ordered_subscriptions()
+    }
+
+    fn subscription_key(
+        &self,
+        id: &str,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Result<Option<bytes::Bytes>, GuestError> {
+        self.package.handler.subscription_key(id, checkpoint)
+    }
+
+    fn revalidate_foreign_conflicts(&self, actor: &crate::addressing::ActorReference) -> bool {
+        self.package.handler.revalidate_foreign_conflicts(actor)
     }
 
     fn handoff(&self, checkpoint: &Checkpoint) -> Result<Option<DurableAwait>, GuestError> {

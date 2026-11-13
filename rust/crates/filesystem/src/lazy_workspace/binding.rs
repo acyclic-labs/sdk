@@ -299,39 +299,31 @@ impl<
         Ok(state)
     }
 
-    /// Loads the ready binding at the source's current epoch. A source
-    /// shared by several workspaces advances its epoch when any of them
-    /// observes a change; that invalidates source cursors, not this
-    /// workspace's authored or observed state. Root bindings follow the newer
-    /// epoch; forks retain the source cut captured by their creation.
+    /// Projects the current source epoch without publishing read bookkeeping.
+    /// The next workspace mutation persists it with that mutation's state.
     pub(crate) async fn current_binding(
         &self,
         missing: fn() -> LazyWorkspaceError,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
+        let (mut state, source) = self.recorded_binding(missing, ctx).await?;
+        state.source = source;
+        Ok(state)
+    }
+
+    /// Validates the saved binding against the current source without rebinding it.
+    pub(super) async fn recorded_binding(
+        &self,
+        missing: fn() -> LazyWorkspaceError,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyWorkspaceState, SourceReference), LazyWorkspaceError> {
         let state = self
             .store
             .load_lazy_workspace(self.workspace.id(), ctx)
             .await?
             .ok_or_else(missing)?;
         let source = self.binding_source(&state, ctx).await?;
-        if state.source == source {
-            return Ok(state);
-        }
-        let revision = state.revision;
-        let next = LazyWorkspaceState {
-            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-            source,
-            ..state
-        };
-        if self
-            .store
-            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next.clone(), ctx)
-            .await?
-        {
-            return Ok(next);
-        }
-        Err(LazyWorkspaceError::Concurrent)
+        Ok((state, source))
     }
 
     /// A root follows its provider; a fork owns its original source cut.
@@ -362,12 +354,9 @@ impl<
         if checkout.volume_id() != self.workspace.volume.id() {
             return Err(crate::FsError::VolumeMismatch.into());
         }
-        let mut state = self
-            .store
-            .load_lazy_workspace(self.workspace.id(), ctx)
-            .await?
-            .ok_or(LazyWorkspaceError::NotFound)?;
-        let source = self.binding_source(&state, ctx).await?;
+        let (mut state, source) = self
+            .recorded_binding(|| LazyWorkspaceError::NotFound, ctx)
+            .await?;
         if let Some(pending) = &state.pending_remove {
             if state.source != source {
                 return Err(LazyWorkspaceError::StaleSource);

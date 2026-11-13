@@ -97,7 +97,7 @@ pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
-pub(crate) use content_eq::records_match_content;
+pub(crate) use content_eq::{records_match_content, records_match_prefix};
 pub(crate) use file_read::{
     OriginalReadAccounting, read_object_with_accounting, release_standalone_read_bytes,
 };
@@ -247,8 +247,8 @@ pub use publication::{
     decode_published_generation, publish_generation,
 };
 pub(crate) use publication::{
-    PreparedPublication, PublicationPreconditions, RetainedPublication,
-    contextual_publication_fingerprint, prepare_publication,
+    OriginalEvidence, PreparedPublication, PublicationPreconditions, RetainedPublication,
+    contextual_publication_fingerprint, prepare_publication, verify_original_publication_evidence,
 };
 pub(crate) use publication::{
     decode_publication_evidence_with_accounting, publish_generation_async_guarded,

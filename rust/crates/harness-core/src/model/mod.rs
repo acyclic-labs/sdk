@@ -66,8 +66,8 @@ pub(crate) use preparation::MODEL_DIAGNOSTIC_LABEL_BYTES;
 #[cfg(test)]
 pub(crate) use preparation::clone_request;
 pub(crate) use preparation::{
-    charge_items, clone_content, clone_file, clone_messages, clone_model, clone_tool_definition,
-    clone_value, hash_bytes, vec_with_capacity,
+    charge_items, clone_content, clone_file, clone_messages, clone_model, clone_resource,
+    clone_tool_definition, clone_value, hash_bytes, vec_with_capacity,
 };
 pub use profile::ModelProfileBinding;
 #[cfg(not(target_arch = "wasm32"))]

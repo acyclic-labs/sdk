@@ -100,23 +100,34 @@ impl<'io> StockExecution<'io> {
             let prepared = if let Some(preparation) = preparation {
                 let deadline = timeout
                     .as_ref()
-                    .map(|(timeout, _)| Self::tool_wait_deadline(started_at, *timeout))
+                    .map(|timeout| Self::tool_wait_deadline(started_at, timeout.timeout_ms))
                     .transpose()?;
                 let preparation = async {
-                    let Some((_, result)) = timeout else {
+                    let Some(timeout) = timeout else {
                         return preparation.await;
                     };
                     let alarm = journal.preparation_deadline(deadline.ok_or_else(|| {
                         Error::Invalid("timed preparation has no original deadline".into())
                     })?)?;
-                    futures::pin_mut!(preparation);
-                    // At expiry, do no new storage work merely to describe an
-                    // already elapsed wait. Unobserved children remain unknown.
-                    match futures::future::select(alarm, preparation).await {
-                        futures::future::Either::Right((prepared, _)) => prepared,
-                        futures::future::Either::Left((expired, _)) => {
-                            expired?;
-                            Ok((crate::tool::ToolPreparation::Ready(result), None))
+                    let expired = async {
+                        alarm.await?;
+                        Ok((crate::tool::ToolPreparation::Ready(timeout.result), None))
+                    };
+                    futures::pin_mut!(preparation, expired);
+                    if timeout.observe_on_expiry {
+                        // The actor has already released the condition. Allow
+                        // its ready snapshot to describe progress, but do not
+                        // wait for any observation that is still pending.
+                        match futures::future::select(preparation, expired).await {
+                            futures::future::Either::Left((result, _))
+                            | futures::future::Either::Right((result, _)) => result,
+                        }
+                    } else {
+                        // Expiry of an initial or blocked preparation starts
+                        // no new observation just to describe an elapsed wait.
+                        match futures::future::select(expired, preparation).await {
+                            futures::future::Either::Left((result, _))
+                            | futures::future::Either::Right((result, _)) => result,
                         }
                     }
                 };
@@ -135,9 +146,7 @@ impl<'io> StockExecution<'io> {
                         return Ok(ToolInvocationOutcome::Interrupted);
                     }
                     Err(error) => return Err(error),
-                    Ok(Err(error))
-                        if error.is_tool_failure() && !error.leaves_effect_uncertain() =>
-                    {
+                    Ok(Err(error)) if error.settles_tool_call() => {
                         return self
                             .reject_tool_call(
                                 journal,
@@ -212,6 +221,9 @@ impl<'io> StockExecution<'io> {
                 .await
             {
                 Ok(ExecutionProgress::Ready(result)) => Some(Ok(Some(result))),
+                Ok(ExecutionProgress::Controlled(control)) => {
+                    return Ok(ToolInvocationOutcome::Controlled(control));
+                }
                 Ok(ExecutionProgress::Pending(operation)) => {
                     return Ok(ToolInvocationOutcome::Pending(operation));
                 }
@@ -296,7 +308,7 @@ impl<'io> StockExecution<'io> {
             Ok(None) | Err(Error::Indeterminate(_)) => {
                 return Err(Error::Indeterminate(operation_id));
             }
-            Err(error) if error.leaves_effect_uncertain() || !error.is_tool_failure() => {
+            Err(error) if !error.settles_tool_call() => {
                 tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
                 return Err(error);
             }

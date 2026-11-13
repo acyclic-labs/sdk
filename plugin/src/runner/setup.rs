@@ -61,6 +61,9 @@ mod tests {
 }
 
 fn credentials(args: &Args) -> Result<Credentials, Failure> {
+    if args.environment_credentials {
+        return Ok(Credentials::environment());
+    }
     if args.default_config {
         let configured = args
             .credentials
@@ -115,10 +118,13 @@ fn base_selection(
     model: Option<&str>,
 ) -> Result<String, Failure> {
     let role = acyclic_harness::templates::root()?.model;
-    let configured = model.map(str::to_owned).or(settings(args)?
-        .map(|settings| settings.configured_model())
-        .transpose()?
-        .flatten());
+    let configured = match model {
+        Some(model) => Some(model.to_owned()),
+        None => settings(args)?
+            .map(|settings| settings.configured_model())
+            .transpose()?
+            .flatten(),
+    };
     Ok(
         acyclic_harness::templates::resolve_model(role.as_deref(), configured.as_deref())
             .unwrap_or_else(|| registry.default_model())
@@ -153,13 +159,14 @@ pub(super) async fn first_run(
     args: &mut Args,
     registry: &mut Registry,
 ) -> Result<Option<Tty>, Failure> {
-    if args.default_config
+    if args.environment_credentials
+        || args.default_config
         || !onboarding::interactive()
         || args.input_format != InputFormat::Text
         || args.output_format != OutputFormat::Text
         || !matches!(
             args.command,
-            None | Some(Command::Run | Command::Exec { .. })
+            None | Some(Command::Run { .. } | Command::Exec { .. })
         )
     {
         return Ok(None);
@@ -243,8 +250,8 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
     doctor_facilities(args, needs_key, headless, &mut notes, &mut refusals);
     let local = match configure(args, registry) {
         Ok(config) => LocalHarness::doctor(config).await,
-        Err(_) => {
-            refusals.push("local configuration: unavailable; recovery: repair workspace, approval policy and settings flags".into());
+        Err(error) => {
+            refusals.push(format!("local configuration: {error}; recovery: repair workspace, approval policy and settings flags"));
             Registry::new(Credentials::explicit(Default::default()))?
                 .graphcoder(&args.workspace, args.model.clone())?
                 .preflight()
@@ -302,17 +309,18 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
 fn doctor_registry(args: &Args, refusals: &mut Vec<String>) -> Result<Registry, Failure> {
     let credentials = match credentials(args) {
         Ok(credentials) => credentials,
-        Err(_) => {
-            refusals.push("credentials file: cannot read or decode provider credentials; recovery: repair --credentials FILE (JSON api_keys provider map)".to_owned());
+        Err(error) => {
+            refusals.push(format!("credentials file: {error}; recovery: repair --credentials FILE (JSON api_keys provider map)"));
             Credentials::explicit(Default::default())
         }
     };
     let mut registry = Registry::new(credentials)?;
     if let Some(path) = &args.catalog
-        && registry.load_catalog(path).is_err()
+        && let Err(error) = registry.load_catalog(path)
     {
-        refusals
-            .push("provider catalog: cannot load catalog; recovery: repair --catalog FILE".into());
+        refusals.push(format!(
+            "provider catalog: {error}; recovery: repair --catalog FILE"
+        ));
     }
     Ok(registry)
 }
@@ -329,14 +337,14 @@ async fn doctor_provider(
             match registry.needs_credentials(selected) {
                 Ok(true) => { needs_key = true; refusals.push(KEYS.into()); }
                 Ok(false) => notes.push("provider credentials: available or optional".into()),
-                Err(_) => refusals.push("provider/model: unavailable; recovery: select a catalogued --model provider/model".into()),
+                Err(error) => refusals.push(format!("provider/model: {error}; recovery: select a catalogued --model provider/model")),
             }
             match registry.check_reachability(selected).await {
                 Ok(()) => notes.push("provider network: reachable (HTTP; no key sent)".into()),
                 Err(error) => refusals.push(format!("{error}; recovery: check the configured provider endpoint and network")),
             }
         }
-        Err(_) => refusals.push("model settings: unavailable; recovery: repair user config.toml or select --model provider/model".into()),
+        Err(error) => refusals.push(format!("model settings: {error}; recovery: repair user config.toml or select --model provider/model")),
     }
     needs_key
 }

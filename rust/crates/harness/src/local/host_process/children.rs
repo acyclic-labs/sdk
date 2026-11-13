@@ -24,7 +24,6 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 pub(crate) mod answer;
-use super::EVENT_LINE_BYTES as EVENT_LIMIT;
 use answer::NativeAnswer;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -64,7 +63,7 @@ impl Running {
             process,
             claim,
             failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            events: acyclic_native_runtime::lines::LineBuffer::new(None),
             answer: NativeAnswer::default(),
             settlement: None,
             wake: Waker::from(Arc::new(ChildWake {
@@ -586,7 +585,7 @@ impl NativeChildren {
                     cause: cause.clone(),
                 },
                 None if running.answer.omitted => Outcome::Failed {
-                    message: "step=read native reply: an event exceeded the 65,536-byte frame limit, contained invalid UTF-8 or malformed JSON; recovery=acyclic agents".into(),
+                    message: "step=read native reply: an event contained invalid UTF-8 or malformed JSON; recovery=acyclic agents".into(),
                 },
                 None => Outcome::Failed {
                     message: "step=settle native child: process exited without a completed native reply; recovery=acyclic agents".into(),

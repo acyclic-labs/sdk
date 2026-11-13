@@ -55,6 +55,41 @@ async fn megabyte_interior_restoration_uses_byte_work_instead_of_item_work()
         )
         .await;
     assert!(denied.is_err(), "comparison must retain its byte admission");
+    let mut append = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(
+        append.checkout,
+        change_content(
+            NamespacePath::from_portable(
+                &PortablePath::parse("/large", workspace.limits())?,
+                workspace.limits()
+            )?,
+            crate::ContentChange::Write {
+                offset: bytes.len() as u64,
+                bytes: OwnedBytes::from(b"suffix".to_vec())
+            },
+            crate::ContentTimes::Preserve
+        )
+    )?;
+    let TransactionCommit::Committed(appended) = commit(&mut append).await? else {
+        return Err("append did not commit".into());
+    };
+    let prefix = appended
+        .matches_content_prefix(
+            &current,
+            "/large",
+            bytes.len() as u64,
+            WorkBudget {
+                source_bytes_read: 0,
+                ..crate::performance::BOUNDARY_BUDGET
+            },
+            &CancellationToken::new(),
+        )
+        .await?;
+    assert!(prefix.value);
+    assert_eq!(
+        prefix.work.source_bytes_read, 0,
+        "shared prefix reread a file body"
+    );
     Ok(())
 }
 
@@ -103,6 +138,21 @@ fn native_range_restoration_compares_bytes_across_payload_layouts() -> Result<()
                     };
                     let equal = unbounded!(current, matches_content(&base, "/large"))?;
                     assert_eq!(equal, replacement == byte);
+                    assert_eq!(
+                        unbounded!(current, content_changed_from(&base))?,
+                        replacement != byte,
+                        "authored progress must compare bytes across native range layouts",
+                    );
+                    for prefix in [0, offset, offset + 1, bytes.len() as u64] {
+                        assert_eq!(
+                            unbounded!(current, matches_content_prefix(&base, "/large", prefix))?,
+                            prefix <= offset || replacement == byte,
+                        );
+                    }
+                    assert!(!unbounded!(
+                        current,
+                        matches_content_prefix(&current, "/large", bytes.len() as u64 + 1)
+                    )?);
                     let actual = unbounded!(current, read("/large", bytes.len() as u64))?;
                     let mut expected = bytes.clone();
                     *expected

@@ -38,6 +38,7 @@ where
         dirty: &[DirtyDetachedRecord],
         captured_records: MountedRecords,
         selection: (SelectedPublication<'_>, Option<SelectedImportProof>),
+        requested: Option<crate::OperationId>,
         input: &mut adapter::InputBuffers<'_, '_>,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<PreparedPublication<'_, A, O, impl Sized + Send + use<A, O, D, S>>, MountSourceError>
@@ -52,9 +53,10 @@ where
             .await?;
         let mut paths = input.vec(removals.len())?;
         paths.extend(removals.into_iter().map(|(path, _)| path));
-        let operation = selected
-            .as_ref()
-            .map_or(fresh_operation, |(_, _, operation)| *operation);
+        let operation = selected.as_ref().map_or_else(
+            || requested.unwrap_or(fresh_operation),
+            |(_, _, operation)| *operation,
+        );
         let mut effects = match selected {
             Some((destination, plan, _)) => Some(
                 self.lazy

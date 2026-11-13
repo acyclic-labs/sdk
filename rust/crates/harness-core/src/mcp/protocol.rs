@@ -45,7 +45,8 @@ impl From<rmcp::model::Tool> for McpToolDefinition {
 
 /// Pinned transport for admitted operations and optional task authority.
 pub trait McpToolTransport: acyclic_stream::ProviderPlatform {
-    /// Monotone source revision advanced by notifications/tools/list_changed.
+    /// Monotone source revision advanced by catalog changes or notification
+    /// transport invalidation, including a retained terminal failure.
     fn tools_generation(&self) -> u64 {
         0
     }

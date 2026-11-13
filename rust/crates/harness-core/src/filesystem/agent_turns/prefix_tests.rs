@@ -282,9 +282,7 @@ async fn opening_followup_reuses_own_request_and_inherited_child_reads_no_execut
     let open = host
         .open(
             &root,
-            OperationId::new(),
-            1,
-            2,
+            crate::agent::TurnIdentity::new(OperationId::new(), 1, 2),
             &ModelContent::Text("next".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )
@@ -309,9 +307,7 @@ async fn opening_followup_reuses_own_request_and_inherited_child_reads_no_execut
     let open = host
         .open(
             &child,
-            OperationId::new(),
-            1,
-            2,
+            crate::agent::TurnIdentity::new(OperationId::new(), 1, 2),
             &ModelContent::Text("child input".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )

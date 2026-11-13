@@ -116,20 +116,19 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
     }
 }
 pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
-    let shadows = [3_u8; 32];
-    serde_json::from_value(serde_json::json!({
-        "schema_version": LazyWorkspaceState::SCHEMA_VERSION,
-        "revision": revision,
-        "workspace_id": workspace_id,
-        "parent_workspace_id": null,
-        "fork_origin": null,
-        "selected_import_roots": null,
-        "source": crate::demand::SourceReference { components: acyclic_stream::OwnedBytes::new(),  identity: [1; 16], epoch: 0 },
-        "overlay": LazyOverlayId::from_bytes([2; 32]),
-        "shadows": shadows,
-        "pending_remove": null,
-    }))
-    .unwrap()
+    LazyWorkspaceState {
+        revision,
+        ..LazyWorkspaceState::new(
+            workspace_id,
+            crate::demand::SourceReference {
+                components: acyclic_stream::OwnedBytes::new(),
+                identity: [1; 16],
+                epoch: 0,
+            },
+            LazyOverlayId::from_bytes([2; 32]),
+            crate::LazyShadowId::from_bytes([3; 32]),
+        )
+    }
 }
 
 pub(super) fn is_ownership_conflict<T>(result: &Result<T, LocalCoreStateStoreError>) -> bool {
@@ -416,8 +415,11 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
     let shadow = crate::LazyShadow::Node {
         file_id: crate::FileId::from_bytes([0xa1; 16]),
         priority: 0,
-        record: vec![1, 2, 3],
-        metadata: crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default()),
+        authored: Some(crate::lazy_workspace::LazyStoredRecord {
+            record: vec![1, 2, 3],
+            metadata: crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default()),
+        }),
+        observed: None,
         left: empty_shadows,
         right: empty_shadows,
     };

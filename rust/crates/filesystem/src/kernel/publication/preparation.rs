@@ -144,6 +144,16 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
     where
         E: From<crate::FsError> + acyclic_stream::ProviderTask,
     {
+        let (evidence, evidence_conflict) = super::original_evidence::prepare(
+            self.0.owner.objects(),
+            &mut self.0.intent,
+            self.0.resolved.as_ref(),
+            self.0.limits,
+            accounting,
+            self.0.cancellation,
+        )
+        .await
+        .map_err(E::from)?;
         let candidate = self.candidate(accounting).await.map_err(E::from)?;
         let proven_at = self.0.owner.objects().collection_sweeps();
         let mut authentication = self
@@ -165,13 +175,16 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             self.0.request,
             Some(candidate.root),
             operation_context,
-            self.0.intent.original_evidence.take(),
+            (
+                self.0.intent.original_evidence_reference,
+                self.0.intent.original_evidence_custody.clone(),
+            ),
             accounting,
             self.0.cancellation,
         )
         .map_err(E::from)?;
         if let Some(resolved) = self.0.resolved.as_ref()
-            && resolved.fingerprint != commit.fingerprint
+            && (evidence_conflict || resolved.fingerprint != commit.fingerprint)
         {
             return Ok(Prepared::Complete(RetainedPublication {
                 receipt: PublicationReceipt {
@@ -251,6 +264,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
             .map_err(E::from)?;
         }
         let scope = crate::PublicationScope {
+            related_objects: &evidence.objects,
             objects: &authentication.proof.objects,
             proven_at,
         };
@@ -268,6 +282,7 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
                 crate::FsError::Object(error)
             })
             .map_err(E::from)?;
+        evidence.transferred();
         let append = GuardedAppend {
             authority_id: self.0.request.authority_id,
             epoch: self.0.request.epoch,

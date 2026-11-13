@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { fixtureAuthorization } from "./credential-fixture";
 import { create, toJsonString } from "@bufbuild/protobuf";
-import { CredentialCache, CredentialSnapshot, resolveCredential } from "@acyclic-labs/actors/credential";
+import { CredentialCache, CredentialSnapshot, resolveCredential } from "@acyclic-labs/auth/credential";
 import {
   HttpInferenceTransport, InferenceClient, InferenceTransportError, InspectRunRequestSchema,
   ListModelsResponseSchema, RunEventSchema, RunTerminal, RunViewSchema, WatchRunRequestSchema,

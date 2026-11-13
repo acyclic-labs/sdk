@@ -170,6 +170,25 @@ impl<
                 .apply_resolved_promotion(&mut transaction, path, &lookup.0, maximum, ctx)
                 .await?;
             if changed {
+                if let LazyLookup::Source { source, node } = &lookup.0
+                    && node.kind != SourceNodeKind::Directory
+                {
+                    let record = accounted!(ctx, |work, cancel| transaction
+                        .checkout
+                        .read_file_record_by_id(expected, work, cancel))?;
+                    let metadata = transaction
+                        .checkout
+                        .read_metadata_with_accounting(expected, ctx, cancellation(ctx))
+                        .await?;
+                    self.retain_source_before_image(
+                        *source,
+                        node.version,
+                        record,
+                        crate::WorkspaceMetadata::from_engine(metadata),
+                        ctx,
+                    )
+                    .await?;
+                }
                 *checkout = transaction.checkout;
             }
             Ok(changed)

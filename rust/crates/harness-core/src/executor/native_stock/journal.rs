@@ -4,7 +4,7 @@ pub(in crate::executor) async fn stage_bytes(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
     key: &str,
-    bytes: &[u8],
+    (bytes, media): (&[u8], &'static str),
     bind_content: bool,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
@@ -46,19 +46,19 @@ pub(in crate::executor) async fn stage_bytes(
             operation,
             copied.as_deref().unwrap_or(key),
             bytes,
-            "application/json",
+            media,
             io,
         )?
         .await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
-        || reference.descriptor().media_type() != "application/json"
+        || reference.descriptor().media_type() != media
         || reference.descriptor().byte_length() != bytes.len() as u64
         || reference.descriptor().sha256() != &digest
     {
         return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Storage,
-            "execution journal staged different private JSON bytes",
+            "execution journal staged different private payload bytes",
         ));
     }
     Ok(reference)
@@ -76,13 +76,29 @@ pub(crate) async fn stage_json<T: Serialize>(
         let hold;
         let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         hold = io.guard_bytes(&bytes)?;
-        let result = stage_bytes(journal, operation, key, &bytes, true, Some(io)).await;
+        let result = stage_bytes(
+            journal,
+            operation,
+            key,
+            (&bytes, "application/json"),
+            true,
+            Some(io),
+        )
+        .await;
         drop(bytes);
         drop(hold);
         return result;
     }
     let bytes = crate::contract::canonical_json_bytes(value)?;
-    stage_bytes(journal, operation, key, &bytes, true, None).await
+    stage_bytes(
+        journal,
+        operation,
+        key,
+        (&bytes, "application/json"),
+        true,
+        None,
+    )
+    .await
 }
 
 #[cfg(not(target_arch = "wasm32"))]

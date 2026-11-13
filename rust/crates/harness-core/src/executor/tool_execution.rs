@@ -53,6 +53,7 @@ type ToolReceipt<'a> = (ToolResult, Option<crate::conversation::ContentHold<'a>>
 
 /// A settled call can be shown to the model; an interrupted effect ends the turn.
 enum ToolInvocationOutcome<'a> {
+    Controlled(crate::supervision::Control),
     Settled(crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
     Pending(OperationId),
     Interrupted,
@@ -398,6 +399,11 @@ impl<'io> StockExecution<'io> {
         };
         #[cfg(not(target_arch = "wasm32"))]
         self.append_hook_context(_hook_context, pre_hook)?;
+        if let Some(context) = &mut context {
+            context.output_activity = journal
+                .run_admission()
+                .is_some_and(|source| source.value.quiet_ms.is_some());
+        }
         // One match over every record state: a settlement replays whether or not it has a
         // start, so the turn's scan never stops at a settled call.
         let (content, receipt) = match recorded {
@@ -564,6 +570,9 @@ impl<'io> StockExecution<'io> {
                     .await?
                 {
                     ToolInvocationOutcome::Settled(content, receipt) => (content, receipt),
+                    ToolInvocationOutcome::Controlled(control) => {
+                        return Ok(ExecutionProgress::Controlled(control));
+                    }
                     ToolInvocationOutcome::Interrupted => {
                         return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
                     }

@@ -135,6 +135,9 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
             target.write_bytes(contents)
         workspace = self.root / "workspace"
         workspace.mkdir()
+        existing = workspace / ".agents/skills/existing/SKILL.md"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"existing project skill")
 
         class TaskEnvironment(Environment):
             async def exec(self, command, **kwargs):
@@ -156,7 +159,8 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(agent.capabilities.skills)
         projected = workspace / ".agents/skills"
         self.assertEqual({str(path.relative_to(projected)): path.read_bytes()
-                          for path in projected.rglob("*") if path.is_file()}, files)
+                          for path in projected.rglob("*") if path.is_file()},
+                         {**files, "existing/SKILL.md": b"existing project skill"})
         await agent.run("use the review skill", environment, None)
 
         skills.rename(self.root / "withdrawn-skills")

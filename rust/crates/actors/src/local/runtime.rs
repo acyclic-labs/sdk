@@ -13,6 +13,8 @@ use acyclic_stream::StreamProviderExt as _;
 mod clock;
 mod completion;
 mod dispatcher;
+mod external;
+mod failure;
 mod interrupt;
 mod limits;
 mod pause;
@@ -48,6 +50,7 @@ use std::{
 };
 
 struct Slot {
+    failure: OnceLock<Arc<failure::Signal>>,
     registration: Registration<ActorReference>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
@@ -57,10 +60,20 @@ struct Slot {
     /// Just past its latest activation entry this dispatcher observed or
     /// carried; zero for none. A failed delivery's checkpoint bound.
     entry: AtomicU64,
+    evict: AtomicBool,
     event_deliveries: AtomicUsize,
     /// Control requests serialize separately from the delivery they stop.
     control: tokio::sync::Mutex<()>,
     delivery_control: SyncMutex<DeliveryControl>,
+}
+
+impl Slot {
+    fn wake(&self) {
+        self.refresh.store(true, Ordering::Release);
+        if !self.unplaced.load(Ordering::Acquire) {
+            self.waker.wake_by_ref();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -75,7 +88,11 @@ struct DeliveryControl {
 struct EventDelivery(Arc<Slot>);
 impl Drop for EventDelivery {
     fn drop(&mut self) {
-        self.0.event_deliveries.fetch_sub(1, Ordering::AcqRel);
+        if self.0.event_deliveries.fetch_sub(1, Ordering::AcqRel) == 1
+            && self.0.evict.load(Ordering::Acquire)
+        {
+            self.0.waker.wake_by_ref();
+        }
     }
 }
 
@@ -88,10 +105,13 @@ impl Drop for EventDelivery {
 /// alarm; its flight then keeps the actor's failure mark. The work it was
 /// taken for settles with it.
 struct Settlement<'a> {
+    actor: &'a ActorReference,
+    failures: &'a Arc<failure::Signals>,
     slot: &'a Slot,
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
     failed: bool,
+    cause: Option<DeliveryFailure>,
 }
 impl Drop for Settlement<'_> {
     fn drop(&mut self) {
@@ -99,14 +119,33 @@ impl Drop for Settlement<'_> {
             return;
         };
         if self.failed {
+            self.slot
+                .failure
+                .get_or_init(|| self.failures.signal(self.actor))
+                .failed(self.cause.take().unwrap_or_else(|| DeliveryFailure {
+                    message: format!(
+                        "actor {:?}: delivery producer disappeared before reporting an outcome",
+                        self.actor
+                    ),
+                }));
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
+        } else if let Some(failure) = self.slot.failure.get() {
+            failure.healthy();
         }
         flight.finish(self.failed);
         if let Some(work) = self.work.take() {
             work.settle();
         }
     }
+}
+
+/// One failed delivery attempt. Its input and any unknown publication remain
+/// owned by the actor; observing this failure does not settle either.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct DeliveryFailure {
+    message: String,
 }
 
 #[derive(Default)]
@@ -154,14 +193,17 @@ fn terminal(error: &Error) -> bool {
             !error.uncertain() && !matches!(error.category(), StreamError::Capacity)
         }
         Error::PreconditionUnchanged => true,
+        Error::Handler(failure) => !matches!(failure, crate::guest::GuestError::Pending(_)),
         _ => false,
     }
 }
 
 enum Event {
+    ExternalRegistered(external::Watch),
+    External(external::Outcome),
     Created(u16, Record),
     Dispatched(u16, Result<Snapshot, Error>),
-    Work(Work<ActorReference>),
+    Work(usize, Work<ActorReference>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
     Due(Result<(), ClockError>),
@@ -195,6 +237,13 @@ enum Next {
     Window(Option<u64>),
 }
 
+enum DrainEvent {
+    Work(usize, Work<ActorReference>),
+    Done(Result<(), (ActorReference, Error)>),
+    Subscription(Result<(), (Vec<ActorReference>, StreamError)>),
+    Idle,
+}
+
 /// Executes one handler package for every actor whose state lives under the
 /// store's root and that it claims, including actors created by other
 /// parties' commits.
@@ -206,8 +255,9 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     scheduling_shards: BTreeSet<u16>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
-    ready: ReadySet<ActorReference>,
+    ready: [ReadySet<ActorReference>; 2],
     actors: [SyncMutex<HashMap<ActorReference, Arc<Slot>>>; 64],
+    failures: Arc<failure::Signals>,
     shards: RandomState,
     /// Host node incarnation retained in explicit placement commands.
     instance: uuid::Uuid,
@@ -216,12 +266,13 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     /// The external owner told of due work for non-resident actors.
     unplaced: Option<Arc<dyn PlacementRequests>>,
     limits: RuntimeLimits,
-    admission: Option<tokio::sync::Semaphore>,
+    admission: [Option<tokio::sync::Semaphore>; 2],
     completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
     subscriptions: SyncMutex<subscriptions::Subscriptions>,
     requests: crate::guest::Requests,
     /// Set once this host has paged every interest marker of its shards.
     restored: tokio::sync::watch::Sender<bool>,
+    external: external::Registry,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -237,22 +288,26 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         Self {
             scheduling_shards: (0..store.scheduling_shards()).collect(),
             // Each shard's deadline watermark is held only by its own alarms.
-            ready: ReadySet::grouped(move |actor| scheduling::shard(shards, actor)),
+            ready: std::array::from_fn(|_| {
+                ReadySet::grouped(move |actor| scheduling::shard(shards, actor))
+            }),
             store,
             scope: None,
             handler,
             clock,
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
+            failures: Arc::new(failure::Signals::default()),
             shards: RandomState::new(),
             instance: crate::identity::fresh_uuid(),
             places: true,
             unplaced: None,
             limits: RuntimeLimits::default(),
-            admission: None,
+            admission: [None, None],
             completions: OnceLock::new(),
             subscriptions: SyncMutex::new(subscriptions::Subscriptions::default()),
             requests,
             restored: tokio::sync::watch::Sender::new(false),
+            external: external::Registry::default(),
         }
     }
 
@@ -279,7 +334,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// deliveries and continuous dispatch use the same admission bound.
     #[must_use]
     pub fn with_limits(mut self, limits: RuntimeLimits) -> Self {
-        self.admission = limits.active.map(tokio::sync::Semaphore::new);
+        self.admission = limits
+            .active
+            .map(|capacity| capacity.map(tokio::sync::Semaphore::new));
         self.limits = limits;
         self
     }
@@ -374,7 +431,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Exact resident registration and ready counts.
     pub fn counts(&self) -> (usize, usize) {
-        self.ready.counts()
+        self.ready
+            .iter()
+            .map(ReadySet::counts)
+            .fold((0, 0), |total, next| (total.0 + next.0, total.1 + next.1))
+    }
+
+    fn wake_due(&self, now: u64) -> usize {
+        self.ready
+            .iter()
+            .map(|ready| ready.wake_due(now, self.limits.work))
+            .sum()
     }
 
     /// Register a dormant slot. Registration queues no work and grants no ownership.
@@ -394,28 +461,51 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if actors.contains_key(&actor) {
             return Ok(());
         }
-        let registration = self.ready.register(actor.clone())?;
+        let ready = &self.ready[self.handler.admission_class(&actor).index()];
+        let registration = ready.register(actor.clone())?;
         if unplaced {
             // An undelivered activation has the same checkpoint custody as an
             // unfinished delivery. Placement alone does not consume its input.
-            drop(self.ready.flight(&actor));
+            drop(ready.flight(&actor));
         }
         let waker = registration.waker();
+        let failure = self
+            .failures
+            .existing(&actor)
+            .map_or_else(OnceLock::new, OnceLock::from);
         actors.insert(
             actor,
             Arc::new(Slot {
+                failure,
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
                 refresh: AtomicBool::new(false),
                 unplaced: AtomicBool::new(unplaced),
                 entry: AtomicU64::new(0),
+                evict: AtomicBool::new(false),
                 event_deliveries: AtomicUsize::new(0),
                 control: tokio::sync::Mutex::new(()),
                 delivery_control: SyncMutex::new(DeliveryControl::default()),
             }),
         );
         Ok(())
+    }
+
+    /// Observe this actor's next failed delivery, including a failure already
+    /// retained by this runtime. Observation registers no resident slot or work. Observers
+    /// survive hibernation without retaining actor I/O. Recovery clears the
+    /// current failure, but cannot erase an event from an earlier observer.
+    pub fn delivery_failure(
+        &self,
+        actor: &ActorReference,
+    ) -> Result<BoxProviderFuture<'static, DeliveryFailure>, Error> {
+        if !self.includes(actor) {
+            return Err(Error::Invalid("actor is outside this runtime's scope"));
+        }
+        // Signals outlive idle slots. Register directly in their shared index,
+        // so concurrent release cannot turn healthy hibernation into failure.
+        Ok(self.failures.signal(actor).observe())
     }
 
     /// Register an actor and request its first delivery attempt, as after
@@ -462,16 +552,48 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .release(actor);
+        if !self.handler.external_subscriptions().is_empty() {
+            self.external.remove(actor);
+        }
         true
     }
 
     /// Request a delivery attempt, for example after a transient failure.
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
-            slot.refresh.store(true, Ordering::Release);
-            if !slot.unplaced.load(Ordering::Acquire) {
-                slot.waker.wake_by_ref();
-            }
+            slot.wake();
+        }
+    }
+
+    /// Notify a resident actor of the activation in a confirmed publication.
+    /// The direct producer and the activation follow share its committed cursor,
+    /// so a delayed copy cannot redeliver an input after its producer failed.
+    /// The caller must have included this actor's activation in the commit.
+    ///
+    /// # Errors
+    /// The receipt omits the actor's activation log append.
+    pub fn wake_committed(
+        &self,
+        actor: &ActorReference,
+        receipt: &acyclic_stream::CommitReceipt,
+    ) -> Result<(), Error> {
+        let path = self
+            .store
+            .scheduling_path(self.store.scheduling_shard(actor))?;
+        let append = receipt
+            .appends
+            .iter()
+            .find(|append| append.path == path)
+            .ok_or(Error::Invalid("receipt omits the actor activation"))?;
+        self.activate(actor, append.tail);
+        Ok(())
+    }
+
+    fn activate(&self, actor: &ActorReference, cursor: u64) {
+        if let Some(slot) = self.slot(actor)
+            && slot.entry.fetch_max(cursor, Ordering::AcqRel) < cursor
+        {
+            slot.wake();
         }
     }
 
@@ -547,51 +669,78 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// and event delivery; no task is created for a dormant actor.
     pub async fn drain(&self) -> Vec<(ActorReference, Error)> {
         let now = self.clock.now_unix_ms();
-        while self.ready.wake_due(now, self.limits.work) == self.limits.work {
+        while self.wake_due(now) >= self.limits.work {
             limits::yield_now().await;
         }
         let mut failures = Vec::new();
-        let mut running = FuturesUnordered::new();
+        let mut running: [_; 2] = std::array::from_fn(|_| FuturesUnordered::new());
+        let mut next_done = 0;
+        let mut next_work = 0;
         let mut steps = 0;
-        let mut subscriptions_first = false;
         loop {
-            while self
-                .limits
-                .active
-                .is_none_or(|active| running.len() < active)
-            {
-                let Some(work) = self.ready.take() else { break };
-                running.push(self.execute(work));
-                steps += 1;
-                if steps == self.limits.work {
+            for step in 0..self.limits.work {
+                let mut admitted = false;
+                for _ in 0..2 {
+                    let class = next_work;
+                    next_work = (next_work + 1) % 2;
+                    if self.limits.allows(class, running[class].len())
+                        && let Some(work) = self.ready[class].take()
+                    {
+                        running[class].push(self.execute(work));
+                        admitted = true;
+                        break;
+                    }
+                }
+                if !admitted {
+                    break;
+                }
+                if step + 1 == self.limits.work {
                     limits::yield_now().await;
-                    steps = 0;
                 }
             }
             let result = poll_fn(|context| {
-                subscriptions_first = !subscriptions_first;
-                if !subscriptions_first
-                    && let Poll::Ready(Some(result)) = running.poll_next_unpin(context)
-                {
-                    return Poll::Ready(Some(result));
-                }
-                if let Poll::Ready(result) = self.poll_subscriptions(context) {
-                    if let Err((actors, error)) = result {
-                        failures.extend(
-                            actors
-                                .into_iter()
-                                .map(|actor| (actor, Error::Stream(error.clone()))),
-                        );
+                for _ in 0..3 {
+                    let class = next_done;
+                    next_done = (next_done + 1) % 3;
+                    if class == 2 {
+                        if let Poll::Ready(result) = self.poll_subscriptions(context) {
+                            return Poll::Ready(DrainEvent::Subscription(result));
+                        }
+                        continue;
                     }
-                    return Poll::Ready(Some(Ok(())));
+                    if let Poll::Ready(Some(result)) = running[class].poll_next_unpin(context) {
+                        return Poll::Ready(DrainEvent::Done(result));
+                    }
                 }
-                running.poll_next_unpin(context)
+                for _ in 0..2 {
+                    let class = next_work;
+                    next_work = (next_work + 1) % 2;
+                    if self.limits.allows(class, running[class].len())
+                        && let Poll::Ready(work) = self.ready[class].poll_ready(context)
+                    {
+                        return Poll::Ready(DrainEvent::Work(class, work));
+                    }
+                }
+                if running.iter().all(FuturesUnordered::is_empty) {
+                    Poll::Ready(DrainEvent::Idle)
+                } else {
+                    Poll::Pending
+                }
             })
             .await;
             match result {
-                Some(Err(failure)) => failures.push(failure),
-                Some(Ok(())) => {}
-                None => break,
+                DrainEvent::Done(Err(failure)) => failures.push(failure),
+                DrainEvent::Done(Ok(())) => {}
+                DrainEvent::Subscription(Ok(())) => {}
+                DrainEvent::Subscription(Err((actors, error))) => {
+                    failures.extend(
+                        actors
+                            .into_iter()
+                            .map(|actor| (actor, Error::Stream(error.clone()))),
+                    );
+                }
+                DrainEvent::Work(class, work) => running[class].push(self.execute(work)),
+                DrainEvent::Idle => break,
             }
             steps += 1;
             if steps == self.limits.work {
@@ -624,8 +773,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         Err(error) => break Err(error),
                     }
                 };
+                let evict = delivery.0.evict.load(Ordering::Acquire);
                 drop(delivery);
-                if matches!(result, Err(Error::Conflict)) {
+                if matches!(result, Err(Error::Conflict)) || (result.is_ok() && evict) {
                     self.release(actor);
                 }
                 result
@@ -650,7 +800,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .state()
                     .filter(|state| !state.paused())
                     .and_then(|state| state.alarm().pending());
-                if !self.release(actor) {
+                if self.slot(actor).is_some() && !self.release(actor) {
                     return Err(Error::Invalid("actor still owns an unsettled delivery"));
                 }
                 Ok(alarm)
@@ -713,6 +863,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         completions: Result<tokio::sync::mpsc::Receiver<Completion>, Error>,
     ) -> Result<Infallible, Error> {
         let mut completions = completions?;
+        let _external = self.external.running();
         let mut completing = Completions::default();
         let mut completion_tail = BTreeMap::new();
         let mut failure = None;
@@ -743,7 +894,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut windows = BTreeSet::new();
         // From here on a hibernating resident parks its alarm token in the
         // ready index, which holds the deadline watermark at its window.
-        self.ready.dispatch();
+        for ready in &self.ready {
+            ready.dispatch();
+        }
         let earliest =
             futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
                 |(&shard, dispatcher)| {
@@ -794,8 +947,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // The activation log is also every producer's wake entry: the cursor
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
-        let mut running = FuturesUnordered::new();
-        // A checkpoint is waiting for deliveries to settle.
+        let mut running: [_; 2] = std::array::from_fn(|_| FuturesUnordered::new());
+        let mut next_done = 0;
+        let mut next_work = 0;
+        let mut sources = FuturesUnordered::new();
         let mut held = false;
         let mut timer: Option<(u64, BoxProviderFuture<'static, Result<(), ClockError>>)> = None;
         let mut next_class = 0;
@@ -820,21 +975,30 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             let event = poll_fn(|context: &mut Context<'_>| {
                 // Alarm changes must wake us even when active admission is
                 // full and the ready queue cannot currently be consumed.
-                self.ready.listen(context);
-                // The last delivery to settle, whichever consumer took it,
-                // wakes this listener so a held checkpoint is retried.
-                if held && !self.ready.busy() {
+                for ready in &self.ready {
+                    ready.listen(context);
+                }
+                if held
+                    && running.iter().all(FuturesUnordered::is_empty)
+                    && !self.ready.iter().any(ReadySet::busy)
+                {
                     return Poll::Ready(Event::Quiet);
                 }
-                for _ in 0..6 {
+                for _ in 0..7 {
                     let class = next_class;
-                    next_class = (next_class + 1) % 6;
+                    next_class = (next_class + 1) % 7;
                     match class {
                         0 => {
                             // Provider I/O owned by an active delivery must keep
                             // progressing during dispatcher checkpoint writes.
-                            if let Poll::Ready(Some(result)) = running.poll_next_unpin(context) {
-                                return Poll::Ready(Event::Done(result));
+                            for _ in 0..2 {
+                                let class = next_done;
+                                next_done = (next_done + 1) % 2;
+                                if let Poll::Ready(Some(result)) =
+                                    running[class].poll_next_unpin(context)
+                                {
+                                    return Poll::Ready(Event::Done(result));
+                                }
                             }
                         }
                         1 => {
@@ -866,19 +1030,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                         }
                         2 => {
-                            if self
-                                .limits
-                                .active
-                                .is_none_or(|active| running.len() < active)
-                                && let Poll::Ready(work) = self.ready.poll_ready(context)
-                            {
-                                return Poll::Ready(Event::Work(work));
+                            for _ in 0..2 {
+                                let class = next_work;
+                                next_work = (next_work + 1) % 2;
+                                if self.limits.allows(class, running[class].len())
+                                    && let Poll::Ready(work) = self.ready[class].poll_ready(context)
+                                {
+                                    return Poll::Ready(Event::Work(class, work));
+                                }
                             }
                         }
                         3 => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
-                            let armed = self.ready.take_armed();
+                            let armed = self
+                                .ready
+                                .iter()
+                                .flat_map(ReadySet::take_armed)
+                                .collect::<Vec<_>>();
                             if !armed.is_empty() {
                                 return Poll::Ready(Event::Armed(armed));
                             }
@@ -887,9 +1056,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 .first()
                                 .map(|&(window, _)| scheduling::window_start(window))
                                 .into_iter()
-                                .chain(self.ready.next_parked_wake().filter(|_| self.places))
+                                .chain(
+                                    self.ready
+                                        .iter()
+                                        .filter_map(ReadySet::next_parked_wake)
+                                        .min()
+                                        .filter(|_| self.places),
+                                )
                                 .min();
-                            let next = match (self.ready.next_deadline(), opens) {
+                            let next = match (
+                                self.ready.iter().filter_map(ReadySet::next_deadline).min(),
+                                opens,
+                            ) {
                                 (Some(resident), Some(opens)) => Some(resident.min(opens)),
                                 (resident, opens) => resident.or(opens),
                             };
@@ -910,6 +1088,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Completion(completion));
                             }
                         }
+                        5 => {
+                            if let Poll::Ready(watch) = self.external.poll_registered(context) {
+                                return Poll::Ready(Event::ExternalRegistered(watch));
+                            }
+                            if let Poll::Ready(Some(outcome)) = sources.poll_next_unpin(context) {
+                                return Poll::Ready(Event::External(outcome));
+                            }
+                        }
                         _ => {
                             if let Poll::Ready(result) = self.poll_subscriptions(context) {
                                 return Poll::Ready(Event::Subscription(result));
@@ -918,7 +1104,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
                 if !completing.is_empty()
-                    && !self.ready.busy()
+                    && running.iter().all(FuturesUnordered::is_empty)
+                    && !self.ready.iter().any(ReadySet::busy)
                     && dispatching.is_empty()
                     && opening.is_empty()
                     && completion_tail
@@ -932,6 +1119,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await;
             steps += 1;
             match event {
+                Event::ExternalRegistered(watch) => {
+                    sources.push(watch.next(provider));
+                }
+                Event::External(outcome) => {
+                    if let Err((actor, error)) = outcome.result {
+                        self.subscription_failed(&actor, &error);
+                        let error = Error::Stream(error);
+                        report(&actor, &error);
+                        failure.get_or_insert_with(|| Arc::new(error));
+                    }
+                    if let Some(watch) = outcome.watch {
+                        sources.push(watch.next(provider));
+                    }
+                }
                 Event::Created(shard, record) => {
                     // Activation is a wake hint, not a placement command. The
                     // local placement owner hosts its shard's actors on demand;
@@ -947,19 +1148,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     {
                         let handoff = handoffs.remove(&actor);
                         self.due(&actor, !handoff)?;
-                        if let Some(slot) = self.slot(&actor) {
-                            slot.entry.fetch_max(cursor, Ordering::AcqRel);
-                        }
-                        self.wake(&actor);
+                        self.activate(&actor, cursor);
                     }
                     seen.insert(shard, cursor);
                 }
                 Event::Dispatched(shard, result) => {
                     dispatchers.insert(shard, Some(result?));
                 }
-                Event::Work(work) => {
+                Event::Work(class, work) => {
                     let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
-                    running.push(execution);
+                    running[class].push(execution);
                 }
                 Event::Done(Err((actor, error))) => {
                     report(&actor, &error);
@@ -992,7 +1190,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     // Hosting a parked actor again moves its token into its
                     // registration, which this same pass then wakes.
                     if self.places {
-                        for actor in self.ready.parked_due(now, self.limits.work) {
+                        for actor in self
+                            .ready
+                            .iter()
+                            .flat_map(|ready| ready.parked_due(now, self.limits.work))
+                        {
                             self.track(actor.clone())?;
                             if let Some(slot) = self.slot(&actor) {
                                 slot.registration.adopt_parked();
@@ -1000,7 +1202,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             self.wake(&actor);
                         }
                     }
-                    self.ready.wake_due(now, self.limits.work);
+                    self.wake_due(now);
                     // An opened window wakes its dormant actors, page by page;
                     // each delivery installs its exact committed deadline.
                     for (shard, window) in
@@ -1092,7 +1294,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     if completion_tail
                         .iter()
                         .all(|(shard, tail)| seen.get(shard).is_some_and(|cursor| cursor >= tail))
-                        && self.ready.counts().1 == 0
+                        && self.counts().1 == 0
                         && timer
                             .as_ref()
                             .map(|(deadline, _)| *deadline)
@@ -1119,7 +1321,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // In-flight and failed deliveries are counted once, in the shared
             // ready index, for every consumer (this loop, `drain`, direct
             // deliveries), so no local view can let a checkpoint pass one.
-            held = self.ready.busy();
+            held = self.ready.iter().any(ReadySet::busy);
             if held {
                 continue;
             }
@@ -1129,7 +1331,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     continue;
                 };
                 let from = dispatcher::activation_cursor(checkpoint);
-                let failed = self.ready.failed(shard);
+                let failed = self
+                    .ready
+                    .iter()
+                    .flat_map(|ready| ready.failed(shard))
+                    .collect::<Vec<_>>();
                 let holds: Vec<_> = failed
                     .iter()
                     .map(|actor| {
@@ -1140,7 +1346,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     })
                     .collect();
                 let (cursor, carry) = scheduling::checkpoint(seen[&shard], &holds);
-                let deadline = consumed[&shard].min(self.ready.watermark(shard, now));
+                let deadline = consumed[&shard].min(
+                    self.ready
+                        .iter()
+                        .map(|ready| ready.watermark(shard, now))
+                        .min()
+                        .unwrap_or(now),
+                );
                 if let Some(previous) = previous.take_if(|previous| {
                     from < cursor || dispatcher::deadline_cursor(previous) != deadline
                 }) {
@@ -1156,7 +1368,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             // the next placer's wake owns; the mark ends here,
                             // and reading the entry back retakes no custody.
                             None => {
-                                self.ready.forget(actor);
+                                self.ready[self.handler.admission_class(actor).index()]
+                                    .forget(actor);
                                 handoffs.insert(actor.clone());
                             }
                         }
@@ -1174,6 +1387,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
             }
         }
+    }
+
+    fn subscription_failed(&self, actor: &ActorReference, error: &StreamError) {
+        let signal = self.failures.signal(actor);
+        if let Some(slot) = self.slot(actor) {
+            slot.failure.get_or_init(|| Arc::clone(&signal));
+        }
+        signal.failed(DeliveryFailure {
+            message: format!("actor {actor:?}: {error}"),
+        });
     }
 
     fn slot(&self, actor: &ActorReference) -> Option<Arc<Slot>> {
@@ -1249,12 +1472,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // until it settles; a failed or unfinished one keeps its
                 // actor's wake past every later checkpoint.
                 let mut settlement = Settlement {
+                    actor,
+                    failures: &self.failures,
                     slot,
-                    flight: Some(self.ready.flight(actor)),
+                    flight: Some(
+                        self.ready[self.handler.admission_class(actor).index()].flight(actor),
+                    ),
                     work,
                     failed: true,
+                    cause: None,
                 };
-                let result = match &self.admission {
+                let result = match &self.admission[self.handler.admission_class(actor).index()] {
                     Some(admission) => admission
                         .acquire()
                         .await
@@ -1264,6 +1492,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 };
                 let result = match result.and_then(|admission| {
                     self.handler.manifest().validate_interrupts()?;
+                    self.handler
+                        .manifest()
+                        .validate_external(self.handler.external_subscriptions())?;
+                    self.handler
+                        .manifest()
+                        .validate_external(self.handler.ordered_subscriptions())?;
                     Ok(admission)
                 }) {
                     Ok(_admission) => self.deliver_retained(actor, slot, &mut inner).await,
@@ -1276,8 +1510,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // A released slot delivered nothing: its input belongs to
                 // the next placer.
                 settlement.failed = result.is_err() || inner.released;
+                if let Err(error) = &result {
+                    settlement.cause = Some(DeliveryFailure {
+                        message: format!("actor {actor:?}: {error}"),
+                    });
+                }
                 drop(settlement);
                 drop(inner);
+                if result.is_ok() && slot.evict.load(Ordering::Acquire) && self.release(actor) {
+                    slot.evict.store(false, Ordering::Release);
+                }
                 result
             }
         )
@@ -1348,6 +1590,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             let Some(state) = snapshot.state() else {
                 // No actor: nothing is left to deliver or wake.
+                self.external.remove(actor);
                 inner.observed = None;
                 self.subscriptions
                     .lock()
@@ -1357,6 +1600,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(true);
             };
             if state.deleted() {
+                self.external.remove(actor);
                 // Deletion is terminal: nothing is left to deliver or wake.
                 inner.observed = None;
                 self.subscriptions
@@ -1366,11 +1610,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 slot.registration.suspend_alarm();
                 return Ok(true);
             }
+            self.external
+                .refresh(actor, state, &*self.handler, &slot.waker)?;
             if inner.epoch != 0 && state.epoch() != inner.epoch {
                 // Another placement owns the actor, and with it the alarm.
                 slot.registration.suspend_alarm();
                 return Err(Error::Conflict);
             }
+            slot.evict.store(
+                state.paused() && !self.handler.retain_paused(actor, state.checkpoint()),
+                Ordering::Release,
+            );
             if state.paused() {
                 // The alarm stays committed; only its active wake is withdrawn.
                 // A later wake must observe an external resume as well.
@@ -1422,28 +1672,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 )?;
             let now = self.clock.now_unix_ms();
             let due = slot.registration.observe_delivery(state.alarm(), now)?;
-            let (trigger, record) = match state.alarm().pending() {
+            let (trigger, record, subscription) = match state.alarm().pending() {
                 Some(_) if due => (
                     Trigger::Alarm {
                         generation: state.alarm().generation(),
                         now_unix_ms: now,
                     },
                     None,
+                    None,
                 ),
                 _ => match self.next_record(state, inner.last_input.as_deref()).await? {
-                    Some((subscription, record)) => (
-                        Trigger::Record {
-                            subscription,
-                            sequence: record.sequence,
-                        },
-                        Some(record),
-                    ),
+                    Some((trigger, record, after)) => (trigger, Some(record), Some(after)),
                     None => {
                         // An idle actor's activation is checkpointed without a
                         // publication: its interests must be restorable first.
                         if !inner.interests_marked {
                             self.store
-                                .persist_interests(actor, state, self.handler.manifest())
+                                .persist_interests(actor, state, self.handler.as_ref())
                                 .await?;
                             inner.interests_marked = true;
                         }
@@ -1560,10 +1805,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 self.finish_publication(&mut publication, actor)?;
                 Ok(publication)
             })();
-            let subscription = match &trigger {
-                Trigger::Record { subscription, .. } => Some(subscription.clone()),
-                Trigger::Alarm { .. } => None,
-            };
             let mut result = match publication {
                 Ok(publication) => {
                     inner.pending =
@@ -1714,9 +1955,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         publication: &mut PreparedPublish,
         actor: &ActorReference,
     ) -> Result<(), Error> {
-        publication.require(self.handler.publication_conditions())?;
+        publication.require(self.handler.publication_conditions(actor))?;
         self.store
-            .mark_interests(publication, actor, self.handler.manifest())
+            .mark_interests(publication, actor, self.handler.as_ref())
     }
 
     fn prepare_transition(
@@ -1737,8 +1978,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         {
             return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
         }
-        self.store
-            .prepare_publish(snapshot, epoch, trigger, record, transition, identity)
+        let mut publication = self
+            .store
+            .prepare_publish(snapshot, epoch, trigger, record, transition, identity)?;
+        if self
+            .handler
+            .revalidate_foreign_conflicts(&self.store.actor(snapshot.path())?)
+        {
+            publication.revalidate_foreign_conflicts()?;
+        }
+        Ok(publication)
     }
 
     /// Open the follow for one subscription. A stream that does not exist yet
@@ -1750,13 +1999,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         id: &str,
         path: &StreamPath,
         cursor: u64,
+        key: Option<bytes::Bytes>,
     ) -> Result<bool, Error> {
-        match self
-            .store
-            .provider()
-            .follow(acyclic_stream::FollowRequest::new(path.clone(), cursor))
-            .await
-        {
+        let mut request = acyclic_stream::FollowRequest::new(path.clone(), cursor);
+        if let Some(key) = key {
+            request.filter = acyclic_stream::FollowFilter::exact_key(key)?;
+        }
+        match self.store.provider().follow(request).await {
             Ok(follow) => {
                 inner
                     .follows
@@ -1775,38 +2024,103 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         state: &State,
         after: Option<&str>,
-    ) -> Result<Option<(String, Record)>, Error> {
+    ) -> Result<Option<(Trigger, Record, String)>, Error> {
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let subscriptions = state.subscriptions();
         let later = subscriptions.range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded));
         let earlier = after
             .into_iter()
             .flat_map(|last| subscriptions.range::<str, _>((Unbounded, Included(last))));
+        let ordered = self.handler.ordered_subscriptions();
         for (id, subscription) in later.chain(earlier) {
-            let records = self
-                .store
-                .provider()
-                .read(acyclic_stream::ReadRequest {
-                    key: None,
-                    path: subscription.path.clone(),
-                    from: subscription.cursor,
-                    limit: 1,
-                    at_least: Default::default(),
-                })
-                .await;
-            let mut records = match records {
-                Ok(records) => records,
-                Err(error) if error.category() == StreamError::NotFound => continue,
-                Err(error) => return Err(error.into()),
-            };
-            if let Some(record) = records.next().await.transpose()? {
-                if record.sequence != subscription.cursor {
-                    return Err(Error::Invalid("subscription skipped a record"));
+            if !ordered.contains(id) {
+                if let Some((trigger, record)) =
+                    self.next_subscription(state, id, subscription).await?
+                {
+                    return Ok(Some((trigger, record, id.clone())));
                 }
-                return Ok(Some((id.clone(), record)));
+                continue;
+            }
+            // One stable representative rotates this source against unrelated
+            // inputs. Other members participate only in its source-order cut.
+            if ordered.iter().any(|other| {
+                other < id
+                    && subscriptions
+                        .get(other)
+                        .is_some_and(|other| other.path == subscription.path)
+            }) {
+                continue;
+            }
+            let mut selected: Option<(Trigger, Record)> = None;
+            for member in ordered {
+                let Some(bound) = subscriptions
+                    .get(member)
+                    .filter(|bound| bound.path == subscription.path)
+                else {
+                    continue;
+                };
+                if let Some((trigger, record)) =
+                    self.next_subscription(state, member, bound).await?
+                    && selected
+                        .as_ref()
+                        .is_none_or(|(_, previous)| record.sequence < previous.sequence)
+                {
+                    selected = Some((trigger, record));
+                }
+            }
+            if let Some((trigger, record)) = selected {
+                return Ok(Some((trigger, record, id.clone())));
             }
         }
         Ok(None)
+    }
+
+    async fn next_subscription(
+        &self,
+        state: &State,
+        id: &str,
+        subscription: &crate::guest::Subscription,
+    ) -> Result<Option<(Trigger, Record)>, Error> {
+        let key = self.handler.subscription_key(id, state.checkpoint())?;
+        let records = self
+            .store
+            .provider()
+            .read(acyclic_stream::ReadRequest {
+                key: key
+                    .clone()
+                    .map(|key| acyclic_stream::ReadKeySeek::exact(key, u64::MAX)),
+                path: subscription.path.clone(),
+                from: subscription.cursor,
+                limit: 1,
+                at_least: Default::default(),
+            })
+            .await;
+        let mut records = match records {
+            Ok(records) => records,
+            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let Some(record) = records.next().await.transpose()? else {
+            return Ok(None);
+        };
+        if record.sequence < subscription.cursor
+            || (key.is_none() && record.sequence != subscription.cursor)
+        {
+            return Err(Error::Invalid("subscription skipped a record"));
+        }
+        let trigger = match key {
+            Some(key) => Trigger::KeyedRecord {
+                subscription: id.to_owned(),
+                from: subscription.cursor,
+                sequence: record.sequence,
+                key,
+            },
+            None => Trigger::Record {
+                subscription: id.to_owned(),
+                sequence: record.sequence,
+            },
+        };
+        Ok(Some((trigger, record)))
     }
 }
 
@@ -1841,6 +2155,20 @@ async fn settle_pending<P: StreamProvider + ?Sized>(
             inner.refused(conflicts)?;
             Ok(true)
         }
+        Err(Error::Conflict) => {
+            // A same-placement metadata/control write is not a new owner.
+            // The definite refusal published none of this delivery's effects;
+            // admit again from the actually changed cut, without claiming that
+            // the refused publication applied or advancing its source cursor.
+            if let Some(observed) = refresh_owned(store, &snapshot).await? {
+                inner.refused = None;
+                inner.observed = Some(Arc::new(observed));
+                Ok(true)
+            } else {
+                inner.observed = None;
+                Err(Error::Conflict)
+            }
+        }
         Err(error) => {
             if subscription.is_some() {
                 inner.last_input = subscription;
@@ -1849,6 +2177,22 @@ async fn settle_pending<P: StreamProvider + ?Sized>(
             Err(error)
         }
     }
+}
+
+/// A conditional refusal is the wake. Revalidate only a genuinely changed
+/// original actor cut in the same placement; unchanged/foreign cuts still fail.
+async fn refresh_owned<P: StreamProvider + ?Sized>(
+    store: &Store<P>,
+    previous: &Snapshot,
+) -> Result<Option<Snapshot>, Error> {
+    let epoch = previous.state().ok_or(Error::Conflict)?.epoch();
+    if !previous.owns_epoch(epoch) {
+        return Ok(None);
+    }
+    Ok(store
+        .observe(previous)
+        .await?
+        .filter(|observed| observed.owns_epoch(epoch)))
 }
 
 /// The original and unknown-acknowledgement paths share cancellation

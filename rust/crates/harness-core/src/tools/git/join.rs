@@ -84,10 +84,9 @@ where
             }
         };
         if !unresolved.is_empty() {
-            return Err(Self::error(&format!(
-                "Git join has unresolved conflicts at {}. Edit the conflicted paths, then repeat the same merge to finish it",
-                unresolved.join(", "),
-            )));
+            unresolved.sort_unstable();
+            unresolved.dedup();
+            return Err(Error::MergeConflict { paths: unresolved });
         }
         let tracked_paths = self
             .joined_tracked_paths(operation, target_tree, &generation, tracked)
@@ -149,17 +148,7 @@ where
                     needs_resolution |= matches!(&resolution, acyclic_fs::MergeResolution::Text(text)
                         if acyclic_fs::text_merge::has_conflict_markers(text));
                     if needs_resolution {
-                        let path = conflict.path.as_deref().unwrap_or("/");
-                        let description = if matches!(conflict.key, acyclic_fs::ConflictKey::Binding { .. }) {
-                            let binding = |value: &acyclic_fs::ConflictValue| match value {
-                                acyclic_fs::ConflictValue::Binding(id) => Some(*id),
-                                _ => None,
-                            };
-                            format!("{path} ({:?}; base={:?}, ours={:?}, theirs={:?})", conflict.key, binding(&conflict.base), binding(&conflict.ours), binding(&conflict.theirs))
-                        } else {
-                            format!("{path} ({:?})", conflict.key)
-                        };
-                        unresolved.push(description);
+                        unresolved.push(conflict.path.clone().unwrap_or_else(|| "/".into()));
                     }
                     resolutions.insert(conflict.key.clone(), resolution);
                 }

@@ -107,10 +107,6 @@ impl AgentCall {
             headers: Vec::new(),
             body: encode_agent_reply(result, &self.command)?,
         };
-        if response.encoded_len() > acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
-        {
-            return Err(CommandError::Capacity);
-        }
         let response =
             domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
         Ok(wire::InvokeActorResponse::from(response)
@@ -345,10 +341,12 @@ impl AgentControls {
             .map_or(self.credential, |(_, slot)| *slot)
     }
 
-    fn observation_client(&self) -> Client {
+    /// Original observation capability selected on the existing session pool.
+    pub fn observation_session(&self) -> Client {
         self.observation
             .as_ref()
             .map_or_else(|| self.client.clone(), |(client, _)| client.clone())
+            .select_credential(self.observation_credential())
     }
 
     /// Start bounded observation on this same authenticated pool.
@@ -373,7 +371,7 @@ impl AgentControls {
         all: bool,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
         crate::AgentClient::observing(
-            self.observation_client(),
+            self.observation_session(),
             selection,
             self.observation_credential(),
             all,
@@ -590,11 +588,7 @@ impl<'a> PreparedAgentInvocation<'a> {
     ) -> Result<AgentReply, AgentExchangeError> {
         self.send(|invocation| async move {
             session
-                .actor_call(
-                    &invocation,
-                    credential,
-                    acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
-                )
+                .actor_call(&invocation, credential, None)
                 .await
                 .map_err(AgentExchangeError::Session)
         })
@@ -677,13 +671,27 @@ mod tests {
             Ok(AgentReply::Root { agent: actual }) if actual == agent
         ));
         assert!(matches!(&result, Ok(AgentReply::Root { agent: actual }) if actual == &agent));
-        let refused = call.reply(&Err(acyclic_harness_core::agent::Error::NoSuchAgent))?;
-        let response = wire::InvokeActorResponse::decode(refused)?;
-        assert_eq!(response.deployment_envelope, caller);
-        assert!(matches!(
-            decode_agent_reply(&response.body, call.command())?,
-            Err(failure) if failure.code() == "no_such_agent"
-        ));
+        let message = "é".repeat(acyclic_stream::MAX_COMMAND_BYTES);
+        let diagnostic = acyclic_harness_core::Error::Invalid(message);
+        for failure in [
+            acyclic_harness_core::agent::Error::NoSuchAgent,
+            acyclic_harness_core::agent::Error::Turn(Box::new(diagnostic)),
+        ] {
+            let code = failure.code().to_owned();
+            let expected = failure.to_string();
+            let refused = call.reply(&Err(failure))?;
+            let response = wire::InvokeActorResponse::decode(refused)?;
+            assert_eq!(response.deployment_envelope, caller);
+            let Err(AgentControlFailure::Refused {
+                code: actual,
+                reason,
+            }) = decode_agent_reply(&response.body, call.command())?
+            else {
+                return Err("host refusal changed its result kind".into());
+            };
+            assert_eq!(actual, code);
+            assert_eq!(reason, expected);
+        }
         Ok(())
     }
 

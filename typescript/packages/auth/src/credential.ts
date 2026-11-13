@@ -1,4 +1,5 @@
 import { validCredential } from "./wasm.js";
+export { websocketCredential } from "./wasm.js";
 
 /** Source-owned freshness, partitioned by account, audience and auth context.
  * Observe performs no IO. A source watcher publishes a new revision before

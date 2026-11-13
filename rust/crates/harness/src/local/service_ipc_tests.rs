@@ -141,7 +141,7 @@ async fn external_process_delivers_attributed_peer_input_to_a_running_session() 
         assert!(matches!(settled.phase, crate::agent::Phase::Idle));
         let entries = recipient.entries(0, 1).await?;
         assert!(matches!(entries.as_slice(), [entry] if matches!(&entry.input, TurnInput::Message { from: Sender::Agent { path }, .. } if path == sender.root())));
-        assert_eq!(recipient.output_text(&entries[0]).await?, "received");
+        assert_eq!(recipient.output_text_at(0, &entries[0]).await?, "received");
         let sender = Conversation::open(sender);
         assert!(sender.text(&entries[0].output).await.is_err());
 

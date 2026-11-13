@@ -128,6 +128,14 @@ async fn generation_and_count_publish_original_admission_on_both_provider_paths(
                 ModelWait::AdmissionFinished { waited_for, admitted_at: 1_005_000 }
             )) if waited_for == Duration::from_secs(5))
             );
+            assert!(matches!(
+                events.next().await.transpose()?,
+                Some(ModelEvent::Trace { .. })
+            ));
+            assert!(matches!(
+                events.next().await.transpose()?,
+                Some(ModelEvent::Trace { .. })
+            ));
             let mut terminal = false;
             while let Some(event) = events.next().await {
                 terminal |= matches!(

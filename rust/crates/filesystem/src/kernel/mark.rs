@@ -154,7 +154,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
     /// Marks everything `pending` reaches through the same immediate
     /// references the store records at write, so every child a marked object
     /// pins is itself marked. Chunks carry no references and are not read.
-    async fn closure(&mut self, mut pending: Vec<ObjectId>) -> Result<(), MarkError> {
+    pub(crate) async fn closure(&mut self, mut pending: Vec<ObjectId>) -> Result<(), MarkError> {
         while let Some(object) = pending.pop() {
             if object.kind == ObjectKind::BlobChunk {
                 self.marked.insert(object);

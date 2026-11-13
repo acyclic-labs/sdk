@@ -26,7 +26,7 @@ the next control and before running the restored corpus.
 | --- | --- | --- |
 | `layout-version.patch` | `unsupported-layout-version` | `layout version admitted outside v1` |
 | `command-path-duplicates.patch` | `duplicate-request-path` | `client files admitted duplicate paths` |
-| `reply-file-path.patch` | `mismatched-reply-path` | `reply file path did not match request` |
+| `reply-file-path.patch` | `mismatched-reply-path` | `reply file path differs` |
 | `command-valid-refusal.patch` | `committed-snapshot` | `client files encoder and decoder disagree on admission` |
 
 The command oracle compares the original caller's encoder admission with the

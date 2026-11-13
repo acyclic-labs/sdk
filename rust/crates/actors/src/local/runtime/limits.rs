@@ -5,13 +5,14 @@ use super::*;
 /// The default has no active-delivery ceiling; work batches remain chunked.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeLimits {
-    pub(super) active: Option<usize>,
+    pub(super) active: [Option<usize>; 2],
     pub(super) work: usize,
 }
 
 impl RuntimeLimits {
-    /// Admit at most `active` deliveries and perform at most `work` immediate
-    /// steps before yielding. The same work bound limits each due-index batch.
+    /// Reserve at most `active` ordinary deliveries and perform at most `work`
+    /// immediate steps before yielding. Controls have their own capacity; the
+    /// same work chunk limits each due-index batch. Default has no reservation.
     pub fn new(active: usize, work: usize) -> Result<Self, Error> {
         if active == 0 || active > tokio::sync::Semaphore::MAX_PERMITS || work == 0 {
             return Err(Error::Invalid(
@@ -19,16 +20,33 @@ impl RuntimeLimits {
             ));
         }
         Ok(Self {
-            active: Some(active),
+            active: [Some(active), None],
             work,
         })
+    }
+
+    /// Independently reserve control deliveries. None is truly unbounded.
+    pub fn with_control_capacity(mut self, capacity: Option<usize>) -> Result<Self, Error> {
+        if capacity
+            .is_some_and(|capacity| capacity == 0 || capacity > tokio::sync::Semaphore::MAX_PERMITS)
+        {
+            return Err(Error::Invalid(
+                "control capacity must be positive and representable",
+            ));
+        }
+        self.active[1] = capacity;
+        Ok(self)
+    }
+
+    pub(super) fn allows(self, class: usize, running: usize) -> bool {
+        self.active[class].is_none_or(|capacity| running < capacity)
     }
 }
 
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
-            active: None,
+            active: [None, None],
             work: 64,
         }
     }

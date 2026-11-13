@@ -10,26 +10,34 @@ use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
 };
 
 #[derive(Default)]
 struct Counts {
     snapshots: AtomicUsize,
+    requested: Mutex<Vec<NamespacePath>>,
     nodes: AtomicUsize,
     lookups: AtomicUsize,
     ranges: Mutex<Vec<(u64, u64)>>,
 }
+struct SnapshotWait {
+    entered: tokio::sync::oneshot::Sender<()>,
+    released: tokio::sync::oneshot::Receiver<()>,
+}
 #[derive(Clone)]
 struct Provider {
+    identity: Arc<AtomicU8>,
     data: Arc<Mutex<BTreeMap<u64, Bytes>>>,
     epoch: Arc<AtomicU64>,
     counts: Arc<Counts>,
     sink: Arc<Mutex<Option<Arc<dyn ViewChangeSink<u64>>>>>,
+    gate: Arc<Mutex<Option<SnapshotWait>>>,
 }
 impl Provider {
     fn new() -> Self {
         Self {
+            identity: Arc::new(AtomicU8::new(7)),
             data: Arc::new(Mutex::new(BTreeMap::from([(
                 0,
                 Bytes::from_static(b"abcdef"),
@@ -37,6 +45,7 @@ impl Provider {
             epoch: Arc::new(AtomicU64::new(0)),
             counts: Arc::default(),
             sink: Arc::default(),
+            gate: Arc::default(),
         }
     }
     fn append(&self, bytes: Bytes, ctx: &mut KernelAccounting<'_>) {
@@ -53,7 +62,7 @@ impl ViewProvider for Provider {
     type Snapshot = Bytes;
     type Record = u64;
     fn identity(&self) -> [u8; 16] {
-        [7; 16]
+        [self.identity.load(Ordering::SeqCst); 16]
     }
     async fn reference(
         &self,
@@ -85,6 +94,19 @@ impl ViewProvider for Provider {
         _: &mut KernelAccounting<'_>,
     ) -> Result<Bytes, DemandError> {
         self.counts.snapshots.fetch_add(1, Ordering::SeqCst);
+        self.counts.requested.lock().unwrap().push(match query {
+            ViewQuery::Lookup(path)
+            | ViewQuery::Open(path)
+            | ViewQuery::Directory { path, .. }
+            | ViewQuery::Range { path, .. } => path.clone(),
+        });
+        let gate = self.gate.lock().unwrap().take();
+        if let Some(SnapshotWait { entered, released }) = gate {
+            entered
+                .send(())
+                .map_err(|_| DemandError::SourceUnavailable)?;
+            released.await.map_err(|_| DemandError::SourceUnavailable)?;
+        }
         if let ViewQuery::Directory {
             cursor: Some(cursor),
             ..
@@ -308,6 +330,83 @@ pub(crate) fn unknown_length_source(lookup_length: bool) -> impl DemandSource {
         Arc::new(Projection(provider.counts.clone(), true, lookup_length)),
         provider,
     )
+}
+
+#[tokio::test]
+async fn computed_snapshot_wait_keeps_the_requested_path_cut_and_cancellation() {
+    for (cancelled, rebound) in [(false, false), (true, false), (false, true)] {
+        let provider = Provider::new();
+        let view = computed(&provider);
+        let source = view.reference(ctx!()).await.unwrap();
+        let selected = path("/index.md");
+        let cancellation = CancellationToken::new();
+        let (entered, arrival) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        *provider.gate.lock().unwrap() = Some(SnapshotWait { entered, released });
+        let lookup = view.lookup(
+            source.clone(),
+            &selected,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        tokio::pin!(lookup);
+        tokio::select! {
+            result = &mut lookup => panic!("computed snapshot did not await its provider: {result:?}"),
+            entered = arrival => entered.unwrap(),
+        }
+        assert_eq!(
+            *provider.counts.requested.lock().unwrap(),
+            [selected.clone()],
+            "snapshot was not scoped to the requested path"
+        );
+        assert_eq!(provider.counts.lookups.load(Ordering::SeqCst), 0);
+        provider.append(Bytes::from_static(b"changed"), ctx!());
+        if cancelled {
+            cancellation.cancel();
+        }
+        if rebound {
+            provider.identity.store(8, Ordering::SeqCst);
+        }
+        release.send(()).unwrap();
+        let result = lookup.await;
+        if cancelled {
+            assert!(matches!(result.unwrap_err().error, DemandError::Cancelled));
+            assert_eq!(
+                provider.counts.lookups.load(Ordering::SeqCst),
+                0,
+                "cancelled snapshot projected data after its provider wait"
+            );
+        } else if rebound {
+            assert!(
+                matches!(result, Err(ref failure) if matches!(&failure.error, DemandError::StaleSource)),
+                "snapshot rebound to another provider after its wait"
+            );
+            assert_eq!(
+                provider.counts.lookups.load(Ordering::SeqCst),
+                0,
+                "snapshot rebound to another provider after its wait"
+            );
+        } else {
+            let node = result.unwrap().value.unwrap();
+            assert_eq!(node.logical_bytes, Some(6));
+            let opened = view
+                .open_file(
+                    source,
+                    &selected,
+                    node.version,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .unwrap()
+                .value;
+            assert_eq!(
+                opened.read_range(0, 6, ctx!()).unwrap().bytes.as_ref(),
+                b"abcdef",
+                "provider wait substituted a later source cut"
+            );
+        }
+    }
 }
 
 #[tokio::test]

@@ -25,10 +25,12 @@ pub use state_transaction::{
     ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateSeed,
 };
 mod handler;
+mod hosted;
 pub use handler::{
-    AlarmChange, Composer, Composition, Delivery, Handler, Interrupt, Manifest, Participant,
-    Subscription, SubscriptionChange, SubscriptionCuts, Transition, Trigger,
+    AdmissionClass, AlarmChange, Composer, Composition, Delivery, Handler, Interrupt, Manifest,
+    Participant, Subscription, SubscriptionChange, SubscriptionCuts, Transition, Trigger,
 };
+pub use hosted::HostedHandler;
 /// Cooperative delivery interruption; handler cleanup and publication remain
 /// subject to the original timeout and checkpoint fence.
 pub use tokio_util::sync::CancellationToken;

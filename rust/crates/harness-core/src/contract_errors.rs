@@ -88,7 +88,7 @@ impl HeadlessOutcome {
         if let Error::Cleanup(failure) = error {
             return failure.classification.outcome;
         }
-        if matches!(error, Error::GoalBlocked(_)) {
+        if matches!(error, Error::GoalBlocked(_) | Error::ExecutionControlled(_)) {
             return Self::Blocked;
         }
         match error.code() {
@@ -126,6 +126,10 @@ impl HeadlessOutcome {
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An original owner decision closed admission before dispatch. Executors
+    /// yield this control with their checkpoint rather than report a failure.
+    #[error("execution controlled by {:?}", .0.action)]
+    ExecutionControlled(crate::supervision::Control),
     /// An agent primitive failure with its original cause and uncertain request.
     #[error("{0}")]
     Agent(#[source] Box<crate::agent::Error>),
@@ -150,6 +154,12 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Content disagreements projected into working files for explicit repair.
+    #[error("merge conflict: {}. Edit the conflicted paths, then continue the merge", paths.join(", "))]
+    MergeConflict {
+        /// Working paths requiring resolution.
+        paths: Vec<String>,
+    },
     /// The agent host definitively refused a request, which committed
     /// nothing. It reads as the host error's own text, already classified.
     #[error("{0}")]
@@ -243,6 +253,17 @@ pub enum Error {
         /// The original provider classification and refusal diagnostics.
         #[source]
         source: acyclic_stream::StreamError,
+    },
+    /// A client's exchange with the server of its agent tree failed. Only a
+    /// typed cause constructs it, so the transport, session or owner failure
+    /// stays the source chain that diagnostics and spans walk.
+    #[error("storage failure: {step}{source}")]
+    Exchange {
+        /// The client step that failed.
+        step: ExchangeStep,
+        /// The original cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     /// Native process creation, capture, or hook configuration IO failed.
     #[error("process: {0}")]
@@ -531,6 +552,65 @@ fn filesystem_error_code(source: &acyclic_fs::FsError) -> ErrorCode {
     }
 }
 
+/// What a failed client exchange was doing, rendered before its cause.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExchangeStep {
+    /// The exchange itself; the cause names everything.
+    Session,
+    /// A named connection step.
+    Step(&'static str),
+    /// A command of this kind.
+    Command(&'static str),
+}
+
+impl std::fmt::Display for ExchangeStep {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Session => Ok(()),
+            Self::Step(step) => write!(output, "{step}: "),
+            Self::Command(kind) => write!(output, "{kind} command: "),
+        }
+    }
+}
+
+/// Classify a lazy-source cause by what it proves. A path that is absent, is
+/// a directory or is not a directory is the request's definitive refusal, not
+/// a storage outcome to reconcile; provider, record and accounting failures stay
+/// storage. The match is exhaustive so a new cause is classified on purpose.
+fn lazy_source_error_code(source: &acyclic_fs::LazyWorkspaceError) -> ErrorCode {
+    use acyclic_fs::LazyWorkspaceError as Lazy;
+    match source {
+        Lazy::WorkspaceCause(source) => Error::workspace_error_code(source),
+        Lazy::Filesystem(source) => filesystem_error_code(source),
+        Lazy::NotFound => ErrorCode::NotFound,
+        Lazy::NamespacePath(_)
+        | Lazy::NotDirectory
+        | Lazy::NotRegularFile
+        | Lazy::TooLarge
+        | Lazy::InvalidPageBound => ErrorCode::Invalid,
+        Lazy::UnsupportedNode => ErrorCode::Unsupported,
+        Lazy::Concurrent | Lazy::StaleSource | Lazy::StaleCursor | Lazy::StaleIdentity => {
+            ErrorCode::Conflict
+        }
+        Lazy::Cancelled => ErrorCode::Cancelled,
+        #[cfg(not(target_arch = "wasm32"))]
+        Lazy::NativeWork(cause) => native_work_error_code(cause),
+        Lazy::Demand(_)
+        | Lazy::Store(_)
+        | Lazy::OriginalSnapshotUnavailable
+        | Lazy::SourcePageCleanup { .. } => ErrorCode::Storage,
+        #[cfg(not(target_arch = "wasm32"))]
+        Lazy::NativeLedgerMismatch
+        | Lazy::NativeRecordIo(..)
+        | Lazy::NativeRecordJson(..)
+        | Lazy::NativeRecordOwnershipConflict(..)
+        | Lazy::NativeRecordContextTransaction(..)
+        | Lazy::NativeRecordCorrupt(..)
+        | Lazy::NativeRecordMaterializationInProgress
+        | Lazy::NativeRecordIntegrity => ErrorCode::Storage,
+    }
+}
+
 /// Wire classification of a retained Machines cause.
 const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::wire::ErrorCode {
     use crate::wire::ErrorCode;
@@ -599,11 +679,11 @@ impl Error {
             | WorkspaceError::ChangedPathLimit
             | WorkspaceError::EmptyContentSet
             | WorkspaceError::NotFork
-            | WorkspaceError::ContentLengthOverflow
-            | WorkspaceError::Work(_)
-            | WorkspaceError::WorkMerge { .. } => ErrorCode::Invalid,
+            | WorkspaceError::ContentLengthOverflow => ErrorCode::Invalid,
             WorkspaceError::Cancelled(_) => ErrorCode::Cancelled,
-            WorkspaceError::Engine(_) => ErrorCode::Storage,
+            WorkspaceError::Engine(_)
+            | WorkspaceError::Work(_)
+            | WorkspaceError::WorkMerge { .. } => ErrorCode::Storage,
         }
     }
 
@@ -723,6 +803,18 @@ impl Error {
         })
     }
 
+    /// A failed client exchange, retaining `source` as its cause.
+    #[must_use]
+    pub fn exchange(
+        step: ExchangeStep,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Exchange {
+            step,
+            source: Box::new(source),
+        }
+    }
+
     /// Stable wire classification from which every adapter derives its status.
     #[must_use]
     pub fn code(&self) -> crate::wire::ErrorCode {
@@ -746,7 +838,10 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_)
+            | Self::Refused(_)
+            | Self::ExactEdit(_)
+            | Self::ExecutionControlled(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::ModelTokenCountUnavailable
@@ -755,6 +850,7 @@ impl Error {
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } | Self::Boundary { code, .. } => *code,
+            Self::MergeConflict { .. } => ErrorCode::Conflict,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
@@ -771,6 +867,7 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_)
             | Self::StreamFollow { .. }
+            | Self::Exchange { .. }
             | Self::Allocation(_)
             | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process(crate::ProcessError::NotFound { .. }) => ErrorCode::NotFound,
@@ -804,9 +901,10 @@ impl Error {
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeFilesystem { source, .. } => filesystem_error_code(source),
             #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeSource { source, .. } => lazy_source_error_code(source),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
-            | Self::NativeSource { .. }
             | Self::NativeDrivenJoin { .. }
             | Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(not(target_arch = "wasm32"))]
@@ -816,10 +914,6 @@ impl Error {
             Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeBoundary { code, .. } => *code,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeConstruction { .. } => ErrorCode::Storage,
         }
     }
 
@@ -866,6 +960,7 @@ impl Error {
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
                 | Self::StreamFollow { .. }
+                | Self::Exchange { .. }
                 | Self::Cancelled
                 | Self::Boundary {
                     code: crate::wire::ErrorCode::Indeterminate | crate::wire::ErrorCode::Cancelled,
@@ -924,6 +1019,37 @@ impl Error {
             )
     }
 
+    /// A known capacity refusal delays accepted input without making its outcome unknown.
+    fn retains_guest_input(&self) -> bool {
+        use acyclic_stream::StreamError;
+        if self.uncertain() {
+            return true;
+        }
+        match self {
+            Self::Agent(source) => match &**source {
+                crate::agent::Error::Stream(source) => {
+                    matches!(source.category(), StreamError::Capacity)
+                }
+                crate::agent::Error::Actor(source) => {
+                    matches!(&**source, acyclic_actors::local::Error::Stream(source) if matches!(source.category(), StreamError::Capacity))
+                }
+                crate::agent::Error::Turn(source) => source.retains_guest_input(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Preserve undecided or backpressured host work across the guest boundary.
+    pub(crate) fn guest(error: impl Into<Self>) -> acyclic_actors::guest::GuestError {
+        let error = error.into();
+        if error.retains_guest_input() {
+            acyclic_actors::guest::GuestError::Pending(error.to_string())
+        } else {
+            acyclic_actors::guest::GuestError::Handler(error.to_string())
+        }
+    }
+
     /// A tool's definitive refusal is model feedback. Native accounting and
     /// producer faults remain harness failures even when their wire code is Invalid.
     pub(crate) fn is_tool_failure(&self) -> bool {
@@ -956,14 +1082,12 @@ impl Error {
             return true;
         }
         // A retained workspace cause is model feedback only as a definitive
-        // refusal; exhausted work stays a harness failure despite its Invalid code.
+        // refusal. Its canonical classification keeps exhausted work in Storage,
+        // including when a lazy source wraps the same workspace cause.
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::NativeWorkspace { source, .. } = self {
             use crate::wire::ErrorCode;
-            return !matches!(
-                **source,
-                acyclic_fs::WorkspaceError::Work(_) | acyclic_fs::WorkspaceError::WorkMerge { .. }
-            ) && matches!(
+            return matches!(
                 Self::workspace_error_code(source),
                 ErrorCode::Invalid
                     | ErrorCode::NotFound
@@ -971,7 +1095,29 @@ impl Error {
                     | ErrorCode::Unauthorized
             );
         }
+        // A lazy source's definitive refusal (an absent path, a directory read
+        // as a file) is the request's error; exhausted native work is not.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Self::NativeSource { source, .. } = self {
+            return !matches!(**source, acyclic_fs::LazyWorkspaceError::NativeWork(_))
+                && matches!(
+                    lazy_source_error_code(source),
+                    ErrorCode::Invalid
+                        | ErrorCode::NotFound
+                        | ErrorCode::Conflict
+                        | ErrorCode::Unauthorized
+                        | ErrorCode::Unsupported
+                );
+        }
         !self.is_native_failure() || matches!(self, Self::Process(_))
+    }
+
+    /// Whether this failure of an accepted tool call is its definitive, model
+    /// visible result. Every tool path settles a call by this one predicate;
+    /// any other failure ends the delivery for reconciliation.
+    #[must_use]
+    pub fn settles_tool_call(&self) -> bool {
+        !self.leaves_effect_uncertain() && self.is_tool_failure()
     }
 
     /// Mark a fixed rejection at a checked model-input boundary. Allocation,
@@ -998,7 +1144,7 @@ impl Error {
         }
     }
 
-    /// Native failures must propagate before additional provider or deadline work. The match is
+    /// Native failures and owner controls propagate before additional provider or deadline work. The match is
     /// exhaustive so every new variant is classified on purpose: a semantic failure the task or
     /// model can settle must never default to an accounting failure that strands the turn.
     #[doc(hidden)]
@@ -1009,12 +1155,13 @@ impl Error {
                 _ => false,
             },
             Self::Command(failure) => failure.classification.native_failure,
-            Self::OutputOmitted(_) => true,
+            Self::OutputOmitted(_) | Self::ExecutionControlled(_) => true,
             Self::Cleanup(_) => true,
             Self::ModelContextOverflow
             | Self::ModelTokenCountUnavailable
             | Self::NotFound(_)
             | Self::Conflict(_)
+            | Self::MergeConflict { .. }
             | Self::Refused(_)
             | Self::ExactEdit(_)
             | Self::TaskFailed { .. }
@@ -1030,6 +1177,7 @@ impl Error {
             | Self::InteractionRejected(_)
             | Self::Storage(_)
             | Self::StreamFollow { .. }
+            | Self::Exchange { .. }
             | Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
             | Self::UnsupportedRecordVersion(_)
@@ -1136,15 +1284,24 @@ pub struct CommandFailure {
 #[derive(Debug)]
 enum CommandCause {
     Original(Error),
+    #[cfg(not(target_arch = "wasm32"))]
+    Shared(std::sync::Arc<Error>),
+    #[cfg(not(target_arch = "wasm32"))]
+    External(Box<dyn std::error::Error + Send + Sync>),
     Projection(Option<String>),
 }
 
 impl CommandFailure {
-    /// The actual local failure, if this command failed on this host.
+    /// The original local SDK failure. Foreign I/O errors are exposed through
+    /// [`std::error::Error::source`] without manufacturing an SDK cause.
     #[must_use]
     pub fn original(&self) -> Option<&Error> {
         match &self.cause {
             CommandCause::Original(error) => Some(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(error) => Some(error),
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::External(_) => None,
             CommandCause::Projection(_) => None,
         }
     }
@@ -1155,6 +1312,8 @@ impl CommandFailure {
         match &self.cause {
             CommandCause::Projection(diagnostic) => diagnostic.as_deref(),
             CommandCause::Original(_) => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(_) | CommandCause::External(_) => None,
         }
     }
 }
@@ -1163,6 +1322,14 @@ impl std::fmt::Display for CommandFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.cause {
             CommandCause::Original(error) => {
+                write!(formatter, "command {}: {error}", self.operation)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::Shared(error) => {
+                write!(formatter, "command {}: {error}", self.operation)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            CommandCause::External(error) => {
                 write!(formatter, "command {}: {error}", self.operation)
             }
             CommandCause::Projection(diagnostic) => formatter.write_str(
@@ -1176,6 +1343,10 @@ impl std::fmt::Display for CommandFailure {
 
 impl std::error::Error for CommandFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let CommandCause::External(error) = &self.cause {
+            return Some(error.as_ref());
+        }
         self.original().map(|error| error as &dyn std::error::Error)
     }
 }
@@ -1193,6 +1364,31 @@ impl Error {
             operation,
             classification,
             cause: CommandCause::Original(self),
+        }))
+    }
+
+    /// Observe a shared producer failure without erasing its original cause.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn shared_for_request(source: std::sync::Arc<Self>, operation: OperationId) -> Self {
+        let classification = source.classification();
+        Self::Command(Box::new(CommandFailure {
+            operation,
+            classification,
+            cause: CommandCause::Shared(source),
+        }))
+    }
+
+    /// Retain a foreign I/O cause with the request owner's semantic decision.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn external_for_request(
+        operation: OperationId,
+        classification: ErrorClassification,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Command(Box::new(CommandFailure {
+            operation,
+            classification,
+            cause: CommandCause::External(Box::new(source)),
         }))
     }
 
@@ -1396,7 +1592,16 @@ impl From<acyclic_fs::LazyWorkspaceError> for Error {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            Self::Storage(source.to_string())
+            let message = source.to_string();
+            match lazy_source_error_code(&source) {
+                ErrorCode::NotFound => Self::NotFound(message),
+                ErrorCode::Invalid => Self::Invalid(message),
+                ErrorCode::Conflict => Self::Conflict(message),
+                ErrorCode::Unsupported => Self::Unsupported(message),
+                ErrorCode::Unauthorized => Self::Unauthorized(message),
+                ErrorCode::Cancelled => Self::Cancelled,
+                _ => Self::Storage(message),
+            }
         }
     }
 }

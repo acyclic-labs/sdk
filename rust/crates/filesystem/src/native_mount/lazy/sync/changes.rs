@@ -120,40 +120,34 @@ where
                 .publication_companion_settled(operation, context.clone(), committed, accounting)
                 .await
                 .map_err(lazy_error)?;
-            match (context.clone(), proof) {
+            match (&context, proof) {
                 (NativeSnapshotContext::Lazy(_), None) => {}
                 (NativeSnapshotContext::Selected { input, .. }, Some(proof))
-                    if input == proof.input => {}
+                    if *input == proof.input => {}
                 (NativeSnapshotContext::Selected { .. }, None)
                     if settled && committed.is_some() => {}
                 _ => return Err(MountSourceError::Stale),
             }
             return Ok(context);
         }
-        if let (Some(generation), Some(SelectedImportProof { input, .. })) =
-            (committed, proof.as_ref())
-        {
-            let (snapshot, original_input) = self
+        if let Some(generation) = committed {
+            let original = self
                 .lazy
-                .selected_snapshot(operation, generation, accounting)
+                .original_publication(operation, accounting)
                 .await
-                .map_err(lazy_error)?;
-            if original_input != *input {
+                .map_err(lazy_error)?
+                .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
+            if original.generation() != generation {
                 return Err(MountSourceError::Stale);
             }
-            let cut = self
-                .lazy
-                .publication_cut(Some(operation), accounting)
-                .await
-                .map_err(lazy_error)?;
-            if cut.workspace_id != snapshot.workspace_id
-                || cut.source != snapshot.source
-                || cut.overlay != snapshot.overlay
-                || cut.shadows != snapshot.shadows
-            {
-                return Err(MountSourceError::Stale);
+            match (&original.context, proof) {
+                (NativeSnapshotContext::Lazy(_), None) => {}
+                (NativeSnapshotContext::Selected { input, .. }, Some(proof))
+                    if *input == proof.input => {}
+                (NativeSnapshotContext::Selected { .. }, None) => {}
+                _ => return Err(MountSourceError::Stale),
             }
-            return Ok(NativeSnapshotContext::Selected { cut, input: *input });
+            return Ok(original.context);
         }
         let cut = self
             .lazy

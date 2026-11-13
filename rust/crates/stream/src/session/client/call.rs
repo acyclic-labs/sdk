@@ -6,13 +6,14 @@ impl Client {
     ///
     /// The caller retains the invocation and its intent throughout this borrow.
     /// A lost connection returns an error; a call is never automatically replayed
-    /// or resumed into a newly computed response. Only a complete bounded reply
-    /// is returned. The host must authorize `actors/invoke` before dispatch.
+    /// or resumed into a newly computed response. Only a complete reply is returned.
+    /// `None` imposes no total byte limit; a finite limit is enforced before
+    /// collecting any payload. The host must authorize `actors/invoke`.
     pub async fn actor_call(
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<Bytes, StreamError> {
         validate_call(invocation, maximum_reply_bytes)?;
         self.reply(
@@ -37,7 +38,7 @@ impl Client {
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<
         impl futures::Stream<
             Item = Result<(usize, crate::body::BodyChunk<impl Sized + use<>>), StreamError>,
@@ -66,7 +67,7 @@ impl Client {
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<
         (
             CallInputSender,
@@ -111,7 +112,7 @@ impl Client {
             .reply(
                 Kind::ChildrenPage(wire_codec::children_page_request_to_wire(request.clone())),
                 credential,
-                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+                None,
             )
             .await?;
         let page = wire_codec::children_page_from_response(
@@ -135,7 +136,7 @@ impl Client {
             .reply(
                 Kind::Heads(wire_codec::heads_request_to_wire(request.clone())),
                 credential,
-                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+                None,
             )
             .await?;
         let view = wire_codec::heads_from_response(
@@ -150,22 +151,20 @@ impl Client {
         &self,
         kind: Kind,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<Bytes, StreamError> {
         let source = self
             .reply_chunks(kind, credential, maximum_reply_bytes)
             .await?;
         let mut source = core::pin::pin!(source);
         let mut reply = Vec::new();
-        let mut total = None;
         while let Some(item) = source.next().await {
             let (length, chunk) = item?;
-            if total.is_none() {
-                reply
-                    .try_reserve_exact(length)
-                    .map_err(|_| StreamError::Capacity)?;
-                total = Some(length);
-            }
+            // Retain the original receive credit until the fragment is copied.
+            // An advertised total never reserves bytes that have not arrived.
+            reply
+                .try_reserve(chunk.as_ref().len())
+                .map_err(|_| StreamError::Capacity)?;
             reply.extend_from_slice(chunk.as_ref());
             if reply.len() == length {
                 return Ok(reply.into());
@@ -178,7 +177,7 @@ impl Client {
         &self,
         kind: Kind,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> Result<
         impl futures::Stream<Item = Result<(usize, crate::body::BodyChunk<Credit>), StreamError>>
         + 'static
@@ -195,7 +194,7 @@ impl Client {
 
     fn reply_cursor(
         cursor: Cursor,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: Option<usize>,
     ) -> impl futures::Stream<Item = Result<(usize, crate::body::BodyChunk<Credit>), StreamError>>
     + 'static
     + use<> {
@@ -211,7 +210,9 @@ impl Client {
                     .await?
                     .ok_or(StreamError::Unavailable)?;
                 let length = wire_codec::session::actor_call_total(&data)?;
-                if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
+                if maximum_reply_bytes.is_some_and(|maximum| length > maximum)
+                    || total.is_some_and(|old| old != length)
+                {
                     return Err(StreamError::InvalidResponse);
                 }
                 let bytes = match data.item {
@@ -242,11 +243,13 @@ impl Client {
     }
 }
 
-fn validate_call(invocation: &Bytes, maximum_reply_bytes: usize) -> Result<(), StreamError> {
+fn validate_call(
+    invocation: &Bytes,
+    maximum_reply_bytes: Option<usize>,
+) -> Result<(), StreamError> {
     if invocation.is_empty()
         || invocation.len() > crate::MAX_COMMAND_BYTES
-        || maximum_reply_bytes == 0
-        || maximum_reply_bytes > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
+        || maximum_reply_bytes == Some(0)
     {
         return Err(StreamError::InvalidArgument);
     }

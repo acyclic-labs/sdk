@@ -16,6 +16,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod clock;
 mod completion;
 mod drain;
+mod external;
 mod invocation_failure;
 mod pause;
 mod progress;
@@ -23,6 +24,7 @@ mod retry;
 mod subscriptions;
 
 mod conditional;
+mod handler_failure;
 mod scheduling;
 
 fn root() -> Result<StreamPath, StreamError> {
@@ -532,7 +534,7 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
             (1, 0),
             "the resident must finish its turn"
         );
-        assert_eq!(runtime.ready.next_deadline(), original);
+        assert_eq!(runtime.ready[0].next_deadline(), original);
         let slot = runtime.slot(&address).ok_or("missing resident")?;
         let inner = slot.inner.try_lock()?;
         let observed = inner
@@ -1793,14 +1795,14 @@ async fn activation_transfer<P: StreamProvider>(provider: Arc<P>) -> TestResult 
         handler.clone(),
         Arc::new(SystemClock),
     )
-    .with_external_placement(unrequested());
+    .externally_placed();
     let replacement = Runtime::new(
         crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         next_handler.clone(),
         Arc::new(SystemClock),
     )
-    .with_external_placement(unrequested());
+    .externally_placed();
     original.place(address.clone(), 1).await?;
     let mut first = Box::pin(original.drain_actor(&address));
     assert!(futures::poll!(first.as_mut()).is_pending());
@@ -1873,10 +1875,9 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
         .await;
         assert_eq!(handler.peak.load(Ordering::SeqCst), 2);
         assert_eq!(
-            runtime
-                .admission
+            runtime.admission[0]
                 .as_ref()
-                .expect("explicit concurrency reservation")
+                .expect("reserved work credit")
                 .available_permits(),
             0
         );
@@ -1895,10 +1896,9 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
     }
     assert_eq!(handler.active.load(Ordering::SeqCst), 0);
     assert_eq!(
-        runtime
-            .admission
+        runtime.admission[0]
             .as_ref()
-            .expect("explicit concurrency reservation")
+            .expect("reserved work credit")
             .available_permits(),
         2
     );
@@ -1952,10 +1952,9 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
     }
     assert!(futures::poll!(duplicates.next()).is_pending());
     assert_eq!(
-        runtime
-            .admission
+        runtime.admission[0]
             .as_ref()
-            .expect("explicit concurrency reservation")
+            .expect("reserved work credit")
             .available_permits(),
         2,
         "queued duplicates cannot occupy active delivery permits"
@@ -1974,10 +1973,9 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
         vec![Bytes::from_static(b"r0")]
     );
     assert_eq!(
-        runtime
-            .admission
+        runtime.admission[0]
             .as_ref()
-            .expect("explicit concurrency reservation")
+            .expect("reserved work credit")
             .available_permits(),
         2
     );
@@ -2001,7 +1999,7 @@ async fn a_cancelled_waiter_leaves_the_active_delivery_alarm() -> TestResult {
     );
     runtime.host(address.clone())?;
     runtime.drain_actor(&address).await?;
-    let armed = runtime.ready.next_deadline();
+    let armed = runtime.ready[0].next_deadline();
     assert_eq!(armed, Some(101));
     let slot = runtime.slot(&address).ok_or("missing actor")?;
     // The active delivery owns the actor.
@@ -2009,7 +2007,7 @@ async fn a_cancelled_waiter_leaves_the_active_delivery_alarm() -> TestResult {
     let mut waiter = Box::pin(runtime.drain_actor(&address));
     assert!(futures::poll!(waiter.as_mut()).is_pending());
     drop(waiter);
-    assert_eq!(runtime.ready.next_deadline(), armed);
+    assert_eq!(runtime.ready[0].next_deadline(), armed);
     assert!(!slot.refresh.load(Ordering::Acquire));
     drop(active);
     Ok(())
@@ -2066,7 +2064,7 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
     .with_limits(RuntimeLimits::new(1, 1)?);
     runtime.host(address.clone())?;
     for expected in 0..64 {
-        let work = runtime.ready.take().ok_or("rotation work disappeared")?;
+        let work = runtime.ready[0].take().ok_or("rotation work disappeared")?;
         runtime.execute(work).await.map_err(|(_, error)| error)?;
         let snapshot = runtime.store().load(&address).await?;
         let state = snapshot.state().ok_or("rotation state disappeared")?;
@@ -2096,7 +2094,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     .with_limits(RuntimeLimits::new(1, 2)?);
     runtime.host(hot.clone())?;
     runtime.host(cold.clone())?;
-    let work = runtime.ready.take().ok_or("missing initial hot work")?;
+    let work = runtime.ready[0].take().ok_or("missing initial hot work")?;
     assert_eq!(work.key(), &hot);
     runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
@@ -2107,7 +2105,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
             .and_then(|state| state.cursor("inbox")),
         Some(2)
     );
-    let work = runtime.ready.take().ok_or("missing cold work")?;
+    let work = runtime.ready[0].take().ok_or("missing cold work")?;
     assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
     runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
@@ -2154,10 +2152,9 @@ async fn event_batch_yield_retains_placement_until_completion_or_abort() -> Test
                 .is_pending()
         );
         assert_eq!(
-            runtime
-                .admission
+            runtime.admission[0]
                 .as_ref()
-                .expect("explicit concurrency reservation")
+                .expect("reserved work credit")
                 .available_permits(),
             1,
             "the next actor may enter during the yield"
@@ -2213,14 +2210,14 @@ async fn a_paused_actor_withdraws_its_due_alarm_until_resume() -> TestResult {
     let address = spawn_with(&store, "sleeper", &[b"set 10"]).await?;
     runtime.host(address.clone())?;
     assert!(runtime.drain().await.is_empty());
-    assert_eq!(runtime.ready.next_deadline(), Some(11));
+    assert_eq!(runtime.ready[0].next_deadline(), Some(11));
     runtime.pause(&address, true).await?;
     runtime.wake(&address);
     assert!(runtime.drain().await.is_empty());
     // Control: scheduling before the paused check keeps Some(11) here, and
     // every timer fire re-queues the paused actor.
     assert_eq!(
-        runtime.ready.next_deadline(),
+        runtime.ready[0].next_deadline(),
         None,
         "paused alarm left the due index"
     );
@@ -2524,10 +2521,4 @@ async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult 
     assert!(refused(&failures, "checkpoint"), "{failures:?}");
     assert!(published.is_empty());
     Ok(())
-}
-
-/// External placement for tests that place every actor themselves and never
-/// run the dispatcher, so no due work is ever reported.
-fn unrequested() -> Arc<dyn PlacementRequests> {
-    Arc::new(|_: &ActorReference| {})
 }

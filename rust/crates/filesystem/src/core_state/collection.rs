@@ -13,13 +13,19 @@ impl LocalCoreStateStore {
                 .filter_map(|stem| <[u8; 32]>::try_from(stem).ok());
             let mut records = Vec::new();
             for address in addresses {
-                if let Some(crate::LazyShadow::Node { record, .. }) =
-                    load_content_addressed::<crate::LazyShadow>(namespace, family, address)?
+                if let Some(crate::LazyShadow::Node {
+                    authored, observed, ..
+                }) = load_content_addressed::<crate::LazyShadow>(namespace, family, address)?
                 {
-                    records.push(
-                        crate::kernel::decode_file_record(&record)
-                            .map_err(|_| LocalCoreStateStoreError::Integrity)?,
-                    );
+                    for content in authored
+                        .into_iter()
+                        .chain(observed.map(|record| record.content))
+                    {
+                        records.push(
+                            crate::kernel::decode_file_record(&content.record)
+                                .map_err(|_| LocalCoreStateStoreError::Integrity)?,
+                        );
+                    }
                 }
             }
             Ok(records)

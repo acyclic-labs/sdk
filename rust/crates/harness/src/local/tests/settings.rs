@@ -45,7 +45,13 @@ async fn enabling_feedback_preserves_authored_settlement_settings() -> Result<()
     let mut observed = super::ObservedConversation::open(&harness).await?;
     let entry = observed.send("task", "Finish the task").await?;
     assert_eq!(entry.outcome, crate::agent::TurnOutcome::Completed);
-    assert_eq!(observed.conversation.output_text(&entry).await?, "done");
+    assert_eq!(
+        observed
+            .conversation
+            .output_text_at(observed.observer.seen() - 1, &entry)
+            .await?,
+        "done"
+    );
     assert_eq!(provider.request_count(), 1);
     Ok(())
 }

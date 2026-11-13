@@ -16,6 +16,8 @@ pub(super) struct ExecutionSummary {
     pub(super) tools: SummaryMap<(u32, [u8; 32]), bool>,
     pub(super) pending_dispatches: u64,
     pub(super) latest_response: Option<u32>,
+    pub(super) latest_response_output: bool,
+    pub(super) latest_response_completed: bool,
     pub(super) model_dispatched: bool,
     pub(super) recovery: Option<checkpoint::Recovery>,
     pub(super) pages: persistent_index::NodeCache,
@@ -50,7 +52,9 @@ impl ExecutionSummary {
             ExecutionEvent::Started { request_digest } => {
                 self.tail == 0 && *request_digest != [0; 32]
             }
-            ExecutionEvent::ConversationItem { .. } => self.tail > 0,
+            ExecutionEvent::ConversationItem { .. }
+            | ExecutionEvent::Progress { .. }
+            | ExecutionEvent::NativeCapture { .. } => self.tail > 0,
             ExecutionEvent::ModelWait {
                 purpose: crate::executor::ModelPurpose::Count,
                 ..
@@ -96,6 +100,16 @@ impl ExecutionSummary {
                 .models
                 .get(&(*step, *purpose), io)?
                 .is_some_and(Option::is_some),
+            ExecutionEvent::ModelOutput { step, .. } => {
+                self.latest_response == Some(*step)
+                    && !self.latest_response_output
+                    && self.latest_response_completed
+                    && matches!(
+                        self.models
+                            .get(&(*step, crate::executor::ModelPurpose::Response), io)?,
+                        Some(None)
+                    )
+            }
             ExecutionEvent::ToolStarted { step, call_id, .. } => {
                 self.tail > 0 && !call_id.is_empty() && {
                     let key = *blake3::hash(call_id.as_bytes()).as_bytes();
@@ -268,6 +282,10 @@ impl ExecutionSummary {
                     .insert((*step, *purpose), Some(ModelEventAdmission::default()), io)?;
                 self.model_dispatched = true;
                 if *purpose == crate::executor::ModelPurpose::Response {
+                    if self.latest_response.is_none_or(|previous| *step > previous) {
+                        self.latest_response_output = false;
+                        self.latest_response_completed = false;
+                    }
                     self.latest_response = Some(
                         self.latest_response
                             .map_or(*step, |previous| previous.max(*step)),
@@ -310,6 +328,11 @@ impl ExecutionSummary {
                     io,
                 )?;
                 if admission.completed {
+                    if *purpose == crate::executor::ModelPurpose::Response
+                        && self.latest_response == Some(*step)
+                    {
+                        self.latest_response_completed = true;
+                    }
                     release_model(state, io)?;
                     self.pending_dispatches =
                         self.pending_dispatches.checked_sub(1).ok_or_else(|| {
@@ -342,6 +365,7 @@ impl ExecutionSummary {
                         )
                     })?;
             }
+            ExecutionEvent::ModelOutput { .. } => self.latest_response_output = true,
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
@@ -387,17 +411,25 @@ impl ExecutionSummary {
                     io,
                 )?;
             }
-            ExecutionEvent::Started { .. } | ExecutionEvent::ConversationItem { .. } => {}
+            ExecutionEvent::Started { .. }
+            | ExecutionEvent::ConversationItem { .. }
+            | ExecutionEvent::Progress { .. }
+            | ExecutionEvent::NativeCapture { .. } => {}
         }
         self.retries.insert(key, (sequence, digest), io)?;
-        self.pending_steps.push(
-            sequence,
-            key,
-            digest,
-            event.step(),
-            tool_key.map(|key| (key, !matches!(event, ExecutionEvent::ToolStarted { .. }))),
-            io,
-        )?;
+        if !matches!(
+            event,
+            ExecutionEvent::Progress { .. } | ExecutionEvent::NativeCapture { .. }
+        ) {
+            self.pending_steps.push(
+                sequence,
+                key,
+                digest,
+                event.step(),
+                tool_key.map(|key| (key, !matches!(event, ExecutionEvent::ToolStarted { .. }))),
+                io,
+            )?;
+        }
         self.tail = sequence;
         Ok(())
     }
@@ -444,8 +476,8 @@ fn release_model(
     Ok(())
 }
 
-// Version 5 pins cumulative steering in the existing prepared projection.
-pub(super) const OBSERVATION_VERSION: u32 = 5;
+// Version 7 adds the original model-call index and semantic output receipts.
+pub(super) const OBSERVATION_VERSION: u32 = 7;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -490,6 +522,8 @@ impl PreparationRecord for Observation {
                 "model_stopped",
                 "model",
                 "model_inline",
+                "model_output",
+                "digest",
                 "usage",
                 "tool_started",
                 "tool_completed",

@@ -35,10 +35,39 @@ struct Builder {
 }
 
 impl Builder {
-    fn condition(&mut self, condition: CommitCondition) {
-        self.conditions
-            .entry(CommitCondition::path(&condition).clone())
-            .or_insert(condition);
+    fn condition(&mut self, condition: CommitCondition) -> Result<(), Error> {
+        match self.conditions.entry(condition.path().clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(condition);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) if entry.get() != &condition => {
+                return Err(Error::Record(
+                    "source contributions have different conditions",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn contribute(&mut self, effect: CommitEffect) -> Result<(), Error> {
+        if effect.soft {
+            return Err(Error::Record("a source contribution must be hard"));
+        }
+        for condition in effect.conditions {
+            self.condition(condition)?;
+        }
+        for mutation in effect.mutations {
+            match mutation {
+                CommitMutation::Append { path, records } => {
+                    for record in records {
+                        self.append(path.clone(), record);
+                    }
+                }
+                mutation => self.forks.push(mutation),
+            }
+        }
+        Ok(())
     }
 
     /// A hard append to a path that also has soft records keeps their order
@@ -107,6 +136,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         .checked_sub(conversation_count)
         .ok_or(Error::Record("conversation tail precedes its appends"))?;
     for out in &step.outs {
+        if let Out::Commit(effect) = out {
+            builder.contribute(effect.clone())?;
+        }
         if let Out::Spawn {
             intent,
             brief,
@@ -148,19 +180,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             let spawn = commit::spawn_at(path, intent, cursor, adopted, history.as_ref())?;
             builder.created.insert(spawn.child.inbox()?);
             for effect in spawn.request.effects {
-                for condition in effect.conditions {
-                    builder.condition(condition);
-                }
-                for mutation in effect.mutations {
-                    match mutation {
-                        CommitMutation::Append { path, records } => {
-                            for record in records {
-                                builder.append(path.clone(), record);
-                            }
-                        }
-                        mutation => builder.forks.push(mutation),
-                    }
-                }
+                builder.contribute(effect)?;
             }
         }
     }
@@ -179,7 +199,33 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 builder.condition(CommitCondition::Tail {
                     path: diagnostic.path()?,
                     expected: diagnostic.records(),
-                });
+                })?;
+            }
+            Out::Commit(_) => {}
+            Out::Supervised { run, control } => {
+                let event = match control.action {
+                    crate::supervision::Action::Pause => crate::supervision::Lifecycle::Paused {
+                        signal: control.signal,
+                    },
+                    crate::supervision::Action::Stop => crate::supervision::Lifecycle::Stopped {
+                        signal: control.signal,
+                    },
+                    crate::supervision::Action::Alert => {
+                        return Err(Error::Record("alert cannot close execution admission"));
+                    }
+                };
+                builder.append(
+                    crate::supervision::streams::path(path)
+                        .map_err(|_| Error::Record("invalid agent event path"))?,
+                    crate::supervision::streams::lifecycle_record(&crate::supervision::Event {
+                        version: 1,
+                        agent: path.clone(),
+                        run: Some(*run),
+                        source: control.source.clone(),
+                        event,
+                    })
+                    .map_err(|_| Error::Record("agent event did not encode"))?,
+                );
             }
             Out::Conversation(record) => {
                 builder.append(conversation.clone(), record.clone());
@@ -187,13 +233,34 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     .checked_add(1)
                     .ok_or(Error::Record("agent conversation tail overflow"))?;
             }
+            Out::TurnDone { run, turn } => {
+                let event = crate::supervision::Event {
+                    version: 1,
+                    agent: path.clone(),
+                    run: Some(*run),
+                    source: crate::supervision::Position {
+                        stream: conversation.clone(),
+                        sequence: sequence
+                            .checked_sub(1)
+                            .filter(|sequence| *sequence >= prior_conversation)
+                            .ok_or(Error::Record("turn completion has no conversation entry"))?,
+                    },
+                    event: crate::supervision::Lifecycle::TurnDone { turn: *turn },
+                };
+                builder.append(
+                    crate::supervision::streams::path(path)
+                        .map_err(|_| Error::Record("invalid agent event path"))?,
+                    crate::supervision::streams::lifecycle_record(&event)
+                        .map_err(|_| Error::Record("agent event did not encode"))?,
+                );
+            }
             Out::GoalCompleted { run } => {
                 let sequence = sequence
                     .checked_sub(1)
                     .filter(|sequence| *sequence >= prior_conversation)
                     .ok_or(Error::Record("goal completion has no conversation entry"))?;
                 let path = super::goal::result(path, *run)?;
-                builder.condition(CommitCondition::Absent { path: path.clone() });
+                builder.condition(CommitCondition::Absent { path: path.clone() })?;
                 builder.append(path, super::goal::Completed { sequence }.encode()?);
             }
             Out::Checkpoint
@@ -226,7 +293,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     let marker = path.sent_message(&message.id)?;
                     builder.condition(CommitCondition::Absent {
                         path: marker.clone(),
-                    });
+                    })?;
                     builder.append(
                         marker,
                         super::sent::SentRecord {
@@ -245,7 +312,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                 }
             }
             Out::Archive { target, id } => {
-                builder.recipient(target)?;
+                if !builder.created.contains(&target.inbox()?) {
+                    builder.recipient(target)?;
+                }
                 let control = Control {
                     by: sender.clone(),
                     id: id.clone(),
@@ -269,15 +338,28 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         builder.condition(CommitCondition::Tail {
             path: conversation,
             expected: prior_conversation,
-        });
+        })?;
     }
     if let Some(status) = &step.status {
         let path = path.status()?;
         builder.condition(CommitCondition::Tail {
             path: path.clone(),
             expected: state.status_tail - 1,
-        });
+        })?;
         builder.append(path, status.append_record()?);
+    }
+    // The primitive fork carries records for its own destination. Fold hard
+    // records into that mutation rather than emitting a conflicting append.
+    for mutation in &mut builder.forks {
+        if let CommitMutation::Fork {
+            destination,
+            records,
+            ..
+        } = mutation
+            && let Some(appended) = builder.appends.remove(destination)
+        {
+            records.extend(appended);
+        }
     }
     let mut mutations = builder.forks;
     mutations.extend(

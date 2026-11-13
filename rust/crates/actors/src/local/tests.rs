@@ -1,6 +1,6 @@
 use super::*;
 use crate::guest::CodecIdentity;
-use acyclic_stream::{LocalStream, MemoryStream, ReadRequest};
+use acyclic_stream::{AppendRequest, LocalStream, MemoryStream, ReadRequest};
 use bytes::Bytes;
 use futures::TryStreamExt;
 use proptest::prelude::*;
@@ -11,6 +11,145 @@ mod overlay;
 mod subscriptions;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[tokio::test]
+async fn indexed_delivery_requires_original_cursor_and_source_key() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(provider.clone(), state_root()?);
+    let address = actor("indexed")?;
+    place(&store, &address).await?;
+    let before = store.load(&address).await?;
+    let input = before.state().ok_or("missing state")?.subscriptions()["inbox"]
+        .path
+        .clone();
+    provider
+        .append(AppendRequest {
+            path: input.clone(),
+            records: (0..4)
+                .map(|sequence| {
+                    Ok(acyclic_stream::AppendRecord {
+                        value: Bytes::from_static(b"emit").into(),
+                        headers: acyclic_stream::RecordHeaders::new(
+                            vec![
+                                Bytes::from_static(if sequence == 3 {
+                                    b"control"
+                                } else {
+                                    b"output"
+                                })
+                                .into(),
+                            ],
+                            vec![],
+                        )?,
+                    })
+                })
+                .collect::<Result<_, StreamError>>()?,
+            if_tail: Some(0),
+            idempotency_key: key("indexed/input")?,
+        })
+        .await?;
+    let delivered = provider
+        .read(ReadRequest {
+            path: input,
+            key: Some(acyclic_stream::ReadKeySeek::exact(
+                Bytes::from_static(b"control"),
+                u64::MAX,
+            )),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing selected record")?;
+    let selected = |from, sequence, key: &'static [u8]| Trigger::KeyedRecord {
+        subscription: "inbox".into(),
+        from,
+        sequence,
+        key: Bytes::from_static(key),
+    };
+    for trigger in [
+        record(3),
+        selected(1, 3, b"control"),
+        selected(0, 3, b"output"),
+        selected(0, 2, b"control"),
+    ] {
+        assert!(
+            store
+                .prepare_publish(
+                    &before,
+                    1,
+                    &trigger,
+                    Some(&delivered),
+                    transition(7, AlarmChange::Keep),
+                    key("indexed/refused")?
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        store
+            .prepare_publish(
+                &before,
+                1,
+                &selected(0, 3, b"control"),
+                None,
+                transition(7, AlarmChange::Keep),
+                key("indexed/no-source")?
+            )
+            .is_err()
+    );
+    let trigger = selected(0, 3, b"control");
+    let publication = store.prepare_publish(
+        &before,
+        1,
+        &trigger,
+        Some(&delivered),
+        transition(7, AlarmChange::Keep),
+        key("indexed/accepted")?,
+    )?;
+    store.submit(publication).await?;
+    let after = store.load(&address).await?;
+    assert_eq!(
+        after.state().and_then(|state| state.cursor("inbox")),
+        Some(4)
+    );
+    assert!(
+        store
+            .prepare_publish(
+                &after,
+                1,
+                &trigger,
+                Some(&delivered),
+                transition(8, AlarmChange::Keep),
+                key("indexed/replayed")?
+            )
+            .is_err()
+    );
+    let delivery = crate::guest::Delivery {
+        request: crate::guest::RequestId::new(1),
+        actor: address,
+        epoch: 1,
+        trigger,
+        now_unix_ms: 1,
+        subscriptions: crate::guest::SubscriptionCuts::new(
+            before.path.clone(),
+            before.anchor.ok_or("missing state anchor")?,
+            before
+                .state()
+                .ok_or("missing state")?
+                .subscriptions()
+                .clone(),
+        ),
+        record: Some(delivered),
+    };
+    assert_eq!(
+        crate::guest::wire::decode_delivery(&crate::guest::wire::encode_delivery(&delivery, None))?
+            .0,
+        delivery
+    );
+    Ok(())
+}
 
 #[tokio::test]
 async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> TestResult {
@@ -747,6 +886,7 @@ fn key(value: &str) -> Result<IdempotencyKey, StreamError> {
 
 fn transition(value: u8, alarm: AlarmChange) -> Transition {
     Transition {
+        pause: false,
         response: None,
         participant: None,
         checkpoint: Checkpoint {

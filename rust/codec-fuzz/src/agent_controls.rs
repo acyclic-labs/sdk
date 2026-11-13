@@ -80,11 +80,18 @@ fn writer_controls() {
         ),
         "captured writer command refused"
     );
-    for captured in [
-        include_bytes!("../corpus/agent_controls/actor-response-root-0").as_slice(),
-        include_bytes!("../corpus/agent_controls/actor-response-refused").as_slice(),
-        include_bytes!("../corpus/agent_controls/assembled-cancel").as_slice(),
+    let controls = seeds().expect("public writer control seeds");
+    for name in [
+        "actor-response-root-0",
+        "actor-response-refused",
+        "assembled-cancel",
     ] {
+        let captured = controls
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+            .expect("public writer control missing")
+            .1
+            .as_slice();
         let separator = captured.iter().position(|byte| *byte == 0).unwrap();
         let call =
             AgentCall::decode(&captured[..separator]).expect("captured writer invocation refused");
@@ -98,6 +105,15 @@ fn writer_controls() {
             );
         }
     }
+    // A staged request without its original input selection cannot cancel a
+    // different turn merely because that turn is current when it is replayed.
+    let unbound = include_bytes!("../corpus/agent_controls/cancel-without-selected-input");
+    let separator = unbound.iter().position(|byte| *byte == 0).unwrap();
+    let head = AgentCall::decode(&unbound[..separator]).expect("original staged route");
+    assert!(
+        head.assembled(&unbound[separator + 1..]).is_err(),
+        "unselected cancellation admitted"
+    );
     let command = AgentCommand::Root {};
     let original = recovery_request().expect("original recovery request");
     let result = Err(AgentError::Unknown(Box::new(original.clone())));

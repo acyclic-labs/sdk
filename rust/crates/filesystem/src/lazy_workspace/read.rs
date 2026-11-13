@@ -218,9 +218,19 @@ impl<
         let record = match record {
             Ok(record) => record,
             Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {
-                self.shadow_record(cut.shadows, file_id, ctx)
+                let records = self
+                    .shadow_records(cut.shadows, file_id, ctx)
                     .await?
-                    .ok_or(LazyWorkspaceError::NotFound)?
+                    .ok_or(LazyWorkspaceError::NotFound)?;
+                records
+                    .authored
+                    .or_else(|| {
+                        records
+                            .observed
+                            .filter(|(source, _, _, _)| *source == cut.source)
+                            .map(|(_, _, record, metadata)| (record, metadata))
+                    })
+                    .ok_or(LazyWorkspaceError::StaleSource)?
                     .0
             }
             Err(error) => return Err(error),

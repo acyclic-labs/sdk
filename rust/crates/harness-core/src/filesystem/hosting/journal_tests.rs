@@ -316,6 +316,173 @@ async fn partial_private_pages_resume_the_original_cut_without_skipping_retained
 }
 
 #[tokio::test]
+async fn waking_notices_steer_without_granting_their_journal_files() -> TestResult {
+    use crate::filesystem::{
+        FilesystemContentPublisher, FilesystemContentVerifier, agent_internal::AgentInternalFiles,
+        agent_steering::FilesystemBoundary, agent_turns::AdmittedAgent,
+    };
+    use crate::{
+        agent::{Message, ModelBoundary, NoticePayload},
+        conversation::{ContentGrant, ContentResidencyVerifier, VolumeOperation},
+        model::{ModelContent, ModelContentPart, ModelRole},
+    };
+
+    let (bound, root) = binding().await?;
+    let state = bound.agents().state(&root).await?;
+    let by = Sender::Host {
+        host: "steering".into(),
+    };
+    let id = IntentId::try_from("initial")?;
+    let body = bound
+        .stage_text(&root, "message", &by, &id, ("initial", "prompt"))
+        .await?;
+    let Delivered::Committed { inbox } = bound
+        .agents()
+        .send(
+            &root,
+            &by,
+            &InboxRecord::Message(Message {
+                from: by.clone(),
+                id,
+                re: None,
+                body: Box::new(body),
+                attachments: None,
+            }),
+        )
+        .await?
+    else {
+        return Err("uncertain initial input".into());
+    };
+    let (journal, host) = bound.turns().journal_authority(&state).await?;
+    let (scope, verifier) = bound.volume_scope(&root).await?;
+    let private = state.volumes[0].volume()?;
+    let files = Arc::new(AgentInternalFiles::new(
+        Arc::clone(bound.volumes()),
+        journal.clone(),
+        ContentGrant::verify(
+            &host.verifier,
+            &host.scope,
+            &journal,
+            VolumeOperation::Write,
+            &mut None,
+        )?,
+        private.clone(),
+        ContentGrant::verify(
+            &verifier,
+            &scope,
+            private,
+            VolumeOperation::Write,
+            &mut None,
+        )?,
+    ));
+    let journal_reader = FilesystemContentVerifier::new(
+        Arc::clone(bound.volumes()),
+        &host.verifier,
+        &host.scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let writer = FilesystemContentPublisher::new(
+        Arc::clone(bound.volumes()),
+        private,
+        &verifier,
+        &scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let operation = OperationId::from_bytes([64; 16]);
+    let initial_through = acyclic_stream::StreamProviderExt::tail(
+        bound.agents().provider().as_ref(),
+        state.path.inbox()?,
+    )
+    .await?;
+    let boundary = FilesystemBoundary::new(
+        Arc::clone(bound.agents().provider()),
+        Arc::clone(bound.volumes()),
+        bound.issuer().clone(),
+        bound.admission().clone(),
+        state.clone(),
+        (operation, inbox, initial_through),
+        files,
+        Arc::new(journal_reader),
+        Arc::new(writer),
+        None,
+    );
+    assert!(boundary.messages(operation, 0, None).await?.is_empty());
+    boundary.admitted(operation, 0).await?;
+
+    let notice = crate::conversation::wire::Notice {
+        source: "records".into(),
+        kind: "record.changed".into(),
+        body: serde_json::json!({"revision": 1}),
+        wake: true,
+        coalesce_key: None,
+    };
+    let record = bound
+        .stage_notice(&root, &by, &IntentId::try_from("changed")?, &notice)
+        .await?;
+    let InboxRecord::Notice {
+        notice: NoticePayload::Waking(file),
+        ..
+    } = &record
+    else {
+        return Err("waking notice was not staged".into());
+    };
+    let file = file.as_ref().clone();
+    let external = [file.clone()];
+    let guest = AdmittedAgent::verify(bound.issuer(), bound.admission(), &root, &state.volumes)?
+        .authority(&external)
+        .await?;
+    let guest_reader = FilesystemContentVerifier::new(
+        Arc::clone(bound.volumes()),
+        &guest.verifier,
+        &guest.scope,
+        crate::conversation::MAX_EXACT_JS_INTEGER,
+        None,
+    )?;
+    let denied = async {
+        guest_reader
+            .read(&file, file.descriptor().byte_length(), None, None)?
+            .await
+    }
+    .await
+    .expect_err("an exact input grant exposed the host notice file");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    bound.agents().send(&root, &by, &record).await?;
+    let messages = boundary.messages(operation, 1, None).await?;
+    let [message] = messages.as_slice() else {
+        return Err("missing waking notice".into());
+    };
+    assert_eq!(message.role, ModelRole::User);
+    let ModelContent::Part(ModelContentPart::Notices { notices }) = &message.content else {
+        return Err("waking notice was not decoded".into());
+    };
+    assert_eq!(notices.as_slice(), &[notice]);
+    boundary.admitted(operation, 1).await?;
+
+    bound
+        .agents()
+        .send(
+            &root,
+            &by,
+            &InboxRecord::Message(Message {
+                from: by.clone(),
+                id: IntentId::try_from("ordinary")?,
+                re: None,
+                body: Box::new(file),
+                attachments: None,
+            }),
+        )
+        .await?;
+    let denied = boundary
+        .messages(operation, 2, None)
+        .await
+        .expect_err("an ordinary message acquired the host notice reader");
+    assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
+    Ok(())
+}
+
+#[tokio::test]
 async fn tool_result_reads_keep_the_settled_journal_cut() -> TestResult {
     use crate::{agent::TurnHost, executor::ExecutionJournal};
     let (bound, root) = binding().await?;
@@ -480,12 +647,12 @@ async fn workspace_queries_keep_subdirectory_read_grants_without_widening_them()
                 ClientFileChange {
                     path: "ui/title".into(),
                     expected: None,
-                    text: "scoped title".into(),
+                    text: Some("scoped title".into()),
                 },
                 ClientFileChange {
                     path: "outside".into(),
                     expected: None,
-                    text: "must not be disclosed".into(),
+                    text: Some("must not be disclosed".into()),
                 },
             ],
         )
@@ -796,6 +963,68 @@ async fn call_output_uses_the_journal_without_granting_tools_its_writer() -> Tes
             .0,
         b"streamed"
     );
+    let mut activity_context = context.clone();
+    activity_context.output_activity = true;
+    let mut log = crate::runtime::ToolOutputLog::new(activity_context.clone());
+    let chunk = log.publish_chunk("stderr/0", b"observed").await?;
+    assert_eq!(chunk.volume(), file.volume());
+    let activity_path = crate::runtime::tool_output_activity_path(turn, context.operation_id());
+    let (_, bytes, _) = reader
+        .read_tool_path(&format!("volume:///output/{activity_path}"), None, None)
+        .await?;
+    let activity: crate::runtime::ToolOutputActivity = serde_json::from_slice(&bytes)?;
+    assert_eq!(activity.through, 1);
+    assert_eq!(log.publish_chunk("stderr/0", b"observed").await?, chunk);
+    let second = log.publish_chunk("stderr/1", b"next").await?;
+    assert_eq!(log.publish_chunk("stderr/0", b"observed").await?, chunk);
+    let third = log.publish_chunk("stderr/2", b"last").await?;
+    let mut recovered = crate::runtime::ToolOutputLog::new(activity_context.clone());
+    assert_eq!(
+        recovered.publish_chunk("stderr/0", b"observed").await?,
+        chunk
+    );
+    assert_eq!(recovered.publish_chunk("stderr/1", b"next").await?, second);
+    assert_eq!(recovered.publish_chunk("stderr/2", b"last").await?, third);
+    let (_, bytes, _) = reader
+        .read_tool_path(&format!("volume:///output/{activity_path}"), None, None)
+        .await?;
+    let activity: crate::runtime::ToolOutputActivity = serde_json::from_slice(&bytes)?;
+    assert_eq!(
+        activity.through, 3,
+        "chunk replay changed the activity cursor"
+    );
+    assert!(log.publish_chunk("stderr/0", b"replacement").await.is_err());
+    log.finish().await?;
+    let terminal = activity_context
+        .read_output_file_once("completed.json")
+        .await?
+        .ok_or("physical completion missing")?;
+    let completed: crate::runtime::ToolOutputCompletion = serde_json::from_slice(&terminal.1)?;
+    assert_eq!(
+        (completed.turn, completed.call),
+        (turn, context.operation_id())
+    );
+    recovered.finish().await?;
+    assert_eq!(
+        context
+            .read_output_file_once("completed.json")
+            .await?
+            .ok_or("completion replay missing")?,
+        terminal,
+        "completion replay changed its original publication",
+    );
+    assert!(
+        task.stage_file(
+            Some(chunk.volume()),
+            OperationId::new(),
+            &activity_path,
+            b"forged",
+            "application/json",
+            "activity.json",
+        )
+        .await
+        .is_err()
+    );
     Ok(())
 }
 
@@ -941,5 +1170,111 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
             assert!(page.is_none() && closed);
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
+    use crate::client_files::{ClientFileChange, FileRoot};
+    use acyclic_stream::StreamProviderExt as _;
+    let (bound, agent) = binding().await?;
+    let root = FileRoot::Private {};
+    let paths = vec!["notes.txt".to_owned()];
+    bound
+        .publish_files(
+            &agent,
+            root,
+            OperationId::from_bytes([71; 16]),
+            &[ClientFileChange {
+                path: paths[0].clone(),
+                expected: None,
+                text: Some("before".into()),
+            }],
+        )
+        .await?;
+    let original = bound.files(&agent, root, &paths, None).await?;
+    let file = original.files[&paths[0]]
+        .as_ref()
+        .ok_or("missing authored file")?
+        .original()
+        .ok_or("expected authored source")?
+        .clone();
+    let state = bound.agents().state(&agent).await?;
+    let reference = super::super::super::bounded_io::content_workspace(
+        &bound.volumes.provider,
+        state.volumes[0].volume()?,
+        None,
+    )?;
+    let workspace = bound.volumes.open(&reference, None).await?;
+    let source =
+        acyclic_fs::session::changes_path(&bound.volumes.filesystem, workspace.id().volume_id())?;
+    let before = bound.agents.provider().tail(source.clone()).await?;
+    let waiting = bound.files(&agent, root, &paths, Some(&original.cut));
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    // Conditional file updates retain a new operation annotation even for the
+    // same text. A clean transaction exercises an actually unchanged candidate.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut transaction = workspace
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::from_bytes([72; 16]),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let published = transaction
+        .commit(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: acyclic_fs::WorkCounters::UNCHARGED,
+                    },
+                )
+            },
+        )
+        .await?
+        .value;
+    assert!(matches!(
+        published,
+        acyclic_fs::TransactionCommit::Committed(_)
+    ));
+    let unchanged = bound.files(&agent, root, &paths, None).await?;
+    assert!(unchanged.cut.same_inputs(&original.cut));
+    assert!(
+        bound.agents.provider().tail(source).await? > before,
+        "unchanged publication did not exercise the changes producer"
+    );
+    assert!(
+        futures::poll!(waiting.as_mut()).is_pending(),
+        "unchanged cut ended the watch"
+    );
+    bound
+        .publish_files(
+            &agent,
+            root,
+            OperationId::from_bytes([73; 16]),
+            &[ClientFileChange {
+                path: paths[0].clone(),
+                expected: Some(file),
+                text: Some("after".into()),
+            }],
+        )
+        .await?;
+    let changed = waiting.await?;
+    assert!(!changed.cut.same_inputs(&original.cut));
+    assert_eq!(
+        changed.files[&paths[0]]
+            .as_ref()
+            .ok_or("changed file missing")?
+            .text,
+        "after"
+    );
     Ok(())
 }

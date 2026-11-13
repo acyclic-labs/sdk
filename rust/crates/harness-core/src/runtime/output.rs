@@ -4,7 +4,7 @@ use super::*;
 impl ToolContext {
     // Only this private, short-lived context carries the output owner's grant.
     // Callers choose a relative name inside this call, never a volume or turn.
-    fn output_context(&self, name: &str) -> Result<(Self, OperationId, String)> {
+    pub(super) fn output_context(&self, name: &str) -> Result<(Self, OperationId, String)> {
         crate::conversation::validate_content_path(name, &mut None)?;
         let path = format!("tools/{}/{}/{name}", self.turn_id(), self.operation_id());
         let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.tool-output/v1");

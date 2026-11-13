@@ -102,8 +102,7 @@ impl PreparedLocalHarness {
 
     /// Binds providers and opens the host over this same pinned home.
     pub async fn open(self) -> Result<LocalHarness> {
-        let opening = self.opening.activate().await?;
-        opening.finish(self.storage).await
+        self.opening.finish(self.storage).await
     }
 }
 
@@ -227,39 +226,6 @@ impl Opening {
         })
     }
 
-    /// Activation belongs exclusively to opening, after the read-only checks.
-    async fn activate(self) -> Result<Self> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let mut opening = self;
-            let installation = match &opening.settings {
-                Some(settings) => {
-                    let root = std::fs::canonicalize(opening.config.project.root())
-                        .map_err(Error::process_io)?;
-                    crate::mcp::McpConfig::install_watched(
-                        opening.tools,
-                        Arc::clone(settings),
-                        &root,
-                        opening.config.mcp_limits,
-                        Arc::new(crate::secrets::EnvSecrets),
-                    )
-                    .await?
-                }
-                None => crate::mcp::McpInstallation {
-                    tools: opening.tools,
-                    capabilities: Capabilities::default(),
-                    diagnostics: Vec::new(),
-                },
-            };
-            opening.tools = installation.tools;
-            opening.capabilities = installation.capabilities;
-            opening.diagnostics = installation.diagnostics;
-            Ok(opening)
-        }
-        #[cfg(target_arch = "wasm32")]
-        Ok(self)
-    }
-
     /// Captures the checkout and selects its control directory, refusing a
     /// caller's overlapping control directory before opening host state.
     fn checkout(&self) -> Result<(PathBuf, Option<owner::Checkout>)> {
@@ -317,6 +283,10 @@ impl Opening {
         #[cfg(any(test, not(target_arch = "wasm32")))]
         if self.native_mounts() {
             acyclic_fs::initialize_native_mount_services_async()
+                .await
+                .map_err(storage)?;
+        } else {
+            acyclic_fs::initialize_native_source_services_async()
                 .await
                 .map_err(storage)?;
         }
@@ -550,7 +520,33 @@ impl Opening {
         Box::pin(self.assemble(opened))
     }
 
-    async fn assemble(self, opened: Storage) -> Result<LocalHarness> {
+    async fn assemble(mut self, opened: Storage) -> Result<LocalHarness> {
+        // Activation shares the existing owned assembly phase, after preparation.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let installation = match &self.settings {
+                Some(settings) => {
+                    let root = std::fs::canonicalize(self.config.project.root())
+                        .map_err(Error::process_io)?;
+                    crate::mcp::McpConfig::install_watched(
+                        self.tools,
+                        Arc::clone(settings),
+                        &root,
+                        self.config.mcp_limits,
+                        Arc::new(crate::secrets::EnvSecrets),
+                    )
+                    .await?
+                }
+                None => crate::mcp::McpInstallation {
+                    tools: self.tools,
+                    capabilities: Capabilities::default(),
+                    diagnostics: Vec::new(),
+                },
+            };
+            self.tools = installation.tools;
+            self.capabilities = installation.capabilities;
+            self.diagnostics = installation.diagnostics;
+        }
         let Storage {
             issuer,
             owner,

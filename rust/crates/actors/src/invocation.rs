@@ -213,6 +213,11 @@ impl Delivery {
             Trigger::Record {
                 subscription,
                 sequence,
+            }
+            | Trigger::KeyedRecord {
+                subscription,
+                sequence,
+                ..
             } if *sequence == record.sequence => Ok((invocation.actor == self.actor
                 && invocation.subscription == *subscription
                 && state_path == *self.subscriptions.state_path())

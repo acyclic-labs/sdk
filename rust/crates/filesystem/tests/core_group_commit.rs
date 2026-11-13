@@ -9,19 +9,16 @@ use acyclic_fs::{
 use acyclic_native_runtime::testing::{DurableFault, Schedule};
 
 fn state(id: WorkspaceId) -> Result<LazyWorkspaceState, serde_json::Error> {
-    let shadows = [3_u8; 32];
-    serde_json::from_value(serde_json::json!({
-        "schema_version": LazyWorkspaceState::SCHEMA_VERSION,
-        "revision": 1,
-        "workspace_id": id,
-        "parent_workspace_id": null,
-        "fork_origin": null,
-        "selected_import_roots": null,
-        "source": acyclic_fs::demand::SourceReference { components: acyclic_stream::OwnedBytes::new(),  identity: [1; 16], epoch: 0 },
-        "overlay": acyclic_fs::LazyOverlayId::from_bytes([2; 32]),
-        "shadows": shadows,
-        "pending_remove": null
-    }))
+    Ok(LazyWorkspaceState::new(
+        id,
+        acyclic_fs::demand::SourceReference {
+            components: acyclic_stream::OwnedBytes::new(),
+            identity: [1; 16],
+            epoch: 0,
+        },
+        acyclic_fs::LazyOverlayId::from_bytes([2; 32]),
+        serde_json::from_value(serde_json::to_value([3_u8; 32])?)?,
+    ))
 }
 
 async fn publish(
