@@ -71,6 +71,28 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
         (Some(&denied), crate::wire::ErrorCode::Unauthorized),
         (None, crate::wire::ErrorCode::Invalid),
     ] {
+        let changes = [crate::conversation::ContentChange::CreateAbsent {
+            path: "directory",
+            bytes: b"bytes",
+            media_type: "text/plain",
+            display_name: "directory",
+        }];
+        let batch = publisher
+            .stage_changes(
+                &publisher.volume,
+                OperationId::new(),
+                &changes,
+                crate::conversation::ContentAccess { ceiling, io: None },
+            )?
+            .await;
+        let error = batch.err().expect("directory batch must refuse");
+        assert_eq!(error.code(), code, "{error:?}");
+        if code == crate::wire::ErrorCode::Invalid {
+            assert!(
+                error.to_string().contains("path is a directory"),
+                "{error:?}"
+            );
+        }
         let result = publisher
             .stage_once(
                 OperationId::new(),
@@ -92,6 +114,42 @@ async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<
                 "{error:?}"
             );
         }
+    }
+    let create_only = crate::Capabilities::new([acyclic_fs::access::Capability::whole_volume(
+        None,
+        &[acyclic_fs::access::Action::Create],
+    )
+    .to_scope_label()
+    .map_err(|error| Error::Invalid(error.to_string()))?]);
+    let create = crate::conversation::ContentChange::CreateAbsent {
+        path: "directory",
+        bytes: b"bytes",
+        media_type: "text/plain",
+        display_name: "directory",
+    };
+    let mixed = [
+        create,
+        crate::conversation::ContentChange::Delete { path: "other" },
+    ];
+    for (changes, code) in [
+        (&mixed[..1], crate::wire::ErrorCode::Invalid),
+        (&mixed[..], crate::wire::ErrorCode::Unauthorized),
+    ] {
+        let result = publisher
+            .stage_changes(
+                &publisher.volume,
+                OperationId::new(),
+                changes,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(&create_only),
+                    io: None,
+                },
+            )?
+            .await;
+        assert_eq!(
+            result.err().expect("directory batch must refuse").code(),
+            code
+        );
     }
     assert!(directory.path().join("directory").is_dir());
     Ok(())

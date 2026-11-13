@@ -12,7 +12,37 @@ impl CheckoutPublisher {
         access: ContentAccess<'a, 'io>,
         finish: fn(Option<ContentChanges>) -> Result<Output>,
     ) -> Result<BoundedContentFuture<'a, (Output, Option<ContentHold<'io>>)>> {
-        BoundedContentFuture::new(access.io, || {
+        BoundedContentFuture::new(access.io, || async move {
+            if let Some(changes) = changes {
+                let mount = self.tools.workspace.mounts.by_volume(volume, access.io)?;
+                for change in changes {
+                    mount.check_with_work(
+                        change.action(),
+                        change.path(),
+                        self.tools.clock.now_unix_millis() / 1000,
+                        access
+                            .io
+                            .as_ref()
+                            .and_then(crate::store::HistoryIo::original_native_work),
+                    )?;
+                }
+                let (selected, _) = self.tools.workspace.selected_view().await?;
+                let selected = selected
+                    .as_ref()
+                    .unwrap_or_else(|| self.tools.workspace.view());
+                let workspace = mount.view.source.as_ref().map_or_else(
+                    || selected.workspace(),
+                    |source| source.workspace.workspace(),
+                );
+                let writer = self.writer_for(volume, workspace)?;
+                let (original, hold) = writer
+                    .observe_changes(volume, operation, maximum, access)?
+                    .await?;
+                if original.is_none() {
+                    writer.check_change_destinations(changes, access)?.await?;
+                }
+                drop((original, hold));
+            }
             serialized(&self.tools.state, async move |mut state| {
                 let physical = self.selected_workspace(&state)?;
                 let mount = physical.mounts.by_volume(volume, access.io)?;
@@ -167,6 +197,7 @@ impl CheckoutPublisher {
                 }
                 Ok((finish(Some(receipt))?, hold))
             })
+            .await
         })
     }
 }

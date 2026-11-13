@@ -122,14 +122,6 @@ impl CheckoutPublisher {
                 || selected.workspace(),
                 |source| source.workspace.workspace(),
             );
-            access::require_volume_access(
-                workspace,
-                &mount.view.volume,
-                &self.tools.signed,
-                ceiling.unwrap_or(self.tools.signed.capabilities()),
-                "local checkout publication",
-            )
-            .await?;
             let writer = self.writer_for(&mount.view.volume, workspace)?;
             let original = match &publication {
                 Publication::Once { .. } => {
@@ -158,6 +150,14 @@ impl CheckoutPublisher {
                     )?
                     .await?;
             }
+            access::require_volume_access(
+                workspace,
+                &mount.view.volume,
+                &self.tools.signed,
+                ceiling.unwrap_or(self.tools.signed.capabilities()),
+                "local checkout publication",
+            )
+            .await?;
         }
         serialized(&self.tools.state, async |mut state| {
             let physical = self.selected_workspace(&state)?;

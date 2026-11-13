@@ -318,6 +318,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })
     }
 
+    /// Checks authorized file destinations without consuming payloads or
+    /// publishing. Recover an original receipt first: replay must retain its
+    /// original cut. A successful publication revalidates at its own cut.
+    #[doc(hidden)]
+    pub fn check_change_destinations<'a>(
+        &'a self,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
+        self.host
+            .check_change_destinations(&self.volume, &self.grant, changes, access)
+    }
+
     pub(super) async fn observe_publication(
         &self,
         operation: OperationId,
