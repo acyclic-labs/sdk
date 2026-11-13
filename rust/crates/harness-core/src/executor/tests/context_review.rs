@@ -5,7 +5,12 @@ use futures::FutureExt as _;
 /// its cached prefix. Only a finished, source-bound decision may rewrite it.
 #[tokio::test]
 async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixes() -> Result<()> {
-    for (replace, change_source) in [(false, false), (true, false), (true, true)] {
+    for (replace, change_source, tokenized) in [
+        (false, false, true),
+        (true, false, true),
+        (true, true, true),
+        (true, false, false),
+    ] {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let dispatches = Arc::new(AtomicUsize::new(0));
@@ -26,7 +31,7 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             ]),
         ])
         .with_context_capacity(crate::context::ModelContextCapacity { context_tokens: 65_536, output_tokens: Some(4096) })
-        .with_token_counter(fixture_token_count)
+        .with_token_counter(move |request| if tokenized { fixture_token_count(request) } else { Err(Error::ModelTokenCountUnavailable) })
         .with_dispatch_observer(move |_| {
             let (seen, gate) = (seen.clone(), gate.clone());
             let index = calls.fetch_add(1, Ordering::SeqCst);
@@ -93,24 +98,31 @@ async fn model_budget_reviews_context_without_stalling_or_rewriting_live_prefixe
             let prepared = execution
                 .prepared_response(journal, &input, 2, &prior, None)
                 .await?;
-            let window = prepared
-                .context_window()
-                .expect("the rewritten boundary has verified occupancy");
+            let window = prepared.context_window();
             assert_eq!(
-                window.input_tokens,
-                fixture_token_count(&prepared)?.input_tokens
+                window.is_some(),
+                tokenized,
+                "a provider without a tokenizer must not invent occupancy"
             );
-            assert_eq!(window.capacity_tokens, 65_536);
+            if let Some(window) = window {
+                assert_eq!(
+                    window.input_tokens,
+                    fixture_token_count(&prepared)?.input_tokens
+                );
+                assert_eq!(window.capacity_tokens, 65_536);
+            }
             let events = execution.model_step(journal, &input, 2, &prior).await?;
             let after = provider.request(3).unwrap();
             assert!(!after.summary);
             if replace && !change_source {
                 let bytes = crate::contract::canonical_json_bytes(&after)?;
                 assert!(bytes.len() < crate::contract::canonical_json_bytes(&before)?.len());
-                assert!(
-                    window.input_tokens
-                        < crate::contract::canonical_json_bytes(&before)?.len() as u64
-                );
+                if let Some(window) = window {
+                    assert!(
+                        window.input_tokens
+                            < crate::contract::canonical_json_bytes(&before)?.len() as u64
+                    );
+                }
                 assert!(after.messages.iter().any(|message| {
                     message
                         .content

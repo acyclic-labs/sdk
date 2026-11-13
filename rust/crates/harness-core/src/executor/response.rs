@@ -322,7 +322,7 @@ impl StockExecution<'_> {
                 "single inference request declares invocable tools",
             ));
         }
-        if matches!(accounting.count, InputAccounting::Unavailable) {
+        if self.single_request && matches!(accounting.count, InputAccounting::Unavailable) {
             return Ok(prepared);
         }
         let input_tokens = accounting
@@ -364,6 +364,12 @@ impl StockExecution<'_> {
             .await?
         {
             return Ok(retained);
+        }
+        if matches!(accounting.count, InputAccounting::Unavailable) {
+            return Ok(self
+                .review_response(journal, turn, &projection, accounting.capacity, false)
+                .await?
+                .unwrap_or(prepared));
         }
         let token_pressure = match input_tokens {
             Some(tokens) => policy.needs_compaction(accounting.capacity, tokens)?,
