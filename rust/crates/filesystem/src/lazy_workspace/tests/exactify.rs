@@ -448,7 +448,7 @@ async fn sealed_exactification_skips_saved_entries_and_reopens_on_source_invalid
         .unwrap();
     root.write(
         "/file-000",
-        bytes::Bytes::from_static(b"authored"),
+        acyclic_stream::OwnedBytes::from_static(b"authored"),
         IdempotencyKey::new(),
         crate::PublicationPermit::Unrestricted,
         accounting!(),
