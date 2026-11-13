@@ -326,6 +326,14 @@ pub enum ExecutionEvent {
         #[cfg_attr(feature = "wasm", tsify(type = "unknown"))]
         publication: crate::resources::ResourceRef,
     },
+    /// An original native capture's measured content outcome, including an
+    /// explicit unavailable observation. The receipt is host-owned output,
+    /// never a counter copied from a model or a tool's stdout.
+    NativeCapture {
+        /// Original capture evidence and call identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
+        receipt: FileRef,
+    },
     /// Appends an immutable conversation envelope at this original journal position.
     ConversationItem {
         /// Executor step admitting the item; this does not close an exchange.

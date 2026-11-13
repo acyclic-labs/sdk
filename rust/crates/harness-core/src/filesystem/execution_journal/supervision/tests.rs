@@ -244,6 +244,112 @@ async fn original_content_receipts_count_changes_once_and_exclude_same_bytes() -
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
+async fn native_capture_receipts_keep_original_identity_and_refuse_unavailable_progress()
+-> Result<()> {
+    use crate::runtime::{NativeCaptureEvidence, ToolContext};
+    use crate::supervision::{RunAdmission, RunAdmissionSource};
+    let (journal, issuer) = super::super::test_support::journal().await?;
+    let execution = OperationId::from_bytes([177; 16]);
+    let effect = OperationId::from_bytes([178; 16]);
+    let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([81; 16]));
+    let policy = Policy {
+        no_progress_turns: Some(1),
+        ..Default::default()
+    };
+    let bytes = crate::contract::canonical_json_bytes(&policy)?;
+    let declaration = RunAdmission::new(execution, b"Finish", &bytes);
+    let goal = journal
+        .stage(execution, "goal", b"Finish", "text/plain", None)?
+        .await?;
+    let policy_file =
+        crate::executor::stage_json(&journal, execution, "policy", &policy, None).await?;
+    let admission =
+        crate::executor::stage_json(&journal, execution, "admission", &declaration, None).await?;
+    let journal = Arc::new(
+        journal
+            .with_run_admission(Some(RunAdmissionSource {
+                admission,
+                goal,
+                policy: policy_file,
+                value: declaration.verify(execution, b"Finish", &bytes)?,
+            }))
+            .with_agent_events(agent.clone(), execution, 0, true),
+    );
+    journal
+        .append(
+            execution,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [1; 32],
+            },
+            None,
+        )?
+        .await?;
+    let (content, scope, foreign) = authored_workspace(&journal, &issuer, b"original").await?;
+    let mut bindings = crate::runtime::Bindings::local();
+    bindings.scope = scope;
+    bindings.content = Some(content.clone());
+    let task = Arc::new(
+        bindings
+            .build()?
+            .agent_context(&crate::Capabilities::new(Vec::<String>::new()), content)?
+            .with_execution_journal(journal.clone(), execution)?,
+    );
+    let context = ToolContext::new(task.clone(), effect, "shell")?;
+    let evidence = NativeCaptureEvidence::Unavailable {
+        operation: acyclic_fs::OperationId::new(),
+    };
+    assert!(
+        context
+            .record_native_progress(evidence.clone(), Some(true))
+            .await
+            .is_err()
+    );
+    assert!(
+        context
+            .read_output_file_once("capture-progress.json")
+            .await?
+            .is_none(),
+        "invalid native measurement poisoned its immutable receipt"
+    );
+    context.record_native_progress(evidence, None).await?;
+    assert!(context.recover_native_progress().await?);
+    let other = ToolContext::new(task, OperationId::from_bytes([179; 16]), "shell")?;
+    assert!(
+        !other.recover_native_progress().await?,
+        "another call borrowed native content evidence"
+    );
+    let records = journal.records(execution, 0, 16, None).await?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| matches!(record.event, ExecutionEvent::NativeCapture { .. }))
+            .count(),
+        1,
+        "native measurement replay appended a second event"
+    );
+    let queries = Queries::new(&*journal.stream, &agent, execution);
+    assert!(
+        !queries.progress_in_turn(0).await?.0,
+        "unavailable native evidence became positive progress"
+    );
+    assert!(
+        journal
+            .published_progress(
+                execution,
+                effect,
+                crate::executor::ProgressPublication::NativeCapture(&foreign),
+                None,
+            )?
+            .await
+            .is_err(),
+        "foreign authored content became host-owned capture evidence"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
 async fn failed_progress_releases_the_original_conditional_receipt_on_write_and_recovery()
 -> Result<()> {
     use crate::supervision::{RunAdmission, RunAdmissionSource};

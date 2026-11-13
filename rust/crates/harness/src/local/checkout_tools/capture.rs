@@ -8,6 +8,7 @@ use acyclic_fs::{
 };
 
 mod converge;
+mod progress;
 #[cfg(test)]
 #[cfg(not(loom))]
 mod tests;

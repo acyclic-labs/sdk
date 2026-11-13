@@ -89,6 +89,9 @@ pub(super) fn completion_cut(
 /// An accepted source for one original progress publication.
 #[derive(Clone, Copy)]
 pub enum ProgressPublication<'a> {
+    /// Original host-owned native capture measurement. Its typed receipt
+    /// distinguishes changed, unchanged and unavailable content evidence.
+    NativeCapture(&'a FileRef),
     /// A trusted producer has already established that this immutable result
     /// changed authored state, such as a conditional content receipt.
     Resource(&'a crate::resources::ResourceRef),

@@ -301,7 +301,8 @@ where
             }
             ExecutionEvent::Started { .. }
             | ExecutionEvent::ConversationItem { .. }
-            | ExecutionEvent::Progress { .. } => {}
+            | ExecutionEvent::Progress { .. }
+            | ExecutionEvent::NativeCapture { .. } => {}
         }
         Ok(())
     }
@@ -363,6 +364,7 @@ where
             | ExecutionEvent::ToolFailed { .. }
             | ExecutionEvent::Started { .. }
             | ExecutionEvent::Progress { .. }
+            | ExecutionEvent::NativeCapture { .. }
             | ExecutionEvent::ConversationItem { .. } => {}
         }
         Ok(roots)

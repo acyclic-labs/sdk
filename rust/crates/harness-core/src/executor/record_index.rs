@@ -48,7 +48,7 @@ pub(super) struct RecordIndex<'a> {
 impl ExecutionEvent {
     pub(crate) fn step(&self) -> Option<u32> {
         match self {
-            Self::Started { .. } | Self::Progress { .. } => None,
+            Self::Started { .. } | Self::Progress { .. } | Self::NativeCapture { .. } => None,
             Self::ConversationItem { step, .. }
             | Self::ContextPrepared { step, .. }
             | Self::ContextCompacted { step, .. }
@@ -74,6 +74,9 @@ impl ExecutionEvent {
             },
             Progress { publication } => Progress {
                 publication: crate::model::clone_resource(publication, io)?,
+            },
+            NativeCapture { receipt } => NativeCapture {
+                receipt: file(receipt)?,
             },
             ConversationItem {
                 step,
@@ -292,7 +295,10 @@ impl<'a> RecordIndex<'a> {
             let step = record_bucket_key(&record.event, io)?;
             let sequence = record.sequence;
             let mut work = OwnedIndexWork(io);
-            if matches!(record.event, ExecutionEvent::Progress { .. }) {
+            if matches!(
+                record.event,
+                ExecutionEvent::Progress { .. } | ExecutionEvent::NativeCapture { .. }
+            ) {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
                     io.release(record.payload_bytes(Some(io))?)?;

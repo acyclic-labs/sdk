@@ -238,6 +238,10 @@ fn progress_key(turn: u64) -> [u8; 32] {
     super::signature(b"progress-turn", &[&turn.to_be_bytes()])
 }
 
+fn unmeasured_key(turn: u64) -> [u8; 32] {
+    super::signature(b"unmeasured-progress-turn", &[&turn.to_be_bytes()])
+}
+
 fn occurrence_bytes(sequence: u64) -> Vec<u8> {
     let mut bytes = 1u32.to_be_bytes().to_vec();
     bytes.extend_from_slice(&sequence.to_be_bytes());
@@ -347,6 +351,30 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         Ok(projection)
     }
 
+    /// An original native capture contributes either a positive byte-change
+    /// fact, a known unchanged measurement, or an explicit coverage gap.
+    /// A coverage gap never writes a positive progress marker.
+    pub async fn project_native_capture(
+        &self,
+        source: &Position,
+        turn: u64,
+        changed: Option<bool>,
+        policy: &Policy,
+    ) -> Result<Projection> {
+        let mut projection = self.project(source, &Observation::Progress, policy).await?;
+        if policy.no_progress_turns.is_some() {
+            let key = match changed {
+                Some(true) => Some(progress_key(turn)),
+                Some(false) => None,
+                None => Some(unmeasured_key(turn)),
+            };
+            if let Some(key) = key {
+                self.join_turn_fact(&mut projection, key).await?;
+            }
+        }
+        Ok(projection)
+    }
+
     /// Join original progress receipts and this exact turn's reported spending
     /// to its terminal publication. The original settlement producer owns the
     /// returned effect; a concurrent usage publication refuses that same commit
@@ -361,14 +389,22 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         if policy.no_progress_turns.is_none() {
             return Ok(None);
         }
-        let ((spent_tokens, spending_fence), (progress, progress_fence)) =
-            futures::try_join!(self.spent_in_turn(turn), self.progress_in_turn(turn),)?;
+        let (
+            (spent_tokens, spending_fence),
+            (progress, progress_fence),
+            (unmeasured, measurement_fence),
+        ) = futures::try_join!(
+            self.spent_in_turn(turn),
+            self.progress_in_turn(turn),
+            self.turn_fact(unmeasured_key(turn)),
+        )?;
         let mut projection = self
             .project(
                 source,
                 &Observation::TurnDone {
                     spent_tokens,
                     progress,
+                    progress_measured: !unmeasured,
                 },
                 policy,
             )
@@ -376,7 +412,7 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         projection
             .effect
             .conditions
-            .extend([spending_fence, progress_fence]);
+            .extend([spending_fence, progress_fence, measurement_fence]);
         Ok(Some(projection))
     }
 

@@ -288,6 +288,16 @@ where
                     }
                     [None, None, None]
                 }
+                ExecutionEvent::NativeCapture { receipt } => {
+                    if receipt.volume() != &self.volume {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "native capture belongs to another journal",
+                        ));
+                    }
+                    [Some(receipt), None, None]
+                }
                 ExecutionEvent::ConversationItem {
                     envelope: projection,
                     ..

@@ -79,4 +79,23 @@ source removal and a later write. `native-content-generation.patch` substitutes
 authored-generation equality for logical content equality; the unchanged test
 must fail at `source promotion with unchanged bytes counted as a content change`.
 Restore the patch and require the same regression to pass. This point proof
-does not claim a complete source-alias diff or a completed shell progress bridge.
+does not claim a complete source-alias diff. An unavailable comparison never
+counts as positive progress or as a proved absence of content changes.
+
+The original native capture producer is covered by the shipping
+`supervision::headless_native_edits_count_progress_but_unchanged_rewrites_do_not`
+(`acyclic-plugin --test cli`). Its two real commands make an equal-length edit
+and rewrite identical bytes. Only the edit may admit a second paid goal turn;
+both commands must have returned success and exit code zero.
+`native-progress-publication.patch` restores capture without its original
+content measurement. The identical regression must fail at
+`native changed=true`, then pass after restoration.
+
+`native_capture_receipts_keep_original_identity_and_refuse_unavailable_progress`
+uses real journal and filesystem publications to reject an unavailable positive
+verdict before immutable staging, retain original replay exactly once, refuse
+another call's receipt and reject a foreign volume. The existing real Streams
+`original_turn_spending_is_atomic_and_does_not_borrow_later_turn_usage` includes
+unavailable, positive and unchanged native measurements: unavailable evidence
+must not create a positive fact, and subsequent known unchanged spending turns
+must still reach the configured stop.

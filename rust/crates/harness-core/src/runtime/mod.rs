@@ -36,8 +36,10 @@ mod task_context;
 pub use task_context::*;
 mod content_read;
 mod content_write;
+mod native_progress;
 mod output;
 pub(crate) use content_write::{PrivateContent, SummaryDestination};
+pub use native_progress::{NativeCaptureEvidence, NativeCaptureProgress};
 mod model_context;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
