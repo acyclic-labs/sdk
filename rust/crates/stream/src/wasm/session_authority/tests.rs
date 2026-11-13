@@ -124,8 +124,17 @@ async fn local_session_closes_an_idle_follow_on_revocation_and_rejects_trust_rol
         frame.body,
         Some(wire::session_frame::Body::Data(_))
     ));
-    authority.update(&public_trust(true)).expect("revoke");
+    let mut advanced: Snapshot = serde_json::from_str(&public_trust(false)).expect("public trust");
+    advanced.not_before_unix_seconds = 1;
+    let unchanged = serde_json::to_string(&advanced).expect("advanced trust");
+    authority.update(&unchanged).expect("advance floor");
     assert!(authority.update(&public_trust(false)).is_err());
+    authority.update(&unchanged).expect("equal floor");
+    advanced.revoked_key_ids.insert("key".into());
+    authority
+        .update(&serde_json::to_string(&advanced).expect("revoked trust"))
+        .expect("revoke");
+    assert!(authority.update(&unchanged).is_err());
     assert!(follow.next().await.is_err());
     follow.close();
 }
