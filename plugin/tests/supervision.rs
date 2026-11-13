@@ -445,10 +445,13 @@ async fn run_goal(fixture: &Fixture, model: &Model, policy: &Policy) -> Output {
     let configuration = fixture._directory.path().join("supervision.json");
     std::fs::write(&goal, "Finish this task\n").unwrap();
     std::fs::write(&configuration, serde_json::to_vec(policy).unwrap()).unwrap();
+    let plugins = task_plugins(fixture);
     graphcoder(
         fixture,
         &model.catalog,
         vec![
+            "--home-file",
+            plugins.as_str(),
             "run",
             "--output-format",
             "jsonl",
