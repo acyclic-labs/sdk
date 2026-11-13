@@ -15,6 +15,21 @@ impl StreamProvider for LocalStream {
         )
     }
 
+    async fn lease_ephemeral(
+        &self,
+        root: StreamPath,
+    ) -> Result<crate::EphemeralLease, StreamError> {
+        acyclic_observability::async_operation!(
+            "acyclic.stream.lease_ephemeral",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.check_available()?;
+                self.inner.provider.lease_ephemeral_inner(root).await
+            }
+        )
+    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,
@@ -61,13 +76,18 @@ impl StreamProvider for LocalStream {
                             .borrow()
                             .flushed
                             .is_some_and(|cut| cut >= revision);
+                        let ephemeral = self.inner.provider.ephemeral_mask(&request.paths).await;
                         let mut tails = self
                             .inner
                             .durable_tails
                             .lock()
                             .map_err(|_| StreamError::Unavailable)?;
-                        for (path, head) in request.paths.iter().zip(&mut view.heads) {
-                            if let Some(head) = head {
+                        for ((path, head), ephemeral) in
+                            request.paths.iter().zip(&mut view.heads).zip(ephemeral)
+                        {
+                            if let Some(head) = head
+                                && !ephemeral
+                            {
                                 let mut durable = tails.get(path).copied().unwrap_or(0);
                                 if synced && head.tail > durable {
                                     durable = head.tail;
@@ -81,11 +101,17 @@ impl StreamProvider for LocalStream {
                         Ok((view, revision))
                     })
                     .await??;
+                // An ephemeral path is never sealed: it has no journal frame.
+                let ephemeral = match through {
+                    Some(_) => self.inner.provider.ephemeral_mask(&request.paths).await,
+                    None => Vec::new(),
+                };
                 if through.is_some_and(|through| {
-                    view.heads
-                        .iter()
-                        .flatten()
-                        .any(|head| through <= head.tail && head.retained_through.is_none())
+                    view.heads.iter().zip(&ephemeral).any(|(head, ephemeral)| {
+                        head.as_ref().is_some_and(|head| {
+                            !ephemeral && through <= head.tail && head.retained_through.is_none()
+                        })
+                    })
                 }) {
                     // Flush exactly the captured publication cut, outside its read lock.
                     // Concurrent appends cannot change the view or enlarge its proof.
@@ -95,8 +121,15 @@ impl StreamProvider for LocalStream {
                         .durable_tails
                         .lock()
                         .map_err(|_| StreamError::Unavailable)?;
-                    for (path, head) in request.paths.into_iter().zip(&mut view.heads) {
-                        if let Some(head) = head {
+                    for ((path, head), ephemeral) in request
+                        .paths
+                        .into_iter()
+                        .zip(&mut view.heads)
+                        .zip(ephemeral)
+                    {
+                        if let Some(head) = head
+                            && !ephemeral
+                        {
                             let durable = tails.entry(path).or_default();
                             let marks = flushed_watermarks(durable, head.tail, flushed);
                             head.durable = marks.durable;

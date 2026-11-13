@@ -104,8 +104,9 @@ impl MemoryStream {
     /// The cut a guarded Commit's guard can observe: whether its key has a
     /// replay, and the tails of the request's own paths (conditions, mutation
     /// paths and fork sources) and of the paths the guard declares it reads.
-    /// Paths are permanent and tails only grow, so the sum of `tail + 1` over
-    /// present paths moves exactly when one of them changes. Commits anywhere
+    /// Durable paths are permanent and tails only grow, so the sum of
+    /// `tail + 1` over present paths moves exactly when one of them changes,
+    /// unless a lease released an ephemeral subtree, which the cut also counts. Commits anywhere
     /// else in the store never move it. Both native providers compare this one
     /// cut before and after the guard.
     #[cfg(not(target_arch = "wasm32"))]
@@ -130,7 +131,11 @@ impl MemoryStream {
             .chain(reads)
             .map(|path| state.tail(path).map_or(0, |tail| u128::from(tail) + 1))
             .sum();
-        Ok(GuardCut { replayed, tails })
+        Ok(GuardCut {
+            replayed,
+            tails,
+            released: state.ephemeral.released,
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -292,4 +297,6 @@ fn inspect<T>(meter: &Arc<dyn NativeReadMeter>, lookup: impl FnOnce() -> T) -> s
 pub(crate) struct GuardCut {
     replayed: bool,
     tails: u128,
+    /// A released lease removes paths, so tails alone no longer only grow.
+    released: u64,
 }

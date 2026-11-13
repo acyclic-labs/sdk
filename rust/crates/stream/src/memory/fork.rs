@@ -11,10 +11,14 @@ impl MemoryStream {
         StreamError,
     > {
         let digest = fork_digest(request)?;
-        if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {
+        let scope = state.ephemeral.fork_scope(request)?;
+        if let Some(result) = self.replay_fork(state, &scope, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned(result));
         }
-        admit_replay(state, self.limits)?;
+        let durable = matches!(scope, Scope::Durable);
+        if durable {
+            admit_replay(state, self.limits)?;
+        }
         let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
         let forked_at = crate::preparation::fork_cut(
             request,
@@ -24,8 +28,7 @@ impl MemoryStream {
         reserve_fork(state, request, self.limits)?;
         reserve_commit(state, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-        let commit_id = commit_identity(decision, digest);
+        let (decision, commit_id) = state.identity(&scope, digest)?;
         let receipt = ForkReceipt {
             source: request.source.clone(),
             destination: request.destination.clone(),
@@ -51,7 +54,7 @@ impl MemoryStream {
             self.paths(state, std::iter::once(&receipt.destination), |prefix| {
                 receipt.destination.as_str() == prefix
             })?;
-        let retained = self.reserve_retained(state)?;
+        let retained = durable.then(|| self.reserve_retained(state)).transpose()?;
         let time = crate::preparation::committed_time(
             state.last_committed_at_micros,
             self.commit_clock.now_unix_millis(),
@@ -69,19 +72,31 @@ impl MemoryStream {
             install: move |state: &mut State, _durable, at_millis| {
                 let _holds = (_histories, _paths);
                 let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
-                let retained = self.install_retained(state, retained)?;
-                install_namespace(state, namespace, &envelope)?;
-                state.decision = decision;
-                state.last_committed_at_micros = time;
-                retain(
-                    state,
-                    &mut |items| self.record_replay_probe(&mut probes, items),
-                    Some(envelope),
-                    Some(request.idempotency_key.clone()),
-                    digest,
-                    IdempotencyOutcome::Fork(receipt.clone()),
-                    (Default::default(), retained),
-                );
+                let retained = retained
+                    .map(|retained| self.install_retained(state, retained))
+                    .transpose()?;
+                install_namespace(state, namespace, &envelope, &scope)?;
+                state.advance(&scope, time);
+                let result = IdempotencyOutcome::Fork(receipt.clone());
+                match retained {
+                    Some(retained) => retain(
+                        state,
+                        &mut |items| self.record_replay_probe(&mut probes, items),
+                        Some(envelope),
+                        Some(request.idempotency_key.clone()),
+                        digest,
+                        result,
+                        (Default::default(), retained),
+                    ),
+                    None => state.ephemeral.retain(
+                        &scope,
+                        &request.idempotency_key,
+                        digest,
+                        result,
+                        decision,
+                        Default::default(),
+                    ),
+                }
                 Ok(receipt)
             },
         })

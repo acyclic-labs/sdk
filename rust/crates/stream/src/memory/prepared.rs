@@ -101,6 +101,8 @@ impl MemoryStream {
         ))?;
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
+        // A prepared commit publishes through the journal only.
+        durable_only(state.ephemeral.commit_scope(&request))?;
         let capacity_reservation = self.reserve_prepared_capacity(&state, &request, maximum)?;
         let retained = self.reserve_retained(&state)?;
         // The requested key bounds both lookup and insertion even when other
@@ -399,6 +401,11 @@ impl PreparedCommit {
         let state = self.provider.state.write().await;
         let (mut conflicts, output_claim) = self.conflicts;
         let result = async {
+            // A lease may have reserved the destination since preparation.
+            durable_only(state.ephemeral.scope(
+                [&append(&self.plan.result).path],
+                self.conditions.iter().map(CommitCondition::path),
+            ))?;
             if let Some(stored) = state.replay(self.key.as_bytes(), |items| {
                 self.provider.record_replay_probe(&mut self.probes, items);
                 Ok::<_, StreamError>(())
@@ -483,25 +490,32 @@ impl PreparedCommit {
             Decision::Accepted {
                 bytes,
                 install: |state: &mut State, _durable, at_millis| {
-                    let time = publication.bind_acceptance(state, at_millis)?;
+                    publication.bind_acceptance(state, at_millis)?;
                     let retained = self.provider.install_retained(state, self.retained)?;
                     publication.publish(
                         state,
                         &mut |items| self.provider.record_replay_probe(&mut self.probes, items),
                         self.key,
                         digest,
-                        time,
-                        retained,
+                        &Scope::Durable,
+                        Some(retained),
                     )
                 },
             }
-            .durable(&self.provider, state, persist.as_mut())
+            .durable(&self.provider, state, false, persist.as_mut())
             .await
         }
         .await;
         let _ = work.record(self.probes.record(16));
         work.release_write();
         result
+    }
+}
+
+fn durable_only(scope: Result<Scope, StreamError>) -> Result<(), StreamError> {
+    match scope? {
+        Scope::Durable => Ok(()),
+        Scope::Ephemeral(_) => Err(StreamError::InvalidArgument),
     }
 }
 

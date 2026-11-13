@@ -18,6 +18,10 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().durability_barrier().await
     }
+    async fn lease_ephemeral(&self, root: StreamPath) -> Result<EphemeralLease, StreamError> {
+        self.record(RequestClass::Metadata);
+        self.inner().lease_ephemeral(root).await
+    }
 
     async fn inspect_idempotency(
         &self,
