@@ -615,7 +615,7 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
                     path: "/control/pause".into(),
                 },
             ],
-            &crate::IdempotencyKey::unique(),
+            &crate::IdempotencyKey::new("invalid-title-resume")?,
         )
         .await?;
     runtime.drain_actor(&control).await?;
@@ -759,6 +759,138 @@ async fn goal_events_use_only_home_and_publish_bounded_utf8_changes() -> TestRes
             .ok_or("goal row removed")?
             .goal_preview
             .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn metadata_bootstrap_skips_history_and_rejoin_reads_current_files() -> TestResult {
+    use crate::{
+        agent::{SessionPublication, SessionRow},
+        client_files::{ClientFileChange, FileRoot},
+    };
+    use acyclic_stream::StreamProviderExt as _;
+    let routing = crate::agent::Routing {
+        paths: acyclic_actors::route::Paths::new(acyclic_stream::StreamPath::new("routing")?),
+        node: acyclic_actors::route::NodeId::new(b"node")?,
+    };
+    let (bound, root) = binding_with_metadata(Some(routing), true).await?;
+    let provider = bound.agents().provider();
+    let actor = bound.agents().actor(&root)?;
+    let path = SessionPublication::row_path(&actor)?;
+    for index in 0..64 {
+        let files = bound.agent_files(&root, &["ui/title".into()], None).await?;
+        let expected = files.files["ui/title"]
+            .as_ref()
+            .and_then(crate::client_files::ClientFile::original)
+            .cloned();
+        bound
+            .publish_agent_files(
+                &root,
+                OperationId::new(),
+                &[ClientFileChange {
+                    path: "ui/title".into(),
+                    expected,
+                    text: Some(format!("title {index}")),
+                }],
+            )
+            .await?;
+    }
+    let user = Sender::User {
+        principal: "owner".into(),
+    };
+    // The first delivery observes the latest choice, rather than reading files
+    // again for each superseded membership decision.
+    for (index, enabled) in [false, true, false, true].into_iter().enumerate() {
+        bound
+            .agents()
+            .set_peer_membership(
+                &root,
+                &user,
+                &IntentId::try_from(format!("choice-{index}"))?,
+                enabled,
+            )
+            .await?;
+    }
+    let before = provider.tail(path.clone()).await?;
+    let (mut runtime, control) = file_runtime(&bound, &root)?;
+    runtime.drain_actor(&control).await?;
+    let head = provider.head(path.clone()).await?;
+    assert_eq!(
+        head.tail,
+        before + 1,
+        "bootstrap replayed historical display values"
+    );
+    assert_eq!(
+        SessionRow::decode(&head.last.ok_or("metadata missing")?.value)?
+            .profile
+            .ok_or("metadata removed")?
+            .title,
+        "title 63"
+    );
+    let snapshot = crate::agent::actor_store(provider)?.load(&control).await?;
+    assert_eq!(
+        snapshot
+            .state()
+            .ok_or("companion missing")?
+            .cursor("session-membership"),
+        Some(provider.tail(root.peer_membership()?).await?),
+        "superseded choices remain queued"
+    );
+    bound
+        .agents()
+        .set_peer_membership(&root, &user, &IntentId::try_from("off")?, false)
+        .await?;
+    runtime.drain_actor(&control).await?;
+    let removed = provider.tail(path.clone()).await?;
+    for (file_root, file, text) in [
+        (FileRoot::Private {}, "ui/title", "edited while off"),
+        (FileRoot::Home {}, "GOAL.md", "new goal while off"),
+    ] {
+        let files = bound.files(&root, file_root, &[file.into()], None).await?;
+        let expected = files.files[file]
+            .as_ref()
+            .and_then(crate::client_files::ClientFile::original)
+            .cloned();
+        bound
+            .publish_files(
+                &root,
+                file_root,
+                OperationId::new(),
+                &[ClientFileChange {
+                    path: file.into(),
+                    expected,
+                    text: Some(text.into()),
+                }],
+            )
+            .await?;
+    }
+    runtime.drain_actor(&control).await?;
+    assert_eq!(
+        provider.tail(path.clone()).await?,
+        removed,
+        "files re-enabled a removed row"
+    );
+    bound
+        .agents()
+        .set_peer_membership(&root, &user, &IntentId::try_from("on")?, true)
+        .await?;
+    let rejoined = provider.tail(path.clone()).await?;
+    runtime.drain_actor(&control).await?;
+    let head = provider.head(path.clone()).await?;
+    assert_eq!(head.tail, rejoined + 1);
+    let profile = SessionRow::decode(&head.last.ok_or("metadata missing")?.value)?
+        .profile
+        .ok_or("metadata removed")?;
+    assert_eq!(profile.title, "edited while off");
+    assert_eq!(profile.goal_preview, "new goal while off");
+    drop(runtime);
+    let (runtime, _) = file_runtime(&bound, &root)?;
+    runtime.drain_actor(&control).await?;
+    assert_eq!(
+        provider.tail(path).await?,
+        head.tail,
+        "reopen repeated metadata publication"
     );
     Ok(())
 }

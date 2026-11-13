@@ -22,6 +22,7 @@ const CLOSED: &str = "file-closed";
 const JOBS: &str = "job-created";
 const TITLE: &str = "session-title";
 const GOAL: &str = "session-goal";
+const PEERS: &str = "session-membership";
 
 mod presence;
 
@@ -33,7 +34,8 @@ struct State {
     sources: crate::agent::WorkspaceTable,
     steer: Option<crate::resources::GenerationRef>,
     source_sequence: Option<u64>,
-    home_sequence: Option<u64>,
+    metadata_private_from: Option<u64>,
+    metadata_home_from: Option<u64>,
     paused: bool,
 }
 
@@ -73,7 +75,7 @@ impl State {
 fn codec() -> CodecIdentity {
     CodecIdentity {
         name: "harness.file-controls".into(),
-        version: "6".into(),
+        version: "7".into(),
     }
 }
 fn guest(error: impl std::fmt::Display) -> GuestError {
@@ -110,6 +112,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             JOBS,
             TITLE,
             GOAL,
+            PEERS,
             super::quiet::ACTIVITY,
             super::quiet::COMPLETED,
             super::quiet::LIFECYCLE,
@@ -197,7 +200,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .ok_or(Error::Record("control checkpoint codec"))?;
         let mut state: State = serde_json::from_slice(&checkpoint.bytes)
             .map_err(|_| Error::Record("control checkpoint"))?;
-        if state.version != 6 || self.actor(&delivery.actor, &state.agent)? != delivery.actor {
+        if state.version != 7 || self.actor(&delivery.actor, &state.agent)? != delivery.actor {
             return Err(Error::Record("control checkpoint identity"));
         }
         let (subscription, sequence) = delivery
@@ -234,6 +237,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                 record,
             )?);
             return state.transition(effects, false);
+        }
+        if subscription == PEERS {
+            return self.membership_transition(&delivery, state).await;
         }
         let mut retired = subscription == CLOSED;
         if !retired {
@@ -277,7 +283,9 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             let through = if private_source {
                 state.source_sequence
             } else {
-                state.home_sequence
+                state
+                    .metadata_home_from
+                    .and_then(|from| from.checked_sub(1))
             };
             if through.is_none_or(|through| sequence > through) {
                 let bindings = if private_source {
@@ -304,7 +312,14 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         .binary_search_by(|key| key.as_ref().cmp(path))
                         .is_ok()
                 };
-                if changed(b"ui/title") || changed(b"GOAL.md") {
+                let metadata_from = if private_source {
+                    state.metadata_private_from
+                } else {
+                    state.metadata_home_from
+                };
+                if metadata_from.is_some_and(|from| sequence >= from)
+                    && (changed(b"ui/title") || changed(b"GOAL.md"))
+                {
                     effects.extend(
                         self.metadata_effects(
                             &delivery,
@@ -316,6 +331,16 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         )
                         .await?,
                     );
+                    let next = Some(
+                        sequence
+                            .checked_add(1)
+                            .ok_or(Error::Record("metadata source cursor overflow"))?,
+                    );
+                    if private_source {
+                        state.metadata_private_from = next;
+                    } else {
+                        state.metadata_home_from = next;
+                    }
                     if !private_source
                         || ![
                             b"control/pause".as_slice(),
@@ -327,11 +352,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     {
                         if private_source {
                             state.source_sequence = Some(sequence);
-                        } else {
-                            state.home_sequence = Some(sequence);
                         }
                         return state.transition(effects, false);
                     }
+                }
+                if !private_source {
+                    return state.transition(effects, false);
                 }
                 let mut present = [false; 2];
                 for (index, path) in ["control/pause", "control/stop"].into_iter().enumerate() {
@@ -691,7 +717,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
         let source = self.source(private.volume()?).map_err(turn)?;
         let actor = self.actor(within, agent)?;
         let state = State {
-            version: 6,
+            version: 7,
             agent: agent.clone(),
             sources: crate::agent::WorkspaceTable::new(
                 volumes
@@ -707,59 +733,46 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
             )?,
             steer: Default::default(),
             source_sequence: None,
-            home_sequence: None,
+            metadata_private_from: None,
+            metadata_home_from: None,
             paused: false,
         };
         let metadata = (agent.depth() == 0 && self.routing.is_some())
-            .then_some([TITLE])
+            .then_some([(PEERS, agent.peer_membership()?)])
             .into_iter()
             .flatten();
-        let mut subscriptions: std::collections::BTreeMap<String, Subscription> =
-            [PAUSE, STOP, STEER]
-                .into_iter()
-                .chain(metadata)
-                .map(|id| {
-                    (
-                        id.into(),
-                        Subscription {
-                            path: source.clone(),
-                            cursor: 0,
-                            paused: false,
-                        },
-                    )
-                })
-                .chain([
-                    (
-                        CLOSED.into(),
-                        Subscription {
-                            path: agent.closed()?,
-                            cursor: 0,
-                            paused: false,
-                        },
-                    ),
-                    (
-                        JOBS.into(),
-                        Subscription {
-                            path: crate::supervision::tool_jobs::path(agent).map_err(turn)?,
-                            cursor: 0,
-                            paused: false,
-                        },
-                    ),
-                ])
-                .collect();
-        if agent.depth() == 0
-            && self.routing.is_some()
-            && let Some(home) = State::home(&state.sources)
-        {
-            subscriptions.insert(
-                GOAL.into(),
-                Subscription {
-                    path: self.source(home.volume()?).map_err(turn)?,
-                    cursor: 0,
-                    paused: false,
-                },
-            );
-        }
+        let subscriptions: std::collections::BTreeMap<String, Subscription> = [PAUSE, STOP, STEER]
+            .into_iter()
+            .map(|id| {
+                (
+                    id.into(),
+                    Subscription {
+                        path: source.clone(),
+                        cursor: 0,
+                        paused: false,
+                    },
+                )
+            })
+            .chain(metadata.map(|(id, path)| (id.into(), Subscription { path, cursor: 0 })))
+            .chain([
+                (
+                    CLOSED.into(),
+                    Subscription {
+                        path: agent.closed()?,
+                        cursor: 0,
+                        paused: false,
+                    },
+                ),
+                (
+                    JOBS.into(),
+                    Subscription {
+                        path: crate::supervision::tool_jobs::path(agent).map_err(turn)?,
+                        cursor: 0,
+                        paused: false,
+                    },
+                ),
+            ])
+            .collect();
         Ok(vec![
             self.store
                 .create(
