@@ -78,12 +78,14 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
     outs: &[super::Out],
     retired: Option<super::BoundaryCut>,
     conversation: u64,
+    routing: Option<(&super::Routing, &acyclic_actors::addressing::ActorReference)>,
     request: &mut acyclic_stream::CommitRequest,
 ) -> Result<bool, Error> {
     let mut completed = std::collections::BTreeSet::new();
     let mut records = Vec::new();
     let mut ranges = Vec::new();
     let mut fence = None;
+    let mut results = Vec::new();
     if let Some(retired) = retired {
         ranges.push(retired);
     }
@@ -93,9 +95,16 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             conversation,
         } = out
         {
-            let source = super::reply::inbox_record(provider, agent.inbox()?, *input)
+            let record = super::reply::source_record(provider, agent.inbox()?, *input)
                 .await?
                 .ok_or(Error::Record("cancelled input is unavailable"))?;
+            let source = super::InboxRecord::decode(&record.value)?;
+            if let Some((routing, within)) = routing
+                && let Some(result) =
+                    super::routing::notices::cancelled(routing, within, agent, &source, &record)?
+            {
+                results.push(result);
+            }
             if let Some(input) = super::input::input(*input, source)
                 && let Some(run) = super::goal::continuing(agent, &input.input)
             {
@@ -197,7 +206,7 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
             .collect::<Result<Vec<_>, Error>>()?;
         records.extend(completions);
     }
-    if !records.is_empty() {
+    if !records.is_empty() || !results.is_empty() {
         let index = request
             .effects
             .iter()
@@ -211,6 +220,26 @@ pub(super) async fn complete<P: acyclic_stream::StreamProvider + ?Sized>(
         let effect = &mut request.effects[index];
         if let Some(condition) = &fence {
             effect.conditions.push(condition.clone());
+        }
+        if !results.is_empty()
+            && let Some((routing, _)) = routing
+        {
+            let path = routing.paths.outbox(&routing.node).map_err(Error::Stream)?;
+            if let Some(acyclic_stream::CommitMutation::Append { records, .. }) = effect
+                .mutations
+                .iter_mut()
+                .find(|mutation| matches!(mutation, acyclic_stream::CommitMutation::Append {path: candidate, ..} if candidate == &path))
+            {
+                records.extend(results);
+            } else {
+                effect.mutations.push(acyclic_stream::CommitMutation::Append {
+                    path,
+                    records: results,
+                });
+            }
+        }
+        if records.is_empty() {
+            return Ok(fence.is_some());
         }
         let path = input_events(agent)?;
         if let Some(acyclic_stream::CommitMutation::Append { records: original, .. }) = effect.mutations.iter_mut()

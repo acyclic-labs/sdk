@@ -196,6 +196,18 @@ pub(super) async fn inbox_record<P: acyclic_stream::StreamProvider + ?Sized>(
     path: StreamPath,
     sequence: u64,
 ) -> Result<Option<InboxRecord>, Error> {
+    source_record(provider, path, sequence)
+        .await?
+        .map(|record| InboxRecord::decode(&record.value))
+        .transpose()
+}
+
+/// Preserve host provenance when the caller also publishes an input's terminal.
+pub(super) async fn source_record<P: acyclic_stream::StreamProvider + ?Sized>(
+    provider: &P,
+    path: StreamPath,
+    sequence: u64,
+) -> Result<Option<acyclic_stream::Record>, Error> {
     let mut records = match provider
         .read(ReadRequest {
             key: None,
@@ -212,13 +224,11 @@ pub(super) async fn inbox_record<P: acyclic_stream::StreamProvider + ?Sized>(
         }
         Err(error) => return Err(Error::Stream(error)),
     };
-    records
+    Ok(records
         .try_next()
         .await
         .map_err(Error::Stream)?
-        .filter(|record| record.sequence == sequence)
-        .map(|record| InboxRecord::decode(&record.value))
-        .transpose()
+        .filter(|record| record.sequence == sequence))
 }
 
 /// Committed conversation entry `sequence`.

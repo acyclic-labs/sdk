@@ -30,6 +30,22 @@ fn key(sender: &AgentPath, id: &IntentId) -> Result<Vec<u8>, Error> {
 }
 
 impl ResultRecord {
+    fn envelope(
+        &self,
+        node: route::NodeId,
+        sender: acyclic_actors::addressing::ActorReference,
+        to: acyclic_actors::addressing::ActorReference,
+        target: &AgentPath,
+        receipt: &route::RelayReceipt,
+    ) -> Result<route::Envelope, Error> {
+        Ok(route::Envelope {
+            source: node,
+            sender,
+            to,
+            request: self.request(target, receipt)?,
+        })
+    }
+
     fn request(
         &self,
         target: &AgentPath,
@@ -109,13 +125,64 @@ impl PeerRoute<'_> {
             peer: self.recipient.clone(),
             status,
         };
-        Ok(route::Envelope {
-            source: node,
-            sender: self.envelope.to.clone(),
-            to: self.envelope.sender.clone(),
-            request: result.request(&self.sender, receipt)?,
-        })
+        result.envelope(
+            node,
+            self.envelope.to.clone(),
+            self.envelope.sender.clone(),
+            &self.sender,
+            receipt,
+        )
     }
+}
+
+/// A cancelled accepted input already has its immutable source in hand. Return
+/// only a routed peer's terminal, never traffic for ordinary local inputs.
+pub(in crate::agent) fn cancelled(
+    routing: &super::Routing,
+    within: &acyclic_actors::addressing::ActorReference,
+    agent: &AgentPath,
+    source: &InboxRecord,
+    record: &acyclic_stream::Record,
+) -> Result<Option<AppendRecord>, Error> {
+    let (InboxRecord::Message(message) | InboxRecord::FollowUp(message)) = source else {
+        return Ok(None);
+    };
+    let Sender::Agent { path: sender } = &message.from else {
+        return Ok(None);
+    };
+    if agent.depth() != 0
+        || sender.depth() != 0
+        || sender == agent
+        || record.origin != agent.inbox()?
+    {
+        return Ok(None);
+    }
+    let Some(receipt) = route::RelayReceipt::from_headers(&record.headers).map_err(super::error)?
+    else {
+        return Ok(None);
+    };
+    let actor = |path: &AgentPath| {
+        crate::agent::handler::Agents::<dyn crate::store::JournalProvider>::actor(
+            within,
+            &path.id(),
+        )
+    };
+    Ok(Some(
+        ResultRecord {
+            version: 1,
+            id: message.id.clone(),
+            peer: agent.clone(),
+            status: SentReplyStatus::Dropped,
+        }
+        .envelope(
+            routing.node.clone(),
+            actor(agent)?,
+            actor(sender)?,
+            sender,
+            &receipt,
+        )?
+        .outbox_record(),
+    ))
 }
 
 /// Host-result data validation; this does not confer a peer or node grant.

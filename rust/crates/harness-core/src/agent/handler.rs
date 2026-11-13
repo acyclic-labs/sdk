@@ -994,6 +994,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             &step.outs,
             retired,
             step.state.conversation_tail,
+            self.agents
+                .routing
+                .as_ref()
+                .map(|routing| (routing, &delivery.actor)),
             &mut request,
         )
         .await?;

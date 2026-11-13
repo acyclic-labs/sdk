@@ -1073,8 +1073,16 @@ async fn unrelated_turn_completion_preserves_a_queued_cancellation()
         )],
         idempotency_key: crate::agent::intent_key("complete-first", &[])?,
     };
-    crate::agent::cancellation::complete(provider.as_ref(), &path, &outs, None, 1, &mut completed)
-        .await?;
+    crate::agent::cancellation::complete(
+        provider.as_ref(),
+        &path,
+        &outs,
+        None,
+        1,
+        None,
+        &mut completed,
+    )
+    .await?;
     crate::agent::submit(provider.as_ref(), completed).await?;
     crate::agent::submit(provider.as_ref(), pending_cancel).await?;
     assert_eq!(
@@ -1385,6 +1393,7 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
             &stopped.outs,
             retired,
             stopped.state.conversation_tail,
+            None,
             &mut publication,
         )
         .await?;
@@ -1418,6 +1427,7 @@ async fn cancelling_a_goal_continuation_closes_only_its_run_without_an_entry()
                 &stopped.outs,
                 retired,
                 stopped.state.conversation_tail,
+                None,
                 &mut publication,
             )
             .await?;

@@ -206,16 +206,22 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
     impl TurnDriver for Recipient {
         fn step<'a>(
             &'a self,
-            _: &'a AgentState,
+            state: &'a AgentState,
             _: u64,
-            _: Option<Queued>,
+            input: Option<Queued>,
             _: acyclic_actors::guest::CancellationToken,
         ) -> TurnFuture<'a> {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async {
+            Box::pin(async move {
                 Ok(TurnStep {
                     checkpoint: None,
-                    outs: Vec::new(),
+                    outs: input
+                        .into_iter()
+                        .map(|input| Out::InputCancelled {
+                            input: input.inbox,
+                            conversation: state.conversation_tail,
+                        })
+                        .collect(),
                     wait: Wait::Input,
                     drops: None,
                 })
@@ -230,12 +236,22 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             let recipient = AgentPath::root(&id(61));
             let within = ActorReference::new(b"account", b"agents", b"owner")?;
             let calls = Arc::new(AtomicUsize::new(0));
-            let host = AgentHost::new(
-                destination.clone(),
+            let receiving = Routing {
+                paths: Paths::new(StreamPath::new("routing")?),
+                node: NodeId::new(b"recipient-node")?,
+            };
+            let handler = AgentHandler::new(
+                actor_store(&destination)?,
                 Recipient(calls.clone()),
-                within.clone(),
                 ActorLimits::default(),
+            )?
+            .with_routing(receiving.clone());
+            let host = AgentHost::hosting(
+                destination.clone(),
+                within.clone(),
+                Arc::new(handler),
                 Arc::new(SystemClock),
+                None,
             )?;
             host.create(&intent("recipient"), adopted(recipient.id()))
                 .await?;
@@ -310,10 +326,6 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             };
             drop(account);
             let peer = PeerRoute::parse(&envelope)?;
-            let receiving = Routing {
-                paths: routing.paths.clone(),
-                node: recipient_node,
-            };
             if opt_out_before_delivery {
                 host.set_peer_membership(&recipient, &user(), &intent("off"), false)
                     .await?;
@@ -397,6 +409,65 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 calls.load(Ordering::SeqCst),
                 usize::from(!opt_out_before_delivery)
             );
+            assert_eq!(
+                destination
+                    .tail(receiving.paths.outbox(&receiving.node)?)
+                    .await?,
+                1
+            );
+            let terminal = destination
+                .record_at(receiving.paths.outbox(&receiving.node)?, 0)
+                .await?
+                .ok_or("terminal Notice missing")?;
+            assert_eq!(
+                route::Publication::decode(&terminal.value)?.delivery()?,
+                peer.result(receiving.node.clone(), &receipt, SentReplyStatus::Dropped)?,
+            );
+            if !opt_out_before_delivery {
+                let cancelled = destination
+                    .head(StreamPath::new(format!(
+                        "{recipient}/context/input-events"
+                    ))?)
+                    .await?;
+                assert_eq!(
+                    cancelled.last.ok_or("cancellation fact missing")?.commit_id,
+                    terminal.commit_id,
+                    "the terminal Notice must join the original input cancellation"
+                );
+                host.drain(&recipient).await?;
+                assert_eq!(
+                    destination
+                        .tail(receiving.paths.outbox(&receiving.node)?)
+                        .await?,
+                    1,
+                    "replaying an idle actor must not publish another terminal"
+                );
+                let local_peer = AgentPath::root(&id(62));
+                host.create(&intent("local-peer"), adopted(local_peer.id()))
+                    .await?;
+                for (name, from) in [
+                    ("ordinary-user", user()),
+                    ("ordinary-peer", Sender::Agent { path: local_peer }),
+                ] {
+                    let message = InboxRecord::Message(Message {
+                        from: from.clone(),
+                        id: intent(name),
+                        re: None,
+                        body: Box::new(super::driver::file("ordinary.md")?),
+                        attachments: None,
+                    });
+                    host.deliver(&recipient, send(&recipient, &from, &message)?)
+                        .await?;
+                    host.drain(&recipient).await?;
+                    assert_eq!(
+                        destination
+                            .tail(receiving.paths.outbox(&receiving.node)?)
+                            .await?,
+                        1,
+                        "ordinary user and same-node peer inputs must not emit routed results"
+                    );
+                }
+            }
             assert!(
                 matches!(
                     destination.tail(sender.peer_membership()?).await,
