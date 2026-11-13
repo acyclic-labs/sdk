@@ -265,7 +265,7 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
             vec![AuthoredMutation::CreateFile {
                 file_id: None,
                 path: root
-                    .namespace_path("/new.txt", accounting!())
+                    .namespace_path("/file.txt", accounting!())
                     .unwrap()
                     .value,
                 bytes: acyclic_stream::OwnedBytes::from_static(b"dirty"),
@@ -280,6 +280,15 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
         .list_directory_in_checkout(&mut checkout, "/", None, 16, None, accounting!())
         .await
         .unwrap();
+    assert_eq!(source.examined, 1);
+    assert!(
+        source.entries.is_empty(),
+        "authored replacement shadows the source name"
+    );
+    assert!(
+        source.next.is_some(),
+        "empty source page must preserve authored progress"
+    );
     let (authored, _, _) = root
         .list_directory_in_checkout(&mut checkout, "/", source.next, 16, None, accounting!())
         .await
@@ -288,11 +297,15 @@ async fn mounted_listing_includes_dirty_authored_bindings() {
         authored
             .entries
             .iter()
-            .any(|e| e.authored && e.name.as_bytes() == b"new.txt")
+            .any(|e| e.authored && e.name.as_bytes() == b"file.txt")
     );
     assert!(
         root.workspace()
-            .stat("/new.txt", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .stat(
+                "/file.txt",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
             .await
             .is_err()
     );
