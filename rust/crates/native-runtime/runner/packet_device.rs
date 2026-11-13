@@ -190,10 +190,7 @@ impl Session {
         )?;
         self.interest(queue)?;
         // Acceptance proves that this host owns all three original handles.
-        if sys::write(self.control, &sys::getpid().to_ne_bytes())? != 4 {
-            return Err(Errno(sys::EPIPE));
-        }
-        Ok(())
+        write_control(self.control, &sys::getpid().to_ne_bytes())
     }
 
     fn command(&mut self, queue: Fd) -> Result<(), Errno> {
@@ -271,10 +268,7 @@ impl Session {
             Ok(()) => 0,
             Err(Errno(error)) => -error,
         };
-        if sys::write(self.control, &status.to_ne_bytes())? != 4 {
-            return Err(Errno(sys::EPIPE));
-        }
-        Ok(())
+        write_control(self.control, &status.to_ne_bytes())
     }
     fn helper_ready(&mut self, queue: Fd) -> Result<(), Errno> {
         let mut body = [0; 5];
@@ -293,10 +287,7 @@ impl Session {
         self.mounted = true;
         sys::nonblocking(self.device)?;
         self.interest(queue)?;
-        if sys::write(self.control, &0_i32.to_ne_bytes())? != 4 {
-            return Err(Errno(sys::EPIPE));
-        }
-        Ok(())
+        write_control(self.control, &0_i32.to_ne_bytes())
     }
     fn progress(&mut self) -> Result<(), Errno> {
         let protocol = self.protocol.as_ref().ok_or(Errno(sys::EINVAL))?;
@@ -482,10 +473,7 @@ impl Session {
                 response[4..].copy_from_slice(&flags.to_ne_bytes());
             }
         }
-        if sys::write(self.control, &response)? != response.len() {
-            return Err(Errno(sys::EPIPE));
-        }
-        Ok(())
+        write_control(self.control, &response)
     }
     fn close(&mut self, queue: Fd) {
         self.active = false;
@@ -712,7 +700,21 @@ pub(super) fn serve(listener: Fd) -> Result<(), Errno> {
 
 fn send_receipt(control: Fd, receipt: Receipt) -> Result<(), Errno> {
     let bytes: [u8; Receipt::SIZE] = receipt.try_into().map_err(|()| Errno(sys::EINVAL))?;
-    if sys::write(control, &bytes)? != bytes.len() {
+    write_control(control, &bytes)
+}
+
+fn write_control(control: Fd, bytes: &[u8]) -> Result<(), Errno> {
+    // Publication state has already been consumed. EAGAIN cannot be treated
+    // as an unfinished read by the event loop: losing this receipt must close
+    // the session and wake its owner rather than wait forever for another one.
+    let written = sys::write(control, bytes).map_err(|error| {
+        if error.0 == sys::EAGAIN {
+            Errno(sys::EPIPE)
+        } else {
+            error
+        }
+    })?;
+    if written != bytes.len() {
         return Err(Errno(sys::EPIPE));
     }
     Ok(())

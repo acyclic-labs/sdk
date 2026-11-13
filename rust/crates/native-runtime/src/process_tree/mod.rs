@@ -97,7 +97,7 @@ mod release;
 #[cfg(target_os = "linux")]
 mod runner;
 #[cfg(target_os = "linux")]
-pub use packet_device::{PacketDevice, PacketDeviceRetirement};
+pub use packet_device::{PacketDevice, PacketDevicePublication, PacketDeviceRetirement};
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 mod packet_device_reply;
 #[cfg(all(target_os = "linux", feature = "test-support"))]

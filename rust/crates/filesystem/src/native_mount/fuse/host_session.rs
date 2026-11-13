@@ -268,10 +268,20 @@ impl<'a> PendingReply<'a> {
     }
 
     fn publish(&mut self, slices: &[std::io::IoSlice<'_>]) -> std::io::Result<()> {
-        // A failed/short write has uncertain delivery. Do not send a second
-        // reply: end the connection instead, before any worker join can wait.
+        // ENOENT confirms that this request is already gone (for example,
+        // interrupted). It completes this obligation without disconnecting
+        // unrelated requests. Other failures do not certify request retirement.
         self.unique = None;
-        self.io.publish(slices).inspect_err(|_| self.abort())
+        self.io
+            .publish_packet(slices)
+            .and_then(|outcome| match outcome {
+                acyclic_native_runtime::PacketDevicePublication::Published
+                | acyclic_native_runtime::PacketDevicePublication::Rejected(libc::ENOENT) => Ok(()),
+                acyclic_native_runtime::PacketDevicePublication::Rejected(errno) => {
+                    Err(std::io::Error::from_raw_os_error(errno))
+                }
+            })
+            .inspect_err(|_| self.abort())
     }
 
     fn abort(&self) {
@@ -292,6 +302,36 @@ impl Drop for PendingReply<'_> {
             error[8..].copy_from_slice(&unique.to_ne_bytes());
             let _ = self.publish(&[std::io::IoSlice::new(&error)]);
         }
+    }
+}
+
+/// Exercise the real pending-reply publisher with a kernel-expired identity.
+#[cfg(test)]
+pub(super) fn publish_expired_reply_for_test(io: &HostIo, old_abort: bool) -> std::io::Result<()> {
+    let request = PacketRequest {
+        opcode: 3,
+        unique: u64::MAX,
+        inode: ROOT_INODE,
+        owner: (0, 0),
+        body: &[],
+    };
+    let mut pending = PendingReply::new(io, io.connection.get(), &request);
+    let mut reply = [0; super::packet::OUTPUT_HEADER];
+    acyclic_native_runtime::fuse_protocol::reply_header(
+        &mut reply,
+        super::packet::OUTPUT_HEADER,
+        request.unique,
+        Some(libc::EIO),
+    )
+    .map_err(std::io::Error::from_raw_os_error)?;
+    let slices = [std::io::IoSlice::new(&reply)];
+    if old_abort {
+        // Exact former policy: a confirmed device rejection is flattened to
+        // an I/O error, aborts the connection, and escapes to worker teardown.
+        pending.unique = None;
+        io.publish(&slices).inspect_err(|_| pending.abort())
+    } else {
+        pending.publish(&slices)
     }
 }
 

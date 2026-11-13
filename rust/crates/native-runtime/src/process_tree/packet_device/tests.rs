@@ -3,6 +3,8 @@
 use super::*;
 use std::sync::mpsc::sync_channel;
 
+mod wire;
+
 const CASE: &str = "ACYCLIC_MOUNT_HOST_ADMISSION_PROOF";
 const TEST: &str = "process_tree::packet_device::tests::concurrent_admission_survives_startup_and_last_owner_retirement";
 
@@ -40,7 +42,7 @@ fn exited(event: &OwnedFd, timeout: i32) -> io::Result<bool> {
 fn concurrent_admission_survives_startup_and_last_owner_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os(CASE).is_some_and(|case| case == "foreign-env") {
-        let refused = admissions()?.into_iter().any(|admission| {
+        let refused = admissions()?.into_iter().all(|admission| {
             admission
                 .lock
                 .try_lock(crate::FileLockMode::Exclusive)

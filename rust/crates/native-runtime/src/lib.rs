@@ -85,7 +85,8 @@ pub use process_tree::{
 };
 #[cfg(target_os = "linux")]
 pub use process_tree::{
-    ChildExitWatch, PacketDevice, PacketDeviceRetirement, ProcessExitAction, wait_child_until,
+    ChildExitWatch, PacketDevice, PacketDevicePublication, PacketDeviceRetirement,
+    ProcessExitAction, wait_child_until,
 };
 #[cfg(unix)]
 pub use process_tree::{DescriptorInterest, DescriptorReadiness, descriptor_readiness};

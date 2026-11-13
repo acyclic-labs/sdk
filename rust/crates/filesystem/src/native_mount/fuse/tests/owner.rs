@@ -87,6 +87,39 @@ fn missing_cached_inode_reports_errno_and_keeps_the_mount_live()
     Ok(())
 }
 
+#[test]
+fn expired_pending_reply_keeps_unrelated_requests_live() -> Result<(), Box<dyn std::error::Error>> {
+    if acyclic_native_runtime::private_file::with_isolated_user_runtime(
+        "native_mount::fuse::tests::owner::expired_pending_reply_keeps_unrelated_requests_live",
+    )? {
+        return Ok(());
+    }
+    crate::initialize_native_mount_services()?;
+    for old_abort in [false, true] {
+        let (source, _) = shared_sources(posix_config())?;
+        let volume = source.volume_id()?;
+        let root = tempfile::tempdir()?;
+        let mut session = mount(Arc::new(source), volume, root.path())?;
+        let io = transport(&session);
+        assert!(
+            io.connection.get().is_some(),
+            "negative control needs actual abort custody"
+        );
+        let outcome = super::super::host_session::publish_expired_reply_for_test(&io, old_abort);
+        let path = root.path().join("after-expired-reply");
+        if old_abort {
+            assert_eq!(outcome.unwrap_err().raw_os_error(), Some(libc::ENOENT));
+            assert!(std::fs::write(&path, b"must be disconnected").is_err());
+        } else {
+            outcome?;
+            std::fs::write(&path, b"independent request")?;
+            assert_eq!(std::fs::read(path)?, b"independent request");
+        }
+        assert!(session.stop()?);
+    }
+    Ok(())
+}
+
 const OWNER_CASE: &str = "ACYCLIC_FUSE_OWNER_DEATH_CASE";
 const OWNER_ROOT: &str = "ACYCLIC_FUSE_OWNER_DEATH_ROOT";
 const OWNER_TEST: &str =

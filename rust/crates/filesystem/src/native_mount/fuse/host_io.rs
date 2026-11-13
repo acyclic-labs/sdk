@@ -2,7 +2,7 @@
 
 use super::notification::PacketSink;
 use super::transport_io::{self, Ready};
-use acyclic_native_runtime::{PacketDeviceRetirement, ProcessWake};
+use acyclic_native_runtime::{PacketDevicePublication, PacketDeviceRetirement, ProcessWake};
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
@@ -254,10 +254,10 @@ impl HostIo {
             })
     }
 
-    fn publication(&self) -> io::Result<()> {
+    fn publication(&self) -> io::Result<PacketDevicePublication> {
         #[cfg(test)]
         if SOCKET_COMPLETION.get() {
-            return Ok(());
+            return Ok(PacketDevicePublication::Published);
         }
         let custody = self.custody.read().unwrap_or_else(PoisonError::into_inner);
         if let Some((custody, _)) = custody.as_ref() {
@@ -269,7 +269,7 @@ impl HostIo {
         } else if self.framed {
             Err(io::Error::from_raw_os_error(libc::ENODEV))
         } else {
-            Ok(())
+            Ok(PacketDevicePublication::Published)
         }
     }
 
@@ -359,8 +359,13 @@ impl HostIo {
     }
 }
 
-impl PacketSink for HostIo {
-    fn publish(&self, packet: &[IoSlice<'_>]) -> io::Result<()> {
+impl HostIo {
+    /// Only transport loss is an error here. A physical rejection completes
+    /// the original publication obligation without closing other requests.
+    pub(super) fn publish_packet(
+        &self,
+        packet: &[IoSlice<'_>],
+    ) -> io::Result<PacketDevicePublication> {
         // Stream writes may split a frame; retain its one publication claim
         // until every slice is sent, without interleaving another response.
         let _publication = self
@@ -420,6 +425,15 @@ impl PacketSink for HostIo {
                 }
                 Err(error) => return Err(error),
             }
+        }
+    }
+}
+
+impl PacketSink for HostIo {
+    fn publish(&self, packet: &[IoSlice<'_>]) -> io::Result<()> {
+        match self.publish_packet(packet)? {
+            PacketDevicePublication::Published => Ok(()),
+            PacketDevicePublication::Rejected(errno) => Err(io::Error::from_raw_os_error(errno)),
         }
     }
 }

@@ -123,10 +123,7 @@ impl PacketDevice {
         let mut status = [0; 4];
         (&self.retirement.control).read_exact(&mut status)?;
         let status = i32::from_ne_bytes(status);
-        if status != 0 {
-            return Err(io::Error::from_raw_os_error(-status));
-        }
-        Ok(())
+        operation_status(status)
     }
     /// Original mount-free thread identity for real process-death proofs.
     #[cfg(feature = "test-support")]
@@ -149,6 +146,16 @@ pub struct PacketDeviceRetirement {
     control: UnixStream,
     retired: AtomicBool,
     host: u32,
+}
+
+/// An acknowledged physical device-write outcome, distinct from transport loss.
+/// A rejected frame published no bytes and does not retire its connection.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PacketDevicePublication {
+    /// The complete frame reached the physical device.
+    Published,
+    /// The device rejected the complete frame with this original errno.
+    Rejected(i32),
 }
 
 impl PacketDeviceRetirement {
@@ -190,21 +197,17 @@ impl PacketDeviceRetirement {
                 crate::fuse_protocol::Error::UnsupportedCapabilities(missing),
             ));
         }
-        match status {
-            0 => Ok(()),
-            status if status < 0 => Err(io::Error::from_raw_os_error(-status)),
-            _ => Err(io::ErrorKind::InvalidData.into()),
-        }
+        operation_status(status)
     }
 
     /// Joins one physical reply publication. Callers retain the original
     /// payload and work until this receipt, not merely until socket acceptance.
-    pub fn publication(&self) -> io::Result<()> {
+    pub fn publication(&self) -> io::Result<PacketDevicePublication> {
         let mut receipt = [0; Receipt::SIZE];
         (&self.control).read_exact(&mut receipt)?;
         match Receipt::try_from(receipt).map_err(|()| io::ErrorKind::InvalidData)? {
-            Receipt::Published => Ok(()),
-            Receipt::Rejected(errno) => Err(io::Error::from_raw_os_error(errno)),
+            Receipt::Published => Ok(PacketDevicePublication::Published),
+            Receipt::Rejected(errno) => Ok(PacketDevicePublication::Rejected(errno)),
             Receipt::Retired => {
                 self.retired.store(true, Ordering::Release);
                 Err(io::Error::from_raw_os_error(libc::ENODEV))
@@ -248,6 +251,14 @@ impl Drop for PacketDeviceRetirement {
         if let Err(error) = self.retire() {
             tracing::error!(%error, "packet device retirement failed");
         }
+    }
+}
+
+fn operation_status(status: i32) -> io::Result<()> {
+    match status.checked_neg() {
+        Some(0) => Ok(()),
+        Some(errno) if errno > 0 => Err(io::Error::from_raw_os_error(errno)),
+        _ => Err(io::ErrorKind::InvalidData.into()),
     }
 }
 

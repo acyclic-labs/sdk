@@ -92,9 +92,10 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     sys::exit(127)
 }
 
-/// Keeps the control socket, received on standard input, and the null
-/// device as the standard streams; closes everything else inherited. A
-/// write to a reply its owner abandoned must not end the runner.
+/// Keeps the control socket received on stdin. Packet-host mode also keeps
+/// the admission lock and event queue on fds 4/5 and closes standard streams;
+/// process-runner mode retains its null standard streams. Close other inherited
+/// descriptors. An abandoned reply must not terminate the runner via SIGPIPE.
 fn prepare() -> Result<(), Errno> {
     sys::dup_onto(0, CONTROL, true)?;
     if sys::is_listener(CONTROL).unwrap_or(false) {
