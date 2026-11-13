@@ -181,6 +181,7 @@ impl LocalWorkspace {
         let mut mounts = mounts::owner(
             path,
             (
+                primary.view.entry,
                 &primary.view.name,
                 &primary.view.volume,
                 &primary.view.root,
@@ -192,6 +193,7 @@ impl LocalWorkspace {
                 .filter(|(relative, _)| !relative.is_empty())
                 .map(|(_, mount)| {
                     (
+                        mount.view.entry,
                         mount.view.name.clone(),
                         mount.view.volume.clone(),
                         mount.view.root.clone(),
@@ -274,7 +276,14 @@ impl LocalWorkspace {
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
-            (&primary.name, project, &primary.root, primary.mode, None),
+            (
+                primary.id,
+                &primary.name,
+                project,
+                &primary.root,
+                primary.mode,
+                None,
+            ),
             mounts::auxiliary(bindings).map(|(entry, volume)| {
                 let source = self
                     .mounts
@@ -286,6 +295,7 @@ impl LocalWorkspace {
                     })
                     .and_then(|(_, mount)| mount.view.source.clone());
                 (
+                    entry.id,
                     entry.name.clone(),
                     volume.clone(),
                     entry.root.clone(),
@@ -521,6 +531,12 @@ pub(super) async fn open(
     let mut mounts = mounts::owner(
         &path,
         (
+            crate::agent::WorkspaceEntry::initial_volume(
+                crate::agent::WorkspaceRole::User,
+                "project".into(),
+                volume.clone(),
+            )
+            .id,
             "project",
             volume,
             "",
@@ -529,6 +545,16 @@ pub(super) async fn open(
         ),
         attach.auxiliary().map(|(name, volume)| {
             (
+                crate::agent::WorkspaceEntry::initial_volume(
+                    if name == crate::filesystem::HOME_VOLUME {
+                        crate::agent::WorkspaceRole::Home
+                    } else {
+                        crate::agent::WorkspaceRole::Shared
+                    },
+                    name.into(),
+                    volume.clone(),
+                )
+                .id,
                 name.into(),
                 volume.clone(),
                 String::new(),

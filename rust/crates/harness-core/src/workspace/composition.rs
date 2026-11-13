@@ -12,7 +12,9 @@ use std::{
 
 /// Host-selected published view. `source` remains unopened during composition.
 pub struct VolumeView<T> {
-    /// Stable lineage name, also used by `fs --volume`.
+    /// Stable slot identity from the admitted workspace table; never authority.
+    pub entry: crate::agent::EntryId,
+    /// Current model-visible binding label; the entry identity survives rename.
     pub name: String,
     /// Host-authenticated agent reference owning this fork.
     pub agent: String,
@@ -197,9 +199,27 @@ pub struct MountTable<T> {
     // with the namespace; neither identity lookup nor iteration copies a path.
     mounted: Vec<(Arc<str>, Mount<T>)>,
     volumes: std::collections::HashMap<[u8; 32], Vec<usize>>,
+    slots: std::collections::HashMap<crate::agent::EntryId, Option<usize>>,
 }
 
 impl<T> MountTable<T> {
+    /// The admitted task's stable table slot, independent of names and sources.
+    /// A foreign task's view cannot shadow a slot in this task's table.
+    /// Selection adds no authority; operations still require the mount's check.
+    pub fn by_entry(&self, entry: crate::agent::EntryId) -> Option<&Mount<T>> {
+        self.slots
+            .get(&entry)
+            .copied()
+            .flatten()
+            .map(|index| &self.mounted[index].1)
+    }
+
+    /// Actual native projection of this task's admitted slot, if exposed.
+    pub fn native_root_for_entry(&self, entry: crate::agent::EntryId) -> Option<&Path> {
+        self.by_entry(entry)
+            .and_then(|mount| self.native_root_for(mount))
+    }
+
     /// OS root of an exposed mount; the primary defaults to this task's root.
     /// Named mounts require an explicit native projection.
     pub fn native_root_for<'a>(&'a self, mount: &'a Mount<T>) -> Option<&'a Path> {
@@ -511,7 +531,20 @@ pub fn compose<T>(
     component(&primary.name)?;
     let primary_address = format!("volume:///{}", primary.name);
     let mut mounts = BTreeMap::new();
+    let mut slots = std::collections::HashMap::new();
     for (index, view) in std::iter::once(primary).chain(volumes).enumerate() {
+        if view.agent == principal.id {
+            match slots.entry(view.entry) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(None);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(Error::Conflict(
+                        "task view has duplicate workspace slots".into(),
+                    ));
+                }
+            }
+        }
         if !view.root.is_empty() {
             crate::conversation::validate_content_path(&view.root, &mut None)?;
         }
@@ -584,6 +617,9 @@ pub fn compose<T>(
         let index = match mount {
             Some(mount) => {
                 let index = mounted.len();
+                if mount.view.agent == principal.id {
+                    slots.insert(mount.view.entry, Some(index));
+                }
                 let digest = mount.view.volume.identity_digest(
                     crate::store::default_projection_read_limits().maximum_bytes,
                     &mut None,
@@ -610,6 +646,7 @@ pub fn compose<T>(
         entries,
         mounted,
         volumes: volumes_by_identity,
+        slots,
     })
 }
 

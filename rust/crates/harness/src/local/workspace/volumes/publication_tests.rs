@@ -296,6 +296,7 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     let table = super::super::mounts::owner(
         &mounts.root,
         (
+            mounts.named(None)?.1.view.entry,
             "project",
             &mounts.named(None)?.1.view.volume,
             "",
@@ -304,6 +305,12 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         ),
         [("home", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))].map(|(name, source)| {
             (
+                crate::agent::WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::User,
+                    name.into(),
+                    mount.view.volume.clone(),
+                )
+                .id,
                 name.to_owned(),
                 mount.view.volume.clone(),
                 String::new(),
@@ -371,6 +378,7 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
     let table = super::super::mounts::owner(
         &mounts.root,
         (
+            mounts.named(None)?.1.view.entry,
             "project",
             &mounts.named(None)?.1.view.volume,
             "",
@@ -379,6 +387,12 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         ),
         [("aaa", Arc::clone(&busy)), ("home", Arc::clone(scratch))].map(|(name, source)| {
             (
+                crate::agent::WorkspaceEntry::initial_volume(
+                    crate::agent::WorkspaceRole::User,
+                    name.into(),
+                    mount.view.volume.clone(),
+                )
+                .id,
                 name.to_owned(),
                 mount.view.volume.clone(),
                 String::new(),
@@ -436,6 +450,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
         super::super::mounts::owner(
             &mounts.root,
             (
+                crate::agent::EntryId::from_bytes([1; 16]),
                 "project",
                 &mount.view.volume,
                 "",
@@ -443,6 +458,7 @@ async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> R
                 Some(Arc::clone(primary)),
             ),
             [(
+                crate::agent::EntryId::from_bytes([2; 16]),
                 "home".into(),
                 mount.view.volume.clone(),
                 String::new(),

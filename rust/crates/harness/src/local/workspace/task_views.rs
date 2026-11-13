@@ -241,9 +241,17 @@ impl LocalWorkspace {
         let primary = mounts::primary(bindings, project)?;
         let mounts = Arc::new(mounts::owner(
             &self.path,
-            (&primary.name, project, &primary.root, primary.mode, None),
+            (
+                primary.id,
+                &primary.name,
+                project,
+                &primary.root,
+                primary.mode,
+                None,
+            ),
             mounts::auxiliary(bindings).map(|(entry, volume)| {
                 (
+                    entry.id,
                     entry.name.clone(),
                     volume.clone(),
                     entry.root.clone(),

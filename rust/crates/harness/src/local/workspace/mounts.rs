@@ -1,6 +1,6 @@
 //! Default ownership policy, compiled through the common composed-view path.
 use super::*;
-use crate::agent::WorkspaceMode;
+use crate::agent::{EntryId, WorkspaceMode};
 use acyclic_fs::access::*;
 
 /// Retain the admitted binding mode when moving a composed native root.
@@ -39,10 +39,10 @@ pub(super) fn auxiliary(
 
 pub(super) fn owner<T>(
     root: &Path,
-    primary: (&str, &VolumeRef, &str, WorkspaceMode, T),
-    volumes: impl IntoIterator<Item = (String, VolumeRef, String, WorkspaceMode, T)>,
+    primary: (EntryId, &str, &VolumeRef, &str, WorkspaceMode, T),
+    volumes: impl IntoIterator<Item = (EntryId, String, VolumeRef, String, WorkspaceMode, T)>,
 ) -> Result<crate::workspace::MountTable<T>> {
-    let (name, volume, source_root, mode, source) = primary;
+    let (entry, name, volume, source_root, mode, source) = primary;
     let principal = Principal {
         kind: PrincipalKind::Agent,
         id: "owner".into(),
@@ -81,7 +81,7 @@ pub(super) fn owner<T>(
     let capability = Capability {
         layers: vec![
             std::iter::once(volume)
-                .chain(volumes.iter().map(|(_, volume, _, _, _)| volume))
+                .chain(volumes.iter().map(|(_, _, volume, _, _, _)| volume))
                 .flat_map(|volume| {
                     Capability::whole_volume(Some(volume.id().into()), ActionSet::Owner.actions())
                         .layers
@@ -92,7 +92,8 @@ pub(super) fn owner<T>(
         ],
         expires_at: None,
     };
-    let view = |name, volume, root, mode, source| crate::workspace::VolumeView {
+    let view = |entry, name, volume, root, mode, source| crate::workspace::VolumeView {
+        entry,
         name,
         agent: principal.id.clone(),
         volume,
@@ -118,6 +119,7 @@ pub(super) fn owner<T>(
             approvals: 0,
         },
         view(
+            entry,
             name.into(),
             volume.clone(),
             source_root.into(),
@@ -126,7 +128,9 @@ pub(super) fn owner<T>(
         ),
         volumes
             .into_iter()
-            .map(|(name, volume, root, mode, source)| view(name, volume, root, mode, source)),
+            .map(|(entry, name, volume, root, mode, source)| {
+                view(entry, name, volume, root, mode, source)
+            }),
     )
 }
 
@@ -147,8 +151,8 @@ mod tests {
             let volume = |name: &str| VolumeRef::new(provider.clone(), name.into(),
                 VolumeClass::Project, VolumeOwner::Project("owner".into()), &mut None).unwrap();
             let root = std::env::current_dir().unwrap();
-            let mut mounts = owner(&root, ("project", &volume("project"), "", WorkspaceMode::ReadWrite, sources[0]),
-                [("data".into(), volume("data"), String::new(), WorkspaceMode::ReadWrite, sources[1])]).unwrap();
+            let mut mounts = owner(&root, (EntryId::from_bytes([1; 16]), "project", &volume("project"), "", WorkspaceMode::ReadWrite, sources[0]),
+                [(EntryId::from_bytes([2; 16]), "data".into(), volume("data"), String::new(), WorkspaceMode::ReadWrite, sources[1])]).unwrap();
             let before: Vec<_> = mounts.mounts().map(|(path, mount)|
                 (path.to_owned(), mount.view.volume.clone(), mount.mode, mount.view.source)).collect();
             for (_, mount) in mounts.mounts_mut() {

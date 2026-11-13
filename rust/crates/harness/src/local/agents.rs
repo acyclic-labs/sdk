@@ -405,25 +405,7 @@ impl TurnContext for LocalContext {
                         .context
                         .workspace
                         .as_ref()
-                        .and_then(|workspace| {
-                            if !entry.root.is_empty()
-                                || entry.mode != crate::agent::WorkspaceMode::ReadWrite
-                            {
-                                return None;
-                            }
-                            let volume = entry.as_volume()?;
-                            let (relative, mount) = workspace
-                                .mounts
-                                .mounts()
-                                .find(|(_, mount)| &mount.view.volume == volume)?;
-                            match &mount.native_root {
-                                crate::workspace::NativeRoot::Logical => None,
-                                crate::workspace::NativeRoot::Composed => {
-                                    Some(workspace.mounts.root.join(relative))
-                                }
-                                crate::workspace::NativeRoot::Path(path) => Some(path.clone()),
-                            }
-                        })
+                        .and_then(|workspace| workspace.mounts.native_root_for_entry(entry.id))
                         .map(|path| path.to_string_lossy().into_owned());
                     #[cfg(not(any(test, not(target_arch = "wasm32"))))]
                     let path: Option<String> = None;

@@ -242,6 +242,20 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         Err(Error::Unauthorized(_)),
     ));
     let remounted = second.mounts_at(&second.path).await?;
+    for entry in &session_bindings {
+        for table in [&second.mounts, &logical.mounts, &remounted] {
+            let selected = table.by_entry(entry.id);
+            if entry.role == crate::agent::WorkspaceRole::Internal {
+                assert!(selected.is_none(), "internal slot must not be exposed");
+            } else {
+                let selected = selected.expect("selected stable workspace slot");
+                assert_eq!(selected.view.name, entry.name);
+                assert_eq!(&selected.view.volume, entry.volume()?);
+                assert_eq!(selected.view.root, entry.root);
+                assert_eq!(super::super::mounts::mode(selected), entry.mode);
+            }
+        }
+    }
     assert_eq!(
         remounted.named(Some("repository"))?.1.view.volume,
         harness.project
@@ -267,6 +281,10 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         )
         .await?;
         assert_eq!(host.path(), second.path.join("selected"));
+        assert_eq!(
+            Some(host.path()),
+            second.mounts.native_root_for_entry(session_bindings[0].id)
+        );
         assert_ne!(host.path(), second.path);
         crate::local::host_workspace::tests::native_write(
             &host.host_cwd().join("host-note"),

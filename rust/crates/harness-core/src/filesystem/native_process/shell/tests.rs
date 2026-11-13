@@ -61,7 +61,10 @@ fn table_with_roots(
         expires_at: None,
     };
     let volume = |name: &str| -> Result<_> {
+        let mut entry = [0; 16];
+        entry.copy_from_slice(&blake3::hash(name.as_bytes()).as_bytes()[..16]);
         Ok(VolumeView {
+            entry: crate::agent::EntryId::from_bytes(entry),
             name: name.into(),
             agent: "owner".into(),
             volume: VolumeRef::new(
