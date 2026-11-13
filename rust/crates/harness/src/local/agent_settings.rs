@@ -35,8 +35,12 @@ pub(super) struct Tree<'a> {
     volumes: &'a Volumes<'a>,
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
+    configuration: std::borrow::Cow<'a, [Option<crate::layers::PinnedLayer>; 4]>,
     io: Option<&'a crate::executor::PreparationIo>,
+    _cut_hold: Option<crate::conversation::ContentHold<'a>>,
 }
+
+mod step_cut;
 
 type SourceFiles = [Option<(crate::conversation::FileRef, acyclic_stream::OwnedBytes)>; 5];
 
@@ -88,7 +92,7 @@ impl Tree<'_> {
 
     async fn sources(&self, path: &str) -> Result<SourceFiles> {
         let mut sources = std::array::from_fn(|_| None);
-        for (index, layer) in self.volumes.configuration.iter().enumerate() {
+        for (index, layer) in self.configuration.iter().enumerate() {
             if let Some(layer) = layer {
                 sources[index] = self.source(layer, path).await?;
             }
@@ -117,7 +121,7 @@ impl Tree<'_> {
     }
 
     pub(super) fn cut(&self) -> Result<blake3::Hash> {
-        let issuers = self.volumes.configuration.each_ref().map(|layer| {
+        let issuers = self.configuration.as_ref().each_ref().map(|layer| {
             layer
                 .as_ref()
                 .map(|layer| (&layer.volume, &layer.generation))
@@ -174,7 +178,7 @@ impl config::Tree for Tree<'_> {
             if let Some((_, bytes)) = self.home(path).await? {
                 return Ok((!is_off(&bytes)).then_some(bytes));
             }
-            for layer in self.volumes.configuration.iter().rev().flatten() {
+            for layer in self.configuration.iter().rev().flatten() {
                 if let Some((_, bytes)) = self.source(layer, path).await? {
                     return Ok((!is_off(&bytes)).then_some(bytes));
                 }
@@ -232,13 +236,16 @@ impl<'a> Tree<'a> {
     pub(super) fn pinned(
         volumes: &'a Volumes<'a>,
         generation: crate::resources::GenerationRef,
+        io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        let read = Self::read_grant(volumes, None)?;
+        let read = Self::read_grant(volumes, io)?;
         Ok(Self {
             volumes,
             read,
             generation,
-            io: None,
+            configuration: std::borrow::Cow::Borrowed(volumes.configuration),
+            io,
+            _cut_hold: None,
         })
     }
     pub(super) async fn new(
@@ -264,7 +271,9 @@ impl<'a> Tree<'a> {
             volumes,
             read,
             generation,
+            configuration: std::borrow::Cow::Borrowed(volumes.configuration),
             io,
+            _cut_hold: None,
         })
     }
 }
@@ -1009,7 +1018,10 @@ mod tests {
             configuration: harness.harness.issuer_configuration(),
             maximum_bytes: None,
         };
-        let original = Tree::new(&volumes, crate::config::AGENT, None).await?;
+        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 65_536).await?;
+        let journal = storage.journal();
+        let operation = crate::OperationId::new();
+        let original = Tree::for_step(&volumes, journal.as_ref(), operation, 0, None).await?;
         for (path, source) in [
             ("switch.ts", "export const enabled = false;"),
             (
@@ -1020,14 +1032,20 @@ mod tests {
         ] {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
+        let replayed = Tree::for_step(&volumes, journal.as_ref(), operation, 0, None).await?;
+        assert_eq!(
+            original.cut()?,
+            replayed.cut()?,
+            "replay substituted current home files"
+        );
         let clock = harness.clock.as_ref();
-        let enabled = plugins(false, None, &original, harness.root, clock).await?;
+        let enabled = plugins(false, None, &replayed, harness.root, clock).await?;
         assert!(
             !enabled.rules.is_empty(),
             "plugin admission refreshed its pinned home generation"
         );
         let settings = admit(
-            &original,
+            &replayed,
             harness.root,
             Some(harness.agent()?.clone()),
             None,
@@ -1040,7 +1058,12 @@ mod tests {
             Some(0.25),
             "settings admission refreshed its pinned home generation"
         );
-        let current = Tree::new(&volumes, crate::config::AGENT, None).await?;
+        let current = Tree::for_step(&volumes, journal.as_ref(), operation, 1, None).await?;
+        assert_ne!(
+            original.cut()?,
+            current.cut()?,
+            "next step retained the preceding cut"
+        );
         assert!(
             plugins(false, None, &current, harness.root, clock)
                 .await?

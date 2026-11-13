@@ -104,7 +104,7 @@ impl PreparedLocalHarness {
             configuration: &opening.config.configuration,
             maximum_bytes: opening.config.limits.file_bytes,
         };
-        agent_settings::Tree::pinned(&volumes, stored.home_generation.clone())?
+        agent_settings::Tree::pinned(&volumes, stored.home_generation.clone(), None)?
             .model_selection(base)
             .await
     }
@@ -653,7 +653,7 @@ impl Opening {
             maximum_bytes: self.config.limits.file_bytes,
         };
         #[cfg(any(test, not(target_arch = "wasm32")))]
-        let settings_tree = agent_settings::Tree::pinned(&volumes, home_generation.clone())?;
+        let settings_tree = agent_settings::Tree::pinned(&volumes, home_generation.clone(), None)?;
         // `plugins.ts` selects the plugin hooks as the session starts.
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let plugin_set = agent_settings::plugins(
@@ -668,7 +668,8 @@ impl Opening {
         let (agent, sampling) = if self.config.has_model() {
             let started = self.config.model.clone();
             #[cfg(not(any(test, not(target_arch = "wasm32"))))]
-            let settings_tree = agent_settings::Tree::pinned(&volumes, home_generation.clone())?;
+            let settings_tree =
+                agent_settings::Tree::pinned(&volumes, home_generation.clone(), None)?;
             #[cfg(any(test, not(target_arch = "wasm32")))]
             let resolver = self
                 .models
