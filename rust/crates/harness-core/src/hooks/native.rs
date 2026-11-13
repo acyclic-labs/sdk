@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_native_runtime::{
     CaptureHandler, CaptureSchedule, ExecutableSearch, OwnedCaptureInput, ProcessCommand,
-    ProcessInput, ProcessOutput, ProcessStdio, ProcessTree, run_blocking_io, shell_command,
+    ProcessInput, ProcessOutput, ProcessStdio, ProcessTree, run_process_io, shell_command,
 };
 use std::{
     collections::BTreeMap,
@@ -116,49 +116,47 @@ pub(super) async fn run_hook(
     let timeout = hook.timeout_ms.map(Duration::from_millis);
     let (workspace, cwd, input) = request;
     let spawner = acyclic_native_runtime::TaskSpawner::current();
-    // Spawning may block; the running hook then holds no worker.
-    let capture = run_blocking_io(
-        move || {
-            let mut handler = handler;
-            if maximum_bytes == Some(0) {
-                return Err(Error::Process(crate::ProcessError::OutputLimit {
-                    exit_code: None,
-                    message: "hook capture budget exhausted".into(),
-                }));
-            }
-            handler.check().map_err(Error::process_io)?;
-            let mut command = hook_command(&hook, &workspace, &cwd, |key| match &execution {
-                Some(execution) => execution
-                    .environment
-                    .get(key)
-                    .map(|value| value.as_str().into()),
-                None => crate::native_environment::variable(key),
-            })?;
-            if let Some(execution) = &execution {
-                command.env_clear().envs(&execution.environment);
-            }
-            command
-                .current_dir(&cwd)
-                .env("CLAUDE_PROJECT_DIR", &workspace)
-                .stdin(ProcessStdio::piped())
-                .stdout(ProcessStdio::piped())
-                .stderr(ProcessStdio::piped());
-            handler.check().map_err(Error::process_io)?;
-            let tree = match execution {
-                Some(execution) => ProcessTree::spawn_granted(command, &execution.grant, None),
-                None => ProcessTree::spawn(&mut command),
-            }
-            .map_err(Error::process_io)?;
-            Ok(tree.capture(
-                &spawner,
-                timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
-                maximum_bytes,
-                Some(OwnedCaptureInput::Literal(input)),
-                handler,
-            ))
-        },
-        None,
-    )
+    // Launch shares process-control capacity, never the filesystem-lock queue.
+    // The running hook then holds no worker.
+    let capture = run_process_io(move || {
+        let mut handler = handler;
+        if maximum_bytes == Some(0) {
+            return Err(Error::Process(crate::ProcessError::OutputLimit {
+                exit_code: None,
+                message: "hook capture budget exhausted".into(),
+            }));
+        }
+        handler.check().map_err(Error::process_io)?;
+        let mut command = hook_command(&hook, &workspace, &cwd, |key| match &execution {
+            Some(execution) => execution
+                .environment
+                .get(key)
+                .map(|value| value.as_str().into()),
+            None => crate::native_environment::variable(key),
+        })?;
+        if let Some(execution) = &execution {
+            command.env_clear().envs(&execution.environment);
+        }
+        command
+            .current_dir(&cwd)
+            .env("CLAUDE_PROJECT_DIR", &workspace)
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
+        handler.check().map_err(Error::process_io)?;
+        let tree = match execution {
+            Some(execution) => ProcessTree::spawn_granted(command, &execution.grant, None),
+            None => ProcessTree::spawn(&mut command),
+        }
+        .map_err(Error::process_io)?;
+        Ok(tree.capture(
+            &spawner,
+            timeout.map_or(CaptureSchedule::Unbounded, CaptureSchedule::new),
+            maximum_bytes,
+            Some(OwnedCaptureInput::Literal(input)),
+            handler,
+        ))
+    })
     .map_err(Error::process_io)?
     .await
     .map_err(Error::process_io)??;
@@ -294,6 +292,57 @@ mod granted;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn hook_launch_uses_process_control_without_host_io_requests() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(Error::process_io)?;
+        #[cfg(not(windows))]
+        let command = "cat >/dev/null; printf ready";
+        #[cfg(windows)]
+        let command = "$null=[Console]::In.ReadToEnd(); [Console]::Write('ready')";
+        let before = acyclic_native_runtime::testing::worker_request_counts();
+        let output = run_hook(
+            Arc::new(HookSpec {
+                run: HookRun::Shell {
+                    command: command.into(),
+                    shell: None,
+                },
+                timeout_ms: None,
+                failure: HookFailure::Report,
+            }),
+            (
+                directory.path().to_owned(),
+                directory.path().to_owned(),
+                b"hook input".to_vec(),
+            ),
+            Arc::new(|| Ok(())),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        let after = acyclic_native_runtime::testing::worker_request_counts();
+        assert_eq!(output, (Some(0), b"ready".to_vec(), Vec::new()));
+        assert_eq!(
+            after.0, before.0,
+            "hook launch entered the filesystem work queue"
+        );
+        assert!(
+            after.1 > before.1,
+            "hook launch bypassed process-control admission"
+        );
+        // Negative control: an ordinary host-I/O request must enter the other queue.
+        acyclic_native_runtime::run_blocking_io(|| (), None)
+            .map_err(Error::process_io)?
+            .await
+            .map_err(Error::process_io)?;
+        assert_eq!(
+            acyclic_native_runtime::testing::worker_request_counts().0,
+            after.0 + 1
+        );
+        Ok(())
+    }
 
     #[test]
     fn default_hook_shell_uses_the_pinned_platform_contract() -> Result<()> {

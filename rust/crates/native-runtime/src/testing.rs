@@ -7,6 +7,23 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::sync::Mutex;
+
+thread_local! {
+    static WORKER_REQUESTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Host-I/O and process-control work requests constructed on this thread.
+/// Snapshot around synchronous submission to distinguish their independent queues.
+pub fn worker_request_counts() -> (usize, usize) {
+    WORKER_REQUESTS.with(std::cell::Cell::get)
+}
+
+pub(crate) fn record_worker_request(process: bool) {
+    WORKER_REQUESTS.with(|counts| {
+        let (host, control) = counts.get();
+        counts.set((host + usize::from(!process), control + usize::from(process)));
+    });
+}
 mod entropy;
 pub use entropy::fill_seeded;
 mod clock;
