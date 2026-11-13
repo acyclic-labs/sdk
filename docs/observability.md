@@ -707,3 +707,16 @@ context, publication credit and terminal custody as asynchronous observations.
 One optional comparison joins its original terminal in the same append batch,
 so it adds no task, publication round trip or completed-call index. The original
 receipt is returned immediately; an unfollowed replay constructs no evidence.
+
+Session authority admission and per-entry resource authorization use the same
+synchronous SDK observer. `stream.session_authorize` accounts for the original
+current-trust credential/resource admission check. `stream.resource_authorize`
+accounts for each original capability evaluation against current trust, entry
+facts and owner policy, including the separate admitted-call grant check for a
+dependent resource. They retain the original decisions and arguments; no
+credential, resource name, audience, holder, key or attribute enters a span.
+Successful checks report zero payload bytes. Rejections currently remain
+`Unsettled` because these paths do not yet retain an original cause record;
+this is an explicit remaining cause-custody gap, not a successful authorization
+or a fabricated failure reference. Scope/account guards and credential-lock
+acquisition still need their own physical observations.
