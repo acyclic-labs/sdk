@@ -51,6 +51,30 @@ async fn auto_staging_commit_and_machine_readable_history() {
         panic!("expected log");
     };
     assert_eq!(log, vec![commit]);
+    for arguments in [
+        vec![
+            "checkout".to_owned(),
+            "--".to_owned(),
+            "tracked.txt".to_owned(),
+        ],
+        vec![
+            "checkout".to_owned(),
+            "HEAD".to_owned(),
+            "--".to_owned(),
+            "tracked.txt".to_owned(),
+        ],
+    ] {
+        let command = parse_git_argv::<std::convert::Infallible>(&arguments, "agent", 10)
+            .expect("checkout path command");
+        let output = repository
+            .execute(command, tree(2))
+            .await
+            .expect("restore from HEAD");
+        assert!(matches!(output,
+            GitCommandOutput::Action(GitFilesystemAction::RestorePaths { tree: source, paths })
+                if source == tree(1) && paths == vec!["tracked.txt".to_owned()]
+        ));
+    }
 }
 
 #[tokio::test]
@@ -429,6 +453,9 @@ async fn discard_retires_only_an_idle_non_current_branch() {
     }
     let listed = repository
         .run(
+            GitCommand::Add {
+                paths: vec!["tracked.txt".to_owned()],
+            },
             GitCommand::Branch { create: None },
             tree(1),
             &TestExecutor::failing(),
@@ -629,6 +656,9 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     assert_eq!(started.remaining, 3);
 
     for command in [
+        GitCommand::Add {
+            paths: vec!["tracked.txt".to_owned()],
+        },
         GitCommand::Branch { create: None },
         GitCommand::Tag {
             name: None,
