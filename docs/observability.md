@@ -676,3 +676,12 @@ actual acquisition are distinct attempts: an abandoned acquisition is unsettled,
 and only the attempt receiving the original read guard succeeds. Retiring a
 consumer still removes the original lock reservation before the held writer is
 released; tracing neither keeps that reservation nor replaces the cursor.
+
+The group flush producer returns an explicit result: only publishing the actual
+device completion returns success. Its original I/O error is attached to the
+caller error while the incarnation's first-failure watch still wakes all other
+waiters. A native metered operation keeps custody of its separately recorded
+physical error until its original completion is observed. A failed flush no
+longer returns an optional success acknowledgement and relies on a later cut
+check to discover the failure. Failure spans still need a retained journal
+record before they can claim a Failed outcome; otherwise they remain unsettled.

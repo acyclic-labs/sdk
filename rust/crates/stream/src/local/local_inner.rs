@@ -193,7 +193,7 @@ impl LocalInner {
         file: &acyclic_native_runtime::FileLease,
         durability: LocalDurability,
         work: Option<&crate::native::Work>,
-    ) -> Option<()> {
+    ) -> Result<(), StreamError> {
         #[cfg(test)]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
@@ -210,8 +210,7 @@ impl LocalInner {
         }
         let target = {
             let Ok(journal) = self.journal.lock() else {
-                self.poison();
-                return None;
+                return Err(self.poison());
             };
             journal.appended
         };
@@ -241,20 +240,23 @@ impl LocalInner {
             }
         }
         let Ok(mut journal) = self.journal.lock() else {
-            self.poison();
-            return None;
+            return Err(self.poison());
         };
         journal.syncing = false;
         match flushed {
-            Ok(completion) => self.publish_synced(&mut journal, target, completion),
+            Ok(completion) => {
+                self.publish_synced(&mut journal, target, completion);
+                Ok(())
+            }
             Err(error) => {
                 drop(journal);
-                self.fail(
-                    work.and_then(|work| work.failure("flush"))
-                        .unwrap_or_else(|| LocalStreamFailure::io("flush", &error)),
-                );
+                Err(self
+                    .fail(
+                        work.and_then(|work| work.failure("flush"))
+                            .unwrap_or_else(|| LocalStreamFailure::io("flush", &error)),
+                    )
+                    .with_source(error))
             }
         }
-        Some(())
     }
 }

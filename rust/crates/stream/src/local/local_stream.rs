@@ -683,7 +683,7 @@ impl LocalStream {
                     )| {
                         let flushed = owner.inner.flush_through(file, durability, work.as_deref());
                         owner.active = false;
-                        Ok(flushed)
+                        flushed
                     };
                     let submitted = async move {
                         #[cfg(not(loom))]
@@ -708,9 +708,7 @@ impl LocalStream {
                         },
                         submitted,
                         |result| match result {
-                            Ok(Ok(Some(()))) if self.check_available().is_ok() => {
-                                Some((None, crate::trace::Outcome::Succeeded))
-                            }
+                            Ok(Ok(())) => Some((None, crate::trace::Outcome::Succeeded)),
                             _ => None,
                         },
                     );
