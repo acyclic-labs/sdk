@@ -65,8 +65,8 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
         )
     };
     let destination = StreamPath::new("settings/applied")?;
-    // Denial, each original source racing after preparation, then success.
-    for scenario in 0_u8..8 {
+    // Permission denial, each source racing, refused admission, then success.
+    for scenario in 0_u8..9 {
         let mut generations = Vec::new();
         for workspace in &workspaces {
             generations.push(workspace.head(budget, &cancellation).await?.value);
@@ -77,7 +77,14 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
             .await?
             .value;
         transaction
-            .write_text("/agent.ts", "export default {model: 'fixture/second'};")
+            .write_text(
+                "/agent.ts",
+                if scenario == 7 {
+                    "throw new Error('candidate refused');"
+                } else {
+                    "export default {model: 'fixture/second'};"
+                },
+            )
             .await?;
         // A subject's attempt to remove its own restrictions cannot replace
         // the issuer permissions used to admit this same staged change.
@@ -106,6 +113,8 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
             idempotency_key: acyclic_stream::IdempotencyKey::new(vec![scenario])?,
         });
         let io = crate::filesystem::PreparationIo::for_unmeasured(&cancellation)?;
+        let admitted = std::cell::Cell::new(false);
+        let observer = &admitted;
         let prepared = manifest
             .prepare_apply(
                 &fs,
@@ -118,6 +127,29 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
                 },
                 &mut commit,
                 &io,
+                |selected, io| async move {
+                    use crate::config::Tree as _;
+                    observer.set(true);
+                    let tree = selected.tree(io, u64::MAX);
+                    let source = tree.read("agent.ts").await?.ok_or_else(|| {
+                        crate::Error::NotFound("candidate settings are absent".into())
+                    })?;
+                    let layers = [crate::layers::Layer {
+                        name: "home",
+                        generation: "candidate",
+                        bytes: Some(&source),
+                    }];
+                    let value = crate::config::compose_result(
+                        "agent.ts",
+                        &layers,
+                        &tree,
+                        serde_json::Value::Null,
+                    )
+                    .await??;
+                    let settings = value.decode::<crate::config::AgentConfig>()?;
+                    assert_eq!(settings.model, "fixture/second");
+                    Ok(())
+                },
             )
             .await;
         assert_eq!(
@@ -125,12 +157,21 @@ async fn home_apply_denies_before_publication_and_fences_every_original_source()
             generations[5].id()
         );
         if scenario == 0 {
+            assert!(!admitted.get(), "denied source must not be evaluated");
             assert_eq!(
                 prepared.unwrap_err().code(),
                 crate::wire::ErrorCode::Unauthorized
             );
             assert_eq!(commit.request().conditions().count(), 0);
             assert_eq!(commit.request().idempotency_key.as_bytes(), &[scenario]);
+            continue;
+        }
+        assert!(admitted.get(), "publication must admit its exact candidate");
+        if scenario == 7 {
+            let error = prepared.unwrap_err();
+            assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+            assert!(error.to_string().contains("candidate refused"));
+            assert_eq!(commit.request().conditions().count(), 0);
             continue;
         }
         prepared?;
