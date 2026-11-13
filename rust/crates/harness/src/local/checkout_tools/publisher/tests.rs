@@ -52,6 +52,150 @@ async fn fixture() -> Result<(tempfile::TempDir, Fixture, CheckoutPublisher)> {
     Ok((directory, fixture, publisher))
 }
 
+async fn before_checkout_admission<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(2), future)
+        .await
+        .expect("file destination refusal waited behind the held checkout guard")
+}
+
+#[tokio::test]
+async fn one_operation_captures_native_edits_before_distinct_file_publications() -> Result<()> {
+    let (directory, _fixture, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    for path in ["baseline", "first", "second"] {
+        std::fs::write(directory.path().join("native"), path).map_err(storage)?;
+        let file = publisher
+            .stage(
+                operation,
+                path,
+                path.as_bytes(),
+                "text/plain",
+                path,
+                Default::default(),
+            )?
+            .await?
+            .0;
+        // Replaying a completed publication must retain its original receipt.
+        let replay = publisher
+            .stage(
+                operation,
+                path,
+                path.as_bytes(),
+                "text/plain",
+                path,
+                Default::default(),
+            )?
+            .await?
+            .0;
+        assert_eq!(file, replay);
+        assert_eq!(
+            std::fs::read(directory.path().join(path)).map_err(storage)?,
+            path.as_bytes()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn directory_destination_refuses_without_waiting_for_checkout() -> Result<()> {
+    let directory = temporary_directory()?;
+    std::fs::create_dir(directory.path().join("directory")).map_err(storage)?;
+    let (_fixture, publisher) = open_fixture(directory.path(), temporary_directory()?).await?;
+    let _busy = lock_owned(StateArc::clone(&publisher.tools.state)).await;
+    let denied = crate::Capabilities::new([acyclic_fs::access::Capability::whole_volume(
+        None,
+        &[
+            acyclic_fs::access::Action::List,
+            acyclic_fs::access::Action::Read,
+        ],
+    )
+    .to_scope_label()
+    .map_err(|error| Error::Invalid(error.to_string()))?]);
+    for (ceiling, code) in [
+        (Some(&denied), crate::wire::ErrorCode::Unauthorized),
+        (None, crate::wire::ErrorCode::Invalid),
+    ] {
+        let changes = [crate::conversation::ContentChange::CreateAbsent {
+            path: "directory",
+            bytes: b"bytes",
+            media_type: "text/plain",
+            display_name: "directory",
+        }];
+        let batch = before_checkout_admission(publisher.stage_changes(
+            &publisher.volume,
+            OperationId::new(),
+            &changes,
+            crate::conversation::ContentAccess { ceiling, io: None },
+        )?)
+        .await;
+        let error = batch.err().expect("directory batch must refuse");
+        assert_eq!(error.code(), code, "{error:?}");
+        if code == crate::wire::ErrorCode::Invalid {
+            assert!(
+                error.to_string().contains("path is a directory"),
+                "{error:?}"
+            );
+        }
+        let result = before_checkout_admission(publisher.stage_once(
+            OperationId::new(),
+            "directory",
+            b"bytes",
+            "text/plain",
+            "directory",
+            crate::conversation::ContentAccess { ceiling, io: None },
+        )?)
+        .await;
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => return Err(Error::Invalid("directory publication was accepted".into())),
+        };
+        assert_eq!(error.code(), code, "{error:?}");
+        if code == crate::wire::ErrorCode::Invalid {
+            assert!(
+                error.to_string().contains("path is a directory"),
+                "{error:?}"
+            );
+        }
+    }
+    let create_only = crate::Capabilities::new([acyclic_fs::access::Capability::whole_volume(
+        None,
+        &[acyclic_fs::access::Action::Create],
+    )
+    .to_scope_label()
+    .map_err(|error| Error::Invalid(error.to_string()))?]);
+    let create = crate::conversation::ContentChange::CreateAbsent {
+        path: "directory",
+        bytes: b"bytes",
+        media_type: "text/plain",
+        display_name: "directory",
+    };
+    let mixed = [
+        create,
+        crate::conversation::ContentChange::Delete { path: "other" },
+    ];
+    for (changes, code) in [
+        (&mixed[..1], crate::wire::ErrorCode::Invalid),
+        (&mixed[..], crate::wire::ErrorCode::Unauthorized),
+    ] {
+        let result = before_checkout_admission(publisher.stage_changes(
+            &publisher.volume,
+            OperationId::new(),
+            changes,
+            crate::conversation::ContentAccess {
+                ceiling: Some(&create_only),
+                io: None,
+            },
+        )?)
+        .await;
+        assert_eq!(
+            result.err().expect("directory batch must refuse").code(),
+            code
+        );
+    }
+    assert!(directory.path().join("directory").is_dir());
+    Ok(())
+}
+
 async fn open_fixture(
     directory: &Path,
     state: tempfile::TempDir,
@@ -1207,5 +1351,103 @@ async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
         "{conflict}"
     );
     assert_eq!(std::fs::read(&path).map_err(storage)?, b"user bytes\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn removed_captured_directory_can_become_a_file_before_checkout_capture() -> Result<()> {
+    for conditional in [false, true] {
+        let directory = temporary_directory()?;
+        std::fs::create_dir(directory.path().join("directory")).map_err(storage)?;
+        let (_fixture, publisher) = open_fixture(directory.path(), temporary_directory()?).await?;
+        let physical = &*publisher.tools.workspace;
+        let view = physical.view();
+        {
+            let mut state = lock_owned(StateArc::clone(&publisher.tools.state)).await;
+            publisher
+                .tools
+                .capture(
+                    (physical, view),
+                    &mut state.watcher,
+                    OperationId::new(),
+                    0,
+                    PublicationPermit::Unrestricted,
+                )?
+                .await?;
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let before = view
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        assert_eq!(
+            before
+                .stat(
+                    "/directory",
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .kind,
+            acyclic_fs::kernel::FileKind::Directory
+        );
+        // The authenticated tree still contains the directory. Only the real
+        // source observes its removal until the next checkout capture.
+        std::fs::remove_dir(directory.path().join("directory")).map_err(storage)?;
+        if conditional {
+            let changes = [crate::conversation::ContentChange::CreateAbsent {
+                path: "directory",
+                bytes: b"replacement",
+                media_type: "text/plain",
+                display_name: "directory",
+            }];
+            publisher
+                .stage_changes(
+                    &publisher.volume,
+                    OperationId::new(),
+                    &changes,
+                    Default::default(),
+                )?
+                .await?;
+        } else {
+            publisher
+                .stage_once(
+                    OperationId::new(),
+                    "directory",
+                    b"replacement",
+                    "text/plain",
+                    "directory",
+                    Default::default(),
+                )?
+                .await?;
+        }
+        assert_eq!(
+            std::fs::read(directory.path().join("directory")).map_err(storage)?,
+            b"replacement"
+        );
+        let after = view
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        assert_eq!(
+            after
+                .stat(
+                    "/directory",
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .kind,
+            acyclic_fs::kernel::FileKind::Regular
+        );
+    }
     Ok(())
 }

@@ -303,7 +303,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             if needs_binding {
                 let (generation, fence) = self
-                    .authorize_content_write(&root, grant, path, true, ceiling, io)?
+                    .authorize_content_write(&root, grant, path, false, ceiling, io)?
                     .await?;
                 let _hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
                 self.bind_content_operation(
@@ -332,7 +332,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let root_authorization = if opened.id() != root.id() {
                 let (generation, fence) = self
-                    .authorize_content_write(&root, grant, path, prior.is_some(), ceiling, io)?
+                    .authorize_content_write(&root, grant, path, prior.is_none(), ceiling, io)?
                     .await?;
                 let hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
                 Some((generation, hold, fence))
@@ -341,7 +341,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let root_fence = root_authorization.as_ref().map(|(_, _, fence)| *fence);
             let (authorized_generation, policy_fence) = self
-                .authorize_content_write(&opened, grant, path, prior.is_some(), ceiling, io)?
+                .authorize_content_write(&opened, grant, path, prior.is_none(), ceiling, io)?
                 .await?;
             let generation_hold = io
                 .map(|io| io.guard_owned(authorized_generation.logical_owned_bytes()?))
