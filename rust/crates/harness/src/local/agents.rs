@@ -502,10 +502,14 @@ impl CompletionTarget {
         &self,
         project: &crate::conversation::VolumeRef,
     ) -> Result<Option<acyclic_fs::GitGenerationRef>> {
+        #[cfg(test)]
+        eprintln!("completion source: acquiring checkout guard");
         let mut state = crate::sync::owned::lock_owned(super::workspace::StateArc::clone(
             &self.workspace.state,
         ))
         .await;
+        #[cfg(test)]
+        eprintln!("completion source: acquired checkout guard");
         let view = self.workspace.view();
         if super::workspace::LocalWorkspace::owes_publication(
             &self.workspace.filesystem,
@@ -523,6 +527,8 @@ impl CompletionTarget {
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
         let selected = view.snapshot(&mut accounting).await.map_err(storage)?;
+        #[cfg(test)]
+        eprintln!("completion source: selected snapshot");
         if let Some(origin) = view
             .state(&mut accounting)
             .await
@@ -556,6 +562,8 @@ impl CompletionTarget {
                 .await
                 .map_err(storage)?
             {
+                #[cfg(test)]
+                eprintln!("completion source: no authored changes");
                 return Ok(None);
             }
         }
@@ -595,6 +603,8 @@ impl LocalHarness {
     /// is idle, else before the parent's next command reads it.
     #[cfg(any(test, not(target_arch = "wasm32")))]
     async fn merge_completed_workspace(&self, agent: &AgentState, turn: OperationId) -> Result<()> {
+        #[cfg(test)]
+        eprintln!("completion handback: selecting recipient");
         let (Some(parent), Some(root)) = (&agent.parent, &self.workspace) else {
             return Ok(());
         };
@@ -614,6 +624,8 @@ impl LocalHarness {
         let own = self
             .completion_target(root, agent, &child_project, turn)
             .await?;
+        #[cfg(test)]
+        eprintln!("completion handback: selected child checkout");
         let Some(source) = own.source(&child_project).await? else {
             return Ok(());
         };
