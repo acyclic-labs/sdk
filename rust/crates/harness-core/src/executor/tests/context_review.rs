@@ -38,9 +38,6 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
             ToolRegistry::default(),
         )
         .with_automatic_compaction()?;
-        let storage = crate::filesystem::MemoryHarnessStorage::new(AgentId::new(), 8192).await?;
-        let journal_owner = storage.journal();
-        let journal = journal_owner.as_ref();
         let mut messages: Vec<_> = (0..count)
             .map(|index| ModelMessage {
                 role: if index % 2 == 0 {
@@ -71,6 +68,9 @@ async fn terminal_replies_prepare_no_review_source_at_any_history_size() -> Resu
                 messages,
             }),
         };
+        let (journal, _issuer) = crate::filesystem::test_execution_journal().await?;
+        let journal = journal.with_bound_selection(input.selected_context.clone().unwrap());
+        let journal = &journal;
         let (result, trace) = acyclic_test_support::differential::observe_async::<
             _,
             (&'static str, u64),

@@ -96,7 +96,7 @@ mod summary_cache;
 mod summary_map;
 mod supervision;
 #[cfg(test)]
-mod test_support;
+pub(super) mod test_support;
 #[cfg(test)]
 mod tests;
 mod tool_settlement;
