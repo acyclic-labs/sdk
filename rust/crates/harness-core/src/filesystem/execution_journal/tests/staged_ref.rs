@@ -166,8 +166,9 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8], published: bool) -> 
             .map(|(file, body)| {
                 assert_eq!(body.expect("authorized payload").as_ref(), bytes);
                 file
-            }),
-        Some(expected)
+            })
+            .as_ref(),
+        Some(&expected)
     );
     // Projection cannot return payload bytes through a metadata-only request,
     // and asking for payload independently requires Read in the same compiler.
