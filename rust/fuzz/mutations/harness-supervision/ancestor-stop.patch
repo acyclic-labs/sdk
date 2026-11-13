@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/filesystem/execution_journal/indexed_publication.rs
++++ b/rust/crates/harness-core/src/filesystem/execution_journal/indexed_publication.rs
+@@ -208,7 +208,7 @@
+             }
+             let closed_start = paths.len();
+             if let Some((agent, ..)) = &self.agent_events {
+-                for ancestor in agent.ancestors() {
++                for ancestor in agent.ancestors().skip(agent.depth()) {
+                     let mut text = crate::executor::stock_string_copy(ancestor, io)?;
+                     crate::executor::stock_string_push(
+                         &mut text,
