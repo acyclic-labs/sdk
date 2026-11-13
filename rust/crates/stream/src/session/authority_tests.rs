@@ -1093,16 +1093,21 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
             {
                 use std::error::Error as _;
                 assert_eq!(denial.category(), StreamError::AccessDenied);
-                assert!(
-                    std::iter::successors(denial.source(), |source| source.source()).any(
-                        |source| matches!(
-                            source.downcast_ref::<verify::VerifyError>(),
-                            Some(verify::VerifyError::Denied(
-                                acyclic_auth::DenialCause::OwnerPolicy
-                            ))
-                        )
-                    )
-                );
+                let mut source = denial.source();
+                let mut retained = false;
+                while let Some(cause) = source {
+                    if matches!(
+                        cause.downcast_ref::<verify::VerifyError>(),
+                        Some(verify::VerifyError::Denied(
+                            acyclic_auth::DenialCause::OwnerPolicy
+                        ))
+                    ) {
+                        retained = true;
+                        break;
+                    }
+                    source = cause.source();
+                }
+                assert!(retained);
             }
             let mut query = TraceQuery::new(
                 trace.follow(0, Default::default()).await.unwrap(),
