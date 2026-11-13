@@ -34,6 +34,8 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
     );
     // Recover before the registered observer gets another poll. Recovery must
     // not erase its event, but a newly registered observer must remain healthy.
+    assert!(runtime.release(&address));
+    runtime.host(address.clone())?;
     handler.gate.add_permits(1);
     runtime.drain_actor(&address).await?;
     assert!(failed.await.to_string().contains("producer disappeared"));
@@ -61,6 +63,10 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
         next.await.to_string().contains("test gate closed"),
         "rehydration lost its original observer"
     );
+    let mut stopping = runtime.delivery_failure(&actor("healthy-runtime-shutdown")?)?;
+    assert!(futures::poll!(stopping.as_mut()).is_pending());
+    drop(runtime);
+    assert!(stopping.await.to_string().contains("runtime released"));
     Ok(())
 }
 
