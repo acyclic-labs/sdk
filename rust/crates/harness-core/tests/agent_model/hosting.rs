@@ -620,6 +620,31 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 65_536,
                 None,
             )?;
+            // A different call publishes into the same host journal. Neither
+            // its output nor its completion may deliver to this quiet actor.
+            let before_unrelated = stream.tail(store.path(&actor)?).await?;
+            let other_call = OperationId::from_bytes([240; 16]);
+            for unrelated in [
+                acyclic_harness_core::runtime::tool_output_activity_path(execution, other_call),
+                acyclic_harness_core::runtime::tool_output_completion_path(execution, other_call),
+            ] {
+                publisher
+                    .stage_once(
+                        OperationId::new(),
+                        &unrelated,
+                        b"{}",
+                        "application/json",
+                        "unrelated.json",
+                        ContentAccess::default(),
+                    )?
+                    .await?;
+            }
+            bound.agents().runtime().complete().await?;
+            assert_eq!(
+                stream.tail(store.path(&actor)?).await?,
+                before_unrelated,
+                "unrelated journal output woke the quiet actor",
+            );
             publisher
                 .stage_once(
                     OperationId::from_bytes([236; 16]),
