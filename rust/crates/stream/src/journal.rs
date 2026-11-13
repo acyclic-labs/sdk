@@ -79,20 +79,32 @@ impl WriteRequest {
             })
     }
     pub(crate) fn encode(&self, output: &mut Vec<u8>) {
+        match self.encode_with(&mut wire_codec::requests::vector_output(output)) {
+            Ok(()) => (),
+            Err(never) => match never {},
+        }
+    }
+
+    /// Write canonical command chunks without materializing a second command buffer.
+    /// A sink failure stops encoding immediately and is returned unchanged.
+    pub(crate) fn encode_with<E>(
+        &self,
+        output: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
         use wire_codec::requests::*;
-        output.extend_from_slice(MAGIC);
+        output(MAGIC)?;
         match self {
             Self::Append(request) => {
-                header(output, 1, append_len(request));
-                append(output, request);
+                header(output, 1, append_len(request))?;
+                append(output, request)
             }
             Self::Fork(request) => {
-                header(output, 2, fork_len(request));
-                fork(output, request);
+                header(output, 2, fork_len(request))?;
+                fork(output, request)
             }
             Self::Commit(request) | Self::CommitAccepted(request) => {
-                header(output, 5, commit_len(request));
-                commit(output, request);
+                header(output, 5, commit_len(request))?;
+                commit(output, request)
             }
         }
     }
@@ -187,6 +199,37 @@ mod tests {
         });
         for command in [append, fork, commit] {
             let encoded = command.encode_to_vec();
+            // Exercise the same encoder against a real file, including empty values.
+            let mut file = tempfile::tempfile().unwrap();
+            command
+                .encode_with(&mut |bytes| std::io::Write::write_all(&mut file, bytes))
+                .unwrap();
+            std::io::Seek::rewind(&mut file).unwrap();
+            let mut persisted = Vec::new();
+            std::io::Read::read_to_end(&mut file, &mut persisted).unwrap();
+            assert_eq!(persisted, encoded);
+
+            // Reject a chunk after an accepted prefix and preserve the original error.
+            let failure = std::io::Error::from_raw_os_error(123);
+            let mut failure = Some(failure);
+            let mut accepted = 0;
+            let mut calls = 0;
+            let error = command
+                .encode_with(&mut |bytes| {
+                    calls += 1;
+                    if accepted == 0 {
+                        accepted += bytes.len();
+                        Ok(())
+                    } else {
+                        Err(failure
+                            .take()
+                            .expect("encoding continued after sink failure"))
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(123));
+            assert_eq!(calls, 2);
+            assert_eq!(accepted, MAGIC.len());
             assert_eq!(decode_command(&encoded)?.encode_to_vec(), encoded);
             for end in 0..encoded.len() {
                 assert!(decode_command(&encoded[..end]).is_err());

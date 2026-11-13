@@ -137,7 +137,11 @@ fn manual_append_and_commit_codecs_match_the_generated_header_contract() -> Resu
     use prost::Message;
     let request = append(body(b"key", b"attribute")?)?;
     let mut actual = Vec::new();
-    crate::wire_codec::requests::append(&mut actual, &request);
+    crate::wire_codec::requests::append(
+        &mut crate::wire_codec::requests::vector_output(&mut actual),
+        &request,
+    )
+    .unwrap();
     let expected = crate::wire::AppendRequest {
         path: request.path.to_string(),
         records: request
@@ -153,7 +157,11 @@ fn manual_append_and_commit_codecs_match_the_generated_header_contract() -> Resu
     for fork in [false, true] {
         let request = commit(body(b"key", b"attribute")?, fork)?;
         let mut actual = Vec::new();
-        crate::wire_codec::requests::commit(&mut actual, &request);
+        crate::wire_codec::requests::commit(
+            &mut crate::wire_codec::requests::vector_output(&mut actual),
+            &request,
+        )
+        .unwrap();
         let expected = crate::wire_codec::commit_to_wire(&request);
         assert_eq!(actual, expected.encode_to_vec());
     }

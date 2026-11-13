@@ -261,72 +261,129 @@ pub(crate) fn prepared_commit_command_len(
     block_len(commit_len_with(request, &|_| record))
 }
 
-pub(crate) fn header(out: &mut Vec<u8>, tag: u32, length: usize) {
-    prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
-    prost::encoding::encode_varint(length as u64, out);
-}
-fn bytes(out: &mut Vec<u8>, tag: u32, value: &[u8]) {
-    header(out, tag, value.len());
-    out.extend_from_slice(value);
-}
-fn uint(out: &mut Vec<u8>, tag: u32, value: Option<u64>) {
-    if let Some(value) = value {
-        prost::encoding::encode_key(tag, prost::encoding::WireType::Varint, out);
-        prost::encoding::encode_varint(value, out);
+/// Infallible materialization for callers that need an owned binary document.
+pub(crate) fn vector_output(
+    output: &mut Vec<u8>,
+) -> impl FnMut(&[u8]) -> Result<(), std::convert::Infallible> {
+    move |bytes| {
+        output.extend_from_slice(bytes);
+        Ok(())
     }
 }
-fn records(out: &mut Vec<u8>, tag: u32, records: &[AppendRecord]) {
+
+fn field<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    tag: u32,
+    kind: prost::encoding::WireType,
+    value: u64,
+) -> Result<(), E> {
+    // One u32 field key and one u64 varint, using the canonical protobuf encoder.
+    let mut prefix = [0_u8; 15];
+    let mut remaining = prefix.as_mut_slice();
+    prost::encoding::encode_key(tag, kind, &mut remaining);
+    prost::encoding::encode_varint(value, &mut remaining);
+    let written = 15 - remaining.len();
+    out(&prefix[..written])
+}
+
+pub(crate) fn header<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    tag: u32,
+    length: usize,
+) -> Result<(), E> {
+    field(
+        out,
+        tag,
+        prost::encoding::WireType::LengthDelimited,
+        length as u64,
+    )
+}
+fn bytes<E>(out: &mut impl FnMut(&[u8]) -> Result<(), E>, tag: u32, value: &[u8]) -> Result<(), E> {
+    header(out, tag, value.len())?;
+    out(value)
+}
+fn uint<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    tag: u32,
+    value: Option<u64>,
+) -> Result<(), E> {
+    if let Some(value) = value {
+        field(out, tag, prost::encoding::WireType::Varint, value)?;
+    }
+    Ok(())
+}
+fn records<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    tag: u32,
+    records: &[AppendRecord],
+) -> Result<(), E> {
     for record in records {
-        header(out, tag, append_record_len(record));
+        header(out, tag, append_record_len(record))?;
         if !record.value.is_empty() {
-            bytes(out, 1, &record.value);
+            bytes(out, 1, &record.value)?;
         }
         for key in crate::changes::wire_keys(&record.headers) {
-            bytes(out, 2, key);
+            bytes(out, 2, key)?;
         }
         for attribute in record.headers.attributes() {
-            header(out, 3, attribute_len(attribute));
-            bytes(out, 1, attribute.name.as_bytes());
+            header(out, 3, attribute_len(attribute))?;
+            bytes(out, 1, attribute.name.as_bytes())?;
             if !attribute.value.is_empty() {
-                bytes(out, 2, attribute.value);
+                bytes(out, 2, attribute.value)?;
             }
         }
     }
+    Ok(())
 }
 
-pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
-    bytes(out, 1, request.path.as_str().as_bytes());
-    records(out, 2, &request.records);
-    uint(out, 3, request.if_tail);
-    bytes(out, 4, request.idempotency_key.as_bytes());
+pub(crate) fn append<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    request: &AppendRequest,
+) -> Result<(), E> {
+    bytes(out, 1, request.path.as_str().as_bytes())?;
+    records(out, 2, &request.records)?;
+    uint(out, 3, request.if_tail)?;
+    bytes(out, 4, request.idempotency_key.as_bytes())?;
+    Ok(())
 }
-pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
+pub(crate) fn fork<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    request: &ForkRequest,
+) -> Result<(), E> {
     for path in &request.exclude {
-        bytes(out, 5, path.as_str().as_bytes());
+        bytes(out, 5, path.as_str().as_bytes())?;
     }
-    bytes(out, 1, request.source.as_str().as_bytes());
-    bytes(out, 2, request.destination.as_str().as_bytes());
-    uint(out, 3, request.at_tail);
-    bytes(out, 4, request.idempotency_key.as_bytes());
+    bytes(out, 1, request.source.as_str().as_bytes())?;
+    bytes(out, 2, request.destination.as_str().as_bytes())?;
+    uint(out, 3, request.at_tail)?;
+    bytes(out, 4, request.idempotency_key.as_bytes())?;
+    Ok(())
 }
-pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
+pub(crate) fn commit<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    request: &CommitRequest,
+) -> Result<(), E> {
     // Generated protobuf writes fields in tag order: `effects` (6) follows
     // the key (3) and deadline (4).
-    bytes(out, 3, request.idempotency_key.as_bytes());
-    uint(out, 4, request.deadline_unix_millis);
+    bytes(out, 3, request.idempotency_key.as_bytes())?;
+    uint(out, 4, request.deadline_unix_millis)?;
     for effect in &request.effects {
-        header(out, 6, effect_len_with(effect, &append_record_len));
-        commit_effect(out, effect);
+        header(out, 6, effect_len_with(effect, &append_record_len))?;
+        commit_effect(out, effect)?;
     }
+    Ok(())
 }
 
-fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
+fn commit_effect<E>(
+    out: &mut impl FnMut(&[u8]) -> Result<(), E>,
+    effect: &CommitEffect,
+) -> Result<(), E> {
     for condition in &effect.conditions {
-        header(out, 1, condition_len(condition));
+        header(out, 1, condition_len(condition))?;
         match condition {
             CommitCondition::Present { path } => {
-                header(out, 4, block_len(path.as_str().len()));
-                bytes(out, 1, path.as_str().as_bytes());
+                header(out, 4, block_len(path.as_str().len()))?;
+                bytes(out, 1, path.as_str().as_bytes())?;
             }
             CommitCondition::Head {
                 path,
@@ -339,10 +396,10 @@ fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
                     block_len(path.as_str().len())
                         + uint_len((*expected != 0).then_some(*expected))
                         + block_len(32),
-                );
-                bytes(out, 1, path.as_str().as_bytes());
-                uint(out, 2, (*expected != 0).then_some(*expected));
-                bytes(out, 3, commit_id.as_bytes());
+                )?;
+                bytes(out, 1, path.as_str().as_bytes())?;
+                uint(out, 2, (*expected != 0).then_some(*expected))?;
+                bytes(out, 3, commit_id.as_bytes())?;
             }
             CommitCondition::Tail { path, expected } => {
                 header(
@@ -350,26 +407,26 @@ fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
                     1,
                     block_len(path.as_str().len())
                         + uint_len((*expected != 0).then_some(*expected)),
-                );
-                bytes(out, 1, path.as_str().as_bytes());
-                uint(out, 2, (*expected != 0).then_some(*expected));
+                )?;
+                bytes(out, 1, path.as_str().as_bytes())?;
+                uint(out, 2, (*expected != 0).then_some(*expected))?;
             }
             CommitCondition::Absent { path } => {
-                header(out, 2, block_len(path.as_str().len()));
-                bytes(out, 1, path.as_str().as_bytes());
+                header(out, 2, block_len(path.as_str().len()))?;
+                bytes(out, 1, path.as_str().as_bytes())?;
             }
         }
     }
     for mutation in &effect.mutations {
-        header(out, 2, mutation_len(mutation));
+        header(out, 2, mutation_len(mutation))?;
         match mutation {
             CommitMutation::Append {
                 path,
                 records: values,
             } => {
-                header(out, 1, block_len(path.as_str().len()) + records_len(values));
-                bytes(out, 1, path.as_str().as_bytes());
-                records(out, 2, values);
+                header(out, 1, block_len(path.as_str().len()) + records_len(values))?;
+                bytes(out, 1, path.as_str().as_bytes())?;
+                records(out, 2, values)?;
             }
             CommitMutation::Fork {
                 source,
@@ -389,18 +446,19 @@ fn commit_effect(out: &mut Vec<u8>, effect: &CommitEffect) {
                             .iter()
                             .map(|path| block_len(path.as_str().len()))
                             .sum::<usize>(),
-                );
-                bytes(out, 1, source.as_str().as_bytes());
-                bytes(out, 2, destination.as_str().as_bytes());
-                uint(out, 3, (*at_tail != 0).then_some(*at_tail));
-                records(out, 4, values);
+                )?;
+                bytes(out, 1, source.as_str().as_bytes())?;
+                bytes(out, 2, destination.as_str().as_bytes())?;
+                uint(out, 3, (*at_tail != 0).then_some(*at_tail))?;
+                records(out, 4, values)?;
                 for path in exclude {
-                    bytes(out, 5, path.as_str().as_bytes());
+                    bytes(out, 5, path.as_str().as_bytes())?;
                 }
             }
         }
     }
-    uint(out, 3, effect.soft.then_some(1));
+    uint(out, 3, effect.soft.then_some(1))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -473,7 +531,7 @@ mod tests {
                 };
                 let expected = crate::wire_codec::commit_to_wire(&request).encode_to_vec();
                 let mut actual = Vec::new();
-                commit(&mut actual, &request);
+                commit(&mut vector_output(&mut actual), &request).unwrap();
                 assert_eq!(actual, expected);
                 assert_eq!(request.wire_encoded_len(), expected.len());
             }
@@ -514,7 +572,7 @@ mod tests {
                 .encode_to_vec();
                 let mut actual = Vec::with_capacity(append_len(&request));
                 let capacity = actual.capacity();
-                append(&mut actual, &request);
+                append(&mut vector_output(&mut actual), &request).unwrap();
                 assert_eq!(actual, expected);
                 assert_eq!(actual.len(), append_len(&request));
                 assert_eq!(actual.capacity(), capacity);
@@ -545,7 +603,7 @@ mod tests {
         ] {
             request.records = records.into_iter().map(Into::into).collect();
             let mut bytes = Vec::with_capacity(append_len(&request));
-            append(&mut bytes, &request);
+            append(&mut vector_output(&mut bytes), &request).unwrap();
             assert_eq!(
                 crate::http_codec::encode_append(&request),
                 Err("limit_exceeded")
@@ -567,7 +625,7 @@ mod tests {
             idempotency_key: crate::IdempotencyKey::unique(),
         };
         let mut binary = Vec::with_capacity(append_len(&request));
-        append(&mut binary, &request);
+        append(&mut vector_output(&mut binary), &request).unwrap();
         assert_eq!(
             crate::http_codec::encode("append", &binary)?,
             crate::http_codec::encode_append(&request)?
@@ -579,7 +637,7 @@ mod tests {
                     crate::http_codec::encode_append(&request)?
                 } else {
                     let mut encoded = Vec::with_capacity(append_len(&request));
-                    append(&mut encoded, &request);
+                    append(&mut vector_output(&mut encoded), &request).unwrap();
                     crate::http_codec::encode("append", &encoded)?
                 };
                 std::hint::black_box(encoded);
