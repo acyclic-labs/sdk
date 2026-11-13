@@ -99,6 +99,7 @@ impl acyclic_stream::NativeStreamProvider for RefusesAppend {}
 
 #[tokio::test]
 async fn interrupted_diagnostic_staging_preserves_the_original_driver_result() -> Result {
+    #[derive(Clone)]
     struct FailsDifferently {
         calls: Arc<AtomicUsize>,
         original: String,
@@ -123,6 +124,34 @@ async fn interrupted_diagnostic_staging_preserves_the_original_driver_result() -
             })
         }
     }
+    struct Rebinding {
+        provider: Arc<RefusesAppend>,
+        driver: FailsDifferently,
+        baseline: AgentHandler<RefusesAppend, FailsDifferently>,
+    }
+    impl Handler for Rebinding {
+        fn manifest(&self) -> &Manifest {
+            self.baseline.manifest()
+        }
+        fn on_record<'a>(
+            &'a self,
+            delivery: Delivery,
+            checkpoint: Option<&'a Checkpoint>,
+            cancellation: CancellationToken,
+        ) -> GuestFuture<'a, Transition> {
+            Box::pin(async move {
+                let handler = AgentHandler::new(
+                    actor_store(&self.provider).map_err(|error| {
+                        acyclic_actors::guest::GuestError::Handler(error.to_string())
+                    })?,
+                    self.driver.clone(),
+                    self.manifest().limits,
+                )?
+                .with_diagnostics_from(&self.baseline)?;
+                handler.on_record(delivery, checkpoint, cancellation).await
+            })
+        }
+    }
     let root = AgentPath::root(&id(19));
     let original = format!("{}original suffix", "é\u{0001}".repeat(65536));
     let expected = Error::Turn(Box::new(acyclic_harness_core::Error::Invalid(
@@ -143,15 +172,25 @@ async fn interrupted_diagnostic_staging_preserves_the_original_driver_result() -
         diagnostic_chunk: Some(1),
     });
     let calls = Arc::new(AtomicUsize::new(0));
-    let host = AgentHost::new(
-        provider.clone(),
-        FailsDifferently {
-            calls: calls.clone(),
-            original,
-        },
-        ActorReference::new(b"account", b"agents", b"owner")?,
+    let driver = FailsDifferently {
+        calls: calls.clone(),
+        original,
+    };
+    let baseline = AgentHandler::new(
+        actor_store(&provider)?,
+        driver.clone(),
         ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+    )?;
+    let host = AgentHost::hosting(
+        provider.clone(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        Arc::new(Rebinding {
+            provider: provider.clone(),
+            driver,
+            baseline,
+        }),
         Arc::new(SystemClock),
+        None,
     )?;
     let mut adoption = adopted(id(19));
     adoption.brief = Some(driver::file("fail")?);
