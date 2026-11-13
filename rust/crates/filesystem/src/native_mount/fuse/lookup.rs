@@ -5,8 +5,10 @@ pub(in crate::native_mount) fn resolve_path(
     path: &MountPath,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(Option<MountLookup>, Option<ViewStamp>), NativeMountError> {
+    // A fresh path carries no earlier binding proof. Admit the current view
+    // before sampling its epoch, including when publication is still finishing.
+    let _lease = source.acquire_binding_lease_with_meter(None, work)?;
     let binding_epoch = source.binding_epoch_with_meter(work)?;
-    let _lease = source.acquire_binding_lease_with_meter(binding_epoch, work)?;
     let stamp = source.view_stamp_with_meter(work)?;
     let lookup = source.lookup_with_meter(path, work)?;
     if !source.view_is_stable_with_meter(work)?

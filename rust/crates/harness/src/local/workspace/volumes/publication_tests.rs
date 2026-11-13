@@ -1,6 +1,46 @@
 use super::*;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 
+#[tokio::test]
+async fn overlapping_command_writers_preserve_every_published_file() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("workspace".into()))?
+        .mounts;
+    let scratch = mounts
+        .named(Some(crate::filesystem::HOME_VOLUME))?
+        .1
+        .view
+        .source
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("home source".into()))?;
+    let entered = Arc::new(tokio::sync::Barrier::new(8));
+    let writers = (0..8).map(|index| {
+        let entered = Arc::clone(&entered);
+        native_scope(mounts, async move |claims| {
+            entered.wait().await;
+            let path = scratch.destination.join(format!("writer-{index}"));
+            tokio::task::spawn_blocking(move || write_projected(&path, b"published"))
+                .await
+                .map_err(storage)??;
+            Ok(((), claims))
+        })
+    });
+    for result in futures::future::join_all(writers).await {
+        result?;
+    }
+    for index in 0..8 {
+        assert_eq!(
+            published(scratch, &format!("/writer-{index}")).await?,
+            b"published"
+        );
+    }
+    Ok(())
+}
+
 fn write_projected(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(windows)]
     {
