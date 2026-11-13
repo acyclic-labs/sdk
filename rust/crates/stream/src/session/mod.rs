@@ -15,6 +15,8 @@ use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
 pub use crate::SESSION_PROTOCOL_VERSION as VERSION;
+mod negotiation;
+pub use negotiation::{protocol_handshake, protocol_welcome};
 
 mod authority;
 #[cfg(any(test, feature = "test-support"))]
@@ -602,6 +604,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             if hello.version != VERSION {
                 return Err(StreamError::Unsupported);
             }
+            negotiation::admit(hello.protocol.as_ref())?;
             if input.channel_id != 0
                 || input.generation != 0
                 || hello.client_id.is_empty()
@@ -632,6 +635,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     0,
                     Body::Welcome(wire::SessionWelcome {
                         version: VERSION,
+                        protocol: Some(protocol_welcome()),
                         node_id: self.node.clone(),
                         receive_bytes: crate::MAX_COMMAND_BYTES as u64,
                         receive_frames: u32::try_from(crate::MAX_ITEMS)

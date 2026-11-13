@@ -246,6 +246,7 @@ impl Connection {
         sender.unbounded_send(Ok(frame(
             0,
             Body::Hello(wire::SessionHello {
+                protocol: Some(acyclic_stream::session::protocol_handshake()),
                 interest: None,
                 version: acyclic_stream::session::VERSION,
                 credentials: vec![credential(&granted_resource).into()],

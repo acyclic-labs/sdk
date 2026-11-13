@@ -60,6 +60,7 @@ wasm-journal = ["dep:wasm-bindgen"]
 wasm = ["js-bytes", "serde", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
+acyclic-protocol = { version = "=0.2.0", path = "../protocol" }
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 web-time = { version = "1.1.0" }

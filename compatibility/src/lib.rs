@@ -95,6 +95,16 @@ pub fn shared_protocols() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
 }
 
+// Root inputs use the same import names as dependencies. Protoc resolves each
+// through the supplied crate and shared include roots, including after either
+// package is published or relocated.
+fn protocol_roots(protos: &[&str]) -> Vec<PathBuf> {
+    protos
+        .iter()
+        .map(|path| PathBuf::from(path.strip_prefix("proto/").unwrap_or(path)))
+        .collect()
+}
+
 impl Compiler {
     /// Compile messages and selected services; only protocol changes rerun codegen.
     ///
@@ -114,7 +124,7 @@ impl Compiler {
         let output =
             PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?).join(descriptor);
         config.file_descriptor_set_path(&output);
-        let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
+        let paths = protocol_roots(protos);
         services.compile_with_config(
             config,
             &paths,
@@ -143,7 +153,7 @@ impl Compiler {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut config = self.config();
         config.file_descriptor_set_path(output);
-        let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
+        let paths = protocol_roots(protos);
         config.load_fds(
             &paths,
             &[

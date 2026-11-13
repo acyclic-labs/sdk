@@ -6,8 +6,6 @@ modules:
   - path: rust/crates/machines/proto
   - path: rust/crates/actors/proto
   - path: rust/crates/filesystem-wire/proto
-    excludes:
-      - rust/crates/filesystem-wire/proto/protocol
   - path: rust/crates/inference/proto
   - path: rust/crates/harness-core/proto
   - path: rust/crates/stream/proto

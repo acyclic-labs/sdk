@@ -506,6 +506,7 @@ async fn handshake(
         0,
         Body::Hello(wire::SessionHello {
             version: super::super::VERSION,
+            protocol: Some(super::super::protocol_handshake()),
             interest: Some(interest),
             client_id: identity,
             destination_node: destination.into(),
@@ -570,6 +571,7 @@ async fn handshake(
     if welcome.version != super::super::VERSION {
         return Err(StreamError::Unsupported.into());
     }
+    super::super::negotiation::confirm(welcome.protocol.as_ref())?;
     if welcome.node_id.is_empty() || (!destination.is_empty() && welcome.node_id != destination) {
         return Err(StreamError::InvalidResponse.into());
     }
@@ -578,4 +580,117 @@ async fn handshake(
         frames: welcome.receive_frames,
     })?;
     Ok((welcome.node_id, link, response))
+}
+
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+mod negotiation_tests {
+    use super::*;
+
+    struct Peer(u8);
+    impl transport::Transport for Peer {
+        fn session(
+            &self,
+            source: transport::Requests,
+        ) -> crate::BoxProviderFuture<'_, Result<Response, transport::Failure>> {
+            let mutation = self.0;
+            Box::pin(async move {
+                let response = crate::session::serve(
+                    std::sync::Arc::new(crate::MemoryStream::default()),
+                    crate::session::testing::authority(),
+                    "node".into(),
+                    crate::session::Limits::default(),
+                    source.map(Ok).boxed(),
+                )?;
+                Ok(response
+                    .map(move |result| {
+                        result
+                            .map(|frame| {
+                                let mut frame = frame.into_wire();
+                                if let Some(Body::Welcome(welcome)) = &mut frame.body {
+                                    if mutation == 1 {
+                                        welcome.protocol = None;
+                                    } else {
+                                        let protocol =
+                                            welcome.protocol.as_mut().expect("served handshake");
+                                        match mutation {
+                                            2 => protocol.protocol = None,
+                                            3 => protocol
+                                                .protocol
+                                                .as_mut()
+                                                .expect("served identity")
+                                                .version
+                                                .clear(),
+                                            4 => {
+                                                protocol
+                                                    .protocol
+                                                    .as_mut()
+                                                    .expect("served identity")
+                                                    .descriptor_digest = "other".into()
+                                            }
+                                            5 => protocol.supported = None,
+                                            6..=8 => {
+                                                let capabilities = &mut protocol
+                                                    .supported
+                                                    .as_mut()
+                                                    .expect("served capabilities")
+                                                    .capabilities;
+                                                match mutation {
+                                                    6 => capabilities.clear(),
+                                                    7 => {
+                                                        capabilities
+                                                            .first_mut()
+                                                            .expect("session capability")
+                                                            .version = "other".into()
+                                                    }
+                                                    _ => capabilities.push(
+                                                        wire::protocol::v1::Capability {
+                                                            name: "additional.feature".into(),
+                                                            version: "1".into(),
+                                                        },
+                                                    ),
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                frame.into()
+                            })
+                            .map_err(transport::Failure::from)
+                    })
+                    .boxed())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn client_binds_the_served_welcome_before_granting_credit()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for mutation in 0..9 {
+            let result = handshake(
+                Arc::new(Peer(mutation)),
+                "node",
+                Bytes::from_static(b"client"),
+                BTreeMap::new(),
+                wire::SessionInterest {
+                    revision: 1,
+                    ..Default::default()
+                },
+                Arc::new(Progress::new(0)),
+            )
+            .await;
+            if mutation == 0 || mutation == 8 {
+                assert!(result.is_ok(), "valid contract refused");
+            } else {
+                match result {
+                    Err(failure) => {
+                        assert!(matches!(failure.error, StreamError::Unsupported));
+                        assert!(!failure.transient);
+                    }
+                    Ok(_) => return Err("incompatible welcome admitted".into()),
+                }
+            }
+        }
+        Ok(())
+    }
 }

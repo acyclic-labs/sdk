@@ -19,6 +19,7 @@ fn hello(bytes: u64, frames: u32) -> wire::SessionFrame {
         0,
         0,
         Body::Hello(wire::SessionHello {
+            protocol: Some(crate::session::protocol_handshake()),
             interest: None,
             credentials: vec![crate::session::testing::credential()],
             version: crate::session::VERSION,

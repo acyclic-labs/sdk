@@ -17,6 +17,12 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+Session Hello binds the framing version, compiled descriptor digest and every
+required capability before credentials or the first interest are admitted.
+Welcome advertises the same compiled identity and supported session contract;
+the client validates it before granting credit. Incompatible contracts fail
+with `Unsupported`, without a compatibility fallback or another request flight.
+
 Socket providers implement `SocketProvider::prepare`, validating the encoded
 request once and retaining its decoded fields in `PreparedSocketOpen`. The
 session binds authorization to that value's canonical resource, then consumes

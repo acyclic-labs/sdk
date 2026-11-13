@@ -129,9 +129,23 @@ pub use memory::browser_follow_model as browser_follow_verification;
     reason = "generated prost and tonic bindings"
 )]
 pub mod wire {
+    /// Shared protocol negotiation messages.
+    pub mod protocol {
+        /// Version 1 of the shared handshake contract.
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
+        }
+    }
+    /// Generated Stream messages in their canonical package hierarchy.
+    pub mod stream {
+        /// Version 1 of the Stream schema.
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
+        }
+    }
+    pub use stream::v1::*;
     // All session data variants have total equality, including repeated headers.
     impl Eq for SessionData {}
-    include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v1.rs"));
 }
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] =

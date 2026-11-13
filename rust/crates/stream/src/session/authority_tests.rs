@@ -891,6 +891,7 @@ fn live_session(
         0,
         0,
         Body::Hello(wire::SessionHello {
+            protocol: Some(crate::session::protocol_handshake()),
             interest: None,
             version: crate::session::VERSION,
             client_id: Bytes::from_static(b"authority-control"),

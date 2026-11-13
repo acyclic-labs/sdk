@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn admission_golden_frame_opens_without_another_request() -> TestResult {
+async fn admission_binds_the_first_interest_and_refuses_an_unbound_golden_frame() -> TestResult {
     let golden = acyclic_proto_build::golden::frame("session.admission")?;
     let decoded = wire::SessionFrame::decode(golden.as_slice())?;
     let frame = frame(
@@ -19,6 +19,19 @@ async fn admission_golden_frame_opens_without_another_request() -> TestResult {
     );
     assert_eq!(frame.encode_to_vec(), golden);
     assert_eq!(decoded, frame);
+    // The retained framing vector predates identity binding. Its bytes remain
+    // decodable, but it cannot admit any work on the current service.
+    let mut refused = serve(
+        Arc::new(MemoryStream::default()),
+        testing::authority(),
+        "node".into(),
+        Limits::default(),
+        stream::iter([Ok(decoded)]).boxed(),
+    )?;
+    assert!(matches!(
+        refused.next().await,
+        Some(Err(StreamError::Unsupported))
+    ));
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", Bytes::from_static(b"first")).await?;
     let mut admission = hello(1_000_000, 10);
@@ -94,6 +107,87 @@ async fn admission_refuses_versions_before_credentials_and_interests() -> TestRe
             output.next().await,
             Some(Err(StreamError::Unsupported))
         ));
+        assert!(output.next().await.is_none());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn admission_binds_identity_and_every_requirement_before_credentials() -> TestResult {
+    for mutation in 0..10 {
+        let mut input = hello(0, 0);
+        let Some(Body::Hello(hello)) = &mut input.body else {
+            return Err("missing admission".into());
+        };
+        let mut protocol = protocol_handshake();
+        match mutation {
+            0 => hello.protocol = None,
+            1 => protocol.protocol = None,
+            2 => protocol
+                .protocol
+                .as_mut()
+                .ok_or("missing identity")?
+                .version
+                .clear(),
+            3 => {
+                protocol
+                    .protocol
+                    .as_mut()
+                    .ok_or("missing identity")?
+                    .version = "other".into()
+            }
+            4 => protocol
+                .protocol
+                .as_mut()
+                .ok_or("missing identity")?
+                .descriptor_digest
+                .clear(),
+            5 => {
+                protocol
+                    .protocol
+                    .as_mut()
+                    .ok_or("missing identity")?
+                    .descriptor_digest = "other".into()
+            }
+            _ => {
+                let mut capability = wire::protocol::v1::Capability {
+                    name: "stream.session".into(),
+                    version: VERSION.to_string(),
+                };
+                match mutation {
+                    6 => capability.name.clear(),
+                    7 => capability.version.clear(),
+                    8 => capability.version = "other".into(),
+                    _ => capability.name = "unsupported.feature".into(),
+                }
+                protocol
+                    .required
+                    .as_mut()
+                    .ok_or("missing requirements")?
+                    .capabilities
+                    .push(capability);
+            }
+        }
+        if mutation != 0 {
+            hello.protocol = Some(protocol);
+        }
+        hello.credentials = vec![Bytes::from_static(b"malformed credential")];
+        hello.interest = Some(wire::SessionInterest {
+            revision: 1,
+            upsert: vec![subscribe(1, "events", 0, false)],
+            remove: vec![],
+        });
+        let mut output = serve(
+            Arc::new(MemoryStream::default()),
+            testing::authority(),
+            "node".into(),
+            Limits::default(),
+            stream::iter([Ok(input)]).boxed(),
+        )?;
+        assert!(
+            matches!(output.next().await, Some(Err(StreamError::Unsupported))),
+            "mutation {mutation}"
+        );
         assert!(output.next().await.is_none());
     }
     Ok(())

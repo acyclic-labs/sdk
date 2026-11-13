@@ -3,6 +3,7 @@ syntax = "proto3";
 package acyclic.stream.v1;
 
 import "stream/v1/stream.proto";
+import "protocol/v1/protocol.proto";
 import "validation/v1/options.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v1;streamv1";
@@ -36,6 +37,9 @@ message SessionHello {
   // The first request shares admission's flight; no Welcome is needed to send it.
   // A peer checks version and credentials before interpreting this interest.
   SessionInterest interest = 7;
+  // Exact compiled schema and required capabilities, checked before credentials
+  // or the first interest can admit work.
+  acyclic.protocol.v1.HandshakeRequest protocol = 8;
 }
 // Empty credential drops the slot and closes every channel bound to it.
 message SessionCredential {
@@ -47,6 +51,7 @@ message SessionWelcome {
   string node_id = 2;
   uint64 receive_bytes = 3;
   uint32 receive_frames = 4;
+  acyclic.protocol.v1.HandshakeResponse protocol = 5;
 }
 message SessionChannel {
   uint64 channel_id = 1;

@@ -41,6 +41,7 @@ impl StreamSessionService for PausedPeer {
             0,
             0,
             Body::Welcome(wire::SessionWelcome {
+                protocol: Some(crate::session::protocol_welcome()),
                 version: crate::session::VERSION,
                 node_id: "paused".into(),
                 receive_bytes: crate::MAX_COMMAND_BYTES as u64,

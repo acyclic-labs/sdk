@@ -63,7 +63,7 @@ export const writeChanged = (path, content) => {
 /** @type {[string, string[], string?][]} */
 export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
-  ["protocol/v1/protocol_pb", ["filesystem"]],
+  ["protocol/v1/protocol_pb", ["filesystem", "stream"], "compatibility"],
   // Service bindings import the proto2 custom options descriptor transitively.
   ["validation/v1/options_pb", ["auth", "inference", "actors", "filesystem", "machines", "objects", "stream"], "compatibility"],
   ["auth/v1/auth_pb", ["auth"]],
@@ -130,7 +130,6 @@ export const packagedSourceCopies = [
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant",
     "interaction-resolution", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
-  ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
 ];
 
 // Evaluate source-owned policy even in exported trees. Parent repositories,

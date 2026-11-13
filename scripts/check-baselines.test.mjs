@@ -15,11 +15,12 @@ test("descriptor checking rejects breaking changes to a secondary root and an im
     for (const family of ["auth", "actors", "filesystem-wire", "inference", "machines", "objects", "stream"]) {
       cpSync(`rust/crates/${family}/proto`, join(root, `rust/crates/${family}/proto`), { recursive: true });
     }
+    cpSync("compatibility/proto", join(root, "compatibility/proto"), { recursive: true });
     for (const [relative, before, after, family] of [
-      ["stream/proto/stream/v1/session.proto", "string destination_node = 3;", "string destination_node = 99;", "stream"],
-      ["filesystem-wire/proto/protocol/v1/protocol.proto", "string descriptor_digest = 2;", "string descriptor_digest = 99;", "filesystem"],
+      ["rust/crates/stream/proto/stream/v1/session.proto", "string destination_node = 3;", "string destination_node = 99;", "stream"],
+      ["compatibility/proto/protocol/v1/protocol.proto", "string descriptor_digest = 2;", "string descriptor_digest = 99;", "filesystem"],
     ]) {
-      const path = join(root, "rust/crates", relative);
+      const path = join(root, relative);
       const original = readFileSync(path, "utf8");
       assert.ok(original.includes(before));
       writeFileSync(path, original.replace(before, after));

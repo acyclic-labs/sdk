@@ -109,6 +109,7 @@ fn session_admission() -> crate::wire::SessionFrame {
     crate::wire::SessionFrame {
         body: Some(crate::wire::session_frame::Body::Hello(
             crate::wire::SessionHello {
+                protocol: Some(crate::session::protocol_handshake()),
                 version: crate::session::VERSION,
                 client_id: bytes::Bytes::from_static(b"codec"),
                 destination_node: "node".into(),

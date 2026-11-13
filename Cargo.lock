@@ -1442,6 +1442,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
+ "acyclic-protocol",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
  "async-trait",
