@@ -1,23 +1,8 @@
 use super::*;
-
-fn distance(left: &str, right: &str) -> usize {
-    let mut row: Vec<_> = (0..=right.chars().count()).collect();
-    for (i, a) in left.chars().enumerate() {
-        let mut diagonal = row[0];
-        row[0] = i + 1;
-        for (j, b) in right.chars().enumerate() {
-            let previous = row[j + 1];
-            row[j + 1] = (diagonal + usize::from(a != b))
-                .min(previous + 1)
-                .min(row[j] + 1);
-            diagonal = previous;
-        }
-    }
-    *row.last().unwrap()
-}
+use proptest::prelude::*;
 
 #[test]
-fn closest_span_agrees_with_exhaustive_unicode_substrings() -> Result<()> {
+fn normalized_literal_spans_preserve_original_unicode_offsets() -> Result<()> {
     let strings: Vec<String> = (0..=4)
         .flat_map(|length| {
             (0..3usize.pow(length)).map(move |mut digits| {
@@ -33,27 +18,82 @@ fn closest_span_agrees_with_exhaustive_unicode_substrings() -> Result<()> {
         .collect();
     for source in &strings {
         for needle in strings.iter().filter(|needle| !needle.is_empty()) {
-            let mut expected = None;
-            for start in source.char_indices().map(|(offset, _)| offset) {
-                for end in source
-                    .char_indices()
-                    .map(|(offset, c)| offset + c.len_utf8())
-                    .filter(|end| *end > start)
-                {
-                    let candidate = (distance(&source[start..end], needle), start, end);
-                    if expected.is_none_or(|best| candidate < best) {
-                        expected = Some(candidate);
-                    }
-                }
+            if let Some(start) = source.find(needle) {
+                assert_eq!(
+                    closest(source, needle, &mut None)?,
+                    start..start + needle.len()
+                );
             }
-            let expected = expected.map_or(0..0, |(_, start, end)| start..end);
-            assert_eq!(
-                closest(source, needle, &mut None)?,
-                expected,
-                "{source:?} / {needle:?}"
-            );
         }
     }
+    assert_eq!(
+        closest("é\n  \"🦀\"  \nend", "\\\"🦀\\\"", &mut None)?,
+        5..11
+    );
+    let blank_lines = rejection("a\n\n", "b\n\n", &None)?.to_string();
+    assert!(blank_lines.contains("lines 1-2"), "{blank_lines}");
+    assert!(blank_lines.contains(r#"+ "a\n\n""#), "{blank_lines}");
+    Ok(())
+}
+
+fn oracle_bag(text: &str) -> std::collections::BTreeMap<Vec<char>, usize> {
+    let mut bag = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let chars: Vec<_> = line.chars().filter(|c| !c.is_whitespace()).collect();
+        for c in &chars {
+            *bag.entry(vec![*c]).or_default() += 1;
+        }
+        for pair in chars.windows(2) {
+            *bag.entry(pair.to_vec()).or_default() += 1;
+        }
+    }
+    bag
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn rolling_windows_agree_with_an_independent_full_window_oracle(source in "[abé\n]{0,48}", needle in "[abé\n]{1,16}") {
+        let lines: Vec<_> = source.split_inclusive('\n').collect();
+        let count = needle.lines().count().max(1);
+        let expected = oracle_bag(&needle);
+        let mut best = None;
+        let mut start = 0;
+        for index in 0..lines.len().saturating_sub(count).saturating_add(1) {
+            let end = start + lines.iter().skip(index).take(count).map(|line| line.len()).sum::<usize>();
+            let actual = oracle_bag(&source[start..end]);
+            let common: usize = expected.iter().map(|(key,n)| (*n).min(*actual.get(key).unwrap_or(&0))).sum();
+            let total = expected.values().sum::<usize>() + actual.values().sum::<usize>();
+            if best.as_ref().is_none_or(|(n,d,_): &(usize,usize,Range<usize>)| common * *d > *n * total) {
+                best = Some((common,total,start..end));
+            }
+            if let Some(line) = lines.get(index) { start += line.len(); }
+        }
+        let mut expected = best.map_or(0..0, |(_,_,range)| range);
+        if !needle.ends_with('\n') && source[expected.clone()].ends_with('\n') { expected.end -= 1; }
+        let actual = ranked_window(&source, &needle, needle.chars().filter(|c| !c.is_whitespace()).count(), &mut None).unwrap();
+        prop_assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn portable_and_native_miss_search_do_not_multiply_file_and_needle_lengths() -> Result<()> {
+    let source = "a".repeat(100_000);
+    let needle = "b".repeat(10_000);
+    let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    budget.items_examined = 2_000_000;
+    assert!(source.len() * needle.len() > budget.items_examined as usize);
+    let work =
+        acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let mut custody = allocation(Some(&work), 0)?;
+    let native = closest(&source, &needle, &mut custody)?;
+    assert_eq!(closest(&source, &needle, &mut None)?, native);
+    assert!(work.receipt().items_examined < budget.items_examined);
+    drop(custody);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 
