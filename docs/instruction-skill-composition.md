@@ -47,8 +47,9 @@ the existing `SourceStage`, `ContextPipeline`, and executor binding digest, not 
 second composition engine. A later builder `context` call replaces the stages.
 
 Model discovery renders `SkillSummary` entries: an opaque `id`, name,
-description and pinned body source. Callable fields and original source
-identities remain in the manifest. The identifier stays stable when a body
+and description. Body sources, callable fields and original source
+identities remain in the manifest; they are not file-tool addresses.
+The identifier stays stable when a body
 version or retained path changes; same-named skills from different sources have
 different identifiers. Skill update and removal notices carry that same `id`,
 so a removal identifies one advertised entry without revealing private roots.

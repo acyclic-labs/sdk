@@ -3210,33 +3210,25 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
         .volume()?;
     assert_ne!(child_scratch, &harness.scratch);
     let child_skills = catalog(0)?;
-    let project_skill = child_skills
+    let child_project_skill = child_skills
         .iter()
         .find(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == child_project
+            skill.name == "context-checkpoint" && skill.description == "Project-specific context"
         })
         .ok_or_else(|| Error::NotFound("child project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, child_project);
+    let child_seed_skill = child_skills
+        .iter()
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description != "Project-specific context"
+        })
+        .ok_or_else(|| Error::NotFound("child seed skill".into()))?;
+    assert_ne!(child_project_skill.id, child_seed_skill.id);
     assert_eq!(
         child_skills
             .iter()
             .filter(|skill| skill.name == "context-checkpoint")
             .count(),
-        2,
-        "configured and built-in sources remain separate pinned entries",
-    );
-    // Built-in skills are read in place from the one shared seed volume.
-    let seed = &harness.seed.0;
-    assert!(
-        child_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
-        })
-    );
-    assert!(
-        child_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
+        2
     );
 
     let mut parent = ObservedConversation::open(&harness).await?;
@@ -3250,22 +3242,20 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_eq!(parent_file.volume(), &project);
     // The second agent must not reuse the first agent's cached private pins.
     let parent_skills = catalog(2)?;
-    let project_skill = parent_skills
+    let parent_project_skill = parent_skills
         .iter()
-        .find(|skill| skill.name == "context-checkpoint" && skill.source.root.volume == project)
-        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
-    assert_eq!(&project_skill.source.root.volume, &project);
-    assert!(
-        parent_skills.iter().any(|skill| {
-            skill.name == "context-checkpoint" && &skill.source.root.volume == seed
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description == "Project-specific context"
         })
-    );
-    assert!(
-        parent_skills
-            .iter()
-            .filter(|skill| skill.name != "context-checkpoint")
-            .all(|skill| &skill.source.root.volume == seed)
-    );
+        .ok_or_else(|| Error::NotFound("parent project skill".into()))?;
+    let parent_seed_skill = parent_skills
+        .iter()
+        .find(|skill| {
+            skill.name == "context-checkpoint" && skill.description != "Project-specific context"
+        })
+        .ok_or_else(|| Error::NotFound("parent seed skill".into()))?;
+    assert_eq!(parent_seed_skill.id, child_seed_skill.id);
+    assert_ne!(parent_project_skill.id, child_project_skill.id);
     // Project skills differ: the child reads its own forked project.
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {

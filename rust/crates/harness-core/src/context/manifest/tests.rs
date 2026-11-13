@@ -54,8 +54,7 @@ fn skill_catalog_credit_excludes_callable_fields_and_source_identity() -> Result
     let expected = json!([{
         "id":blake3::hash(b"skill:[\"inspect\",\"PRIVATE_ORIGINAL_SOURCE\"]").to_hex().as_str(),
         "name":"inspect",
-        "description":"Inspect files",
-        "source": entry.source
+        "description":"Inspect files"
     }]);
     let catalog_bytes = serde_json::to_vec(&expected)
         .map_err(|error| Error::Invalid(error.to_string()))?
@@ -409,6 +408,8 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
     let ModelContent::Text(catalog) = &catalog[0].content else {
         return Err(Error::Invalid("expected skill catalog".into()));
     };
+    assert!(!catalog.contains("SKILL.md"));
+    assert!(!catalog.contains("PRIVATE_ORIGINAL_SOURCE"));
     let catalog: Vec<SkillSummary> = serde_json::from_str(catalog).unwrap();
     assert_ne!(catalog[0].id, catalog[1].id);
     let initial = ContextEpoch::changes(&BTreeMap::new(), &manifest, reader.as_ref()).await?;
@@ -431,7 +432,7 @@ async fn same_named_skill_changes_and_removals_keep_their_source_identity() -> R
     assert_eq!(changed.len(), 1);
     assert_eq!(
         changed[0].notice.body["skill"],
-        json!({"id":catalog[0].id,"name":"inspect","description":"changed user skill","source":manifest.discovery.skills[0].source})
+        json!({"id":catalog[0].id,"name":"inspect","description":"changed user skill"})
     );
     assert!(
         !serde_json::to_string(&changed[0].notice)

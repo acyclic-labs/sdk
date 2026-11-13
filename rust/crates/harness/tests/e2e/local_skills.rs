@@ -2,7 +2,7 @@ use super::TestResult;
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
     agent::{AgentOutcome, Phase, TurnOutcome},
-    context::{CompactionPolicy, ModelContextCapacity, SkillSummary},
+    context::{CompactionPolicy, DiscoveryWork, ModelContextCapacity, SkillMetadata, SkillSummary},
     local::{
         Event,
         agent_conversation::{Conversation, Sent},
@@ -33,7 +33,6 @@ fn config(
             provider,
         ),
     )?
-    .feedback_plugin(false)
     .state_directory(state)
     .without_default_tools()
     .compaction(CompactionPolicy::Disabled)
@@ -97,6 +96,12 @@ fn provider(turns: usize) -> Arc<ScriptedModelProvider> {
                 output_tokens: Some(4096),
             }),
     )
+}
+
+async fn metadata(harness: &LocalHarness) -> TestResult<Vec<SkillMetadata>> {
+    Ok(harness
+        .skills_with_work(None, &mut DiscoveryWork::default())
+        .await?)
 }
 
 fn catalog(provider: &ScriptedModelProvider, index: usize) -> TestResult<Vec<SkillSummary>> {
@@ -175,6 +180,7 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
             1
         );
     }
+    let original_skills = metadata(&harness).await?;
     // Seed skills are read in place from the one seed volume, never copied.
     for (path, _) in acyclic_harness::seed::tree() {
         let Some(name) = path
@@ -183,7 +189,7 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
         else {
             continue;
         };
-        let skill = skills
+        let skill = original_skills
             .iter()
             .find(|skill| skill.name == name)
             .ok_or("seed skill absent from the first request")?;
@@ -275,7 +281,7 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
     )?)
     .await?;
     turn(&harness, "inventory", true).await?;
-    let skills = catalog(&model, 0)?;
+    let skills = metadata(&harness).await?;
     drop(harness);
     let harness = open(config(root.path(), home.path(), state.path(), provider(0))?).await?;
     let reader = harness.client_reader()?;
@@ -391,6 +397,11 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     )
     .await?;
     turn(&harness, "second inventory", true).await?;
+    let prior_sources = metadata(&harness).await?;
+    let prior = prior_sources
+        .iter()
+        .find(|skill| skill.name == "greet2")
+        .ok_or("prior skill absent from host metadata")?;
     let updated = b"---\nname: greet2\ndescription: Updated generation\n---\nCHANGED-PRIVATE-BODY";
     host.apply(
         &workspace,
@@ -416,11 +427,11 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
         ))
     };
     let first_prefix = prefix(&requests[0])?;
-    let mut sources = Vec::new();
+
     for (index, expected) in [(1, 1), (2, 2), (3, 2)] {
         assert_eq!(prefix(&requests[index])?, first_prefix);
         // The epoch catalog stays frozen. Fresh metadata belongs to the
-        // appended notice, including the exact source needed by lazy readers.
+        // appended notice; pinned body references remain host metadata.
         assert_eq!(catalog(&model, index)?, first);
         let changed = requests[index]
             .messages
@@ -438,11 +449,15 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
                 .iter()
                 .all(|skill| skill.description == "Updated generation")
         );
-        sources = changed;
     }
-    assert_ne!(sources[0].source.generation, sources[1].source.generation);
+    let sources = metadata(&harness).await?;
+    let source = sources
+        .iter()
+        .find(|skill| skill.name == "greet2")
+        .ok_or("updated skill absent from host metadata")?;
+    assert_ne!(prior.source.generation, source.source.generation);
     let reader = harness.client_reader()?;
-    let (_, bytes) = sources[1].source.read(reader.as_ref(), 4096).await?;
+    let (_, bytes) = source.source.read(reader.as_ref(), 4096).await?;
     assert_eq!(bytes.as_ref(), updated);
     assert!(!serde_json::to_string(&model.requests())?.contains("PRIVATE-BODY"));
     Ok(())

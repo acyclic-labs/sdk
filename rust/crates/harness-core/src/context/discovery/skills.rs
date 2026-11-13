@@ -18,8 +18,8 @@ pub struct SkillMetadata {
     pub source: PinnedContextPath,
 }
 
-/// The model's discovery surface, including the exact lazy body location.
-/// Original source identity and callable fields stay pinned in the manifest.
+/// The model's discovery surface, without storage paths or read grants.
+/// Body locations, original source identity and callable fields stay pinned in the manifest.
 /// `id` identifies the declared name and original source across body versions
 /// and retained paths. Change and removal notices carry the same identifier.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -32,8 +32,6 @@ pub struct SkillSummary {
     pub name: String,
     /// Frontmatter description.
     pub description: String,
-    /// Exact body location, loaded only when selected.
-    pub source: PinnedContextPath,
 }
 
 #[derive(Serialize)]
@@ -41,7 +39,6 @@ pub(crate) struct SkillSummaryView<'a> {
     id: SkillId,
     name: &'a str,
     description: &'a str,
-    source: &'a PinnedContextPath,
 }
 
 struct SkillId([u8; 32]);
@@ -117,7 +114,6 @@ impl SkillMetadata {
             id: SkillId(*hash.finalize().as_bytes()),
             name: &self.name,
             description: &self.description,
-            source: &self.source,
         })
     }
 

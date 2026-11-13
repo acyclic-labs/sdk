@@ -137,10 +137,13 @@ async fn assert_request(
     for (entry, metadata) in listing.iter().zip(&manifest.discovery.skills) {
         assert_eq!(entry.name, metadata.name);
         assert_eq!(entry.description, metadata.description);
-        assert_eq!(entry.source, metadata.source);
     }
     assert_ne!(listing[0].id, listing[1].id);
-    let (_, body) = listing[1].source.read(reader, 4096).await?;
+    assert!(!catalog.contains("SKILL.md"));
+    let (_, body) = manifest.discovery.skills[1]
+        .source
+        .read(reader, 4096)
+        .await?;
     assert!(
         std::str::from_utf8(&body)
             .map_err(|error| Error::Invalid(error.to_string()))?
