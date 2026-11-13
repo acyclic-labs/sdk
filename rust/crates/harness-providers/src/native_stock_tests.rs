@@ -149,6 +149,13 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
+    // Turns journal on the agent's own journal volume, which hosting creates
+    // beside its workspace volumes; this hand-built root needs it too.
+    host.create_volume(&acyclic_harness_core::conversation::journal_volume(
+        volume.provider().clone(),
+        &root.id(),
+    )?)
+    .await?;
     let issuer = AuthorityRoot::new(
         "fixture",
         [47; 32],
