@@ -1,5 +1,14 @@
 use super::*;
 
+// Omission selects the path head; a present version must name a condition.
+// Option's ordinary decoder also accepts null, silently erasing that condition.
+fn present_version<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
 /// Version-pinned file/media read arguments shared by native tool profiles.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[derive(
@@ -18,7 +27,12 @@ pub struct ReadFileInput {
     pub wait: bool,
     /// Opaque version from a prior read or publication. Omission reads the
     /// current path under the original directory read grant.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_version"
+    )]
+    #[schemars(with = "String")]
     pub version: Option<String>,
     /// Optional UTF-8 byte interval, clipped to the source. Offsets past EOF
     /// return an empty page. Large intervals return a continuation page.
@@ -110,7 +124,13 @@ pub struct WriteFileInput {
     pub content: String,
     /// `any` (or omission) replaces unconditionally; `absent` creates only
     /// when missing; an opaque read version replaces exactly that source.
-    #[serde(default, rename = "ifVersion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "ifVersion",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_version"
+    )]
+    #[schemars(with = "String")]
     pub if_version: Option<String>,
 }
 
@@ -139,7 +159,12 @@ pub struct EditFileInput {
     pub path: String,
     /// Opaque version from a prior read or publication. Omission resolves the
     /// current path under the original directory read grant.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_version"
+    )]
+    #[schemars(with = "String")]
     pub version: Option<String>,
     /// Exact nonempty needle; one unambiguous match unless `replace_all` is set.
     #[serde(default)]

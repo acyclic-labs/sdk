@@ -1,6 +1,20 @@
 (rpc, definitions) => {
     const parse = JSON.parse, stringify = JSON.stringify;
     const ErrorType = Error, PromiseType = Promise;
+    const finite = Number.isFinite;
+    // JSON's default omission/null conversion can turn an explicit condition
+    // into an unconditional operation. Validate during its original traversal,
+    // after toJSON, so getters are never evaluated a second time.
+    const argument = (_key, value) => {
+        const type = typeof value;
+        if (type === 'undefined' || type === 'function' || type === 'symbol'
+            || (type === 'number' && !finite(value))) {
+            const error = new ErrorType('JavaScript tool arguments contain a non-JSON value');
+            error.class = 'invalid';
+            throw error;
+        }
+        return value;
+    };
     const define = Object.defineProperty, tools = Object.create(null);
     const then = Promise.prototype.then;
     const constructor = Object.freeze({[Symbol.species]: PromiseType});
@@ -12,7 +26,7 @@
     const invoke = async (name, args, module = false) => {
         pending++;
         try {
-            const response = await stable(rpc(name, stringify(args), module));
+            const response = await stable(rpc(name, stringify(args, name === null ? undefined : argument), module));
             if (name === null) return;
             const reply = parse(response);
             if (!reply.ok) {

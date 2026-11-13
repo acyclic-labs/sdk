@@ -1,0 +1,44 @@
+{
+  "prompt": "Reject invalid file conditions and keep the original publication.",
+  "seed": {
+    "guarded.txt": "original\n"
+  },
+  "turns": [
+    [
+      {
+        "call_id": "program",
+        "kind": "tool_call",
+        "arguments": {
+          "code": "const path = 'guarded.txt';\nconst before = await tools.read({path, selection:{kind:'text'}});\nlet refused = 0;\nconst reject = async call => {\n    try { await call(); }\n    catch (error) { if (error.class === 'invalid') { refused++; return; } throw error; }\n    throw new Error('invalid condition published');\n};\nfor (const condition of [undefined, () => {}, Symbol('condition'), NaN, Infinity]) {\n    await reject(() => tools.write({path, content:'unsafe\\n', ifVersion:condition}));\n}\nlet getters = 0, conversions = 0;\nawait reject(() => tools.write({toJSON() {\n    conversions++;\n    return {path, content:'unsafe\\n', get ifVersion() { getters++; return undefined; }};\n}}));\nawait reject(() => tools.write({path, content:'unsafe\\n', ifVersion:null}));\nawait reject(() => tools.read({path, version:null}));\nawait reject(() => tools.edit({path, version:null, old_text:'original', new_text:'unsafe'}));\nconst after = await tools.read({path, selection:{kind:'text'}});\nawait tools.write({toJSON() {\n    conversions++;\n    return {path, content:'final\\n', get ifVersion() { getters++; return after.version; }};\n}});\nawait console.log(undefined);\nexport default {refused, unchanged:before.version === after.version, original:after.text === 'original\\n', getters, conversions};"
+        },
+        "name": "code",
+        "type": "event"
+      },
+      {
+        "kind": "completed",
+        "metadata": null,
+        "type": "event"
+      }
+    ],
+    "done"
+  ],
+  "expect": {
+    "files": {
+      "guarded.txt": "final\n"
+    },
+    "results": {
+      "program": {
+        "content": {
+          "kind": "json",
+          "value": {
+            "getters": 2,
+            "refused": 9,
+            "unchanged": true,
+            "conversions": 2,
+            "original": true
+          }
+        }
+      }
+    }
+  }
+}

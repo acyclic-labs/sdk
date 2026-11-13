@@ -166,6 +166,56 @@ async fn native_write_recovery_observes_the_original_receipt_without_republishin
             assert_eq!(after.durability_operations, before.durability_operations);
         }
     }
+    // A present null condition used to decode as omission and publish. Refuse
+    // through the real native authorizer and executor before either volume
+    // acquires a file or a publication receipt.
+    for prefix in ["", crate::layers::HOME_PATH] {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "null-condition".into(),
+            name: "write".into(),
+            arguments: json!({"path":format!("{prefix}null.txt"),"content":"forbidden","ifVersion":null}),
+        };
+        let context = ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(100_000, 16_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let before = work.receipt();
+        assert_eq!(
+            write()?
+                .executor
+                .authorize(
+                    Some(context.effective_scope()),
+                    Some(&context),
+                    &invocation,
+                    Some(&work),
+                )
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Invalid,
+        );
+        assert_eq!(
+            write()?
+                .executor
+                .execute(invocation, Some(context))
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Invalid,
+        );
+        let after = work.receipt();
+        assert_eq!(
+            after.backend_write_operations,
+            before.backend_write_operations
+        );
+        assert_eq!(
+            after.authority_records_appended,
+            before.authority_records_appended
+        );
+        assert_eq!(after.durability_operations, before.durability_operations);
+    }
     for storage in [&project, &home] {
         assert!(
             storage
