@@ -4,6 +4,229 @@ use acyclic_harness_core::Capabilities;
 use proptest::prelude::*;
 
 #[tokio::test]
+async fn account_rejection_settles_only_its_original_owned_send() -> Result {
+    use acyclic_actors::{
+        addressing::ActorReference,
+        route::{self, NodeId, Paths, Rejection, Routed},
+    };
+    use acyclic_stream::{FollowRequest, RecordHeaders, WhenAbsent};
+    use std::sync::Arc;
+    for delivery in [MessageDelivery::Steer, MessageDelivery::FollowUp] {
+        for reason in [Rejection::Closed, Rejection::NoSuchActor] {
+            let local = Arc::new(MemoryStream::default());
+            let account = MemoryStream::default();
+            let sender = create(local.as_ref(), id(60)).await?;
+            let recipient = create(local.as_ref(), id(61)).await?;
+            let within =
+                ActorReference::new(b"account", b"agents", sender.id().as_str().as_bytes())?;
+            let routing = Routing {
+                paths: Paths::new(StreamPath::new("routing")?),
+                node: NodeId::new(b"source")?,
+            };
+            let admission = session_peer_admission(
+                local.as_ref(),
+                &Capabilities::new([SEND_PEER]),
+                &sender,
+                &recipient,
+            )
+            .await?
+            .ok_or("peer grant missing")?;
+            let state = AgentState::adopted(sender.clone(), &adopted(sender.id()))?;
+            let message_id = intent("original");
+            let step = Step {
+                outs: effect_outs(
+                    &state,
+                    vec![TurnEffect::Send {
+                        peer: Some(admission),
+                        delivery,
+                        to: recipient.clone(),
+                        id: message_id.clone(),
+                        re: None,
+                        body: Box::new(super::driver::file("message.md")?),
+                        attachments: None,
+                    }],
+                ),
+                state,
+                status: None,
+                alarm: Alarm::Clear,
+            };
+            submit(
+                local.as_ref(),
+                routing.lower(
+                    &within,
+                    &BTreeSet::from([recipient.clone()]),
+                    &step,
+                    1,
+                    intent_key("original-step", &[])?,
+                )?,
+            )
+            .await?;
+            let published = local
+                .record_at(routing.paths.outbox(&routing.node)?, 0)
+                .await?
+                .ok_or("source missing")?;
+            let original = route::Publication::decode(&published.value)?.delivery()?;
+            let peer = PeerRoute::parse(&original)?;
+            let account_node = NodeId::new(b"account")?;
+            let notice = peer.rejection(account_node.clone(), reason)?;
+            assert!(
+                PeerRoute::parse(&notice).is_err(),
+                "a peer grant must not admit host refusals"
+            );
+            assert!(
+                PeerResultRoute::parse(&notice).is_err(),
+                "an account refusal must not invent a destination receipt"
+            );
+            assert_eq!(
+                original
+                    .publish_rejection(&account, &routing.paths, reason, &notice, Vec::new())
+                    .await?,
+                Routed::Rejected(reason)
+            );
+            assert_eq!(
+                original
+                    .publish_rejection(&account, &routing.paths, reason, &notice, Vec::new())
+                    .await?,
+                Routed::Rejected(reason)
+            );
+            assert_eq!(
+                original
+                    .publish_relay(
+                        &account,
+                        &routing.paths,
+                        &NodeId::new(b"destination")?,
+                        Vec::new()
+                    )
+                    .await?,
+                Routed::Rejected(reason),
+                "a later routing decision must retain the original refusal"
+            );
+            assert_eq!(account.tail(routing.paths.relay(&routing.node)?).await?, 1);
+            let record = account
+                .record_at(routing.paths.relay(&routing.node)?, 0)
+                .await?
+                .ok_or("rejection missing")?;
+            let relayed = route::RelayRecord {
+                envelope: route::Envelope::decode(&record.value)?,
+                receipt: route::RelayReceipt {
+                    commit_id: record.commit_id,
+                    sequence: record.sequence,
+                },
+                headers: record.headers,
+            };
+            let host = AgentHost::new(
+                local.clone(),
+                Scripted(Mutex::new(VecDeque::new())),
+                within.clone(),
+                acyclic_actors::domain::ActorLimits::default(),
+                Arc::new(acyclic_actors::local::SystemClock),
+            )?;
+            host.set_peer_membership(
+                &sender,
+                &Sender::User {
+                    principal: "owner".into(),
+                },
+                &intent("off"),
+                false,
+            )
+            .await?;
+            let routed = PeerRejectionRoute::parse(&relayed.envelope)?;
+            let mut unproven = relayed.clone();
+            unproven.headers = RecordHeaders::default();
+            assert!(
+                routed.deliver(&host, &unproven).await.is_err(),
+                "ordinary relay publication cannot authorize an account refusal"
+            );
+            let other_reason = match reason {
+                Rejection::Closed => Rejection::NoSuchActor,
+                Rejection::NoSuchActor => Rejection::Closed,
+            };
+            let mut changed = relayed.clone();
+            changed.envelope = peer.rejection(account_node.clone(), other_reason)?;
+            assert!(
+                PeerRejectionRoute::parse(&changed.envelope)?
+                    .deliver(&host, &changed)
+                    .await
+                    .is_err(),
+                "a genuine binding must not authorize a changed reason"
+            );
+            // The binding must match the sender's original bytes, not just its
+            // message id, target and a syntactically valid rejection Notice.
+            let mut altered = original.clone();
+            altered.source = NodeId::new(b"other-source")?;
+            let other_account = MemoryStream::default();
+            altered
+                .publish_rejection(&other_account, &routing.paths, reason, &notice, Vec::new())
+                .await?;
+            let wrong = other_account
+                .record_at(routing.paths.relay(&altered.source)?, 0)
+                .await?
+                .ok_or("negative binding missing")?;
+            let wrong = route::RelayRecord {
+                envelope: route::Envelope::decode(&wrong.value)?,
+                receipt: route::RelayReceipt {
+                    commit_id: wrong.commit_id,
+                    sequence: wrong.sequence,
+                },
+                headers: wrong.headers,
+            };
+            assert!(
+                PeerRejectionRoute::parse(&wrong.envelope)?
+                    .deliver(&host, &wrong)
+                    .await
+                    .is_err(),
+                "another original publication must not settle this send"
+            );
+            assert_eq!(
+                local.tail(sender.inbox()?).await?,
+                1,
+                "failed proofs must write no inbox input"
+            );
+            let mut events = acyclic_stream::records_only(
+                account
+                    .follow(FollowRequest {
+                        when_absent: WhenAbsent::Wait,
+                        ..FollowRequest::new(routing.paths.relay_cursor(&routing.node)?, 0)
+                    })
+                    .await?,
+            );
+            let drain = route::drain(&account, &routing.paths, &routing.node, async |record| {
+                PeerRejectionRoute::parse(&record.envelope)
+                    .map_err(|_| route::Error::InvalidRecord)?
+                    .deliver(&host, &record)
+                    .await
+                    .map_err(|_| route::Error::InvalidRecord)?;
+                Ok(())
+            });
+            let ack = events.try_next();
+            futures::pin_mut!(drain, ack);
+            match futures::future::select(drain, ack).await {
+                futures::future::Either::Right((ack, _)) => assert!(ack?.is_some()),
+                futures::future::Either::Left((outcome, _)) => {
+                    return Err(format!("drain stopped: {outcome:?}").into());
+                }
+            }
+            assert_eq!(local.tail(sender.inbox()?).await?, 2);
+            let settled = sent_reply(&local, &within, &sender, &message_id)
+                .await?
+                .ok_or("send missing")?;
+            assert_eq!(settled.status, SentReplyStatus::Dropped);
+            assert!(settled.watch.is_none());
+            assert_eq!(
+                routed.deliver(&host, &relayed).await?,
+                Delivered::Committed { inbox: 1 }
+            );
+            assert_eq!(
+                local.tail(sender.inbox()?).await?,
+                2,
+                "a lost acknowledgment must replay one Notice"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn session_profiles_publish_only_public_metadata_changes() -> Result {
     use acyclic_actors::route::NodeId;
     let volume = super::driver::file("body.md")?.volume().clone();

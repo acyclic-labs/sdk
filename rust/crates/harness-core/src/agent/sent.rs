@@ -187,85 +187,26 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
     sender: &AgentPath,
     id: &IntentId,
 ) -> Result<Option<SentMessage>, Error> {
-    let head = match provider.head(sender.sent_message(id)?).await {
-        Ok(head) => head,
-        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
-        Err(error) => return Err(Error::Stream(error)),
+    let Some((marker, record)) = original_marker(provider, sender, id).await? else {
+        return Ok(None);
     };
-    let record = head
-        .last
-        .ok_or(Error::Record("send receipt marker is empty"))?;
-    if head.tail != 1 || record.sequence != 0 {
-        return Err(Error::Record("send receipt marker is not immutable"));
-    }
-    let marker = SentRecord::decode(&record.value)?;
-    let outbox = record
-        .headers
-        .attributes()
-        .iter()
-        .find(|attribute| attribute.name == super::routing::OUTBOX)
-        .map(|attribute| {
-            let path = std::str::from_utf8(attribute.value.as_ref())
-                .map_err(|_| Error::Record("send outbox path is not UTF-8"))?;
-            acyclic_stream::StreamPath::new(path).map_err(Error::Stream)
-        })
-        .transpose()?;
-    if marker.id != *id {
-        return Err(Error::Record("send receipt intent differs"));
-    }
-    let attributes = record.headers.attributes();
-    let source_intent = attributes
-        .iter()
-        .find(|attribute| attribute.name == super::routing::SOURCE_INTENT);
-    if let Some(outbox) = outbox {
-        let source_intent = source_intent.ok_or(Error::Record("send source index is missing"))?;
-        let mut records = provider
-            .read(acyclic_stream::ReadRequest {
-                path: outbox.clone(),
-                from: 0,
-                limit: 1,
-                key: Some(acyclic_stream::ReadKeySeek::exact(
-                    source_intent.value.to_vec(),
-                    u64::MAX,
-                )),
-                at_least: Default::default(),
-            })
-            .await
-            .map_err(Error::Stream)?;
-        let source = records
-            .try_next()
-            .await
-            .map_err(Error::Stream)?
-            .ok_or(Error::Record("send source publication is missing"))?;
-        if source.commit_id != record.commit_id || source.origin != outbox {
-            return Err(Error::Record("send source publication differs"));
-        }
-        let (paths, node) = route::Paths::from_outbox(&outbox).map_err(super::routing::error)?;
-        let envelope = route::Publication::decode(&source.value)
-            .map_err(super::routing::error)?
-            .delivery()
-            .map_err(super::routing::error)?;
-        let peer = super::PeerRoute::parse(&envelope)?;
-        if envelope.source != node
-            || peer.sender() != sender
-            || peer.recipient() != &marker.to
-            || peer.id() != id
-        {
-            return Err(Error::Record("send source intent differs"));
-        }
+    if let Some(source) = original_routed(provider, sender, &marker, &record).await? {
         let delivery = match route::receipt(
             provider,
-            &paths,
-            &node,
+            &source.paths,
+            &source.envelope.source,
             source.sequence,
-            &envelope.request.idempotency_key,
+            &source.envelope.request.idempotency_key,
         )
         .await
         .map_err(super::routing::error)?
         {
             Some(receipt) => SentDelivery::Complete(receipt),
             None => SentDelivery::Pending {
-                source: paths.outbox_cursor(&node).map_err(Error::Stream)?,
+                source: source
+                    .paths
+                    .outbox_cursor(&source.envelope.source)
+                    .map_err(Error::Stream)?,
                 from: source.sequence,
             },
         };
@@ -274,9 +215,6 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
             id: marker.id,
             delivery,
         }));
-    }
-    if source_intent.is_some() {
-        return Err(Error::Record("send source index has no outbox"));
     }
     let envelope = provider
         .read_commit(record.commit_id)
@@ -317,4 +255,119 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
             Delivered::Closed => Routed::Rejected(route::Rejection::Closed),
         }),
     }))
+}
+
+async fn original_marker<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    sender: &AgentPath,
+    id: &IntentId,
+) -> Result<Option<(SentRecord, acyclic_stream::Record)>, Error> {
+    let path = sender.sent_message(id)?;
+    let head = match provider.head(path.clone()).await {
+        Ok(head) => head,
+        Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+        Err(error) => return Err(Error::Stream(error)),
+    };
+    let record = head
+        .last
+        .ok_or(Error::Record("send receipt marker is empty"))?;
+    if head.tail != 1 || record.sequence != 0 || record.origin != path {
+        return Err(Error::Record("send receipt marker is not immutable"));
+    }
+    let marker = SentRecord::decode(&record.value)?;
+    if marker.id != *id {
+        return Err(Error::Record("send receipt intent differs"));
+    }
+    Ok(Some((marker, record)))
+}
+
+struct RoutedSend {
+    paths: route::Paths,
+    envelope: route::Envelope,
+    sequence: u64,
+}
+
+async fn original_routed<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    sender: &AgentPath,
+    marker: &SentRecord,
+    record: &acyclic_stream::Record,
+) -> Result<Option<RoutedSend>, Error> {
+    let outbox = record
+        .headers
+        .attributes()
+        .iter()
+        .find(|attribute| attribute.name == super::routing::OUTBOX)
+        .map(|attribute| {
+            let path = std::str::from_utf8(attribute.value.as_ref())
+                .map_err(|_| Error::Record("send outbox path is not UTF-8"))?;
+            acyclic_stream::StreamPath::new(path).map_err(Error::Stream)
+        })
+        .transpose()?;
+    let attributes = record.headers.attributes();
+    let source_intent = attributes
+        .iter()
+        .find(|attribute| attribute.name == super::routing::SOURCE_INTENT);
+    if let Some(outbox) = outbox {
+        let source_intent = source_intent.ok_or(Error::Record("send source index is missing"))?;
+        let mut records = provider
+            .read(acyclic_stream::ReadRequest {
+                path: outbox.clone(),
+                from: 0,
+                limit: 1,
+                key: Some(acyclic_stream::ReadKeySeek::exact(
+                    source_intent.value.to_vec(),
+                    u64::MAX,
+                )),
+                at_least: Default::default(),
+            })
+            .await
+            .map_err(Error::Stream)?;
+        let source = records
+            .try_next()
+            .await
+            .map_err(Error::Stream)?
+            .ok_or(Error::Record("send source publication is missing"))?;
+        if source.commit_id != record.commit_id || source.origin != outbox {
+            return Err(Error::Record("send source publication differs"));
+        }
+        let (paths, node) = route::Paths::from_outbox(&outbox).map_err(super::routing::error)?;
+        let envelope = route::Publication::decode(&source.value)
+            .map_err(super::routing::error)?
+            .delivery()
+            .map_err(super::routing::error)?;
+        let peer = super::PeerRoute::parse(&envelope)?;
+        if envelope.source != node
+            || peer.sender() != sender
+            || peer.recipient() != &marker.to
+            || peer.id() != &marker.id
+        {
+            return Err(Error::Record("send source intent differs"));
+        }
+        return Ok(Some(RoutedSend {
+            paths,
+            envelope,
+            sequence: source.sequence,
+        }));
+    }
+    if source_intent.is_some() {
+        return Err(Error::Record("send source index has no outbox"));
+    }
+    Ok(None)
+}
+
+/// Recover the exact sender-owned request for an account rejection. The marker
+/// and native source index prove its original commit, root, target and intent.
+pub(super) async fn original_route<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    sender: &AgentPath,
+    id: &IntentId,
+) -> Result<route::Envelope, Error> {
+    let (marker, record) = original_marker(provider, sender, id)
+        .await?
+        .ok_or(Error::Record("result has no owned send"))?;
+    original_routed(provider, sender, &marker, &record)
+        .await?
+        .map(|source| source.envelope)
+        .ok_or(Error::Record("result has no routed source"))
 }

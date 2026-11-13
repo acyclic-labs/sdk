@@ -3,7 +3,7 @@ use super::{AgentPath, AgentRecord, Error, PeerAdmission};
 use acyclic_actors::{addressing::ActorReference, route};
 
 pub(super) mod notices;
-pub use notices::PeerResultRoute;
+pub use notices::{PeerRejectionRoute, PeerResultRoute};
 
 pub(super) const OUTBOX: &str = "acyclic.actors.route.outbox.v1";
 pub(super) const SOURCE_INTENT: &str = "acyclic.actors.route.source-intent.v1";

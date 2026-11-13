@@ -19,7 +19,10 @@ pub struct Delivered {
 }
 
 /// A definitive recipient refusal, retained under the original intent.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, prost::Enumeration)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, prost::Enumeration, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 #[repr(i32)]
 pub enum Rejection {
     /// The owning node has closed the recipient.

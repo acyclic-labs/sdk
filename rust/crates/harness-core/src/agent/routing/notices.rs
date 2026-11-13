@@ -19,6 +19,7 @@ struct ResultRecord {
     id: IntentId,
     peer: AgentPath,
     status: SentReplyStatus,
+    rejection: Option<route::Rejection>,
 }
 
 fn key(sender: &AgentPath, id: &IntentId) -> Result<Vec<u8>, Error> {
@@ -36,7 +37,7 @@ impl ResultRecord {
         sender: acyclic_actors::addressing::ActorReference,
         to: acyclic_actors::addressing::ActorReference,
         target: &AgentPath,
-        receipt: &route::RelayReceipt,
+        receipt: Option<&route::RelayReceipt>,
     ) -> Result<route::Envelope, Error> {
         Ok(route::Envelope {
             source: node,
@@ -49,13 +50,15 @@ impl ResultRecord {
     fn request(
         &self,
         target: &AgentPath,
-        receipt: &route::RelayReceipt,
+        receipt: Option<&route::RelayReceipt>,
     ) -> Result<CommitRequest, Error> {
         if self.version != 1
             || self.peer.depth() != 0
             || target.depth() != 0
             || target == &self.peer
             || matches!(self.status, SentReplyStatus::Pending)
+            || (self.rejection.is_some() != receipt.is_none())
+            || (self.rejection.is_some() && self.status != SentReplyStatus::Dropped)
         {
             return Err(Error::Record("invalid terminal peer result"));
         }
@@ -94,7 +97,10 @@ impl ResultRecord {
             false,
         )
         .map_err(Error::Stream)?;
-        let mut attributes = vec![receipt.attribute()];
+        let mut attributes = receipt
+            .map(route::RelayReceipt::attribute)
+            .into_iter()
+            .collect::<Vec<_>>();
         attributes.extend(
             record
                 .headers
@@ -107,6 +113,44 @@ impl ResultRecord {
                 .map_err(Error::Stream)?;
         records[0] = record;
         Ok(request)
+    }
+
+    fn parse(
+        envelope: &route::Envelope,
+    ) -> Result<(Self, AgentPath, Option<route::RelayReceipt>), Error> {
+        let [effect] = envelope.request.effects.as_slice() else {
+            return Err(Error::Record("result has extra effects"));
+        };
+        let [CommitMutation::Append { records, .. }] = effect.mutations.as_slice() else {
+            return Err(Error::Record("result is not an inbox append"));
+        };
+        let [record] = records.as_slice() else {
+            return Err(Error::Record("result has extra input"));
+        };
+        let InboxRecord::Notice {
+            notice: NoticePayload::Quiet(notice),
+            ..
+        } = InboxRecord::decode(&record.value)?
+        else {
+            return Err(Error::Record("result is not a quiet Notice"));
+        };
+        if notice.kind != KIND {
+            return Err(Error::Record("result kind differs"));
+        }
+        let result: Self = serde_json::from_value(notice.body)
+            .map_err(|_| Error::Record("invalid peer result"))?;
+        let target = AgentPath::root(&crate::agent::AgentId::try_from(
+            envelope.to.id().to_owned(),
+        )?);
+        let receipt = route::RelayReceipt::from_headers(&record.headers).map_err(super::error)?;
+        if envelope.sender.account() != envelope.to.account()
+            || envelope.sender.namespace() != envelope.to.namespace()
+            || envelope.sender.id() != result.peer.id().as_str()
+            || result.request(&target, receipt.as_ref())? != envelope.request
+        {
+            return Err(Error::Record("result differs from ordinary delivery"));
+        }
+        Ok((result, target, receipt))
     }
 }
 
@@ -124,13 +168,39 @@ impl PeerRoute<'_> {
             id: self.id.clone(),
             peer: self.recipient.clone(),
             status,
+            rejection: None,
         };
         result.envelope(
             node,
             self.envelope.to.clone(),
             self.envelope.sender.clone(),
             &self.sender,
-            receipt,
+            Some(receipt),
+        )
+    }
+
+    /// Construct an account refusal before a destination relay exists. The
+    /// account must publish it with `Envelope::publish_rejection`; its retained
+    /// original-request binding, rather than a fabricated destination receipt,
+    /// proves the cause when the sender's node drains it.
+    pub fn rejection(
+        &self,
+        node: route::NodeId,
+        reason: route::Rejection,
+    ) -> Result<route::Envelope, Error> {
+        ResultRecord {
+            version: 1,
+            id: self.id.clone(),
+            peer: self.recipient.clone(),
+            status: SentReplyStatus::Dropped,
+            rejection: Some(reason),
+        }
+        .envelope(
+            node,
+            self.envelope.to.clone(),
+            self.envelope.sender.clone(),
+            &self.sender,
+            None,
         )
     }
 }
@@ -193,13 +263,14 @@ impl<'a> PeerInput<'a> {
             id: self.id.clone(),
             peer: self.peer.clone(),
             status,
+            rejection: None,
         }
         .envelope(
             routing.node.clone(),
             actor(self.peer)?,
             actor(self.sender)?,
             self.sender,
-            &self.receipt,
+            Some(&self.receipt),
         )?
         .outbox_record(&routing.paths)
         .map_err(super::error)?)
@@ -214,43 +285,64 @@ pub struct PeerResultRoute<'a> {
     receipt: route::RelayReceipt,
 }
 
+/// Account refusal data, without a destination receipt. Only the authenticated
+/// account relay's original admission binding can authorize its delivery.
+pub struct PeerRejectionRoute<'a> {
+    envelope: &'a route::Envelope,
+    target: AgentPath,
+    result: ResultRecord,
+    reason: route::Rejection,
+}
+
+impl<'a> PeerRejectionRoute<'a> {
+    /// Validate the canonical Dropped Notice. This is not an authority check.
+    pub fn parse(envelope: &'a route::Envelope) -> Result<Self, Error> {
+        let (result, target, _) = ResultRecord::parse(envelope)?;
+        let reason = result
+            .rejection
+            .ok_or(Error::Record("result is not an account rejection"))?;
+        Ok(Self {
+            envelope,
+            target,
+            result,
+            reason,
+        })
+    }
+
+    /// Consume only an authenticated account relay, verifying its retained
+    /// refusal against the exact sender-owned publication before any inbox write.
+    /// A later opt-out cannot revoke the terminal of that original send.
+    pub async fn deliver<P: crate::store::JournalProvider + ?Sized + 'static>(
+        &self,
+        host: &crate::agent::AgentHost<P>,
+        record: &route::RelayRecord,
+    ) -> Result<crate::agent::Delivered, Error> {
+        if record.envelope != *self.envelope || host.actor(&self.target)? != self.envelope.to {
+            return Err(Error::Record("rejection belongs to another host or relay"));
+        }
+        let original = crate::agent::sent::original_route(
+            host.provider().as_ref(),
+            &self.target,
+            &self.result.id,
+        )
+        .await?;
+        if record.rejection(&original).map_err(super::error)? != Some(self.reason)
+            || original.sender != self.envelope.to
+            || original.to != self.envelope.sender
+            || PeerRoute::parse(&original)?.recipient() != &self.result.peer
+        {
+            return Err(Error::Record("rejection belongs to another send"));
+        }
+        host.deliver(&self.target, self.envelope.request.clone())
+            .await
+    }
+}
+
 impl<'a> PeerResultRoute<'a> {
     /// Accept one canonical quiet terminal Notice, never user or control input.
     pub fn parse(envelope: &'a route::Envelope) -> Result<Self, Error> {
-        let [effect] = envelope.request.effects.as_slice() else {
-            return Err(Error::Record("result has extra effects"));
-        };
-        let [CommitMutation::Append { records, .. }] = effect.mutations.as_slice() else {
-            return Err(Error::Record("result is not an inbox append"));
-        };
-        let [record] = records.as_slice() else {
-            return Err(Error::Record("result has extra input"));
-        };
-        let InboxRecord::Notice {
-            notice: NoticePayload::Quiet(notice),
-            ..
-        } = InboxRecord::decode(&record.value)?
-        else {
-            return Err(Error::Record("result is not a quiet Notice"));
-        };
-        if notice.kind != KIND {
-            return Err(Error::Record("result kind differs"));
-        }
-        let result: ResultRecord = serde_json::from_value(notice.body)
-            .map_err(|_| Error::Record("invalid peer result"))?;
-        let target = AgentPath::root(&crate::agent::AgentId::try_from(
-            envelope.to.id().to_owned(),
-        )?);
-        let receipt = route::RelayReceipt::from_headers(&record.headers)
-            .map_err(super::error)?
-            .ok_or(Error::Record("result has no original relay"))?;
-        if envelope.sender.account() != envelope.to.account()
-            || envelope.sender.namespace() != envelope.to.namespace()
-            || envelope.sender.id() != result.peer.id().as_str()
-            || result.request(&target, &receipt)? != envelope.request
-        {
-            return Err(Error::Record("result differs from ordinary delivery"));
-        }
+        let (result, target, receipt) = ResultRecord::parse(envelope)?;
+        let receipt = receipt.ok_or(Error::Record("result has no original relay"))?;
         Ok(Self {
             envelope,
             target,
@@ -331,11 +423,11 @@ pub(in crate::agent) fn matches(
     }
     let result: ResultRecord =
         serde_json::from_value(notice.body).map_err(|_| Error::Record("invalid peer result"))?;
+    let receipt = route::RelayReceipt::from_headers(&record.headers).map_err(super::error)?;
     if result.version != 1
         || matches!(result.status, SentReplyStatus::Pending)
-        || route::RelayReceipt::from_headers(&record.headers)
-            .map_err(super::error)?
-            .is_none()
+        || (result.rejection.is_some() != receipt.is_none())
+        || (result.rejection.is_some() && result.status != SentReplyStatus::Dropped)
     {
         return Err(Error::Record("invalid terminal peer result"));
     }
