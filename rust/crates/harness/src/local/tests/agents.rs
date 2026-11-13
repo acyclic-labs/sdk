@@ -5518,6 +5518,17 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         drop(producer);
         advancing.await
     };
+    let usage_result: Result<bool> = match usage_result {
+        Err(error) => Err(error),
+        Ok(_) => loop {
+            // Journal-only lifecycle records can advance a page without
+            // changing visible totals. Consume those original pages;
+            // the quiet continuation waits on the producer's event.
+            if let Err(error) = usage.advance().await {
+                break Err(error);
+            }
+        },
+    };
     assert!(
         matches!(&usage_result, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "usage lost the runtime cause: {usage_result:?}"
@@ -5538,9 +5549,9 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         "source loss changed the admitted projection"
     );
     // Only the failed actor's live subscriptions report its original failure.
-    let observed = futures::poll!(&mut waiting);
+    let observed = waiting.await;
     assert!(
-        matches!(&observed, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
+        matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "public settlement retained its lost model producer: {observed:?}"
     );
     let hosted = harness.agents.get().unwrap();
@@ -5569,9 +5580,9 @@ async fn lost_model_producer(wire: bool) -> Result<()> {
         ),
         "settlement admitted a retired original follow or performed I/O before refusal"
     );
-    let settled = futures::poll!(&mut settling);
+    let settled = settling.await;
     assert!(
-        matches!(&settled, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
+        matches!(&settled, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
         "settlement bypassed the original runtime terminal event: {settled:?}"
     );
     assert!(
