@@ -120,6 +120,7 @@ fn original_reader_pages_and_follow_drive_one_source_bound_projection() {
         assert_eq!(value.mechanisms[&Mechanism::Wait].completed, 1);
         assert_eq!(reader.issued(), issued);
 
+        let snapshot = reader.cache().snapshot();
         // An unrelated source discontinuity must not retire this projection.
         reader.replaced(&StreamPath::new("agents/other/trace").unwrap());
         assert!(file.value(&reader).is_ok());
@@ -132,10 +133,27 @@ fn original_reader_pages_and_follow_drive_one_source_bound_projection() {
         ));
 
         let reopened = File::new(&mut reader, stream.path().clone(), 0, BTreeMap::new()).unwrap();
+        let previous = std::mem::replace(
+            reader.cache_mut(),
+            crate::reader::RecordCache::new(1024 * 1024, 16),
+        );
+        assert!(matches!(
+            reopened.query(&reader),
+            Err(Error::ContinuityLost)
+        ));
+        drop(previous);
+        let reopened = File::new(&mut reader, stream.path().clone(), 0, BTreeMap::new()).unwrap();
         reader.configure_source(provider.as_ref(), 0);
         assert!(matches!(
             reopened.query(&reader),
             Err(Error::ContinuityLost)
+        ));
+        reader.cache_mut().restore(&snapshot).unwrap();
+        let mut restored =
+            File::new(&mut reader, stream.path().clone(), 0, BTreeMap::new()).unwrap();
+        assert!(matches!(
+            restored.advance(&reader, page),
+            Err(ReadError::MissingEvidence { sequence: 0 })
         ));
     });
 }
