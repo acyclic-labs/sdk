@@ -77,7 +77,7 @@ async fn fixture() -> Result<Fixture> {
         &mut None,
     )?;
     let sources = NativeSkills::new(
-        retained.path().join("sources"),
+        filesystem.stream_provider(),
         volume.clone(),
         None,
         vec![home.path().into()],
@@ -159,7 +159,7 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
         .await?;
     // A process restart loses the warm cache. A native sidecar must not
     // redirect the original committed input to a later file generation.
-    let receipt = fixture.retained.path().join("sources").join(format!(
+    let receipt = fixture.retained.path().join(format!(
         "{}.body.json",
         hex::encode(source.generation.as_resource().key())
     ));
@@ -171,7 +171,7 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
     std::fs::remove_file(fixture.home.path().join("first/SKILL.md"))
         .map_err(|error| Error::Storage(error.to_string()))?;
     let sources = NativeSkills::new(
-        fixture.retained.path().join("sources"),
+        fixture.filesystem.stream_provider(),
         fixture.volume.clone(),
         None,
         Vec::new(),
@@ -192,8 +192,8 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     let Fixture {
         _issuer,
         home: _home,
-        retained,
-        filesystem: _filesystem,
+        retained: _retained,
+        filesystem,
         mut host,
         volume,
         grant,
@@ -246,9 +246,9 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         _ = at_a => {},
     }
     // An already-running reader and a replacement registration must still
-    // share the journal owner and retained source directory.
+    // share the journal owner and original retained source stream.
     let replacement = NativeSkills::new(
-        retained.path().join("replacement"),
+        filesystem.stream_provider(),
         volume.clone(),
         None,
         Vec::new(),

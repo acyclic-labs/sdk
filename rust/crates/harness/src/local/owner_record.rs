@@ -2,7 +2,7 @@ use super::{AgentId, TaskId, VolumeRef};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Owner record v13: native-only opaque subtrees never enter SDK generations.
+/// Owner record v14: retained skill metadata uses owner Streams, effects the journal.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Owner {

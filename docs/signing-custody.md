@@ -65,13 +65,18 @@ numeric statuses. Apple interaction-not-allowed is
 InteractionRequired(-25308); it cannot distinguish a locked keychain from an
 unavailable prompt. Credential contents never enter diagnostics.
 
-The current owner.v10 record admits external native preparation, host-owned
+The current owner.v14 record admits external native preparation, host-owned
 journals, pinned hook configurations, frozen manifests and context delivery
 frontiers with read-only selected inputs, retains the same store-owned seed
-reference, and is the first generation holding the v1 actor records. If that
-record is absent but owner.json, owner.v2, owner.v3, owner.v4, owner.v5,
-owner.v6, owner.v7, owner.v8 or owner.v9 exists, both opening and explicit deletion
-return Error::Conflict with: local state at <dir> uses an older format; remove
+reference and v1 actor records, and excludes native-only opaque subtrees from
+captured generations. Native skill-source metadata is a versioned indexed
+record in the original owner's Streams state; lifecycle markers and outcomes
+are in the host journal. There are no native source-metadata sidecars or
+private hook-outcome readers. If that record is absent but owner.json,
+owner.v2, owner.v3, owner.v4, owner.v5,
+owner.v6, owner.v7, owner.v8, owner.v9, owner.v10, owner.v11, owner.v12 or owner.v13
+exists, both opening and explicit deletion return Error::Conflict with:
+local state at <dir> uses an older format; remove
 that directory to start fresh. Refusal happens before decoding the older
 record or accessing credentials, and leaves its bytes unchanged. There is
 no compatible reader, migration, adoption, or silent key regeneration.

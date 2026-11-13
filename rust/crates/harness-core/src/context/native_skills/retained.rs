@@ -1,82 +1,76 @@
-//! One durable metadata bundle per discovery pass. Per-record hard links
-//! keep source identities stable across catalogs without additional file syncs.
+//! Content-addressed source metadata in the original owner's Streams state.
+//! One indexed record retains a discovery batch atomically; sibling lookups
+//! share one bounded read and decode, without native sidecar files.
 use super::*;
-use std::{collections::HashMap, io::Write as _};
+use acyclic_stream::{
+    AppendRecord, AppendRequest, NativeStreamProvider, RecordHeaders, StreamPath, WriteOutcome,
+    WriteRequest,
+};
+use std::collections::{BTreeMap, HashMap};
+
+fn path() -> Result<StreamPath> {
+    StreamPath::new("harness/native-skill-sources/v1").map_err(storage)
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RetainedRecords {
+    pub(super) version: u8,
+    pub(super) sources: RetainedSource,
+}
 
 /// Shared by owner bindings; each immutable record retains its own owner check.
-/// A first load decodes all siblings once, including concurrent body loads.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct RecordCache {
-    records: Arc<std::sync::Mutex<HashMap<String, Arc<RetainedSource>>>>,
-    #[cfg(test)]
-    io_handoffs: Arc<std::sync::atomic::AtomicUsize>,
+    provider: Arc<dyn NativeStreamProvider>,
+    records: Arc<crate::sync::owned::Mutex<HashMap<String, Arc<RetainedSource>>>>,
 }
 
 impl RecordCache {
+    pub(super) fn new(provider: Arc<dyn NativeStreamProvider>) -> Self {
+        Self {
+            provider,
+            records: Arc::default(),
+        }
+    }
+
     pub(super) async fn read(
         &self,
-        directory: PathBuf,
         digest: String,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<Arc<RetainedSource>>> {
-        self.read_with(directory, digest, || {}).await
-    }
-
-    pub(super) async fn read_with(
-        &self,
-        directory: PathBuf,
-        digest: String,
-        decoded: impl FnOnce() + Send + 'static,
-    ) -> Result<Option<Arc<RetainedSource>>> {
-        match self.records.try_lock() {
-            Ok(records) => {
-                if let Some(record) = records.get(&digest) {
-                    return Ok(Some(Arc::clone(record)));
-                }
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {}
-            Err(std::sync::TryLockError::Poisoned(error)) => return Err(storage(error)),
+        // Sibling first loads share this asynchronous lock through the native
+        // read and decode. No runtime thread waits for a blocking file lock.
+        let mut records = self.records.lock().await;
+        if let Some(record) = records.get(&digest) {
+            return Ok(Some(Arc::clone(record)));
         }
-        let records = Arc::clone(&self.records);
-        let completion = acyclic_native_runtime::run_blocking_io(
-            move || {
-                // Only I/O workers wait for this lock. Rechecking it through
-                // decoding makes concurrent first sibling loads share a result.
-                let mut records = records.lock().map_err(storage)?;
-                if let Some(record) = records.get(&digest) {
-                    return Ok(Some(Arc::clone(record)));
-                }
-                let bytes = match std::fs::read(directory.join(format!("{digest}.json"))) {
-                    Ok(bytes) => bytes,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                    Err(error) => return Err(storage(error)),
-                };
-                decoded();
-                let batch = decode_records(&bytes, &digest)?;
-                records.extend(
-                    batch
-                        .into_iter()
-                        .map(|(key, record)| (key, Arc::new(record))),
-                );
-                Ok(records.get(&digest).map(Arc::clone))
-            },
-            None,
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let mut observer = io.history_io();
+        let record = crate::store::operations::one_keyed_record(
+            &self.provider,
+            &path()?,
+            digest.as_bytes().to_vec(),
+            &mut Some(&mut observer),
         )
-        .map_err(Error::process_io)?;
-        #[cfg(test)]
-        self.io_handoffs
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        completion.await.map_err(Error::process_io)?
-    }
-
-    #[cfg(test)]
-    pub(super) fn io_handoffs(&self) -> usize {
-        self.io_handoffs.load(std::sync::atomic::Ordering::SeqCst)
+        .await?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let batch = decode_stream_records(&record.value, &digest)?;
+        // Validate every sibling before making even the selected record hot.
+        records.extend(
+            batch
+                .into_iter()
+                .map(|(key, record)| (key, Arc::new(record))),
+        );
+        Ok(records.get(&digest).map(Arc::clone))
     }
 }
 
 #[derive(Default)]
 pub(super) struct RetainedBatch {
-    records: HashMap<String, RetainedSource>,
+    records: BTreeMap<String, RetainedSource>,
 }
 
 impl RetainedBatch {
@@ -103,34 +97,22 @@ impl RetainedBatch {
         })
     }
 
-    pub(super) async fn publish(self, directory: PathBuf) -> Result<()> {
-        self.publish_with(directory, |file| file.sync_all().map_err(storage))
-            .await
-    }
-
-    pub(super) async fn publish_with(
+    pub(super) async fn publish(
         self,
-        directory: PathBuf,
-        sync: impl FnMut(&std::fs::File) -> Result<()> + Send + 'static,
+        cache: &RecordCache,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         if self.records.is_empty() {
             return Ok(());
         }
-        acyclic_native_runtime::run_blocking_io(move || self.write(&directory, sync), None)
-            .map_err(Error::process_io)?
-            .await
-            .map_err(Error::process_io)?
-    }
-
-    fn write(
-        self,
-        directory: &Path,
-        mut sync: impl FnMut(&std::fs::File) -> Result<()>,
-    ) -> Result<()> {
-        let temporary = tempfile::NamedTempFile::new_in(directory).map_err(storage)?;
-        let mut file = std::io::BufWriter::new(temporary.as_file());
-        let digests = self.records.keys().cloned().collect::<Vec<_>>();
-        let record = if self.records.len() == 1 {
+        // Sorted keys also make the serialized batch and retry identity stable
+        // across independently rebuilt catalogs and discovery orderings.
+        let keys = self
+            .records
+            .keys()
+            .map(|key| key.as_bytes().to_vec().into())
+            .collect();
+        let sources = if self.records.len() == 1 {
             self.records
                 .into_values()
                 .next()
@@ -138,30 +120,71 @@ impl RetainedBatch {
         } else {
             RetainedSource::Batch(self.records)
         };
-        serde_json::to_writer(&mut file, &record).map_err(storage)?;
-        file.flush().map_err(storage)?;
-        // All records share the same immutable inode. Only this one sync is
-        // needed, even when a discovery pass retains hundreds of skills.
-        sync(file.get_ref())?;
-        for digest in &digests {
-            let destination = directory.join(format!("{digest}.json"));
-            match std::fs::hard_link(temporary.path(), destination) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(storage(error)),
-            }
+        let bytes = serde_json::to_vec(&RetainedRecords {
+            version: 1,
+            sources,
+        })
+        .map_err(storage)?;
+        let key = acyclic_stream::IdempotencyKey::new(format!(
+            "native-skill-sources:v1:{}",
+            blake3::hash(&bytes)
+        ))
+        .map_err(storage)?;
+        let request = WriteRequest::Append(AppendRequest {
+            path: path()?,
+            records: vec![AppendRecord {
+                value: bytes.into(),
+                headers: RecordHeaders::new(keys, vec![]).map_err(storage)?,
+            }],
+            if_tail: None,
+            idempotency_key: key,
+        });
+        let outcome = crate::store::history::native_sdk_result(
+            work,
+            cache
+                .provider
+                .native_write(request, work.runtime_meter())
+                .await,
+        )?;
+        let outcome = crate::store::operations::original_sdk_metadata_output(work, outcome)?;
+        if !matches!(
+            outcome.value(),
+            WriteOutcome::Append(acyclic_stream::AppendOutcome::Committed(_))
+        ) {
+            return Err(Error::Storage(
+                "retained skill batch was not appended".into(),
+            ));
         }
         Ok(())
     }
 }
 
+pub(super) fn decode_stream_records(
+    bytes: &[u8],
+    digest: &str,
+) -> Result<BTreeMap<String, RetainedSource>> {
+    let batch: RetainedRecords = serde_json::from_slice(bytes).map_err(storage)?;
+    if batch.version != 1 {
+        return Err(Error::Unsupported(
+            "retained skill records require format v1".into(),
+        ));
+    }
+    admit_records(batch.sources, digest)
+}
+
+/// The source identity codec is shared by the writer, indexed storage and fuzzing.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn decode_records(
     bytes: &[u8],
     digest: &str,
-) -> Result<HashMap<String, RetainedSource>> {
-    let batch = match serde_json::from_slice(bytes).map_err(storage)? {
+) -> Result<BTreeMap<String, RetainedSource>> {
+    admit_records(serde_json::from_slice(bytes).map_err(storage)?, digest)
+}
+
+fn admit_records(record: RetainedSource, digest: &str) -> Result<BTreeMap<String, RetainedSource>> {
+    let batch = match record {
         RetainedSource::Batch(batch) => batch,
-        record => HashMap::from([(digest.to_owned(), record)]),
+        record => BTreeMap::from([(digest.to_owned(), record)]),
     };
     if !batch.contains_key(digest) {
         return Err(Error::Conflict("retained skill source is absent".into()));

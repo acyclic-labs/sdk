@@ -41,7 +41,7 @@ struct Source {
 enum RetainedSource {
     Native(Box<Source>),
     Shadow(Box<ShadowSource>),
-    Batch(std::collections::HashMap<String, RetainedSource>),
+    Batch(std::collections::BTreeMap<String, RetainedSource>),
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -179,7 +179,6 @@ struct SkillWorkspace {
 
 #[doc(hidden)]
 pub struct NativeSkills {
-    directory: PathBuf,
     journal: VolumeRef,
     workspace: Option<SkillWorkspace>,
     pub(crate) materializer: super::skill_materializer::SkillMaterializer,
@@ -207,7 +206,6 @@ impl NativeSkills {
     /// Retained source storage and decoded records remain shared without I/O.
     pub fn for_volume(&self, journal: VolumeRef) -> Arc<Self> {
         Arc::new(Self {
-            directory: self.directory.clone(),
             journal,
             workspace: self.workspace.clone(),
             materializer: super::skill_materializer::SkillMaterializer::new(),
@@ -224,7 +222,7 @@ impl NativeSkills {
     }
 
     pub(crate) fn retain_sources_from(&mut self, previous: &Self) {
-        self.directory = previous.directory.clone();
+        self.records = previous.records.clone();
         self.materializer = previous.materializer.clone();
         self.materialized = Arc::clone(&previous.materialized);
     }
@@ -269,13 +267,14 @@ impl NativeSkills {
                     hex::encode(generation.as_resource().key())
                 )
     }
+    /// Binds retained source metadata to the original owner's native Streams.
+    /// Source pins and body publication keep their original volume admission.
     pub fn new(
-        directory: PathBuf,
+        records: Arc<dyn acyclic_stream::NativeStreamProvider>,
         journal: VolumeRef,
         workspace: Option<(&View, acyclic_fs::LocalFs, acyclic_fs::LocalCoreStateStore)>,
         user_roots: Vec<PathBuf>,
     ) -> Result<Arc<Self>> {
-        std::fs::create_dir_all(&directory).map_err(storage)?;
         let workspace = workspace
             .map(|(view, filesystem, store)| {
                 let cancellation = acyclic_fs::CancellationToken::new();
@@ -293,7 +292,6 @@ impl NativeSkills {
             })
             .transpose()?;
         Ok(Arc::new(Self {
-            directory,
             journal,
             workspace,
             materializer: super::skill_materializer::SkillMaterializer::new(),
@@ -305,7 +303,7 @@ impl NativeSkills {
             user_watch: Arc::default(),
             #[cfg(test)]
             user_pages: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            records: retained::RecordCache::default(),
+            records: retained::RecordCache::new(records),
         }))
     }
 
@@ -361,9 +359,6 @@ impl NativeSkills {
         if path != format!("inputs/skills/{digest}/SKILL.md") {
             return Ok(None);
         }
-        let Some(retained) = self.records.read(self.directory.clone(), digest).await? else {
-            return Ok(None);
-        };
         let cancellation = acyclic_fs::CancellationToken::new();
         let owned;
         let work = if let Some(io) = io {
@@ -373,6 +368,9 @@ impl NativeSkills {
         } else {
             owned = native_work(&cancellation)?;
             &owned
+        };
+        let Some(retained) = self.records.read(digest, work).await? else {
+            return Ok(None);
         };
         match retained.as_ref() {
             RetainedSource::Batch(_) => Err(Error::Invalid("nested retained skill batch".into())),
@@ -552,7 +550,7 @@ impl NativeSkills {
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
             drop(scan);
-            records.publish(self.directory.clone()).await?;
+            records.publish(&self.records, &work).await?;
             // An unwatchable user source must not enter either catalog cache.
             *cached = generation.map(|generation| (cut.id, generation, catalog));
             Ok(skills)
@@ -586,6 +584,8 @@ impl NativeSkills {
             }
             let (generation, mut skills) = self.source_user_catalog(bounds)?.await?;
             let mut records = RetainedBatch::default();
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let work = native_work(&cancellation)?;
             for skill in &mut skills {
                 if skill.source.root.volume == self.journal {
                     continue;
@@ -593,8 +593,8 @@ impl NativeSkills {
                 let retained = self
                     .records
                     .read(
-                        self.directory.clone(),
                         hex::encode(skill.source.generation.as_resource().key()),
+                        &work,
                     )
                     .await?
                     .ok_or_else(|| {
@@ -614,7 +614,7 @@ impl NativeSkills {
                     records.retain(&self.journal, RetainedSource::Native(Box::new(source)))?;
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-            records.publish(self.directory.clone()).await?;
+            records.publish(&self.records, &work).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
         })
@@ -682,7 +682,7 @@ impl NativeSkills {
                 );
             }
             let catalog = SkillCatalog::capture(skills.clone(), *bounds, before)?;
-            records.publish(self.directory.clone()).await?;
+            records.publish(&self.records, &work).await?;
             *cached = generation.map(|generation| (generation, catalog));
             Ok((generation, skills))
         })
@@ -1009,7 +1009,7 @@ mod binding_tests {
             &mut None,
         )?;
         let sources = NativeSkills::new(
-            home.path().join("retained"),
+            Arc::new(acyclic_stream::MemoryStream::default()),
             volume,
             None,
             vec![home.path().join("skills")],
@@ -1142,7 +1142,7 @@ mod binding_tests {
         let parent = volume(1)?;
         let child = volume(2)?;
         let sources = NativeSkills::new(
-            home.path().join("retained"),
+            Arc::new(acyclic_stream::MemoryStream::default()),
             parent.clone(),
             None,
             vec![home.path().join("skills")],

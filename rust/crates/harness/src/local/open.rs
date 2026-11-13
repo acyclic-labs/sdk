@@ -405,7 +405,7 @@ impl Opening {
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let files = retain_skills(
             files,
-            directory.join("skill-sources"),
+            volume_stream.clone(),
             &journal,
             workspace.as_ref(),
             self.user_roots(),
@@ -858,13 +858,13 @@ fn validate_configuration(config: &LocalHarnessConfig) -> Result<()> {
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(super) fn retain_skills(
     files: Arc<LocalFilesystem>,
-    directory: PathBuf,
+    records: Arc<dyn acyclic_stream::NativeStreamProvider>,
     journal: &VolumeRef,
     workspace: Option<&Arc<workspace::LocalWorkspace>>,
     user_roots: Vec<PathBuf>,
 ) -> Result<Arc<LocalFilesystem>> {
     files.with_native_skills(crate::context::native_skills::NativeSkills::new(
-        directory,
+        records,
         journal.clone(),
         workspace.map(|workspace| {
             (

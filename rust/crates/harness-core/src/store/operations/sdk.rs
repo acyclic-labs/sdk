@@ -299,6 +299,27 @@ pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
     .await
 }
 
+/// The first immutable record carrying an exact indexed key, without a tail read.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn one_keyed_record<P: crate::store::JournalProvider + ?Sized>(
+    client: &Arc<P>,
+    path: &StreamPath,
+    key: Vec<u8>,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<Option<ObservedRecord>> {
+    one_selected_record(
+        client,
+        ReadRequest {
+            key: Some(acyclic_stream::ReadKeySeek::exact(key, u64::MAX)),
+            path: path.clone(),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        },
+        work,
+    )
+    .await
+}
 /// A keyed selection keeps its inclusive lower bound; an unkeyed selection
 /// must return the exact cursor. Both reject a producer exceeding one record.
 pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Sized>(
@@ -315,6 +336,8 @@ pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Size
     }
     let from = request.from;
     let keyed = request.key.is_some();
+    let mut selected = request.key.clone();
+    let mut selected_from = from;
     let mut quota = CodecQuota::new(work, 0)?;
     let mut records = match read_selection(client, request, quota.work()).await? {
         Ok(records) => records,
@@ -339,6 +362,10 @@ pub(crate) async fn one_selected_record<P: crate::store::JournalProvider + ?Size
             if position != 0
                 || record.sequence < from
                 || (!keyed && record.sequence != from)
+                || selected.as_mut().is_some_and(|seek| {
+                    seek.advance(&mut selected_from, record.sequence, record.headers.keys())
+                        .is_err()
+                })
                 || record.value.len() > acyclic_stream::MAX_RECORD_BYTES
             {
                 return Err(boundary(
