@@ -1073,3 +1073,72 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
         );
     }
 }
+
+#[cfg(feature = "serde")]
+#[tokio::test]
+async fn original_session_admission_emits_its_current_trust_guarantee()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+    let authority = authority(State::new());
+    let mut slots = Slots::default();
+    authority.register(&mut slots, 0, &token("records", |_| {}), 1)?;
+    let trace = crate::Stream::new(Arc::new(crate::MemoryStream::default()), "owner/trace")?;
+    let recorder = Arc::new(Recorder::new(trace.clone(), [39; 16]));
+    let root = recorder
+        .start(
+            "admission_owner",
+            Mechanism::ActorDelivery,
+            None,
+            Some("original_session_request"),
+        )
+        .await?;
+    let parent = root.id();
+    let root = root.into_owned();
+    for (path, allowed) in [("records", true), ("outside", false)] {
+        let path = StreamPath::new(path)?;
+        let result = root.within_sync(|| authority.bind(&slots, 0, &path, Default::default(), 1));
+        assert_eq!(result.is_ok(), allowed);
+    }
+    let mut query = TraceQuery::new(
+        trace.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut settled = 0;
+    let mut succeeded = 0;
+    let mut unsettled = 0;
+    while settled != 2 {
+        let Some(event) = query.next().await? else {
+            return Err("diagnostic source ended".into());
+        };
+        if let Observation::Completed {
+            start,
+            bytes,
+            result,
+            ..
+        } = event
+        {
+            assert_eq!(start.name, "stream.session_authorize");
+            assert_eq!(start.parent, Some(parent));
+            assert_eq!(start.mechanism, Mechanism::AuthCheck);
+            assert_eq!(
+                start.guarantee.as_deref(),
+                Some("current_trust_credential_and_resource_admission")
+            );
+            match result {
+                Outcome::Succeeded => {
+                    assert_eq!(bytes, Some(0));
+                    succeeded += 1;
+                }
+                Outcome::Unsettled => {
+                    assert_eq!(bytes, None);
+                    unsettled += 1;
+                }
+                _ => return Err("authorization fabricated a cause or cancellation".into()),
+            }
+            settled += 1;
+        }
+    }
+    assert_eq!((succeeded, unsettled), (1, 1));
+    root.finish_submitted(None, Outcome::Succeeded)?;
+    Ok(())
+}
