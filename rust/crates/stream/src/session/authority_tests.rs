@@ -1085,10 +1085,22 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
 async fn original_session_admission_emits_its_current_trust_guarantee()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
-    let authority = authority(State::new());
+    let session_authority = authority(State::new());
     let mut slots = Slots::default();
-    authority.register(&mut slots, 0, &token("records", |_| {}), 1)?;
-    let resource = testing::resource_authorization(&fs_token("fs:/volume", |_| {}), "fs:/volume")?;
+    session_authority.register(&mut slots, 0, &token("records", |_| {}), 1)?;
+    let resource_state = State::new();
+    let resource_authority = authority(resource_state.clone());
+    let mut resource_slots = Slots::default();
+    resource_authority.register(&mut resource_slots, 0, &fs_token("fs:/volume", |_| {}), 1)?;
+    let (_, _, resource) = resource_authority
+        .bind_resource(
+            &resource_slots,
+            0,
+            "fs:/volume".into(),
+            Default::default(),
+            1,
+        )
+        .map_err(|_| "original resource admission failed")?;
     let attributes = RecordAttributes::default();
     let trace = crate::Stream::new(Arc::new(crate::MemoryStream::default()), "owner/trace")?;
     let recorder = Arc::new(Recorder::new(trace.clone(), [39; 16]));
@@ -1108,7 +1120,8 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     );
     for (path, allowed) in [("records", true), ("outside", false)] {
         let path = StreamPath::new(path)?;
-        let result = root.within_sync(|| authority.bind(&slots, 0, &path, Default::default(), 1));
+        let result =
+            root.within_sync(|| session_authority.bind(&slots, 0, &path, Default::default(), 1));
         assert_eq!(result.is_ok(), allowed);
     }
     for (policy, allowed) in [(PolicyDecision::Allow, true), (PolicyDecision::Deny, false)] {
@@ -1214,6 +1227,29 @@ async fn original_session_admission_emits_its_current_trust_guarantee()
     }
     assert_eq!((succeeded, unsettled, locks), (6, 3, 4));
     root.finish_submitted(None, Outcome::Succeeded)?;
+    // The original trust owner fails after admission. Both clock and entry
+    // checks must retain its failure rather than replace it with a bare denial.
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = resource_state.trust.write().expect("live trust owner");
+            panic!("original trust owner failed");
+        }))
+        .is_err()
+    );
+    for result in [
+        resource.now_unix_seconds().map(|_| ()),
+        resource.authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow),
+    ] {
+        use std::error::Error as _;
+        let error = result.expect_err("unavailable trust cannot authorize disclosure");
+        assert_eq!(error.category(), StreamError::AccessDenied);
+        assert!(
+            std::iter::successors(error.source(), |source| source.source()).any(|source| matches!(
+                source.downcast_ref::<verify::VerifyError>(),
+                Some(verify::VerifyError::Trust)
+            ))
+        );
+    }
     Ok(())
 }
 

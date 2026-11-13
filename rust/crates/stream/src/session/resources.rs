@@ -80,7 +80,7 @@ impl ResourceAuthorization {
             self.authority
                 .snapshot()
                 .map(|snapshot| snapshot.now_unix_seconds)
-                .map_err(|_| StreamError::AccessDenied)
+                .map_err(|source| StreamError::AccessDenied.with_source(source))
         };
         #[cfg(feature = "serde")]
         {
@@ -170,7 +170,7 @@ impl ResourceAuthorization {
         let snapshot = self
             .authority
             .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?;
+            .map_err(|source| StreamError::AccessDenied.with_source(source))?;
         let capability = self.current()?;
         if let Some(account) = account {
             let certified = capability
