@@ -1,5 +1,69 @@
 use super::*;
 
+#[tokio::test]
+async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let handler = Arc::new(Gated::new()?);
+    let runtime = Runtime::new(store.clone(), handler.clone(), Arc::new(SystemClock));
+    let address = spawn_with(&store, "failure-observed", &[b"emit"]).await?;
+    let mut failed = runtime.delivery_failure(&address)?;
+    assert!(runtime.release(&address));
+    assert_eq!(
+        runtime.counts(),
+        (0, 0),
+        "observer retained actor residency"
+    );
+    assert!(
+        futures::poll!(failed.as_mut()).is_pending(),
+        "hibernation fabricated a failure"
+    );
+
+    runtime.host(address.clone())?;
+    let mut delivery = Box::pin(runtime.drain_actor(&address));
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    assert_eq!(handler.active.load(Ordering::SeqCst), 1);
+    drop(delivery);
+    assert_eq!(
+        store
+            .load(&address)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
+    // Recover before the registered observer gets another poll. Recovery must
+    // not erase its event, but a newly registered observer must remain healthy.
+    handler.gate.add_permits(1);
+    runtime.drain_actor(&address).await?;
+    assert!(failed.await.to_string().contains("producer disappeared"));
+    let mut next = runtime.delivery_failure(&address)?;
+    assert!(
+        futures::poll!(next.as_mut()).is_pending(),
+        "recovery retained a stale active failure"
+    );
+    assert_eq!(records(&*provider, "out/failure-observed").await?.len(), 1);
+
+    assert!(runtime.release(&address));
+    assert_eq!(runtime.counts(), (0, 0));
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("agents/failure-observed")?,
+            records: vec![Bytes::from_static(b"emit").into()],
+            if_tail: Some(1),
+            idempotency_key: key("failure-observed/next")?,
+        })
+        .await?;
+    runtime.host(address.clone())?;
+    handler.gate.close();
+    assert!(runtime.drain_actor(&address).await.is_err());
+    assert!(
+        next.await.to_string().contains("test gate closed"),
+        "rehydration lost its original observer"
+    );
+    Ok(())
+}
+
 /// Default admission runs beyond the retired 64 slots. The same real gate
 /// under explicit credit is the deterministic negative control.
 #[tokio::test]

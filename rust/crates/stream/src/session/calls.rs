@@ -97,8 +97,10 @@ pub trait CallProvider: crate::ProviderPlatform + 'static {
     /// The owning producer's failure for this logical subscription. The
     /// returned observer is polled only after authorization, independently
     /// of data credit. It must name only the selected producer, never sibling
-    /// work. Finite reads and effectful calls should remain available for
-    /// inspection and recovery. The carrier's lifetime is separate.
+    /// work. Finite reads and effectful calls must remain available for
+    /// inspection and recovery. This observer does not own the physical
+    /// Session connection's lifetime. `None` attaches no product failure
+    /// observer; the stream's own failure and Session lifetime still apply.
     fn failure(
         &self,
         _subscription: &wire::SessionSubscription,

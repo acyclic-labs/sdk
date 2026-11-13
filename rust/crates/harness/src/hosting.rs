@@ -2002,6 +2002,7 @@ where
                 Ok(failure) => failure,
                 Err(error) => return StreamError::unavailable_with_cause(&error),
             };
+            drop(server);
             StreamError::unavailable_with_cause(&failure.await)
         })
     }
