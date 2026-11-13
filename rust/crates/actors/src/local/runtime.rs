@@ -2096,8 +2096,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// The next unconsumed record of any subscription, by one bounded finite
-    /// read per subscription. No follow is retained: the producer's same-commit
-    /// activation entry wakes this actor when new input commits.
+    /// read per subscription. A future position is not input yet. Producer
+    /// activation or a shared source event wakes the actor when it arrives;
+    /// no follow is retained by this actor.
     async fn next_record(
         &self,
         state: &State,
@@ -2181,7 +2182,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await;
         let mut records = match records {
             Ok(records) => records,
-            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
+            Err(error) if matches!(error.category(), StreamError::NotFound | StreamError::OutOfRange) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         let Some(record) = records.next().await.transpose()? else {

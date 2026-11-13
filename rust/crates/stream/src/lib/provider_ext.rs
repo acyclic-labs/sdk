@@ -111,6 +111,48 @@ pub trait StreamProviderExt: StreamProvider {
         }
     }
 
+    /// Probe one exact position with one bounded read. A missing path, a future
+    /// position or the current tail returns `None`; denial and other failures
+    /// remain errors. Wait for later availability through `follow`, never by
+    /// repeatedly probing. Absence here is not a conditional-write guard.
+    fn record_at(
+        &self,
+        path: StreamPath,
+        sequence: u64,
+    ) -> impl std::future::Future<Output = Result<Option<Record>, StreamError>> + ProviderTask {
+        async move {
+            let mut records = match self
+                .read(ReadRequest {
+                    key: None,
+                    path,
+                    from: sequence,
+                    limit: 1,
+                    at_least: Default::default(),
+                })
+                .await
+            {
+                Ok(records) => records,
+                Err(error)
+                    if matches!(
+                        error.category(),
+                        StreamError::NotFound | StreamError::OutOfRange
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            let record = futures::TryStreamExt::try_next(&mut records).await?;
+            if record
+                .as_ref()
+                .is_some_and(|record| record.sequence != sequence)
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+            Ok(record)
+        }
+    }
+
     /// Projects funded append publication without another future allocation.
     #[cfg(not(target_arch = "wasm32"))]
     fn native_append(

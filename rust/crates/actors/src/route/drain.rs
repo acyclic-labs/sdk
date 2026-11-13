@@ -2,7 +2,7 @@
 use super::{Envelope, Error, NodeId, Paths, Routed, account::Reply};
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
-    IdempotencyKey, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+    IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use prost::Message as _;
@@ -31,32 +31,14 @@ pub async fn receipt<P: StreamProvider + ?Sized>(
     intent: &IdempotencyKey,
 ) -> Result<Option<Routed>, Error> {
     let next = outbox_sequence.checked_add(1).ok_or(Error::InvalidRecord)?;
-    let mut records = match local
-        .read(ReadRequest {
-            key: None,
-            path: paths.outbox_cursor(node)?,
-            from: outbox_sequence,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await
-    {
-        Ok(records) => records,
-        Err(error)
-            if matches!(
-                error.category(),
-                StreamError::NotFound | StreamError::OutOfRange
-            ) =>
-        {
-            return Ok(None);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let Some(record) = records.try_next().await? else {
+    let Some(record) = local
+        .record_at(paths.outbox_cursor(node)?, outbox_sequence)
+        .await?
+    else {
         return Ok(None);
     };
     let cursor = Cursor::decode(record.value.as_ref()).map_err(|_| Error::InvalidRecord)?;
-    if record.sequence != outbox_sequence || cursor.version != 1 || cursor.next != next {
+    if cursor.version != 1 || cursor.next != next {
         return Err(Error::InvalidRecord);
     }
     Ok(Some(
