@@ -1545,7 +1545,7 @@ async fn run_current(
                                             Err(error) => {
                                                 view.notice = Some(format!("Feedback save not confirmed: {error}"));
                                                 view.prompt = Some(Prompt::Feedback);
-                                                input.editor = Editor::new(ui.feedback_draft().unwrap_or(&text));
+                                                input.editor = Editor::new(&text);
                                             }
                                         }
                                         continue;

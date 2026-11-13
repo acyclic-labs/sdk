@@ -221,12 +221,6 @@ impl Session {
         Ok(())
     }
 
-    pub fn feedback_draft(&self) -> Option<&str> {
-        self.pending_feedback
-            .as_ref()
-            .map(|pending| pending.report.as_str())
-    }
-
     async fn prepare_feedback(
         &mut self,
         conversation: &Conversation,
