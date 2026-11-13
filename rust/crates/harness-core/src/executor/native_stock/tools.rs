@@ -153,13 +153,7 @@ pub(in crate::executor) async fn stock_project_tool(
         return Ok(Err(violation));
     }
     let maximum = context.map_or(limits.render_bytes, |_| {
-        Some(
-            limits
-                .render_bytes
-                .map_or(crate::tool::output::VIEW_BYTES, |maximum| {
-                    maximum.min(crate::tool::output::VIEW_BYTES)
-                }),
-        )
+        Some(crate::tool::output::view_bytes(limits.render_bytes))
     });
     let spill = maximum
         .map(|maximum| {
