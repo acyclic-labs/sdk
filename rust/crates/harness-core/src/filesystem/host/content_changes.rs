@@ -475,7 +475,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             // condition. Other SDK and accounting failures keep
                             // their original terminal cause; sdk checks the
                             // recorded native work before the condition result.
-                            io.sdk((
+                            let written = io.sdk((
                                 written.map_err(|error| match error {
                                     WorkspaceError::StaleIdentity => Error::ToolRejected {
                                         code: crate::wire::ErrorCode::Conflict,
@@ -484,7 +484,28 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                     error => Error::from(error),
                                 }),
                                 recorded,
-                            ))?;
+                            ));
+                            if let Err(error) = written {
+                                // Diagnose the rejected condition at its original
+                                // authorized cut. Successful creates need no extra read.
+                                if matches!(
+                                    error,
+                                    Error::ToolRejected {
+                                        code: crate::wire::ErrorCode::Conflict,
+                                        reason: "conditional file already exists",
+                                    }
+                                ) && io
+                                    .sdk_if_present(
+                                        selected.stat(&absolute, io, io.cancellation()).await,
+                                    )?
+                                    .is_some_and(|stat| {
+                                        stat.kind == acyclic_fs::kernel::FileKind::Directory
+                                    })
+                                {
+                                    return Err(io.invalid("path is a directory"));
+                                }
+                                return Err(error);
+                            }
                         }
                         ContentChange::UpdateExpected { bytes, .. } => {
                             io.sdk(
