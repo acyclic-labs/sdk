@@ -1086,7 +1086,7 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
                 let error = result.expect_err("lost trust cannot authorize disclosure");
                 assert_eq!(error.category(), StreamError::AccessDenied);
                 assert!(
-                    std::iter::successors(error.source(), |source| source.source()).any(
+                    std::iter::successors(error.source(), |&source| source.source()).any(
                         |source| matches!(
                             source.downcast_ref::<verify::VerifyError>(),
                             Some(verify::VerifyError::Trust)
