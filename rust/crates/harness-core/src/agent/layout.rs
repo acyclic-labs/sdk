@@ -175,6 +175,28 @@ impl Serialize for AgentPath {
 crate::core::ownership::owned_struct!(AgentPath { text, depth });
 
 impl AgentPath {
+    /// The actor that owns a stream in an agent's subtree. Child boundaries
+    /// are parsed once; suffixes such as status, conversation and execution
+    /// journals all retain the same canonical owner.
+    pub fn containing(stream: &StreamPath) -> Option<Self> {
+        let text = stream.as_str();
+        let rest = text.strip_prefix(AGENTS)?.strip_prefix('/')?;
+        let mut segments = rest.split('/');
+        let id = segments.next()?;
+        AgentId::validate(id).ok()?;
+        let mut end = AGENTS.len() + 1 + id.len();
+        let mut depth = 0;
+        while segments.next() == Some(CHILDREN) {
+            let id = segments.next()?;
+            AgentId::validate(id).ok()?;
+            end += 1 + CHILDREN.len() + 1 + id.len();
+            depth += 1;
+        }
+        Some(Self {
+            text: text[..end].to_owned(),
+            depth,
+        })
+    }
     /// A top-level agent.
     #[must_use]
     pub fn root(id: &AgentId) -> Self {

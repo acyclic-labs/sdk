@@ -47,6 +47,7 @@ use std::{
 };
 
 struct Slot {
+    failure: tokio::sync::watch::Sender<Option<DeliveryFailure>>,
     registration: Registration<ActorReference>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
@@ -89,6 +90,7 @@ struct Settlement<'a> {
     flight: Option<Flight<ActorReference>>,
     work: Option<Work<ActorReference>>,
     failed: bool,
+    cause: Option<DeliveryFailure>,
 }
 impl Drop for Settlement<'_> {
     fn drop(&mut self) {
@@ -96,14 +98,30 @@ impl Drop for Settlement<'_> {
             return;
         };
         if self.failed {
+            self.slot
+                .failure
+                .send_replace(Some(self.cause.take().unwrap_or_else(|| DeliveryFailure {
+                    message:
+                        "actor delivery producer disappeared before reporting an outcome".into(),
+                })));
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
+        } else {
+            self.slot.failure.send_replace(None);
         }
         flight.finish(self.failed);
         if let Some(work) = self.work.take() {
             work.settle();
         }
     }
+}
+
+/// One failed delivery attempt. Its input and any unknown publication remain
+/// owned by the actor; observing this failure does not settle either.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct DeliveryFailure {
+    message: String,
 }
 
 #[derive(Default)]
@@ -346,6 +364,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         actors.insert(
             actor,
             Arc::new(Slot {
+                failure: tokio::sync::watch::channel(None).0,
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
@@ -357,6 +376,31 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }),
         );
         Ok(())
+    }
+
+    /// Observe this actor's next failed delivery, including a failure already
+    /// retained by its current host. Registration admits no work. A later
+    /// successful delivery clears the failure under the same actor lock.
+    pub fn delivery_failure(
+        &self,
+        actor: &ActorReference,
+    ) -> Result<BoxProviderFuture<'static, DeliveryFailure>, Error> {
+        self.track(actor.clone())?;
+        let slot = self.slot(actor).ok_or(Error::CompletionStopped)?;
+        let mut failure = slot.failure.subscribe();
+        let actor = actor.clone();
+        Ok(Box::pin(async move {
+            loop {
+                if let Some(cause) = failure.borrow_and_update().clone() {
+                    return cause;
+                }
+                if failure.changed().await.is_err() {
+                    return DeliveryFailure {
+                        message: format!("actor {actor:?}: delivery host released"),
+                    };
+                }
+            }
+        }))
     }
 
     /// Register an actor and request its first delivery attempt, as after
@@ -1188,6 +1232,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     flight: Some(self.ready.flight(actor)),
                     work,
                     failed: true,
+                    cause: Some(DeliveryFailure {
+                        message: format!(
+                            "actor {actor:?}: delivery producer disappeared before reporting an outcome"
+                        ),
+                    }),
                 };
                 let result = match &self.admission {
                     Some(admission) => admission
@@ -1211,6 +1260,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // A released slot delivered nothing: its input belongs to
                 // the next placer.
                 settlement.failed = result.is_err() || inner.released;
+                if let Err(error) = &result {
+                    settlement.cause = Some(DeliveryFailure {
+                        message: format!("actor {actor:?}: {error}"),
+                    });
+                }
                 drop(settlement);
                 drop(inner);
                 result

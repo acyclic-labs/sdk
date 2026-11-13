@@ -89,6 +89,26 @@ impl<'de> serde::Deserialize<'de> for StreamError {
 const NOT_BEFORE: &str = "not_before";
 
 impl StreamError {
+    /// Unavailability attributed to its original producer failure. This
+    /// retains the diagnostic through the canonical status/refusal codec;
+    /// it never grants permission to retry an application failure.
+    #[must_use]
+    pub fn unavailable_with_cause(cause: &(dyn std::error::Error + 'static)) -> Self {
+        acyclic_auth::refusal::Refusal::capture(
+            14,
+            &cause.to_string(),
+            b"",
+            &::http::HeaderMap::new(),
+            acyclic_auth::refusal::Canonical {
+                code: 14,
+                message: "stream unavailable",
+                details: b"",
+                owned: &[],
+            },
+            None,
+        )
+        .map_or(Self::Unavailable, Self::Refused)
+    }
     /// Every failure, in canonical code order.
     pub const ALL: [Self; 16] = [
         Self::InvalidResponse,

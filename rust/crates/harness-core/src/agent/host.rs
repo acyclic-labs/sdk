@@ -350,21 +350,38 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Queued work and a paused turn are included; an idle phase alone is not
     /// a settlement fence. Each recheck follows an original actor publication.
     pub async fn wait_for_input(&self, agent: &AgentPath, input: u64) -> Result<(), Error> {
+        let failed = self
+            .runtime
+            .delivery_failure(&self.actor(agent)?)
+            .map_err(actor_error)?;
+        let failed = std::pin::pin!(failed);
+        let mut failed = failed;
         loop {
             let progress = self.input_progress(agent, input).await?;
             if progress.settled {
                 return Ok(());
             }
-            acyclic_stream::records_only(
+            let mut records = acyclic_stream::records_only(
                 self.provider
                     .follow(progress.follow)
                     .await
                     .map_err(Error::Stream)?,
-            )
-            .try_next()
-            .await
-            .map_err(Error::Stream)?
-            .ok_or(Error::Stream(StreamError::Unavailable))?;
+            );
+            let next = std::pin::pin!(records.try_next());
+            match futures::future::select(next, failed.as_mut()).await {
+                futures::future::Either::Left((next, _)) => {
+                    next.map_err(Error::Stream)?
+                        .ok_or(Error::Stream(StreamError::Unavailable))?;
+                }
+                futures::future::Either::Right((cause, _)) => {
+                    // A publication that settled this particular input wins
+                    // over a later failed delivery of another input.
+                    if self.input_progress(agent, input).await?.settled {
+                        return Ok(());
+                    }
+                    return Err(Error::Stream(StreamError::unavailable_with_cause(&cause)));
+                }
+            }
         }
     }
 

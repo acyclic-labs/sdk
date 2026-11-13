@@ -89,7 +89,7 @@ impl Frame {
                 identity.generation,
                 wire::session_frame::Body::Closed(wire::SessionClosed {
                     code: error.code().into(),
-                    ..Default::default()
+                    message: tonic::Status::from(&error).message().to_owned(),
                 }),
             ),
             original: Some(Original::Error(error)),
