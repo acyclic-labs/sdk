@@ -802,19 +802,39 @@ async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
     let waiting = bound.files(&agent, root, &paths, Some(&original.cut));
     futures::pin_mut!(waiting);
     assert!(futures::poll!(waiting.as_mut()).is_pending());
-    let unchanged = bound
-        .publish_files(
-            &agent,
-            root,
-            OperationId::from_bytes([72; 16]),
-            &[ClientFileChange {
-                path: paths[0].clone(),
-                expected: Some(file.clone()),
-                text: Some("before".into()),
-            }],
+    // Conditional file updates retain a new operation annotation even for the
+    // same text. A clean transaction exercises an actually unchanged candidate.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+    let mut transaction = workspace
+        .begin_transaction(
+            acyclic_fs::IdempotencyKey::from_bytes([72; 16]),
+            budget,
+            &cancellation,
         )
-        .await?;
-    assert_eq!(unchanged, original.cut.generation);
+        .await?
+        .value;
+    let published = transaction
+        .commit(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            |_| async {
+                Ok::<_, acyclic_fs::WorkspaceError>(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                })
+            },
+        )
+        .await?
+        .value;
+    assert!(matches!(
+        published,
+        acyclic_fs::TransactionCommit::Committed(_)
+    ));
+    let unchanged = bound.files(&agent, root, &paths, None).await?;
+    assert!(unchanged.cut.same_inputs(&original.cut));
     assert!(
         bound.agents.provider().tail(source).await? > before,
         "unchanged publication did not exercise the changes producer"
