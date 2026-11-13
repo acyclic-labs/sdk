@@ -187,8 +187,8 @@ impl<S> TraceQuery<S> {
 
 impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
     /// Consume one original delta, or wait on the source's existing event. On
-    /// malformed input the bad record is consumed but projection state is not
-    /// changed; no successful settlement is synthesized.
+    /// malformed input the consumed-record watermark advances, but measurements
+    /// are unchanged; no successful settlement is synthesized.
     pub async fn next(&mut self) -> Result<Option<Observation>, QueryError> {
         let Some(record) = self.records.next().await else {
             return Ok(None);
@@ -205,11 +205,20 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
                 source: QueryViolation::ReorderedRecord,
             });
         }
+        self.sequence = Some(record.sequence);
         let TraceRecord::V1(event) =
             serde_json::from_slice(record.value.as_ref()).map_err(|source| QueryError::Decode {
                 evidence: evidence.clone(),
                 source,
             })?;
+        self.project(event, evidence).map(Some)
+    }
+
+    fn project(
+        &mut self,
+        event: SpanEvent,
+        evidence: RetainedRecord,
+    ) -> Result<Observation, QueryError> {
         let observation = match event {
             SpanEvent::Started {
                 id,
@@ -249,7 +258,8 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
                 bytes,
                 result,
             } => {
-                if let Some(start) = self.active.get(&id) {
+                if let Entry::Occupied(entry) = self.active.entry(id) {
+                    let start = entry.get();
                     let elapsed_ns =
                         at_ns
                             .checked_sub(start.at_ns)
@@ -257,10 +267,7 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
                                 evidence: evidence.clone(),
                                 source: QueryViolation::ReversedTime,
                             })?;
-                    let start = self
-                        .active
-                        .remove(&id)
-                        .expect("start was observed without yielding");
+                    let start = entry.remove();
                     self.active_waits -= usize::from(start.mechanism == Mechanism::Wait);
                     let outlier = self
                         .thresholds_ns
@@ -308,7 +315,6 @@ impl<S: Stream<Item = Result<Record, StreamError>> + Unpin> TraceQuery<S> {
                 }
             }
         };
-        self.sequence = Some(record.sequence);
-        Ok(Some(observation))
+        Ok(observation)
     }
 }
