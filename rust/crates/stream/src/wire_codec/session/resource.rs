@@ -66,7 +66,7 @@ fn decode_stream_name(encoded: &str) -> Result<Cow<'_, str>, StreamError> {
             path.push(b'/');
         }
         for byte in acyclic_auth::component_bytes(component) {
-            let byte = byte.map_err(|_| StreamError::InvalidArgument)?;
+            let byte = byte.map_err(|source| StreamError::InvalidArgument.with_source(source))?;
             // A slash inside a component cannot become a namespace separator.
             if byte == b'/' {
                 return Err(StreamError::InvalidPath);
@@ -76,7 +76,7 @@ fn decode_stream_name(encoded: &str) -> Result<Cow<'_, str>, StreamError> {
     }
     String::from_utf8(path)
         .map(Cow::Owned)
-        .map_err(|_| StreamError::InvalidPath)
+        .map_err(|source| StreamError::InvalidPath.with_source(source))
 }
 
 #[cfg(test)]
@@ -190,6 +190,20 @@ mod tests {
 
     #[test]
     fn malformed_and_alternate_resource_spellings_never_reach_a_stream() {
+        let error = stream_path("streams:/%FF").unwrap_err();
+        assert_eq!(error.category(), StreamError::InvalidPath);
+        let mut cause = std::error::Error::source(&error);
+        let mut original_utf8_error = false;
+        while let Some(source) = cause {
+            original_utf8_error |= source
+                .downcast_ref::<std::string::FromUtf8Error>()
+                .is_some();
+            cause = source.source();
+        }
+        assert!(
+            original_utf8_error,
+            "the original decoded resource bytes lost their UTF-8 failure"
+        );
         for resource in [
             "events",
             "streams:/a%2Fb",
@@ -207,12 +221,18 @@ mod tests {
             "streams:/",
             "fs:/volume",
         ] {
-            assert_eq!(stream_path(resource), temporary_stream_path(resource));
+            assert_eq!(
+                stream_path(resource).map_err(|error| error.category()),
+                temporary_stream_path(resource)
+            );
             let validated = match temporary_stream_path(resource) {
                 Err(StreamError::Unsupported) => Ok(()),
                 result => result.map(|_| ()),
             };
-            assert_eq!(validate_resource(resource), validated);
+            assert_eq!(
+                validate_resource(resource).map_err(|error| error.category()),
+                validated
+            );
             assert!(stream_path(resource).is_err(), "accepted alias {resource}");
             #[cfg(not(target_arch = "wasm32"))]
             if !resource.contains('%') {
