@@ -82,8 +82,8 @@ async fn generation_and_count_publish_original_admission_on_both_provider_paths(
                 transport.clone(),
             );
             let gate = provider.admission.gate(&provider);
-            gate.lock().credit = Some(1);
-            let held = gate.clone().admitted(transport.as_ref(), None).await?;
+            let mut held = gate.clone().admitted(transport.as_ref(), None).await?;
+            assert!(held.observe(429, Some(Duration::from_secs(5)), transport.now()));
             let (request, dispatch) = crate::tests::request(&provider)?;
             let work = crate::tests::native_tests::work(&acyclic_fs::CancellationToken::new())?;
             let baseline = work.live_allocation_bytes();
@@ -116,13 +116,13 @@ async fn generation_and_count_publish_original_admission_on_both_provider_paths(
             assert!(matches!(
                 started,
                 Some(ModelEvent::Wait(ModelWait::AdmissionStarted {
-                    cause: ModelAdmissionCause::Credit,
+                    cause: ModelAdmissionCause::Cooldown { until },
                 }))
-            ));
+             if until == Duration::from_secs(5)));
             assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
             assert!(events.next().now_or_never().is_none());
             transport.millis.store(5_000, Ordering::SeqCst);
-            drop(held);
+            held.waited();
             assert!(
                 matches!(events.next().await.transpose()?, Some(ModelEvent::Wait(
                 ModelWait::AdmissionFinished { waited_for, admitted_at: 1_005_000 }
@@ -191,8 +191,9 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             registry.register("morph".into(), specification)?;
             let provider = registry.resolve("morph/morph-kimik31")?;
             let gate = provider.admission.gate(&provider);
-            gate.lock().credit = Some(1);
             let mut held = gate.clone().admitted(transport.as_ref(), None).await?;
+            let mut extending = gate.clone().admitted(transport.as_ref(), None).await?;
+            assert!(held.observe(429, Some(RETRY_AFTER), transport.now()));
             let provider = Arc::new(provider);
             let directory =
                 tempfile::tempdir().map_err(|error| crate::invalid(error.to_string()))?;
@@ -233,7 +234,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             assert_eq!(transport.sent.load(Ordering::SeqCst), 0);
             if maximum.is_some() {
                 transport.millis.store(5_000, Ordering::SeqCst);
-                drop(held);
+                held.waited();
                 let outcome = turn.await?;
                 assert!(
                     matches!(&outcome,
@@ -256,7 +257,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
                 continue;
             }
             transport.millis.store(2_000, Ordering::SeqCst);
-            assert!(held.observe(429, Some(RETRY_AFTER), transport.now()));
+            assert!(extending.observe(429, Some(RETRY_AFTER), transport.now()));
             while usage.waits().changed == 0 {
                 usage.advance().await?;
             }
@@ -264,7 +265,7 @@ async fn agent_journals_admission_start_before_generation_or_token_count_is_admi
             assert_eq!(usage.waits().completed, 0);
             assert_eq!(usage.waits().elapsed_ns(), None);
             transport.millis.store(5_000, Ordering::SeqCst);
-            held.waited();
+            extending.waited();
             assert!(matches!(
                 turn.await?,
                 acyclic_harness::test_support::PromptOutcome::Settled(_, _)

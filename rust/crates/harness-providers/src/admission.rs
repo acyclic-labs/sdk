@@ -1,11 +1,8 @@
 //! One admission per model at each provider endpoint, shared by one registry.
 //!
 //! A 429 with a provider delay closes that model's bucket until exactly that
-//! instant, and waiters are admitted in arrival order when it opens. In-flight
-//! requests are bounded by credit: unbounded until the endpoint refuses one, then the
-//! number the provider was serving when it refused. Credit grows by one after each
-//! full credit of accepted requests, so a probe above the learned bound costs at most
-//! one refusal. Request bytes are never changed.
+//! instant. Every waiter can resume when it opens: a rate refusal says nothing
+//! about the provider's concurrency capacity. Request bytes are never changed.
 use crate::{HttpRequest, HttpResponse, HttpTransport, ResolvedModel};
 use acyclic_harness_core::{
     Result,
@@ -20,8 +17,8 @@ use std::{
 };
 
 /// The model gates of one registry, keyed by provider, base URL, model and credential.
-/// A bucket retains its gate while anyone holds it or it carries provider-taught
-/// state (a pending cooldown or learned credit), so that state outlives its permits.
+/// A bucket retains its gate while anyone holds it or its cooldown is pending,
+/// so the cooldown outlives its permits.
 #[derive(Default)]
 pub(crate) struct Endpoints(Mutex<HashMap<[u8; 32], Arc<Gate>>>);
 
@@ -50,7 +47,10 @@ impl Endpoints {
         if let Some(gate) = gates.get(&identity) {
             return gate.clone();
         }
-        gates.retain(|_, gate| Arc::strong_count(gate) > 1 || gate.lock().taught());
+        let now = provider.transport.now();
+        gates.retain(|_, gate| {
+            Arc::strong_count(gate) > 1 || gate.lock().closed_until.is_some_and(|until| until > now)
+        });
         let gate = Arc::new(Gate::default());
         gates.insert(identity, gate.clone());
         gate
@@ -99,14 +99,6 @@ pub(crate) struct Gate(Mutex<State>);
 
 #[derive(Default)]
 struct State {
-    /// Admitted permits, including admitted waiters that have not resumed yet.
-    in_flight: u64,
-    /// Permits whose request the provider accepted.
-    accepted: u64,
-    /// `None` until the provider refuses a request: no bound is assumed.
-    credit: Option<u64>,
-    /// Acceptances counted toward the next credit increase.
-    successes: u64,
     /// The provider's instant on the transport clock, while closed.
     closed_until: Option<Duration>,
     next_ticket: u64,
@@ -125,11 +117,6 @@ struct Waiter {
 const QUEUED_BYTES: u64 = 4 * std::mem::size_of::<(u64, Waiter)>() as u64;
 
 impl State {
-    /// Whether the provider has taught this endpoint anything worth retaining.
-    const fn taught(&self) -> bool {
-        self.closed_until.is_some() || self.credit.is_some()
-    }
-
     fn position(&self, ticket: u64) -> Option<usize> {
         self.waiters
             .binary_search_by_key(&ticket, |(ticket, _)| *ticket)
@@ -144,14 +131,12 @@ impl State {
         Some(waiter)
     }
 
-    /// An admission is valid only in the gate state that granted it: closing or
-    /// lowering credit revokes grants whose waiter has not resumed, and every
+    /// An admission is valid only in the gate state that granted it: closing
+    /// revokes grants whose waiter has not resumed, and every
     /// waiter re-evaluates (arming the provider's instant when closed).
     fn revoke(&mut self) {
         for (_, waiter) in &mut self.waiters {
-            if std::mem::take(&mut waiter.admitted) {
-                self.in_flight -= 1;
-            }
+            waiter.admitted = false;
             if let Some(waker) = waiter.waker.take() {
                 waker.wake();
             }
@@ -159,18 +144,12 @@ impl State {
         self.wake();
     }
 
-    fn cause(&self) -> ModelAdmissionCause {
-        match self.closed_until {
-            Some(until) => ModelAdmissionCause::Cooldown { until },
-            None => ModelAdmissionCause::Credit,
-        }
+    fn cause(&self) -> Option<ModelAdmissionCause> {
+        self.closed_until
+            .map(|until| ModelAdmissionCause::Cooldown { until })
     }
 
-    fn admits(&self) -> bool {
-        self.closed_until.is_none() && self.credit.is_none_or(|credit| self.in_flight < credit)
-    }
-
-    /// Admits waiters in arrival order up to credit, only while open.
+    /// Releases every waiter, in arrival order, only while open.
     fn wake(&mut self) {
         if self.closed_until.is_some() {
             return;
@@ -180,11 +159,7 @@ impl State {
             .iter_mut()
             .filter(|(_, waiter)| !waiter.admitted)
         {
-            if self.credit.is_some_and(|credit| self.in_flight >= credit) {
-                break;
-            }
             waiter.admitted = true;
-            self.in_flight += 1;
             if let Some(waker) = waiter.waker.take() {
                 waker.wake();
             }
@@ -217,11 +192,11 @@ impl Gate {
             .is_some_and(|until| until <= transport.now())
         {
             state.closed_until = None;
+            state.wake();
         }
-        if state.waiters.iter().all(|(_, waiter)| waiter.admitted) && state.admits() {
-            state.in_flight += 1;
+        let Some(cause) = state.cause() else {
             return Ok(None);
-        }
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let custody = work
             .map(|work| work.claim(QUEUED_BYTES, 1, acyclic_fs::WorkCounters::UNCHARGED))
@@ -233,7 +208,6 @@ impl Gate {
         };
         let ticket = state.next_ticket;
         state.next_ticket += 1;
-        let cause = state.cause();
         let started = transport.now();
         state.waiters.push_back((
             ticket,
@@ -276,7 +250,10 @@ impl Gate {
                             state.remove(ticket);
                             return Poll::Ready(Ok((None, transport.now())));
                         }
-                        let current = state.cause();
+                        let Some(current) = state.cause() else {
+                            state.wake();
+                            continue;
+                        };
                         if current != cause {
                             return Poll::Ready(Ok((Some(current), transport.now())));
                         }
@@ -307,8 +284,7 @@ impl Gate {
                     cause = next;
                     yield Event::Wait(ModelWait::AdmissionChanged { cause, waited_for });
                 } else {
-                    // Own granted credit before yielding: cancellation while the
-                    // finish is being observed must return that credit too.
+                    // Retain the original gate before yielding the finish.
                     let permit = Permit::new(self.clone());
                     drop(queued);
                     let admitted_at = transport.unix_ms()?;
@@ -321,7 +297,7 @@ impl Gate {
     }
 }
 
-/// A waiter abandoned before it resumes returns any admission it was given.
+/// A waiter abandoned before it resumes releases its queue node and custody.
 struct Queued<'a> {
     gate: &'a Gate,
     ticket: u64,
@@ -331,14 +307,7 @@ struct Queued<'a> {
 
 impl Drop for Queued<'_> {
     fn drop(&mut self) {
-        let mut state = self.gate.lock();
-        if state
-            .remove(self.ticket)
-            .is_some_and(|waiter| waiter.admitted)
-        {
-            state.in_flight -= 1;
-            state.wake();
-        }
+        self.gate.lock().remove(self.ticket);
     }
 }
 
@@ -346,20 +315,12 @@ impl Drop for Queued<'_> {
 /// provider delay, the refused caller's claim to reopen the endpoint at that instant.
 pub(crate) struct Permit {
     gate: Arc<Gate>,
-    accepted: bool,
-    /// Counted in flight; a refusal stops counting before its caller waits.
-    counted: bool,
     opens: Option<Duration>,
 }
 
 impl Permit {
     const fn new(gate: Arc<Gate>) -> Self {
-        Self {
-            gate,
-            accepted: false,
-            counted: true,
-            opens: None,
-        }
+        Self { gate, opens: None }
     }
 
     /// Keeps only an opener: an accepted response's permit ends before its caller waits.
@@ -383,30 +344,11 @@ impl Permit {
     /// Learns from the response head. Returns whether the caller keeps this permit:
     /// in flight while accepted, or as the opener of a provider delay.
     fn observe(&mut self, status: u16, retry_after: Option<Duration>, now: Duration) -> bool {
-        let mut state = self.gate.lock();
         if (200..300).contains(&status) {
-            self.accepted = true;
-            state.accepted += 1;
-            if let Some(credit) = state.credit
-                && state.closed_until.is_none()
-                && state.in_flight >= credit
-            {
-                state.successes += 1;
-                if state.successes >= credit {
-                    state.successes = 0;
-                    state.credit = Some(credit + 1);
-                    state.wake();
-                }
-            }
             return true;
         }
         if status == 429 {
-            // The provider was serving the accepted requests when it refused this one.
-            let bound = state.accepted.max(1);
-            state.credit = Some(state.credit.map_or(bound, |credit| credit.min(bound)));
-            state.successes = 0;
-            state.in_flight -= 1;
-            self.counted = false;
+            let mut state = self.gate.lock();
             if let Some(wait) = retry_after {
                 let until = now.saturating_add(wait);
                 if state.closed_until.is_none_or(|closed| closed < until) {
@@ -418,20 +360,6 @@ impl Permit {
             return self.opens.is_some();
         }
         false
-    }
-}
-
-impl Drop for Permit {
-    fn drop(&mut self) {
-        if !self.counted {
-            return;
-        }
-        let mut state = self.gate.lock();
-        state.in_flight -= 1;
-        if self.accepted {
-            state.accepted -= 1;
-        }
-        state.wake();
     }
 }
 
