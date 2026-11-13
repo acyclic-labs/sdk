@@ -23,7 +23,7 @@
     "duplicate-request-path": "f83385bfa12908193df1355f977fabfafa966329ab11110515a98d309e960419",
     "mismatched-reply-path": "bd9ebd0c21eec43bd218fc67e6d090c5b2a624008969ec115cba6d90beb5e29d",
     "unsupported-layout-version": "574e094d38bcceebb6d5ff6d7ce5eddc1469ee3227f10d80187823b184bdbdad",
-    "stream-query-snapshot": "4ea3daf69c7660063a23aa952ceedc21cd31a4368eea9bd10992ac274195d35c"
+    "stream-query-snapshot": "98fd312521ae1a22df399bfb5a604cb6f0ac19eab8eacc8e54c9b3fdc8cf831d"
   },
   "additional_captures": {
     "conditional-publication": {
@@ -31,8 +31,8 @@
       "origin": "Actual Connection::execute PublishClientFiles command and original encoded committed reply, captured in the same resume/version test."
     },
     "stream-query-snapshot": {
-      "origin": "Actual Connection::execute ClientFiles command and encoded query snapshot from local::endpoint::tests::agent_file_roots_share_conditional_publication_and_follow_over_remote_sessions, captured with ACYCLIC_CAPTURE_CLIENT_FILES. Retained original capture bytes; older JSON numeric cuts are refused after the exact-decimal wire change.",
-      "source": "c7a627b8e7619dee4a69f4af6fd26591dfa319a8"
+      "source": "cdd30fd1fd985504b6d48c7976b74f3dda4bd3eb",
+      "origin": "Actual Connection::execute ClientFiles command and original encoded query snapshot from local::endpoint::tests::agent_file_roots_share_conditional_publication_and_follow_over_remote_sessions with ACYCLIC_CAPTURE_CLIENT_FILES=1. Current exact-decimal JSON wire, retained without editing bytes."
     }
   }
 }
