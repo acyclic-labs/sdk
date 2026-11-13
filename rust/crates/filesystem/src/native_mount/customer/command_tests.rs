@@ -67,9 +67,18 @@ async fn command_final_join(revoke: bool, guarded: bool) -> Result<(), Box<dyn s
         checkout
             .commit(
                 crate::OperationId::new(),
+                None,
+                None,
+                None,
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &cancellation,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    })
+                },
             )
             .await
             .map_err(|failure| failure.error)?;

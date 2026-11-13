@@ -14,7 +14,6 @@ pub fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
 // decoded path must not also contain the stored representation's read path.
 pub(crate) trait ReadRepresentation {
     const STORED: bool = false;
-    fn reads_plaintext(id: ObjectId) -> bool;
 
     fn read_many<S: AsyncObjectStore + ?Sized>(
         store: &S,
@@ -33,10 +32,6 @@ pub(crate) trait ReadRepresentation {
 pub(crate) struct Decoded;
 pub(crate) struct Stored;
 impl ReadRepresentation for Decoded {
-    fn reads_plaintext(_: ObjectId) -> bool {
-        true
-    }
-
     fn read_many<S: AsyncObjectStore + ?Sized>(
         store: &S,
         requests: &[ObjectReadRequest],
@@ -57,10 +52,6 @@ impl ReadRepresentation for Decoded {
 }
 impl ReadRepresentation for Stored {
     const STORED: bool = true;
-    fn reads_plaintext(id: ObjectId) -> bool {
-        id.storage.is_none()
-    }
-
     fn read_many<S: AsyncObjectStore + ?Sized>(
         store: &S,
         requests: &[ObjectReadRequest],

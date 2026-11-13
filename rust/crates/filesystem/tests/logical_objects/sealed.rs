@@ -192,7 +192,7 @@ async fn sealed_reconstruction_preserves_association_without_publication()
     });
     // The erased and cache adapters must preserve the same reconstruction
     // mechanism; falling back to plaintext verification rejects this seal.
-    let store = acyclic_fs::cache::CachedObjectStore::with_default_options(logical);
+    let store = acyclic_fs::cache::CachedObjectStore::with_default_options(logical.clone());
     let erased: &dyn acyclic_fs::async_storage::DynObjectStore = &store;
     let mut context = AuthorityWork::native(&original, &cancellation);
     let object = erased
@@ -215,7 +215,7 @@ async fn sealed_reconstruction_preserves_association_without_publication()
         "each representation must be authenticated exactly once",
     );
     assert!(
-        !erased.contains(id, &mut context).await?,
+        !logical.contains(id, &mut context).await?,
         "reconstruction published data"
     );
     let mut foreign = id;
@@ -233,7 +233,7 @@ async fn sealed_reconstruction_preserves_association_without_publication()
     ));
     erased.put_hashed(restored, &mut context).await?;
     assert!(
-        erased.contains(id, &mut context).await?,
+        logical.contains(id, &mut context).await?,
         "durable visibility oracle missed explicit publication"
     );
     Ok(())
