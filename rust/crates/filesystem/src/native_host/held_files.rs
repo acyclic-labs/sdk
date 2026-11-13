@@ -108,7 +108,20 @@ impl HostRoot {
                     let mut offset = 0;
                     let mut chunk = [0; 4096];
                     loop {
-                        let count = file.read(&mut chunk)?;
+                        let count = work.with_admitted_work(
+                            WorkCounters {
+                                source_bytes_read: chunk.len() as u64,
+                                ..READ
+                            },
+                            || {
+                                let result = file.read(&mut chunk);
+                                let actual = WorkCounters {
+                                    source_bytes_read: result.as_ref().copied().unwrap_or(0) as u64,
+                                    ..READ
+                                };
+                                (result, actual)
+                            },
+                        )??;
                         if count == 0 {
                             break;
                         }
@@ -141,9 +154,14 @@ impl HostRoot {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
                 Err(error) => return Err(error),
             }
-            let temporary =
-                PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
-            match publish_record(self, &temporary, leaf, bytes, durability, work) {
+            let mut name = [0_u8; 38];
+            name[0] = b'.';
+            crate::identity::fresh_uuid()
+                .simple()
+                .encode_lower(&mut name[1..33]);
+            name[33..].copy_from_slice(b".next");
+            let temporary = Path::new(std::str::from_utf8(&name).map_err(io::Error::other)?);
+            match publish_record(self, temporary, leaf, bytes, durability, work) {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::AlreadyExists) => {}
                 result => return result,
             }
@@ -360,11 +378,11 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
         #[cfg(any(test, feature = "test-support"))]
         let bytes = {
             let (first, rest) = bytes.split_at(bytes.len() / 2);
-            file.write_all(first)?;
+            write_record_bytes(&mut file, first, work)?;
             publish_probe::step(1)?;
             rest
         };
-        file.write_all(bytes)?;
+        write_record_bytes(&mut file, bytes, work)?;
         if durability == NativeDurability::Durable {
             sync_file_held(&file, work)?;
         }
@@ -395,6 +413,37 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
         let _ = remove_leaf(&directory, temporary, false, work);
     }
     result
+}
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn write_record_bytes<W: NativeHostWork<Error = DemandError>>(
+    file: &mut std::fs::File,
+    mut bytes: &[u8],
+    work: &mut W,
+) -> Result<(), DemandError> {
+    while !bytes.is_empty() {
+        let result = work.with_admitted_work(
+            WorkCounters {
+                object_bytes_written: bytes.len() as u64,
+                ..WRITE
+            },
+            || {
+                let result = file.write(bytes);
+                let actual = WorkCounters {
+                    object_bytes_written: result.as_ref().copied().unwrap_or(0) as u64,
+                    ..WRITE
+                };
+                (result, actual)
+            },
+        )?;
+        match result {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero).into()),
+            Ok(count) => bytes = &bytes[count..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
