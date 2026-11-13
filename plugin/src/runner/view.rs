@@ -2166,8 +2166,11 @@ mod tests {
         let forked = conversation.select(child).await?;
         forked.wait_current_input().await?;
         let inherited = forked.entries(0, 1).await?;
+        let TurnInput::Message { body, .. } = &inherited[0].input else {
+            return Err("inherited turn lost its original prompt".into());
+        };
         assert!(
-            forked.turn(&inherited[0]).await.is_err(),
+            forked.text(body).await.is_err(),
             "an inherited file needs its original conversation proof"
         );
         let page = older(Arc::clone(&forked), 0, 0, 1).await?;

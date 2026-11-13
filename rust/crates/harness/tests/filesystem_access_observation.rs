@@ -97,7 +97,7 @@ async fn racing_observation(revoke: bool, range: bool) -> Result<(), Box<dyn Err
     // must neither refuse the original bytes nor wait for a quiet Head.
     if revoke {
         assert!(
-            matches!(result, Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized)
+            matches!(result, Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Conflict)
         );
     } else {
         assert_eq!(result?.as_ref(), contents.as_bytes());
