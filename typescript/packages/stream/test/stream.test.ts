@@ -168,6 +168,17 @@ describe("website Stream contract", () => {
     expect(() => typed.decode(new TextEncoder().encode(JSON.stringify({ answer: "wrong" })))).toThrow();
   });
 
+  test("appends and replays one batch beyond a read page", async () => {
+    const stream = StreamClient.memory().bytes("atomic-batch");
+    const records = Array.from({ length: 1_025 }, () => new Uint8Array([7]));
+    const options = { idempotencyKey: key("atomic-batch"), ifTail: 0n };
+    const original = await stream.appendBatch(records, options);
+    if (!original.ok) throw new Error("atomic batch conflicted");
+    expect(original.tail).toBe(1_025n);
+    expect(await stream.appendBatch(records, options)).toEqual(original);
+    expect(await stream.tail()).toBe(1_025n);
+  });
+
   test("enforces the Rust Stream path, batch, and read bounds before mutation", async () => {
     const client = StreamClient.memory();
     for (const path of ["space in/path", "bad\\path", "emoji/ðŸš€", "control/\u000b", "a".repeat(65_536)]) {
@@ -183,13 +194,8 @@ describe("website Stream contract", () => {
     const stream = client.bytes("bounded");
     await expect(stream.appendBatch([], { idempotencyKey: key("stream.test-110") })).rejects.toMatchObject({ code: "limit_exceeded" });
     await expect(stream.appendBatch([new Uint8Array(65_537)], { idempotencyKey: key("stream.test-111") })).rejects.toMatchObject({ code: "limit_exceeded" });
-    await expect(stream.appendBatch(Array(1_025).fill(new Uint8Array()), { idempotencyKey: key("stream.test-112") })).rejects.toMatchObject({ code: "limit_exceeded" });
     const customProvider = new MemoryStreamProvider();
     let customCalls = 0;
-    const originalAppend = customProvider.append.bind(customProvider);
-    customProvider.append = (...args) => { customCalls += 1; return originalAppend(...args); };
-    await expect(new StreamClient(customProvider).bytes("custom").appendBatch(Array(1_025).fill(new Uint8Array()), { idempotencyKey: key("stream.test-117") })).rejects.toMatchObject({ code: "limit_exceeded" });
-    expect(customCalls).toBe(0);
     const customStream = new StreamClient({
       append: () => { customCalls += 1; throw new Error("custom provider called"); },
     } as never).bytes("custom");
