@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import { fixtureAuthorization } from "./credential-fixture";
 import { create, toBinary, toJsonString } from "@bufbuild/protobuf";
 import {
@@ -239,21 +240,22 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
 
 test("prepared requests preserve context, run, and warm identities", async () => {
   let revisionCounter = 0;
+  const inspectedRuns: Uint8Array[] = [];
   const transport: InferenceTransport = {
     async listModels() { return create(ListModelsResponseSchema); },
     async createContext(request) { await Promise.resolve(); expect(request.items[0]?.kind).toBe(ItemKind.USER); return receipt(++revisionCounter); },
-    async inspectContext(request) { const view = contextView(request.revision); view.items.push(create(ItemSchema, { kind: ItemKind.USER })); return view; },
+    async inspectContext(request) { await Promise.resolve(); const view = contextView(request.revision); view.items.push(create(ItemSchema, { kind: ItemKind.USER })); return view; },
     async mutateContext(request) { await Promise.resolve(); expect(request.action.case).not.toBeUndefined(); return receipt(++revisionCounter); },
     async retainWarm(request) { const view = warmView(revision(7), request.context, request.expiresAtMs); view.latencyProfile = request.latencyProfile; return view; },
-    async inspectWarm(request) { return warmView(request.commitment, revision(3)); },
+    async inspectWarm(request) { await Promise.resolve(); return warmView(request.commitment, revision(3)); },
     async renewWarm(request) { return warmView(request.commitment, revision(3), request.expiresAtMs); },
     async releaseWarm(request) { await Promise.resolve(); return warmView(request.commitment, revision(3)); },
     async generateRun(request) { await Promise.resolve(); return create(GenerateRunResponseSchema, { run: { runId: request.identity!.requestId, input: request.context, model: "model" } }); },
-    async inspectRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", lastSequence: 4n, result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: contextView(revision(10)) }) }); },
+    async inspectRun(request) { await Promise.resolve(); inspectedRuns.push(new Uint8Array(request.runId)); return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", lastSequence: 4n, result: create(RunResultSchema, { output: bytes(9), terminal: RunTerminal.COMPLETED, context: contextView(revision(10)) }) }); },
     async *watchRun(request) { yield create(RunEventSchema, { sequence: request.fromSequence, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
-    async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", cancellationRequested: true }); },
+    async cancelRun(request) { await Promise.resolve(); return create(RunViewSchema, { runId: request.runId, input: revision(3), model: "model", cancellationRequested: true }); },
     async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
-    async inspectEvaluation(request) { return evaluationView(request.evaluationId); },
+    async inspectEvaluation(request) { await Promise.resolve(); return evaluationView(request.evaluationId); },
   };
   const inference = new Inference(new InferenceClient(transport));
   const item = create(ItemSchema, { kind: ItemKind.USER, payload: bytes(1) });
@@ -262,7 +264,12 @@ test("prepared requests preserve context, run, and warm identities", async () =>
   const creating = client.createContext(creation);
   creation.items.length = 0;
   const context = contextRevision((await creating).revision);
-  expect((await client.inspectContext(context)).items[0]?.kind).toBe(ItemKind.USER);
+  const contextInput = Buffer.from(context);
+  const inspectingContext = client.inspectContext(contextInput);
+  contextInput.fill(9);
+  const selectedContext = await inspectingContext;
+  expect(selectedContext.items[0]?.kind).toBe(ItemKind.USER);
+  expect(selectedContext.revision).toEqual(context);
   const edit = create(MutateContextRequestSchema, {
     identity: inference.identity(), source: context,
     action: { case: "edit", value: create(EditsSchema, { edits: [create(EditSchema, { action: { case: "append", value: item } })] }) },
@@ -283,20 +290,37 @@ test("prepared requests preserve context, run, and warm identities", async () =>
   expect(generated.run).toMatchObject({ runId: expectedRun, input: fork });
   const run = runId(generated.run!.runId);
   expect((await client.inspectContext(context)).revision).toEqual(context);
-  expect((await client.inspectRun(run)).runId).toEqual(run);
+  const runInput = Buffer.from(run);
+  const inspectingRun = client.inspectRun(runInput);
+  runInput.fill(9);
+  expect((await inspectingRun).runId).toEqual(run);
   const result = await client.resultRun(run);
   expect(result.terminal).toBe("completed");
   expect(result.output).toEqual(bytes(9));
   expect(result.continuationValid).toBeTrue();
   expect(result.context).toEqual(revision(10));
-  expect((await client.cancelRun(run)).cancellationRequested).toBeTrue();
-  const events = []; for await (const event of client.watchRun(run, 4n)) events.push(event.sequence);
+  const cancelInput = Buffer.from(run);
+  const cancelling = client.cancelRun(cancelInput);
+  cancelInput.fill(9);
+  const cancelled = await cancelling;
+  expect(cancelled.runId).toEqual(run);
+  expect(cancelled.cancellationRequested).toBeTrue();
+  const watchInput = Buffer.from(run);
+  const inspections = inspectedRuns.length;
+  const watching = client.watchRun(watchInput, 4n);
+  watchInput.fill(9);
+  expect(inspectedRuns.length).toBe(inspections);
+  const events = []; for await (const event of watching) events.push(event.sequence);
+  expect(inspectedRuns.at(-1)).toEqual(run);
   expect(events).toEqual([4n]);
   const warm = (await client.retainWarm(create(RetainWarmRequestSchema, {
     identity: inference.identity(), context: fork, latencyProfile: revision(2), expiresAtMs: 10n,
   }))).commitment;
   expect(warm).toEqual(revision(7));
-  await client.inspectWarm(warm);
+  const warmInput = Buffer.from(warm);
+  const inspectingWarm = client.inspectWarm(warmInput);
+  warmInput.fill(9);
+  expect((await inspectingWarm).commitment).toEqual(warm);
   expect((await client.renewWarm(create(RenewWarmRequestSchema, {
     identity: inference.identity(), commitment: warm, expiresAtMs: 20n,
   }))).expiresAtMs).toBe(20n);
@@ -306,10 +330,16 @@ test("prepared requests preserve context, run, and warm identities", async () =>
   const releasing = client.releaseWarm(release);
   release.commitment.fill(9);
   expect((await releasing).commitment).toEqual(revision(7));
+  const evaluation = runIdentity(5);
+  const evaluationInput = Buffer.from(evaluation);
+  const inspectingEvaluation = client.inspectEvaluation(evaluationInput);
+  evaluationInput.fill(9);
+  expect((await inspectingEvaluation).evaluationId).toEqual(evaluation);
 });
 
 test("run recovery rejects substituted or malformed streams and observes an inclusive zero cursor", async () => {
   const id = runIdentity(4);
+  const inspectedRuns: Uint8Array[] = [];
   let inspectCount = 0;
   let watchCount = 0;
   const transport: InferenceTransport = {
@@ -318,16 +348,20 @@ test("run recovery rejects substituted or malformed streams and observes an incl
     async retainWarm() { return create(WarmViewSchema); }, async inspectWarm() { return create(WarmViewSchema); },
     async renewWarm() { return create(WarmViewSchema); }, async releaseWarm() { return create(WarmViewSchema); },
     async generateRun() { return create(GenerateRunResponseSchema); },
-    async inspectRun(request) { inspectCount += 1; return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model", lastSequence: 0n, ...(inspectCount > 1 ? { result: create(RunResultSchema, { terminal: RunTerminal.COMPLETED }) } : {}) }); },
-    async *watchRun(request) { watchCount += 1; expect(request.fromSequence).toBe(0n); yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
+    async inspectRun(request) { inspectedRuns.push(new Uint8Array(request.runId)); inspectCount += 1; return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model", lastSequence: 0n, ...(inspectCount > 1 ? { result: create(RunResultSchema, { terminal: RunTerminal.COMPLETED }) } : {}) }); },
+    async *watchRun(request) { watchCount += 1; expect(request.fromSequence).toBe(0n); request.runId.fill(9); yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } }); },
     async cancelRun(request) { return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); },
     async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
     async inspectEvaluation(request) { return evaluationView(request.evaluationId); },
   };
-  const result = await new InferenceClient(transport).resultRun(runId(id));
+  const resultInput = Buffer.from(id);
+  const waitingResult = new InferenceClient(transport).resultRun(resultInput);
+  resultInput.fill(9);
+  const result = await waitingResult;
   expect(result.terminal).toBe("completed");
   expect(inspectCount).toBe(2);
   expect(watchCount).toBe(1);
+  expect(inspectedRuns).toEqual([id, id]);
 
   let reopened = false;
   const completed = new InferenceClient({
@@ -362,7 +396,7 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   await expect(pending).rejects.toThrow();
   expect(reopened).toBeFalse();
 
-  const substituted = new InferenceClient({ ...transport, async inspectRun() { return create(RunViewSchema, { runId: runIdentity(9), input: revision(1), model: "model" }); } });
+  const substituted = new InferenceClient({ ...transport, async inspectRun(request) { request.runId.fill(9); return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); } });
   await expect(substituted.inspectRun(id)).rejects.toThrow();
 
   const substitutedGeneration = new InferenceClient({ ...transport, async generateRun(request) {
@@ -406,10 +440,14 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   await expect(async () => { for await (const _event of overflow.watchRun(id, (1n << 64n) - 1n)) { /* exhaust */ } }).toThrow();
 
   expect(() => contextRevision(bytes(1))).toThrow();
-  const substitutedContext = new InferenceClient({ ...transport, async inspectContext() { return contextView(revision(9)); } });
+  const substitutedContext = new InferenceClient({ ...transport, async inspectContext(request) { request.revision.fill(9); return contextView(request.revision); } });
   await expect(substitutedContext.inspectContext(revision(1))).rejects.toThrow();
-  const substitutedWarm = new InferenceClient({ ...transport, async inspectWarm() { return warmView(revision(9)); } });
+  const substitutedWarm = new InferenceClient({ ...transport, async inspectWarm(request) { request.commitment.fill(9); return warmView(request.commitment); } });
   await expect(substitutedWarm.inspectWarm(revision(8))).rejects.toThrow();
+  const substitutedCancel = new InferenceClient({ ...transport, async cancelRun(request) { request.runId.fill(9); return create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model" }); } });
+  await expect(substitutedCancel.cancelRun(id)).rejects.toThrow();
+  const substitutedInspection = new InferenceClient({ ...transport, async inspectEvaluation(request) { request.evaluationId.fill(9); return evaluationView(request.evaluationId); } });
+  await expect(substitutedInspection.inspectEvaluation(id)).rejects.toThrow();
   const malformedReceipt = new InferenceClient({ ...transport, async createContext() { return create(MutationReceiptSchema); } });
   await expect(malformedReceipt.createContext(create(CreateContextRequestSchema))).rejects.toThrow();
 
