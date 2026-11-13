@@ -211,6 +211,13 @@ impl TurnHost for Host {
             Ok(())
         })
     }
+    fn settle<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     fn open_control<'a>(
         &'a self,
         _: &'a AgentState,
@@ -259,6 +266,20 @@ impl TurnHost for Host {
 struct Announcing(Host, Arc<Mutex<Roster>>);
 
 impl TurnHost for Announcing {
+    fn park<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        operation: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        self.0.park(agent, operation)
+    }
+    fn settle<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<()>> {
+        self.0.settle(agent, turn)
+    }
     fn open_control<'a>(
         &'a self,
         agent: &'a AgentState,
