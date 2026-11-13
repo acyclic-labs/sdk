@@ -397,7 +397,17 @@ async fn live_host_collection_retires_settled_private_forks_without_publishing_o
     drop(omitted_private_phase);
     assert!(store.spill_io.read().await.is_some());
     fs.collect_local_garbage(None, &cancel).await?;
-    assert!(store.index().objects.is_empty());
+    // A fork may restage immutable base metadata already in durable Objects.
+    // Those marked source copies are not private fork garbage. Verify the
+    // actual durable provider, bypassing both staging and the object cache.
+    let remaining = store.index().objects.keys().copied().collect::<Vec<_>>();
+    for id in remaining {
+        let mut reading = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+        assert!(
+            store.inner().inner().contains(id, &mut reading).await?,
+            "settled fork retained a private-only object: {id:?}"
+        );
+    }
     assert!(
         store.spill_io.read().await.is_none(),
         "an empty private area retained its unlinked file"
