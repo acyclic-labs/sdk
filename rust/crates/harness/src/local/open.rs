@@ -106,7 +106,7 @@ impl PreparedLocalHarness {
 }
 
 pub(crate) async fn prepare(config: LocalHarnessConfig) -> Result<PreparedLocalHarness> {
-    let mut opening = Opening::configure(config).await?;
+    let mut opening = Opening::configure(config)?;
     opening.config = opening.config.prepare_state()?;
     if let Some(refusal) = opening.host_refusals().into_iter().next() {
         return Err(refusal);
@@ -120,7 +120,7 @@ pub(crate) async fn prepare(config: LocalHarnessConfig) -> Result<PreparedLocalH
 pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
     let mut refusals = config.preflight();
     let checked = async {
-        let opening = Opening::configure(config).await?;
+        let opening = Opening::configure(config)?;
         let mut model = opening.config.model.clone();
         #[cfg(not(target_arch = "wasm32"))]
         if let (Some(models), Some(base)) = (&opening.models, &opening.config.model_base) {
@@ -146,7 +146,7 @@ pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
 }
 
 impl Opening {
-    async fn configure(config: LocalHarnessConfig) -> Result<Self> {
+    fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
         #[cfg(any(test, not(target_arch = "wasm32")))]
         let models = config.models.as_ref().map(|(models, _)| Arc::clone(models));
@@ -156,7 +156,7 @@ impl Opening {
             let mut config = config;
             if config.without_user_settings {
                 config.settings = None;
-                (config.resolve(None, true).await?, None)
+                (config.resolve(None, true)?, None)
             } else if config.model.is_none() && config.models.is_none() {
                 (config, None)
             } else {
@@ -166,10 +166,7 @@ impl Opening {
                     config.settings.take(),
                     config.hermetic,
                 )?;
-                (
-                    config.resolve(Some(&settings), injected).await?,
-                    Some(settings),
-                )
+                (config.resolve(Some(&settings), injected)?, Some(settings))
             }
         };
         if config.approval_issuer.is_some() {

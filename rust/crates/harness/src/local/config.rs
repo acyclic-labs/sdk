@@ -179,7 +179,7 @@ impl LocalHarnessConfig {
     /// The one resolution of a [`Self::resolving`] composition under its native `settings`;
     /// `injected` settings keep search off the environment's native sources.
     #[cfg(any(test, not(target_arch = "wasm32")))]
-    pub(super) async fn resolve(
+    pub(super) fn resolve(
         mut self,
         settings: Option<&crate::native_settings::SettingsConfig>,
         injected: bool,
@@ -857,8 +857,8 @@ mod resolver_tests {
 
     // 1k compositions over one resolver construct each selection's provider
     // once; a changed selection, here a changed settings model, resolves anew.
-    #[tokio::test]
-    async fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
+    #[test]
+    fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
         let constructed = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&constructed);
         let models = Arc::new(ModelResolver::new("first", move |selection| {
@@ -891,7 +891,7 @@ mod resolver_tests {
         for _ in 0..1000 {
             let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
             assert_eq!(
-                selected(config.resolve(Some(&settings()), true).await?)?,
+                selected(config.resolve(Some(&settings()), true)?)?,
                 expected("first")
             );
         }
@@ -900,7 +900,7 @@ mod resolver_tests {
             .map_err(storage)?;
         let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
         assert_eq!(
-            selected(config.resolve(Some(&settings()), true).await?)?,
+            selected(config.resolve(Some(&settings()), true)?)?,
             expected("second")
         );
         let explicit = LocalHarnessConfig::resolving(
@@ -909,15 +909,12 @@ mod resolver_tests {
             Some("first".into()),
         );
         assert_eq!(
-            selected(explicit.resolve(Some(&settings()), true).await?)?,
+            selected(explicit.resolve(Some(&settings()), true)?)?,
             expected("first")
         );
         let defaults = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None)
             .without_user_settings();
-        assert_eq!(
-            selected(defaults.resolve(None, true).await?)?,
-            expected("first")
-        );
+        assert_eq!(selected(defaults.resolve(None, true)?)?, expected("first"));
         let selections = std::collections::BTreeSet::from([expected("first"), expected("second")]);
         assert_eq!(constructed.load(Ordering::Relaxed), selections.len());
         Ok(())
@@ -928,8 +925,8 @@ mod resolver_tests {
 mod fixed_role_binding_tests {
     use super::*;
 
-    #[tokio::test]
-    async fn fixed_bindings_obey_the_configured_role_selection() -> Result<()> {
+    #[test]
+    fn fixed_bindings_obey_the_configured_role_selection() -> Result<()> {
         let role = crate::templates::root()?.model;
         let selected =
             crate::templates::resolve_model(role.as_deref(), None).unwrap_or("test/fixed");
@@ -942,9 +939,8 @@ mod fixed_role_binding_tests {
                 Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
             let allowed = crate::templates::resolve_model(role.as_deref(), Some(&selection))
                 == Some(selection.as_str());
-            let result = LocalHarnessConfig::new(".", (model.clone(), provider))
-                .resolve(None, true)
-                .await;
+            let result =
+                LocalHarnessConfig::new(".", (model.clone(), provider)).resolve(None, true);
             if allowed {
                 assert_eq!(result?.model.map(|binding| binding.0), Some(model));
             } else {
