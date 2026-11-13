@@ -359,7 +359,9 @@ impl<'a> StockExecution<'a> {
             .zip(self.io)
             .map(|(file, io)| io.guard_owned(file.logical_owned_bytes()?))
             .transpose()?;
-        let instruction = with_history_io(self.io, |work| {
+        let scope = crate::filesystem::PreparationScope::new(self.io)?;
+        let session = self.preparing(scope.io());
+        let instruction = with_history_io(session.io, |work| {
             preparation_format(
                 format_args!(
                     "{INSTRUCTION}\nSelected model: {}\nCapacity: {}\nComplete reported input tokens: {}\nOriginal billing counters: {:?}\nOriginal call latency_ns: {:?}\nPrices not supplied are unknown; do not invent prices.",
@@ -372,16 +374,54 @@ impl<'a> StockExecution<'a> {
                 work,
             )
         })?;
-        let (summary, text) = self
+        let instruction = ModelContent::Text(instruction);
+        let digest = crate::context::prefix_digest(&source, source.messages.len(), session.io)?;
+        let end = match session
+            .manager_window(
+                journal,
+                (input, step),
+                &source,
+                (source.messages.len(), Some(&instruction)),
+                (0, None, digest),
+            )
+            .await
+        {
+            Ok(end) => end,
+            Err(Error::ModelContextOverflow) => {
+                // No paid admission occurred. An irreducible review must not
+                // prevent ordinary work or the independent capacity backstop.
+                drop(instruction);
+                drop(session);
+                scope.finish(0)?;
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let material = session.manager_material(&source, 0..end, None, Some(&instruction))?;
+        let (summary, text) = session
             .summarize(
                 journal,
                 Some(input),
                 input.operation_id,
                 step,
-                (source, ModelContent::Text(instruction)),
+                material,
                 phase,
             )
             .await?;
+        let retained = summary
+            .output
+            .logical_owned_bytes()?
+            .checked_add(text.capacity() as u64)
+            .ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Invalid,
+                    "review ownership overflows",
+                )
+            })?;
+        drop(instruction);
+        drop(session);
+        scope.finish(retained)?;
         let hold = self
             .io
             .map(|io| io.guard_owned(summary.output.logical_owned_bytes()?))

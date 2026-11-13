@@ -22,11 +22,12 @@ struct ManagerWindow {
 impl PreparationRecord for ManagerWindow {}
 
 impl StockExecution<'_> {
-    fn manager_material(
+    pub(super) fn manager_material(
         &self,
         context: &crate::context::Context,
         range: std::ops::Range<usize>,
         previous: Option<&crate::context::ContextSummary>,
+        instruction: Option<&ModelContent>,
     ) -> Result<(crate::context::Context, ModelContent)> {
         let start = range.start;
         let (mut source, _) = with_history_io(self.io, |work| {
@@ -47,6 +48,12 @@ impl StockExecution<'_> {
             );
             source.current_input_index = source.current_input_index.map(|index| index + 1);
         }
+        if let Some(instruction) = instruction {
+            let instruction = with_history_io(self.io, |work| {
+                crate::model::clone_content(instruction, work).map(|(content, _)| content)
+            })?;
+            return Ok((source, instruction));
+        }
         let instruction = with_history_io(self.io, |work| {
             preparation_format(
                 format_args!(
@@ -61,15 +68,16 @@ impl StockExecution<'_> {
         Ok((source, ModelContent::Text(instruction)))
     }
 
-    async fn manager_window(
+    pub(super) async fn manager_window(
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
         context: &crate::context::Context,
-        eligible: usize,
+        selection: (usize, Option<&ModelContent>),
         progress: (u64, Option<&crate::context::ContextSummary>, [u8; 32]),
     ) -> Result<usize> {
         let (input, step) = turn;
+        let (eligible, instruction) = selection;
         let (part, previous, digest) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
         let key = with_history_io(self.io, |work| {
@@ -109,7 +117,7 @@ impl StockExecution<'_> {
             // selected immutable window escapes this preparation scope.
             let scope = crate::filesystem::PreparationScope::new(self.io)?;
             let session = self.preparing(scope.io());
-            let material = session.manager_material(context, start..end, previous)?;
+            let material = session.manager_material(context, start..end, previous, instruction)?;
             let admitted = session
                 .admit_summary_window(journal, turn, material.0, material.1, purpose)
                 .await;
@@ -172,11 +180,12 @@ impl StockExecution<'_> {
         let (part, previous, _) = progress;
         let start = previous.map_or(0, |summary| summary.source_messages as usize);
         let end = self
-            .manager_window(journal, turn, context, eligible, progress)
+            .manager_window(journal, turn, context, (eligible, None), progress)
             .await?;
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         let session = self.preparing(scope.io());
-        let (source, instruction) = session.manager_material(context, start..end, previous)?;
+        let (source, instruction) =
+            session.manager_material(context, start..end, previous, None)?;
         let supplied = source.messages.len();
         let purpose = if part == 0 {
             ModelPurpose::Summary
