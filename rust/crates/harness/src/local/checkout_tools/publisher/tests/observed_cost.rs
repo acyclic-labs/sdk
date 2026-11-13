@@ -9,6 +9,15 @@ fn publication_source(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn large_publication_source(root: &Path) -> Result<()> {
+    let mut bytes = vec![b'x'; 10_240];
+    bytes[..7].copy_from_slice(b"source\n");
+    for index in 0..6_000 {
+        std::fs::write(root.join(format!("source-{index}.txt")), &bytes).map_err(storage)?;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn concurrent_publications_preserve_each_volume_payload() -> Result<()> {
     let (_directory, _state, harness, publisher) = seeded_cost_fixture(publication_source).await?;
@@ -66,8 +75,8 @@ async fn independent_agent_views_preserve_concurrent_project_and_home_writes() -
 
 #[tokio::test]
 async fn forked_physical_views_preserve_concurrent_project_and_home_writes() -> Result<()> {
-    let (_directory, _state, harness, root_publisher) = seeded_cost_fixture_with_mounting(
-        publication_source,
+    let (directory, _state, harness, root_publisher) = seeded_cost_fixture_with_mounting(
+        large_publication_source,
         crate::local::WorkspaceMounting::Physical,
     )
     .await?;
@@ -97,6 +106,7 @@ async fn forked_physical_views_preserve_concurrent_project_and_home_writes() -> 
             &mut None,
         )?;
         harness.files.create_volume(&home).await?;
+        let fork_started = std::time::Instant::now();
         let (view, _) = root
             .view()
             .fork(
@@ -107,6 +117,10 @@ async fn forked_physical_views_preserve_concurrent_project_and_home_writes() -> 
             )
             .await
             .map_err(storage)?;
+        eprintln!(
+            "FORK_PREPARATION writer={index} elapsed_us={}",
+            fork_started.elapsed().as_micros()
+        );
         let grants = [
             project.capability(VolumeOperation::Read, &mut None)?,
             project.capability(VolumeOperation::Write, &mut None)?,
@@ -132,6 +146,7 @@ async fn forked_physical_views_preserve_concurrent_project_and_home_writes() -> 
             .find(|binding| binding.name == crate::filesystem::HOME_VOLUME)
             .ok_or_else(|| Error::NotFound("home binding".into()))?;
         home_binding.source = crate::agent::WorkspaceSource::Volume(home);
+        let binding_started = std::time::Instant::now();
         let physical = root
             .bound_task_view(
                 view,
@@ -141,9 +156,13 @@ async fn forked_physical_views_preserve_concurrent_project_and_home_writes() -> 
                 &authority,
             )
             .await?;
+        eprintln!(
+            "VIEW_BINDING writer={index} elapsed_us={}",
+            binding_started.elapsed().as_micros()
+        );
         assert_eq!(
             std::fs::read(physical.path.join("source-0.txt")).map_err(storage)?,
-            b"source\n"
+            std::fs::read(directory.path().join("source-0.txt")).map_err(storage)?
         );
         let tools = Arc::new(
             CheckoutTools::new(
