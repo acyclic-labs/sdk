@@ -22,8 +22,8 @@ mod task_list;
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use acyclic_harness_client::{
-    AgentClient, AgentClientError, AgentEvent, AgentSelection, StreamView, StreamViewPolicy,
-    WireSession, WireSessionError,
+    AgentClient, AgentClientError, AgentEvent, AgentSelection, StreamView, WireSession,
+    WireSessionError,
 };
 pub use acyclic_harness_client::{
     CREDENTIAL_ENV, ConnectionConfigError, ConnectionOptions, DEFAULT_ENDPOINT, DemandError,

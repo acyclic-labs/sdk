@@ -14,10 +14,7 @@ impl LazyDirectoryCursor {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Vec<u8>, crate::NativeAllocation), LazyWorkspaceError> {
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
+        let mut ctx = KernelAccounting::native(work, work.cancellation());
         let directory = self
             .directory
             .unicode_text_with_accounting(&mut ctx, work.cancellation())?;
@@ -38,10 +35,7 @@ impl LazyDirectoryCursor {
         limits: crate::VolumeLimits,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, LazyWorkspaceError> {
-        let mut ctx = KernelAccounting::NativeOriginal {
-            work,
-            cancellation: work.cancellation(),
-        };
+        let mut ctx = KernelAccounting::native(work, work.cancellation());
         let input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
             decode_fields(bytes, profile, &mut observe)
         })?;

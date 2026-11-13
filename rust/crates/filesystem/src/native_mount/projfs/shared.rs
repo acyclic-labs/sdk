@@ -257,9 +257,16 @@ fn shared_callbacks() -> PRJ_CALLBACKS {
 
 static INSTANCES: Instances<SharedProjFsInstance> = Instances::new();
 
-#[cfg(test)]
 pub(super) fn acquire_instance(root: &Path) -> Result<Arc<SharedProjFsInstance>, NativeMountError> {
     INSTANCES.acquire(root, SharedProjFsInstance::start)
+}
+
+/// Starts or joins `root`'s instance without a view of its own.
+pub(in crate::native_mount) fn hold(
+    root: &Path,
+) -> Result<Arc<dyn std::any::Any + Send + Sync>, NativeMountError> {
+    let instance: Arc<dyn std::any::Any + Send + Sync> = acquire_instance(root)?;
+    Ok(instance)
 }
 
 pub(super) struct SharedProjFsInstance {

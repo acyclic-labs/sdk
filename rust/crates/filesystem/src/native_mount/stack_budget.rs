@@ -201,6 +201,7 @@ async fn lazy_workspace(
                 work: crate::WorkCounters::UNCHARGED,
                 budget: crate::WorkBudget::UNBOUNDED,
                 cancellation: &crate::CancellationToken::new(),
+                construction: Default::default(),
             },
         )
         .await

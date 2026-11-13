@@ -165,6 +165,7 @@ pub(super) fn with_lazy_mount<T>(
                     work: acyclic_fs::WorkCounters::UNCHARGED,
                     budget: acyclic_fs::WorkBudget::UNBOUNDED,
                     cancellation: &acyclic_fs::CancellationToken::new(),
+                    construction: Default::default(),
                 },
             )
             .await

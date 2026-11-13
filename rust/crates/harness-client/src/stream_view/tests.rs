@@ -14,19 +14,119 @@ pub(super) fn visit_metadata() {
     METADATA_VISITS.set(METADATA_VISITS.get() + 1);
 }
 
-fn view(path: &StreamPath, bytes: usize) -> StreamView {
-    StreamView::new(
-        StreamViewPolicy::new(1, bytes).unwrap(),
-        0,
-        0,
-        false,
-        Some(path.clone()),
-        BackingPool::default(),
-    )
+fn view(path: &StreamPath) -> StreamView {
+    StreamView::new(0, 0, false, Some(path.clone()), BackingPool::default())
 }
 
 #[tokio::test]
-async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
+async fn subscribed_rows_and_latest_keys_outlive_former_count_and_byte_ceilings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let memory = MemoryStream::default();
+    let path = StreamPath::new("view/unbounded-selection")?;
+    let backings = BackingPool::default();
+    let mut records = StreamView::new(0, 0, false, Some(path.clone()), backings.clone());
+    let mut latest = StreamView::new(0, 0, true, Some(path.clone()), backings.clone());
+    assert_eq!(backings.bytes(), 0, "selection eagerly reserved history");
+    let count = 2_176_u64;
+    let page = 32_u32;
+    for from in (0..count).step_by(page as usize) {
+        memory
+            .append(AppendRequest {
+                path: path.clone(),
+                records: (from..from + u64::from(page))
+                    .map(|sequence| {
+                        AppendRecord::latest(
+                            OwnedBytes::from(sequence.to_le_bytes().repeat(1024)),
+                            format!("key/{sequence}"),
+                            true,
+                        )
+                    })
+                    .collect::<Result<_, _>>()?,
+                if_tail: Some(from),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let mut rows = memory
+            .read(ReadRequest {
+                path: path.clone(),
+                from,
+                limit: page,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        while let Some(record) = rows.next().await {
+            let record = record?;
+            let sequence = record.sequence;
+            let wire = wire_codec::record_wire(record, Some(&path));
+            let frame = |item| {
+                Frame::from(wire::SessionFrame {
+                    body: Some(wire::session_frame::Body::Data(wire::SessionData {
+                        item: Some(item),
+                        after: Some(wire::SessionCursor {
+                            next: sequence + 1,
+                            ..Default::default()
+                        }),
+                        accepted: from + u64::from(page),
+                        durable: from + u64::from(page),
+                    })),
+                    ..Default::default()
+                })
+            };
+            latest.apply(
+                &frame(wire::session_data::Item::LatestValue(
+                    wire::SessionLatestValue {
+                        key: Bytes::from(format!("key/{sequence}")),
+                        value: wire.value.clone(),
+                        attention: true,
+                    },
+                )),
+                sequence + 1,
+            )?;
+            records.apply(&frame(wire::session_data::Item::Record(wire)), sequence + 1)?;
+        }
+    }
+    let complete = |rows: &[&wire::Record]| {
+        rows.len() == count as usize
+            && rows
+                .iter()
+                .enumerate()
+                .all(|(index, row)| row.sequence == index as u64)
+    };
+    let rows = records.records().collect::<Vec<_>>();
+    assert!(complete(&rows));
+    // The same oracle rejects the former count-bounded tail, independently
+    // of the production fold. The aggregate also exceeds the old byte ceiling.
+    assert!(!complete(&rows[rows.len() - 1_024..]));
+    assert!(records.retained_bytes() > 16 * 1024 * 1024);
+    assert!(latest.retained_bytes() > 16 * 1024 * 1024);
+    for sequence in 0..count {
+        assert!(
+            latest
+                .latest_value(format!("key/{sequence}").as_bytes())
+                .is_some()
+        );
+    }
+    let pinned = records
+        .record(0)
+        .ok_or("missing first selected row")?
+        .value
+        .clone();
+    drop(rows);
+    drop(records);
+    drop(latest);
+    assert_eq!(
+        backings.bytes(),
+        pinned.len(),
+        "deselection retained other rows"
+    );
+    drop(pinned);
+    assert_eq!(backings.bytes(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn metadata_retention_counts_one_pass_and_compacts_unrelated_backing()
 -> Result<(), Box<dyn std::error::Error>> {
     let memory = MemoryStream::default();
     let huge = OwnedBytes::from(vec![b'z'; 64 * 1024]);
@@ -78,7 +178,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
             "finite producer did not end"
         );
         let mut record = wire_codec::record_wire(original.clone(), Some(&path));
-        let (native, _) = retain_metadata(&record, Some(&original), 64 * 1024)?;
+        let (native, _) = retain_metadata(&record, Some(&original))?;
         for (index, key) in native.keys.iter().enumerate() {
             assert_eq!(
                 key.as_ptr() == record.keys[index].as_ptr(),
@@ -120,7 +220,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
                 .collect(),
         )?;
         let exact_wire = wire_codec::record_wire(exact_owner.clone(), Some(&path));
-        let (shared, _) = retain_metadata(&exact_wire, Some(&exact_owner), 64 * 1024)?;
+        let (shared, _) = retain_metadata(&exact_wire, Some(&exact_owner))?;
         for (index, key) in shared.keys.iter().enumerate() {
             assert_eq!(
                 key.as_ptr(),
@@ -160,7 +260,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
         let Some(wire::session_data::Item::Record(record)) = &data.item else {
             unreachable!()
         };
-        let mut retained = view(&path, 64 * 1024);
+        let mut retained = view(&path);
         METADATA_VISITS.set(0);
         retained.apply(&frame, 1)?;
         assert_eq!(
@@ -170,7 +270,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
         );
         let output = retained.record(0).ok_or(StreamError::Unavailable)?;
         assert_eq!(output, record);
-        let expected = size_of::<RecordEntry>()
+        let expected = size_of::<wire::Record>()
             + output.value.len()
             + output.commit_id.len()
             + output.origin.capacity()
@@ -194,38 +294,6 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
                 "unknown key backing was retained"
             );
         }
-        let mut exact = view(&path, expected);
-        exact.apply(&frame, 1)?;
-        // A caller may authorize more display credit than the selected data
-        // needs. Admission must not reserve that unused credit or change the
-        // original row's charge; retention remains lazy under both budgets.
-        let mut wide = StreamView::new(
-            StreamViewPolicy::new(usize::MAX, usize::MAX)?,
-            0,
-            0,
-            false,
-            Some(path.clone()),
-            BackingPool::default(),
-        );
-        METADATA_VISITS.set(0);
-        wide.apply(&frame, 1)?;
-        assert_eq!(wide.record(0), exact.record(0));
-        assert_eq!(wide.retained_bytes(), expected);
-        assert_eq!(wide.records.capacity(), exact.records.capacity());
-        assert_eq!(METADATA_VISITS.get(), count * 2);
-        let mut short = view(&path, expected - 1);
-        assert!(matches!(
-            short.apply(&frame, 1),
-            Err(StreamError::LimitExceeded)
-        ));
-        assert_eq!(
-            (
-                short.next_sequence(),
-                short.retained_bytes(),
-                short.records().len()
-            ),
-            (0, 0, 0)
-        );
         let mut corrupt = frame.into_wire();
         let Some(wire::session_frame::Body::Data(data)) = &mut corrupt.body else {
             unreachable!()
@@ -234,7 +302,7 @@ async fn metadata_retention_counts_one_pass_and_refuses_uncharged_backing()
             unreachable!()
         };
         record.commit_id = Bytes::from_static(&[0; 31]);
-        let mut refused = view(&path, expected);
+        let mut refused = view(&path);
         assert!(
             refused.apply(&corrupt.into(), 1).is_err(),
             "malicious external frame bypassed canonical validation"
