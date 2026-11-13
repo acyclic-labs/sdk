@@ -16,6 +16,125 @@ fn take_trace() -> Vec<&'static str> {
 
 type MemoryCommand = Mount<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
 
+async fn command_final_join(revoke: bool, guarded: bool) -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let work = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+    let filesystem = crate::Fs::memory();
+    let workspace = filesystem
+        .create_workspace(
+            "command-final-join",
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    workspace.write_text("/result", "original").await?;
+    let destination = tempfile::tempdir()?;
+    let command = private_command(&workspace, &work, destination.path(), false).await?;
+    let path = crate::native_mount::adapter::tests::native_test_path("result");
+    command.source.open_file(&path)?.write_range_with_meter(
+        0,
+        crate::kernel::OwnedSourceChunk::claimed(
+            acyclic_stream::OwnedBytes::from_static(b"verified"),
+            0,
+        ),
+        false,
+        &work,
+    )?;
+    let (fork, custody) = command
+        .complete_private_command()
+        .await?
+        .ok_or("missing fork")?;
+    if revoke {
+        let mut checkout = workspace
+            .checkout(
+                crate::model::GenerationSelector::Head,
+                crate::model::CheckoutMode::tracking_transaction(),
+                &work,
+                &cancellation,
+            )
+            .await?;
+        let policy = crate::access::fixtures::denied(crate::access::Action::Write, "result");
+        checkout
+            .write_access_policy(
+                &serde_json::to_vec(&policy)?,
+                crate::NamedAttributeWriteMode::Upsert,
+                &work,
+                &cancellation,
+            )
+            .await?;
+        checkout
+            .commit(
+                crate::OperationId::new(),
+                crate::PublicationPermit::Unrestricted,
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+    }
+    // Replan after revocation so a stale target alone cannot make this proof
+    // pass: the real original-volume authorization seal must refuse it.
+    let plan = fork
+        .join_into(&workspace)
+        .git_metadata()
+        .plan(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    let options = crate::ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: crate::IdempotencyKey::new(),
+    };
+    if guarded {
+        let outcome = command
+            .apply_private_command_join(&plan, options, None)
+            .await;
+        if revoke {
+            assert!(matches!(
+                outcome,
+                Err(MountLifecycleError::Source(MountSourceError::AccessDenied))
+            ));
+        } else {
+            let (outcome, _allocation) = outcome?;
+            assert!(matches!(outcome, crate::JoinOutcome::Applied(_)));
+        }
+    } else {
+        plan.apply(
+            options,
+            Default::default(),
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await?;
+    }
+    let bytes = workspace.read("/result", 8, &work, &cancellation).await?;
+    if revoke {
+        assert_eq!(
+            bytes.as_ref(),
+            b"original",
+            "revoked command reached original volume"
+        );
+    } else {
+        assert_eq!(bytes.as_ref(), b"verified");
+    }
+    custody.settle().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn command_final_join_rechecks_original_authority() -> Result<(), Box<dyn std::error::Error>>
+{
+    command_final_join(false, true).await?;
+    command_final_join(true, true).await
+}
+
+#[tokio::test]
+#[should_panic(expected = "revoked command reached original volume")]
+async fn command_final_join_negative_control_detects_unrestricted_apply() {
+    command_final_join(true, false).await.unwrap();
+}
+
 async fn private_command(
     workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
     work: &NativeMaterializationWork,

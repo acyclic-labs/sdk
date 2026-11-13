@@ -12,7 +12,7 @@ struct CommandFork<A: 'static, O: 'static> {
     origin: crate::GenerationId,
     policy: crate::kernel::MetadataField<ObjectId>,
     workspace: crate::Workspace<A, O>,
-    custody: crate::EphemeralFork,
+    custody: Option<crate::EphemeralFork>,
 }
 
 impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
@@ -144,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 origin,
                 policy,
                 workspace,
-                custody,
+                custody: Some(custody),
             });
             state.checkout = checkout;
             Ok(())
@@ -155,6 +155,77 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
+    pub(in crate::native_mount) async fn apply_command_join(
+        self: &Arc<Self>,
+        plan: &crate::JoinPlan<A, O>,
+        options: crate::ApplyOptions,
+        candidate: Option<&crate::UnpublishedMergeCandidate>,
+    ) -> Result<
+        (crate::JoinOutcome<A, O>, crate::NativeAllocation),
+        super::super::MountLifecycleError,
+    > {
+        let command = self
+            .checkout
+            .command
+            .as_ref()
+            .ok_or(MountSourceError::AccessDenied)?;
+        if !self.cancellation.is_cancelled()
+            || plan.target().id() != command.source.id()
+            || !plan
+                .target()
+                .volume
+                .fs
+                .same_deployment(&command.source.volume.fs)
+        {
+            return Err(MountSourceError::AccessDenied.into());
+        }
+        let (origin, policy) = {
+            let fork = command.fork.lock().unwrap_or_else(PoisonError::into_inner);
+            let fork = fork.as_ref().ok_or(MountSourceError::AccessDenied)?;
+            if fork.custody.is_some() || plan.source().id() != fork.workspace.id() {
+                return Err(MountSourceError::AccessDenied.into());
+            }
+            (fork.origin, fork.policy)
+        };
+        let work = self.operation_work()?;
+        let source = Arc::clone(self);
+        let mut seal = move |original: &crate::NativeMaterializationWork| {
+            let source = Arc::clone(&source);
+            let original = original.clone();
+            async move {
+                source
+                    .validate_command_publication(origin, policy, &original)
+                    .await
+                    .map_err(super::super::MountLifecycleError::from)
+            }
+        };
+        let (outcome, allocation) = match candidate {
+            Some(candidate) => {
+                plan.apply_candidate_with_native_work(
+                    options,
+                    candidate,
+                    crate::PublicationPermit::Unrestricted,
+                    &work,
+                    work.cancellation(),
+                    &mut seal,
+                )
+                .await?
+            }
+            None => {
+                plan.apply_with_native_work(
+                    options,
+                    &[],
+                    crate::PublicationPermit::Unrestricted,
+                    &work,
+                    work.cancellation(),
+                    &mut seal,
+                )
+                .await?
+            }
+        };
+        Ok((outcome, allocation))
+    }
+
     pub(in crate::native_mount) fn is_private_command(&self) -> bool {
         self.checkout.command.is_some()
     }
@@ -182,13 +253,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             return Ok(None);
         };
         let work = self.operation_work()?;
+        self.validate_command_publication(origin, policy, &work)
+            .await?;
+        // Retirement has drained every callback. The view's cancellation now
+        // forbids new work, while this verified publication retains the
+        // original work and callback guard without that retired lifetime.
+        self.publish_async(crate::PublicationPermit::Unrestricted, None)
+            .await?;
+        let mut fork = command.fork.lock().unwrap_or_else(PoisonError::into_inner);
+        let fork = fork.as_mut().ok_or(MountSourceError::Stale)?;
+        let custody = fork.custody.take().ok_or(MountSourceError::Stale)?;
+        Ok(Some((fork.workspace.clone(), custody)))
+    }
+
+    async fn validate_command_publication(
+        &self,
+        origin: crate::GenerationId,
+        policy: crate::kernel::MetadataField<ObjectId>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        let command = self
+            .checkout
+            .command
+            .as_ref()
+            .ok_or(MountSourceError::AccessDenied)?;
         let view = access::policy_snapshot(
             &self.checkout,
             &command.access,
             command.refresh.as_ref(),
             &self.runtime.clock,
             work.cancellation(),
-            &work,
+            work,
         )
         .await?;
         if view
@@ -198,16 +293,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         {
             return Err(MountSourceError::AccessDenied);
         }
-        // Retirement has drained every callback. The view's cancellation now
-        // forbids new work, while this verified publication retains the
-        // original work and callback guard without that retired lifetime.
-        self.publish_async(crate::PublicationPermit::Unrestricted, None)
-            .await?;
-        Ok(command
-            .fork
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .map(|fork| (fork.workspace, fork.custody)))
+        Ok(())
     }
 }

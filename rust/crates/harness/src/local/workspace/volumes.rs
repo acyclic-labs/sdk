@@ -230,7 +230,7 @@ impl CommandView {
             return Ok(Vec::new());
         };
         let target = self.source.workspace.workspace();
-        let merged = projection::compare_and_swap(|| hand_back(&fork, target)).await;
+        let merged = projection::compare_and_swap(|| hand_back(&self.mount, &fork, target)).await;
         settle(custody).await;
         merged
     }
@@ -246,11 +246,11 @@ async fn settle(custody: acyclic_fs::EphemeralFork) {
 /// One attempt of the compare-and-swap join of `fork` into `target`: `None`
 /// when the target moved after planning.
 async fn hand_back(
+    mount: &acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
     fork: &VolumeWorkspace,
     target: &VolumeWorkspace,
 ) -> Result<Option<Vec<String>>> {
     use acyclic_fs::JoinOutcome;
-    let permit = acyclic_fs::PublicationPermit::Unrestricted;
     // Git semantics: content decides a conflict, never incidental metadata
     // such as two commands' write times.
     let plan = fork
@@ -264,7 +264,10 @@ async fn hand_back(
         if_target: plan.target_head(),
         idempotency_key: acyclic_fs::IdempotencyKey::new(),
     };
-    let (outcome, conflicts) = match plan.apply(options, Default::default(), permit).await? {
+    let (outcome, _first_allocation) = mount
+        .apply_private_command_join(&plan, options, None)
+        .await?;
+    let (outcome, conflicts, _resolved_allocation) = match outcome {
         JoinOutcome::Conflicted {
             conflicts,
             truncated,
@@ -291,10 +294,12 @@ async fn hand_back(
                 idempotency_key: acyclic_fs::IdempotencyKey::new(),
                 ..options
             };
-            let outcome = plan.apply_candidate(options, &candidate, permit).await?;
-            (outcome, paths)
+            let (outcome, allocation) = mount
+                .apply_private_command_join(&plan, options, Some(&candidate))
+                .await?;
+            (outcome, paths, Some(allocation))
         }
-        outcome => (outcome, Vec::new()),
+        outcome => (outcome, Vec::new(), None),
     };
     match outcome {
         JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) | JoinOutcome::NoChanges(_) => {

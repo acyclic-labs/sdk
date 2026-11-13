@@ -104,6 +104,9 @@ pub enum MountLifecycleError {
     /// Workspace path, state, or storage failed admission.
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
+    /// Declarative command hand-back failed validation or resolution.
+    #[error(transparent)]
+    Join(#[from] crate::DrivenJoinError),
     /// Lazy source or sparse-overlay admission failed.
     #[error(transparent)]
     Lazy(#[from] LazyWorkspaceError),

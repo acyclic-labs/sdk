@@ -119,6 +119,19 @@ where
             .map_err(MountLifecycleError::Source)
     }
 
+    /// Applies a retired command's join while its original volume authority
+    /// remains valid at the target's atomic publication boundary.
+    pub async fn apply_private_command_join(
+        &self,
+        plan: &crate::JoinPlan<A, O>,
+        options: crate::ApplyOptions,
+        candidate: Option<&crate::UnpublishedMergeCandidate>,
+    ) -> Result<(crate::JoinOutcome<A, O>, crate::NativeAllocation), MountLifecycleError> {
+        self.source
+            .apply_command_join(plan, options, candidate)
+            .await
+    }
+
     /// Publishes pending effects and detaches the native namespace exactly once.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         if self.is_retiring() {
