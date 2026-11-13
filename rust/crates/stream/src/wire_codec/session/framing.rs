@@ -84,7 +84,7 @@ impl<T> FrameDecoder<T> {
                     continue;
                 }
                 let length = prost::decode_length_delimiter(&self.prefix[..self.prefix_len])
-                    .map_err(|_| StreamError::InvalidResponse)?;
+                    .map_err(|cause| StreamError::InvalidResponse.with_source(cause))?;
                 if prost::length_delimiter_len(length) != self.prefix_len {
                     return Err(StreamError::InvalidResponse);
                 }
