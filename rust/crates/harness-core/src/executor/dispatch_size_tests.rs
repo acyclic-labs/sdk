@@ -22,15 +22,17 @@ fn model_step_callers_keep_only_control_state() -> Result<()> {
         boundary: None,
     };
     let mut phase = DispatchPhase::new();
+    let mut history = request::ModelStepHistory::Selected(&[]);
     let preparation = execution.prepare_dispatch_step(
         &journal,
         &input,
         0,
-        (&[], None),
+        (&mut history, None),
         RetainedModelStep {
             #[cfg(feature = "research")]
             journal_cut: None,
             request: None,
+            configuration: None,
             admission: ModelEventAdmission::default(),
             events: Vec::new(),
         },

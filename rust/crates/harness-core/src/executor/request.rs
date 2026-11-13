@@ -10,6 +10,28 @@ pub(super) enum ModelStepHistory<'a> {
     Selected(&'a [ModelMessage]),
 }
 
+impl ModelStepHistory<'_> {
+    pub(super) fn messages(&self) -> &[ModelMessage] {
+        match self {
+            Self::Turn(messages, _) => messages,
+            Self::Selected(messages) => messages,
+        }
+    }
+
+    pub(super) fn append_configuration(
+        &mut self,
+        update: crate::model::ConfigurationUpdate,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if let Self::Turn(messages, retained) = self {
+            let from = messages.len();
+            stock_vec_push(messages, update.message(), io)?;
+            retained.admit(from..messages.len(), io)?;
+        }
+        Ok(())
+    }
+}
+
 /// An optional admission owner moves into the same dispatch path as its history.
 pub(super) struct ModelStepRequest<'a> {
     pub history: ModelStepHistory<'a>,
@@ -101,7 +123,12 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        let base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
+        let mut base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
+        if self.summary.is_some()
+            && let Some(update) = self.configuration_delta(&base.messages)?
+        {
+            stock_vec_push(&mut base.messages, update.message(), self.io)?;
+        }
         self.prepare_transformed_request(&context_input, base)
             .await
             .map(|(_, prepared)| prepared)

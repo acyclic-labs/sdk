@@ -765,6 +765,7 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
                     step,
                     projection: file,
                     steering: Some(selected),
+                    configuration: None,
                 },
                 None,
             )?

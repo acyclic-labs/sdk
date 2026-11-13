@@ -255,15 +255,21 @@ async fn authored_programs_apply_on_the_next_step_with_a_stable_prefix_and_shell
 
 #[tokio::test]
 async fn authored_settings_select_the_next_provider_without_restarting_the_turn() -> Result<()> {
-    use crate::model::{ModelDispatch, ModelStream, NativeToolProfile, PreparedModelRequest};
+    use crate::model::{
+        ModelDispatch, ModelRequest, ModelStream, NativeToolProfile, PreparedModelRequest,
+    };
 
     struct Native {
         family: NativeToolProfile,
+        profile: crate::model::ModelProfileBinding,
         provider: Arc<dyn ModelProvider>,
     }
     impl ModelProvider for Native {
         fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {
             Ok(Some(self.family))
+        }
+        fn model_profile(&self, _: &Model) -> Result<Option<crate::model::ModelProfileBinding>> {
+            Ok(Some(self.profile))
         }
         fn bind_content(
             &self,
@@ -273,6 +279,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
             self.provider.bind_content(reader, maximum).map(|provider| {
                 Arc::new(Self {
                     family: self.family,
+                    profile: self.profile,
                     provider,
                 }) as Arc<dyn ModelProvider>
             })
@@ -296,6 +303,48 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         }
     }
 
+    fn reasoning_profile(name: &str, sampling: &str) -> Result<crate::model::ModelProfileBinding> {
+        use crate::profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve};
+        let model = ModelProfile::parse(
+            &format!(
+                "---\nversion: 1\ntools: []\nreasoning: {{mode: effort, effort: medium}}\nsampling: {sampling}\ncache: automatic\nwatermark_tokens: 4096\n---\n"
+            ),
+            &format!("---\nversion: 1\nkey: scripted/{name}\n---\n"),
+            capacity(),
+            "settings-profile",
+        )?;
+        let role = RoleFile::parse(&format!(
+            "---\nversion: 1\nname: worker\nmodel: scripted/{name}\ncontext: fork\nmay_spawn: []\n---\n"
+        ))?;
+        let project = ProjectLayer::parse("---\nversion: 1\n---\n")?;
+        let approvals = crate::approvals::ApprovalPolicy::default().bind()?;
+        let agent = AgentOverride::parse("---\nversion: 1\n---\n", &approvals)?;
+        resolve(&model, &role, &project, &agent)?.bind_model(
+            &Model::new("scripted".into(), name.into(), "1".into())?,
+            capacity(),
+        )
+    }
+
+    fn efforts(request: &ModelRequest) -> Vec<String> {
+        request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| {
+                if matches!(part, crate::model::ModelContentPart::Configuration { .. }) {
+                    Some(
+                        serde_json::to_value(part).unwrap()["effort"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::create_dir(directory.path().join(".git"))
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -308,7 +357,7 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
         ScriptedTurn::Text("ready".into()),
         code("select-settings", r#"
             import {write} from 'acyclic';
-            await write('volume:///home/agent.ts', "export default {model: 'scripted/second', sampling: {temperature: 0.75}};", 'any');
+            await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: 'low', sampling: {temperature: 0.75}};", 'any');
             export default 'selected';
         "#),
         ScriptedTurn::Text("stale provider".into()),
@@ -320,12 +369,15 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     );
     let first_route: Arc<dyn ModelProvider> = Arc::new(Native {
         family: NativeToolProfile::Anthropic,
+        profile: reasoning_profile("test", "{}")?,
         provider: first.clone(),
     });
     let second_route: Arc<dyn ModelProvider> = Arc::new(Native {
         family: NativeToolProfile::Openai,
+        profile: reasoning_profile("second", "{temperature: 0.75}")?,
         provider: second.clone(),
     });
+    let reasoning_baseline = second_route.model_profile(&model()?)?.unwrap().reasoning();
     let models = Arc::new(crate::model::ModelResolver::new("scripted/test", {
         let first = Arc::clone(&first_route);
         let second = Arc::clone(&second_route);
@@ -422,6 +474,9 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     assert_eq!(result(&after, "select-settings")?, "selected");
     assert_eq!(after.model.name, "second");
     assert_eq!(after.sampling.temperature, Some(0.75));
+    assert!(efforts(&before).is_empty());
+    assert_eq!(efforts(&after), ["low"]);
+    assert_eq!(efforts(&finished), ["low"]);
     assert!(
         after
             .messages
@@ -501,5 +556,62 @@ async fn authored_settings_select_the_next_provider_without_restarting_the_turn(
     assert_eq!(inherited.model.name, "second");
     assert_eq!(inherited.sampling.temperature, Some(0.75));
     assert_ne!(second.dispatches()[2].operation_id, after.operation_id);
+    assert_eq!(efforts(&inherited), ["low"]);
+    let frozen_prefix = system_prefix(&inherited)?;
+    second.extend([
+        code("clear-effort", r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: null, sampling: {temperature: 0.75}};", 'any');
+            export default 'cleared';
+        "#),
+        ScriptedTurn::Text("default effort".into()),
+        code("restore-effort", r#"
+            import {write} from 'acyclic';
+            await write('volume:///home/agent.ts', "export default {model: 'scripted/second', effort: 'low', sampling: {temperature: 0.75}};", 'any');
+            export default 'restored';
+        "#),
+        ScriptedTurn::Text("low effort".into()),
+    ]);
+    let cleared = observed
+        .send("clear-effort", "Clear your effort override")
+        .await?;
+    assert!(cleared.outcome.is_completed(), "{:?}", cleared.outcome);
+    assert_eq!(
+        observed.conversation.output_text(&cleared).await?,
+        "default effort"
+    );
+    let default_request = second.request(4).unwrap();
+    assert_eq!(efforts(&default_request), ["low", "medium"]);
+    assert_eq!(system_prefix(&default_request)?, frozen_prefix);
+    let restored = observed
+        .send("restore-effort", "Restore your effort override")
+        .await?;
+    assert!(restored.outcome.is_completed(), "{:?}", restored.outcome);
+    assert_eq!(
+        observed.conversation.output_text(&restored).await?,
+        "low effort"
+    );
+    let restored_request = second.request(6).unwrap();
+    assert_eq!(efforts(&restored_request), ["low", "medium", "low"]);
+    assert_eq!(system_prefix(&restored_request)?, frozen_prefix);
+    assert_eq!(
+        observed
+            .conversation
+            .send("clear-effort", "Clear your effort override")
+            .await?,
+        cleared.inbox
+    );
+    assert_eq!(
+        observed
+            .conversation
+            .send("restore-effort", "Restore your effort override")
+            .await?,
+        restored.inbox
+    );
+    assert_eq!((first.request_count(), second.request_count()), (2, 7));
+    assert_eq!(
+        second_route.model_profile(&model()?)?.unwrap().reasoning(),
+        reasoning_baseline
+    );
     Ok(())
 }
