@@ -39,14 +39,19 @@ impl CheckoutPublisher {
                     .observe_changes(volume, operation, maximum, access)?
                     .await?;
                 if original.is_none() {
-                    writer.check_change_destinations(changes, access)?.await?;
+                    if mount.view.source.is_none() && self.tools.workspace.mounted.is_none() {
+                        writer.authorize_changes(changes, access)?.await?;
+                    } else {
+                        writer.check_change_destinations(changes, access)?.await?;
+                    }
                     if mount.view.source.is_none() {
                         for change in changes {
                             if matches!(
                                 change,
                                 ContentChange::CreateAbsent { .. }
                                     | ContentChange::UpdateExpected { .. }
-                            ) && Self::inherited_directory(selected, change.path(), access.io)
+                            ) && self
+                                .inherited_directory(selected, change.path(), access.io)
                                 .await?
                             {
                                 let (latest, latest_hold) = writer
@@ -55,7 +60,13 @@ impl CheckoutPublisher {
                                 let published = latest.is_some();
                                 drop((latest, latest_hold));
                                 if !published {
-                                    writer.check_change_destinations(changes, access)?.await?;
+                                    if mount.view.source.is_none()
+                                        && self.tools.workspace.mounted.is_none()
+                                    {
+                                        writer.authorize_changes(changes, access)?.await?;
+                                    } else {
+                                        writer.check_change_destinations(changes, access)?.await?;
+                                    }
                                     return Err(Error::Invalid("path is a directory".into()));
                                 }
                                 break;

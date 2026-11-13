@@ -49,6 +49,7 @@ enum Publication<'a> {
 
 impl CheckoutPublisher {
     async fn inherited_directory(
+        &self,
         view: &workspace::View,
         path: &str,
         io: Option<&ContentIo>,
@@ -63,6 +64,17 @@ impl CheckoutPublisher {
         // Inspect does not author or retain a new source observation. File
         // destinations include inherited names, not just authored entries.
         let result = async {
+            if self.tools.workspace.mounted.is_none() {
+                return view
+                    .current_source_node(&format!("/{path}"), &mut accounting)
+                    .await
+                    .map(|node| {
+                        node.is_some_and(|node| {
+                            node.kind == acyclic_fs::demand::SourceNodeKind::Directory
+                        })
+                    })
+                    .map_err(storage);
+            }
             match view.inspect(&format!("/{path}"), &mut accounting).await {
                 Ok(lookup) => {
                     let directory =
@@ -191,16 +203,19 @@ impl CheckoutPublisher {
                 |source| source.workspace.workspace(),
             );
             let writer = self.writer_for(&mount.view.volume, workspace)?;
+            let admit = || {
+                let access = crate::conversation::ContentAccess { ceiling, io: None };
+                if mount.view.source.is_none() && self.tools.workspace.mounted.is_none() {
+                    writer.authorize_path(&relative, access)
+                } else {
+                    writer.admit_path(&relative, access)
+                }
+            };
             let original = self
                 .original_publication(&writer, operation, &relative, &publication, ceiling)
                 .await?;
             if original.is_none() {
-                writer
-                    .admit_path(
-                        &relative,
-                        crate::conversation::ContentAccess { ceiling, io: None },
-                    )?
-                    .await?;
+                admit()?.await?;
             }
             access::require_volume_access(
                 workspace,
@@ -212,19 +227,14 @@ impl CheckoutPublisher {
             .await?;
             if original.is_none()
                 && mount.view.source.is_none()
-                && Self::inherited_directory(selected, &relative, None).await?
+                && self.inherited_directory(selected, &relative, None).await?
                 && self
                     .original_publication(&writer, operation, &relative, &publication, ceiling)
                     .await?
                     .is_none()
             {
                 // Recheck authority before reporting a transient source fact.
-                writer
-                    .admit_path(
-                        &relative,
-                        crate::conversation::ContentAccess { ceiling, io: None },
-                    )?
-                    .await?;
+                admit()?.await?;
                 access::require_volume_access(
                     workspace,
                     &mount.view.volume,

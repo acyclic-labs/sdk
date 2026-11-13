@@ -7,7 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &'a Workspace<A, O>,
         grant: &'a ContentGrant,
         path: &'a str,
-        replay: bool,
+        inspect_destination: bool,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<
@@ -43,7 +43,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .0
                 .publication_fence()
                 .ok_or_else(|| io.invalid("missing write policy fence"))?;
-            if replay {
+            if !inspect_destination {
                 if !view.0.decide(Action::Create, path, access_now()?).allowed {
                     require(&view.0, Action::Write, path, io)?;
                 }

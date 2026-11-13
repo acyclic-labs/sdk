@@ -58,6 +58,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &'a ContentGrant,
         changes: &'a [ContentChange<'a>],
         access: ContentAccess<'a, 'a>,
+        inspect_destinations: bool,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         grant.require(volume, VolumeOperation::Write, access.io)?;
         crate::conversation::BoundedContentFuture::new(access.io, || async move {
@@ -118,6 +119,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 if let Some(root_view) = &root_view {
                     access::require(&root_view.0, change.action(), change.path(), io)?;
                 }
+            }
+            if !inspect_destinations {
+                return Ok(());
             }
             let selected = io.sdk(opened.generation(view.2, io, io.cancellation()).await)?;
             for change in changes {

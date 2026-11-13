@@ -295,6 +295,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         path: &'a str,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
+        self.admit_path_with_destination(path, access, true)
+    }
+
+    /// Authorizes a destination whose external edits have not been captured.
+    /// Its current type and existence must be observed after this check, then
+    /// ordinary publication revalidates at the captured transaction cut.
+    #[doc(hidden)]
+    pub fn authorize_path<'a>(
+        &'a self,
+        path: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
+        self.admit_path_with_destination(path, access, false)
+    }
+
+    fn admit_path_with_destination<'a>(
+        &'a self,
+        path: &'a str,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+        inspect_destination: bool,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
         self.grant
             .require(&self.volume, VolumeOperation::Write, access.io)?;
         crate::executor::with_history_io(access.io, |work| {
@@ -309,7 +330,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     &workspace,
                     &self.grant,
                     path,
-                    false,
+                    inspect_destination,
                     access.ceiling,
                     access.io,
                 )?
@@ -328,7 +349,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         self.host
-            .check_change_destinations(&self.volume, &self.grant, changes, access)
+            .check_change_destinations(&self.volume, &self.grant, changes, access, true)
+    }
+
+    /// Authorizes every action before an adapter observes uncaptured native
+    /// destinations. It does not use stale committed types as final refusals.
+    #[doc(hidden)]
+    pub fn authorize_changes<'a>(
+        &'a self,
+        changes: &'a [crate::conversation::ContentChange<'a>],
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<BoundedContentFuture<'a, ()>> {
+        self.host
+            .check_change_destinations(&self.volume, &self.grant, changes, access, false)
     }
 
     pub(super) async fn observe_publication(

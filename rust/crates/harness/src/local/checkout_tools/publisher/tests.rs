@@ -1315,3 +1315,101 @@ async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
     assert_eq!(std::fs::read(&path).map_err(storage)?, b"user bytes\n");
     Ok(())
 }
+
+#[tokio::test]
+async fn removed_captured_directory_can_become_a_file_before_checkout_capture() -> Result<()> {
+    for conditional in [false, true] {
+        let directory = temporary_directory()?;
+        std::fs::create_dir(directory.path().join("directory")).map_err(storage)?;
+        let (_fixture, publisher) = open_fixture(directory.path(), temporary_directory()?).await?;
+        let physical = &*publisher.tools.workspace;
+        let view = physical.view();
+        {
+            let mut state = lock_owned(StateArc::clone(&publisher.tools.state)).await;
+            publisher
+                .tools
+                .capture(
+                    (physical, view),
+                    &mut state.watcher,
+                    OperationId::new(),
+                    0,
+                    PublicationPermit::Unrestricted,
+                )?
+                .await?;
+        }
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let before = view
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        assert_eq!(
+            before
+                .stat(
+                    "/directory",
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .kind,
+            acyclic_fs::kernel::FileKind::Directory
+        );
+        // The authenticated tree still contains the directory. Only the real
+        // source observes its removal until the next checkout capture.
+        std::fs::remove_dir(directory.path().join("directory")).map_err(storage)?;
+        if conditional {
+            let changes = [crate::conversation::ContentChange::CreateAbsent {
+                path: "directory",
+                bytes: b"replacement",
+                media_type: "text/plain",
+                display_name: "directory",
+            }];
+            publisher
+                .stage_changes(
+                    &publisher.volume,
+                    OperationId::new(),
+                    &changes,
+                    Default::default(),
+                )?
+                .await?;
+        } else {
+            publisher
+                .stage_once(
+                    OperationId::new(),
+                    "directory",
+                    b"replacement",
+                    "text/plain",
+                    "directory",
+                    Default::default(),
+                )?
+                .await?;
+        }
+        assert_eq!(
+            std::fs::read(directory.path().join("directory")).map_err(storage)?,
+            b"replacement"
+        );
+        let after = view
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        assert_eq!(
+            after
+                .stat(
+                    "/directory",
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .kind,
+            acyclic_fs::kernel::FileKind::RegularFile
+        );
+    }
+    Ok(())
+}
