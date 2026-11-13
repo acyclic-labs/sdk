@@ -24,7 +24,7 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, FileRef},
     core::{Authority, AuthorityRoot, RuntimeAuthority, Scope},
     interaction::{ApprovalBinding, Interaction},
-    resources::ProviderRef,
+    resources::{ProviderRef, VolumeRef},
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
 use acyclic_fs::{
