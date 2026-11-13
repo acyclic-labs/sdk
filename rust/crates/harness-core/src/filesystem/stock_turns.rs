@@ -18,6 +18,15 @@ use crate::{
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
+/// Workspace discovery and the context retaining its admitted placement.
+#[derive(Default)]
+pub struct WorkspacePreparation {
+    /// Newly discovered model-visible workspace information.
+    pub update: Option<crate::agent::WorkspaceUpdate>,
+    /// The same placement must survive discovery and prepare the executor.
+    pub context: Option<Arc<dyn TurnContext>>,
+}
+
 /// What one host adds to a stock turn once its model, tools, limits and
 /// compaction are composed: at least the turn's tool authority.
 pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
@@ -48,9 +57,9 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
         content: &'a crate::runtime::ContentBindings,
         issuer: &'a crate::core::RuntimeAuthority,
         scope: &'a crate::core::Scope,
-    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+    ) -> BoxProviderFuture<'a, Result<WorkspacePreparation>> {
         let _ = (agent, seen, content, issuer, scope);
-        Box::pin(async { Ok(None) })
+        Box::pin(async { Ok(WorkspacePreparation::default()) })
     }
 
     /// The execution targets `agent`'s turns run on
@@ -319,7 +328,7 @@ impl TurnExecutors for StockExecutors {
         content: &'a crate::runtime::ContentBindings,
         issuer: &'a crate::core::RuntimeAuthority,
         scope: &'a crate::core::Scope,
-    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+    ) -> BoxProviderFuture<'a, Result<WorkspacePreparation>> {
         self.context.workspaces(agent, seen, content, issuer, scope)
     }
 
@@ -400,8 +409,10 @@ impl TurnExecutors for StockExecutors {
                 Some(sampling) => Self::sample(executor, sampling)?,
                 None => executor,
             };
-            let executor = self
+            let executor = authority
                 .context
+                .as_deref()
+                .unwrap_or(self.context.as_ref())
                 .prepare((executor, self.limits), agent, turn, input, authority)
                 .await?;
             #[cfg(not(target_arch = "wasm32"))]

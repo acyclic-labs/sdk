@@ -121,6 +121,7 @@ impl TurnExecutors for Executors {
             // Exercise the direct Allow path, which has no approval callback.
             // All files, grants, journal, effects and child reads remain real.
             let authority = TurnAuthority {
+                context: None,
                 templates: authority.templates.clone(),
                 issuer: authority.issuer.clone(),
                 scope: authority.scope.clone(),

@@ -13,7 +13,7 @@ use crate::{
     executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemTurnHost, HOME_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
-        TurnExecutors, TurnLimits,
+        TurnExecutors, TurnLimits, WorkspacePreparation,
     },
     model::ModelContent,
 };
@@ -247,7 +247,12 @@ impl LocalUser {
 
 /// What the local harness adds to each stock turn: its context manifest,
 /// the turn's task context and tool authority, and its hooks.
-struct LocalContext(Weak<LocalHarness>);
+struct LocalContext {
+    local: Weak<LocalHarness>,
+    harness: Option<Arc<crate::runtime::AgentHarness>>,
+    #[cfg(any(test, not(target_arch = "wasm32")))]
+    workspace: Option<Arc<super::workspace::LocalWorkspace>>,
+}
 
 impl TurnContext for LocalContext {
     fn settle<'a>(
@@ -257,7 +262,7 @@ impl TurnContext for LocalContext {
     ) -> BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
             let local = self
-                .0
+                .local
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
             #[cfg(any(test, not(target_arch = "wasm32")))]
@@ -278,7 +283,7 @@ impl TurnContext for LocalContext {
     ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
         Box::pin(async move {
             let local = self
-                .0
+                .local
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
             let writer = authority
@@ -292,6 +297,7 @@ impl TurnContext for LocalContext {
                     &authority.issuer,
                     &authority.scope,
                     &authority.content,
+                    Some(self),
                 )
                 .await?;
             let journal_content = authority
@@ -369,7 +375,7 @@ impl TurnContext for LocalContext {
     /// Every agent of the tree runs on its one home target, the checkout
     /// (a child on its fork view of it).
     fn roster(&self, _: &AgentState) -> Option<Arc<crate::agent::Roster>> {
-        let local = self.0.upgrade()?;
+        let local = self.local.upgrade()?;
         local.harness.targets().map(|targets| targets.roster())
     }
 
@@ -380,15 +386,17 @@ impl TurnContext for LocalContext {
         content: &'a crate::runtime::ContentBindings,
         issuer: &'a crate::core::RuntimeAuthority,
         scope: &'a crate::core::Scope,
-    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+    ) -> BoxProviderFuture<'a, Result<WorkspacePreparation>> {
         Box::pin(async move {
             let local = self
-                .0
+                .local
                 .upgrade()
                 .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?;
             // Use the same admitted placement as turn preparation, including
             // the selected child's own project and auxiliary projections.
-            let bindings = local.turn_bindings(agent, issuer, scope, content).await?;
+            let bindings = local
+                .turn_bindings(agent, issuer, scope, content, None)
+                .await?;
             let roster = bindings.harness.targets().map(|targets| targets.roster());
             let exposures = agent
                 .volumes
@@ -451,7 +459,7 @@ impl TurnContext for LocalContext {
                     }),
                 ..limits
             };
-            crate::agent::WorkspaceUpdate::discover(
+            let update = crate::agent::WorkspaceUpdate::discover(
                 agent.volumes.clone(),
                 roster.as_deref(),
                 exposures,
@@ -460,8 +468,16 @@ impl TurnContext for LocalContext {
                 &Default::default(),
                 &limits,
             )
-            .await
-            .map(Some)
+            .await?;
+            Ok(WorkspacePreparation {
+                update: Some(update),
+                context: Some(Arc::new(Self {
+                    local: self.local.clone(),
+                    harness: Some(bindings.harness),
+                    #[cfg(any(test, not(target_arch = "wasm32")))]
+                    workspace: bindings.context.workspace,
+                })),
+            })
         })
     }
 }
@@ -720,6 +736,7 @@ impl LocalHarness {
         issuer: &'a crate::core::RuntimeAuthority,
         scope: &'a crate::core::Scope,
         content: &'a crate::runtime::ContentBindings,
+        prepared: Option<&'a LocalContext>,
     ) -> BoxProviderFuture<'a, Result<TurnBindings<'a>>> {
         Box::pin(async move {
             let project = WorkspaceTable::primary_in(&agent.volumes)
@@ -750,8 +767,19 @@ impl LocalHarness {
                 #[cfg(any(test, not(target_arch = "wasm32")))]
                 scope,
                 #[cfg(any(test, not(target_arch = "wasm32")))]
-                workspace: self.workspace.clone(),
+                workspace: prepared
+                    .filter(|prepared| prepared.harness.is_some())
+                    .map_or_else(
+                        || self.workspace.clone(),
+                        |prepared| prepared.workspace.clone(),
+                    ),
             };
+            if let Some(harness) = prepared.and_then(|prepared| prepared.harness.as_ref()) {
+                return Ok(TurnBindings {
+                    harness: Arc::clone(harness),
+                    context,
+                });
+            }
             if project == &self.project
                 && scratch == &self.scratch
                 && agent.volumes.iter().any(|binding| {
@@ -885,7 +913,12 @@ impl LocalHarness {
                     model.clone(),
                     self.tools().clone(),
                     (self.limits, self.compaction.clone()),
-                    Arc::new(LocalContext(Arc::downgrade(self))),
+                    Arc::new(LocalContext {
+                        local: Arc::downgrade(self),
+                        harness: None,
+                        #[cfg(any(test, not(target_arch = "wasm32")))]
+                        workspace: None,
+                    }),
                 )
                 .with_agent_tools(&self.agent_tools)
                 .with_question_plugin(self.question_plugin)

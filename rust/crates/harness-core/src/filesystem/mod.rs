@@ -58,7 +58,7 @@ pub use fs_tools::FilesystemTools;
 mod templates;
 pub use templates::Templates;
 mod stock_turns;
-pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
+pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext, WorkspacePreparation};
 mod agent_steering;
 mod agent_turns;
 pub use agent_turns::{

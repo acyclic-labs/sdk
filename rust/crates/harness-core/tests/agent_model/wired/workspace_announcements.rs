@@ -3,20 +3,24 @@ use super::*;
 use acyclic_harness_core::{
     agent::WorkspaceUpdate,
     conversation::{ContentAccess, ContentGrant},
-    filesystem::FilesystemContentVerifier,
+    filesystem::{FilesystemContentVerifier, WorkspacePreparation},
     runtime::ContentBindings,
 };
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Exposed {
     turns: Arc<dyn TurnExecutors>,
     roster: Roster,
     policy: acyclic_harness_core::context::ContextDiscoveryPolicy,
+    discovered: AtomicUsize,
+    prepared: Arc<AtomicUsize>,
 }
 
 /// This host offers only wait and generation. Repository capabilities belong
 /// to the turn's authenticated content reader, not its fixed tool configuration.
-struct InstructionTools;
+#[derive(Default)]
+struct InstructionTools(Option<Arc<AtomicUsize>>);
 
 impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
     fn prepare<'a>(
@@ -34,6 +38,9 @@ impl acyclic_harness_core::filesystem::TurnContext for InstructionTools {
         acyclic_harness_core::Result<acyclic_harness_core::executor::StockExecutor>,
     > {
         Box::pin(async move {
+            if let Some(prepared) = &self.0 {
+                prepared.fetch_add(1, Ordering::SeqCst);
+            }
             let private = agent
                 .volumes
                 .iter()
@@ -90,7 +97,15 @@ impl TurnExecutors for Exposed {
         'a,
         acyclic_harness_core::Result<Arc<dyn acyclic_harness_core::executor::Executor>>,
     > {
-        self.turns.executor(agent, turn, input, authority)
+        Box::pin(async move {
+            let executor = self.turns.executor(agent, turn, input, authority).await?;
+            assert_eq!(
+                self.prepared.load(Ordering::SeqCst),
+                self.discovered.load(Ordering::SeqCst),
+                "workspace discovery must prepare its retained context exactly once"
+            );
+            Ok(executor)
+        })
     }
 
     fn roster(&self, _: &AgentState) -> Option<Arc<Roster>> {
@@ -104,7 +119,7 @@ impl TurnExecutors for Exposed {
         content: &'a ContentBindings,
         _: &'a acyclic_harness_core::core::RuntimeAuthority,
         _: &'a acyclic_harness_core::core::Scope,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Option<WorkspaceUpdate>>> {
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<WorkspacePreparation>> {
         Box::pin(async move {
             let table = WorkspaceTable::new(agent.volumes.clone())
                 .map_err(|error| acyclic_harness_core::Error::Invalid(error.to_string()))?;
@@ -127,7 +142,13 @@ impl TurnExecutors for Exposed {
                 &Default::default(),
             )
             .await
-            .map(Some)
+            .map(|update| {
+                self.discovered.fetch_add(1, Ordering::SeqCst);
+                WorkspacePreparation {
+                    update: Some(update),
+                    context: Some(Arc::new(InstructionTools(Some(Arc::clone(&self.prepared))))),
+                }
+            })
         })
     }
 }
@@ -210,6 +231,8 @@ fn exposed(turns: Arc<dyn TurnExecutors>) -> Result<Exposed> {
     Ok(Exposed {
         turns,
         policy: Default::default(),
+        discovered: AtomicUsize::new(0),
+        prepared: Arc::new(AtomicUsize::new(0)),
         roster: Roster::home(TargetRecord {
             name: "home".into(),
             owner: "user".into(),
@@ -571,7 +594,7 @@ async fn workspace_deltas_preserve_the_request_prefix_and_restore_selected_instr
             ),
             ToolRegistry::default(),
             (projection_limits, CompactionPolicy::Disabled),
-            Arc::new(InstructionTools),
+            Arc::new(InstructionTools::default()),
         ),
     ))?;
     assert!(instruction_files[..2].iter().all(|file| {
@@ -796,7 +819,7 @@ async fn workspace_instructions_remain_readable_when_an_open_turn_loses_their_so
             ),
             ToolRegistry::default(),
             (projection_limits, CompactionPolicy::Disabled),
-            Arc::new(InstructionTools),
+            Arc::new(InstructionTools::default()),
         )
         .with_agent_tools(&["wait".into()]);
         let mut turns = exposed(Arc::new(turns))?;

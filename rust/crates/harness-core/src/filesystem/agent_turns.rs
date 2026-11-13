@@ -47,6 +47,8 @@ mod admission_tests;
 /// The authority of one agent turn: the agent's conversation issuer, its scope
 /// over every bound volume, and the agent's content bound to that scope.
 pub struct TurnAuthority {
+    /// Context retaining the workspace placement discovered for this turn.
+    pub context: Option<Arc<dyn super::TurnContext>>,
     /// Original template admission shared with the hosting entrance.
     pub templates: Option<Arc<dyn crate::agent::SpawnTemplates>>,
     /// Signing custody; it must outlive the turn's journal.
@@ -612,9 +614,9 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         content: &'a ContentBindings,
         issuer: &'a RuntimeAuthority,
         scope: &'a Scope,
-    ) -> BoxFuture<'a, Result<Option<crate::agent::WorkspaceUpdate>>> {
+    ) -> BoxFuture<'a, Result<super::WorkspacePreparation>> {
         let _ = (agent, seen, content, issuer, scope);
-        Box::pin(async { Ok(None) })
+        Box::pin(async { Ok(super::WorkspacePreparation::default()) })
     }
 
     /// Whether these turns use filesystem templates at agent creation.
@@ -2207,6 +2209,7 @@ where
                 use crate::agent::{
                     AnnouncedDocument, AnnouncementDocument as _, AnnouncementKind,
                 };
+                let mut prepared_context = None;
                 let announcements = match pinned_announcements {
                     Some(kept) => kept,
                     None => {
@@ -2219,7 +2222,7 @@ where
                         let seen = context
                             .instruction_entries(bindings.journal.reader.as_ref())
                             .await?;
-                        let update = self
+                        let prepared = self
                             .executors
                             .workspaces(
                                 agent,
@@ -2228,13 +2231,14 @@ where
                                 &bindings.issuer,
                                 &bindings.scope,
                             )
-                            .await?
-                            .filter(|update| {
-                                !context.contains_announcement(
-                                    AnnouncementKind::Workspaces,
-                                    update.document.canonical().1,
-                                ) || !update.instructions.is_empty()
-                            });
+                            .await?;
+                        prepared_context = prepared.context;
+                        let update = prepared.update.filter(|update| {
+                            !context.contains_announcement(
+                                AnnouncementKind::Workspaces,
+                                update.document.canonical().1,
+                            ) || !update.instructions.is_empty()
+                        });
                         let mut changed = Vec::new();
                         if roster.is_some() || update.is_some() {
                             let announcement_files = &bindings.journal.files;
@@ -2370,6 +2374,7 @@ where
                 let journal = journal.with_bound_selection(selected.clone());
                 let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
                 let mut authority = TurnAuthority {
+                    context: prepared_context,
                     templates: self.templates(),
                     issuer: bindings.issuer,
                     scope: bindings.scope,

@@ -3469,6 +3469,33 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
                         }),
                     })
                     .expect("child environment cwd");
+                let project_path = |text: &str| {
+                    let document: serde_json::Value = serde_json::from_str(text).ok()?;
+                    let project = document
+                        .get("workspaces")?
+                        .as_array()?
+                        .iter()
+                        .find(|entry| {
+                            entry.get("name").and_then(serde_json::Value::as_str) == Some("project")
+                        })?;
+                    project
+                        .get("paths")?
+                        .get("local")?
+                        .as_str()
+                        .map(str::to_owned)
+                };
+                let announced = request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| match &message.content {
+                        crate::model::ModelContent::Text(text) => project_path(text),
+                        content => content.parts().iter().rev().find_map(|part| match part {
+                            crate::model::ModelContentPart::Text { text, .. } => project_path(text),
+                            _ => None,
+                        }),
+                    })
+                    .expect("announced child project path");
                 let parent = parent.get().expect("parent cwd").clone();
                 let observed = observed.clone();
                 Box::pin(async move {
@@ -3480,6 +3507,15 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
                     let parent = tokio::fs::canonicalize(&parent)
                         .await
                         .map_err(|error| agent(format!("parent cwd {parent:?}: {error}")))?;
+                    assert_eq!(
+                        tokio::fs::canonicalize(&announced)
+                            .await
+                            .map_err(|error| agent(format!(
+                                "announced child project {announced:?}: {error}"
+                            )))?,
+                        cwd,
+                        "workspace discovery and execution selected different native bindings"
+                    );
                     assert_ne!(cwd, parent);
                     assert_eq!(
                         tokio::fs::read(cwd.join("context-sentinel"))
