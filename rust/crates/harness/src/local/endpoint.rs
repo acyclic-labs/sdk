@@ -31,15 +31,35 @@ pub struct Connection {
     /// The in-process harness serving the tree: a connection keeps it
     /// running, so its prompts' turns run for as long as any clone lives.
     pub(super) _host: Option<Arc<LocalHarness>>,
+    owner_exit: Option<super::service::exit::Observation>,
 }
 
 /// The client's cause together with the one its in-process owner retained.
 #[derive(Debug, thiserror::Error)]
 #[error("{client}; {owner}")]
 struct OwnerFailure<E: std::error::Error + 'static> {
-    #[source]
     client: E,
-    owner: String,
+    #[source]
+    owner: OwnerCause,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OwnerCause {
+    #[error("{0}")]
+    Live(String),
+    #[error("local owner{0}")]
+    Recorded(#[source] acyclic_auth::refusal::Refusal),
+    #[error("cannot read the original owner's exit record: {0}")]
+    Unreadable(#[source] Error),
+}
+
+impl OwnerCause {
+    fn recorded(observation: &super::service::exit::Observation) -> Self {
+        match observation.cause() {
+            Ok(cause) => Self::Recorded(cause),
+            Err(error) => Self::Unreadable(error),
+        }
+    }
 }
 
 impl Connection {
@@ -52,14 +72,14 @@ impl Connection {
                 let directory = directory.clone();
                 let bootstrap = Arc::clone(&bootstrap);
                 async move {
-                    let (connection, credential) = directory
+                    let (connection, credential, owner_exit) = directory
                         .connection()
                         .await
                         .map_err(|error| std::io::Error::other(error.to_string()))?;
                     // The session retains its original authority across
                     // authenticated transport reconnects. The server validates
                     // that capability on every reopened session.
-                    bootstrap.get_or_init(|| credential);
+                    bootstrap.get_or_init(|| (credential, owner_exit));
                     Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(connection))
                 }
             }))
@@ -67,7 +87,7 @@ impl Connection {
             .map_err(|error| {
                 Error::exchange(ExchangeStep::Step("connect to the local owner"), error)
             })?;
-        let credential = credential
+        let (credential, owner_exit) = credential
             .get()
             .ok_or_else(|| Error::Storage("local connection did not bootstrap".into()))?;
         let bytes = acyclic_auth::credential::capability_from_text(credential)
@@ -76,7 +96,7 @@ impl Connection {
             channel,
             acyclic_auth::credential::CredentialProvider::transport_identity(),
         );
-        Self::bind(
+        let mut connection = Self::bind(
             client.session_client().map_err(|error| {
                 Error::exchange(ExchangeStep::Step("open the local owner session"), error)
             })?,
@@ -85,6 +105,17 @@ impl Connection {
             false,
         )
         .await
+        .map_err(|error| {
+            Error::exchange(
+                ExchangeStep::Session,
+                OwnerFailure {
+                    client: error,
+                    owner: OwnerCause::recorded(owner_exit),
+                },
+            )
+        })?;
+        connection.owner_exit = Some(owner_exit.clone());
+        Ok(connection)
     }
 
     /// Refuse explicit launch requirements before creating a session or sending input.
@@ -138,13 +169,18 @@ impl Connection {
         &self,
         error: impl std::error::Error + Send + Sync + 'static,
     ) -> Error {
-        let cause = self._host.as_ref().and_then(|host| {
-            host.agent_stream
-                .as_ref()
-                .and_then(|stream| stream.failure())
-                .map(|cause| cause.to_string())
-                .or_else(|| host.agents.get()?.runtime.failure())
-        });
+        let cause = self
+            ._host
+            .as_ref()
+            .and_then(|host| {
+                host.agent_stream
+                    .as_ref()
+                    .and_then(|stream| stream.failure())
+                    .map(|cause| cause.to_string())
+                    .or_else(|| host.agents.get()?.runtime.failure())
+            })
+            .map(OwnerCause::Live)
+            .or_else(|| self.owner_exit.as_ref().map(OwnerCause::recorded));
         match cause {
             Some(owner) => Error::exchange(
                 ExchangeStep::Session,
@@ -207,6 +243,7 @@ impl Connection {
             tools,
             _host: self._host.clone(),
             directory: self.directory,
+            owner_exit: self.owner_exit.clone(),
         })
     }
 
@@ -311,6 +348,7 @@ impl Connection {
             tools,
             _host: host,
             directory,
+            owner_exit: None,
         })
     }
 }
@@ -438,6 +476,7 @@ impl LocalHarness {
                 tools,
                 _host: connection._host,
                 directory,
+                owner_exit: connection.owner_exit,
             })
         };
         if live {

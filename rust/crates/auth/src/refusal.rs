@@ -101,7 +101,7 @@ pub struct Canonical<'a> {
 }
 
 /// The parts of one status, as decoded from or encoded to the wire.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export_to = "auth/RefusalStatus.ts", rename = "RefusalStatus")]
 pub struct Parts {
     /// gRPC status code number.
@@ -111,17 +111,46 @@ pub struct Parts {
     /// Status message.
     pub message: String,
     /// Status details.
-    #[serde(serialize_with = "serialize_bytes")]
+    #[serde(
+        serialize_with = "serialize_bytes",
+        deserialize_with = "deserialize_bytes"
+    )]
     #[ts(type = "Uint8Array")]
     pub details: Bytes,
     /// Product response metadata.
-    #[serde(serialize_with = "serialize_metadata")]
+    #[serde(
+        serialize_with = "serialize_metadata",
+        deserialize_with = "deserialize_metadata"
+    )]
     #[ts(type = "Array<[string, Uint8Array]>")]
     pub metadata: HeaderMap,
 }
 
 fn serialize_bytes<S: serde::Serializer>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_bytes(bytes)
+}
+
+fn deserialize_bytes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Bytes, D::Error> {
+    <Vec<u8> as serde::Deserialize>::deserialize(deserializer).map(Bytes::from)
+}
+
+fn deserialize_metadata<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<HeaderMap, D::Error> {
+    use serde::de::Error as _;
+    let fields = <Vec<(String, Vec<u8>)> as serde::Deserialize>::deserialize(deserializer)?;
+    let mut metadata = HeaderMap::new();
+    for (name, value) in fields {
+        let name = http::HeaderName::from_bytes(name.as_bytes()).map_err(D::Error::custom)?;
+        if !name.as_str().starts_with(METADATA_PREFIX) {
+            return Err(D::Error::custom(
+                "failure metadata is outside the product namespace",
+            ));
+        }
+        let value = http::HeaderValue::from_bytes(&value).map_err(D::Error::custom)?;
+        metadata.append(name, value);
+    }
+    Ok(metadata)
 }
 
 fn serialize_metadata<S: serde::Serializer>(

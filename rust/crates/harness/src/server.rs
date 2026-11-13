@@ -106,7 +106,7 @@ pub struct Hosted<P: AuthorityProvider + 'static, O: 'static, L> {
     server: Arc<crate::hosting::Server<P, O>>,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
-    completion: Option<BoxProviderFuture<'static, Result<()>>>,
+    pub(crate) completion: Option<BoxProviderFuture<'static, Result<()>>>,
     _owner: L,
 }
 
