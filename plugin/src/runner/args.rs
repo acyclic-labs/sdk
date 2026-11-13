@@ -332,7 +332,7 @@ impl Args {
         if self.output_format == OutputFormat::Jsonl
             && self.input_format == InputFormat::Text
             && self.prompt.is_none()
-            && matches!(self.command, None | Some(Command::Run { .. }))
+            && matches!(self.command, None | Some(Command::Run { goal: None, .. }))
         {
             return Err(
                 "event input: no task or JSONL input; recovery: acyclic run --output-format jsonl --operation OPERATION --input-format jsonl",
