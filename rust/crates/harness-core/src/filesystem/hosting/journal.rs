@@ -16,7 +16,7 @@ type OriginalInput<P, O> = (
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "journal_tests.rs"]
-mod tests;
+pub(in crate::filesystem) mod tests;
 
 trait Projection {
     type Page: acyclic_stream::ProviderTask;
