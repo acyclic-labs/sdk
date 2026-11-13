@@ -369,6 +369,7 @@ fn run_scenarios(started: Instant) -> TestResult {
             let registry = registry.clone();
             let io = io.clone();
             async move {
+                let started = Instant::now();
                 let case_path = path.clone();
                 let (running, peak) = &*admitted;
                 peak.fetch_max(running.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
@@ -379,10 +380,10 @@ fn run_scenarios(started: Instant) -> TestResult {
                 })
                 .await;
                 running.fetch_sub(1, Ordering::SeqCst);
-                (path, result)
+                (path, result, started.elapsed())
             }
         },
-        |(path, result)| {
+        |(path, result, elapsed)| {
             let name = path
                 .strip_prefix(
                     acyclic_test_support::source_path("rust/crates/harness").join("tests"),
@@ -390,9 +391,9 @@ fn run_scenarios(started: Instant) -> TestResult {
                 .unwrap_or(path)
                 .display();
             match result {
-                Ok(()) => println!("PASS {name}"),
+                Ok(()) => println!("PASS {name} ({:.3}s)", elapsed.as_secs_f64()),
                 Err(error) => {
-                    eprintln!("FAIL {name}: {error}");
+                    eprintln!("FAIL {name} ({:.3}s): {error}", elapsed.as_secs_f64());
                     failures.push(path.clone());
                 }
             }

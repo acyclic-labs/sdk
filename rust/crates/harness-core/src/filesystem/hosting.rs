@@ -1168,6 +1168,39 @@ where
         .await
     }
 
+    /// Reads an original staged text through its journal owner, after checking
+    /// the recipient, sender, intent and source identity. This does not grant
+    /// the caller access to pending inputs or other journal files.
+    ///
+    /// # Errors
+    /// As [`Self::staged_text`], or when the original part exceeds `maximum`.
+    pub async fn read_staged_text(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+        source: &str,
+        maximum: u64,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>, Error> {
+        use crate::executor::ExecutionJournal as _;
+
+        let Some(file) = self.staged_text(agent, kind, by, intent, source).await? else {
+            return Ok(None);
+        };
+        if file.descriptor().byte_length() > maximum {
+            return Err(Error::Record("staged text exceeds its read bound"));
+        }
+        let state = self.agents.state(agent).await?;
+        let journal = self.turns.query_journal(&state).await.map_err(turn)?;
+        let bytes = journal
+            .load(&file, None)
+            .map_err(turn)?
+            .await
+            .map_err(turn)?;
+        Ok(Some(bytes))
+    }
+
     /// Stages ordered text and immutable file references through the same
     /// sender/intent publication as text input. Every reference must already
     /// be readable under this agent's admission; input cannot grant access.
