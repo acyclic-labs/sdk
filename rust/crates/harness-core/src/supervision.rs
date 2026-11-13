@@ -30,7 +30,7 @@ mod tests;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// An identical normalized invocation failed with the identical error.
+    /// An identical invocation with byte-identical command arguments failed with the identical error.
     RepeatFailure,
     /// One check was admitted at least three times in one turn.
     ValidationLoop,
@@ -98,7 +98,7 @@ pub struct Reservation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Thresholds {
-    /// Identical normalized tool failures per run.
+    /// Identical byte-identical tool failures per run.
     pub repeat_failure: Option<u64>,
     /// Matching failures at which the default action escalates to pause.
     pub repeat_failure_pause: Option<u64>,
@@ -128,7 +128,7 @@ pub struct Policy {
     /// Occurrence thresholds; omission selects the shared defaults.
     #[serde(default)]
     pub thresholds: Thresholds,
-    /// Owner-selected shell checks, normalized once when the policy is admitted.
+    /// Owner-selected shell checks, matched by exact command bytes.
     /// An empty set selects no checks; no tool or build-system names are guessed.
     #[serde(default)]
     pub validation_commands: BTreeSet<String>,
@@ -164,13 +164,8 @@ impl Default for Policy {
 impl Policy {
     /// Validate and compile owner selections without changing their original
     /// file bytes or the publication that authenticates those bytes.
-    pub fn admit(mut self) -> Result<Self, Error> {
+    pub fn admit(self) -> Result<Self, Error> {
         self.validate()?;
-        self.validation_commands = self
-            .validation_commands
-            .into_iter()
-            .map(|command| normalize_command(&command))
-            .collect();
         Ok(self)
     }
 
@@ -320,7 +315,7 @@ pub enum Observation<'a> {
     ToolStarted {
         /// Turn identity, used to scope validation counts.
         turn: u64,
-        /// Actual admitted shell command, before normalization.
+        /// Actual admitted shell command, with its exact original bytes.
         command: &'a str,
         /// This invocation is a validation check.
         check: bool,
@@ -503,16 +498,13 @@ impl Observation<'_> {
                 ..
             } => Some(signature(
                 b"check",
-                &[&turn.to_be_bytes(), normalize_command(command).as_bytes()],
+                &[&turn.to_be_bytes(), command.as_bytes()],
             )),
             Self::ToolFinished {
                 command,
                 error: Some(error),
                 ..
-            } => Some(signature(
-                b"failure",
-                &[normalize_command(command).as_bytes(), error],
-            )),
+            } => Some(signature(b"failure", &[command.as_bytes(), error])),
             Self::ModelOutput {
                 output: Some(output),
                 ..
@@ -704,41 +696,4 @@ impl Transition {
             );
         }
     }
-}
-
-/// Collapse horizontal whitespace outside quotes, preserving escaped bytes and
-/// quoted content. Multiline commands remain byte-exact: here-doc bodies and
-/// PowerShell here-strings can make any whitespace significant. This deliberately
-/// prefers a missed equivalence over identifying two different shell programs.
-pub fn normalize_command(command: &str) -> String {
-    if command.contains(['\n', '\r', '\\', '`']) {
-        return command.to_owned();
-    }
-    let mut result = String::with_capacity(command.len());
-    let mut quote = None;
-    let mut space = false;
-    let mut comment = false;
-    for character in command.trim_matches([' ', '\t']).chars() {
-        if comment {
-            result.push(character);
-            continue;
-        }
-        if quote.is_none() && matches!(character, ' ' | '\t') {
-            space = true;
-            continue;
-        }
-        if space {
-            result.push(' ');
-            space = false;
-        }
-        result.push(character);
-        if Some(character) == quote {
-            quote = None;
-        } else if quote.is_none() && matches!(character, '\'' | '"') {
-            quote = Some(character);
-        } else if quote.is_none() && character == '#' {
-            comment = true;
-        }
-    }
-    result
 }
