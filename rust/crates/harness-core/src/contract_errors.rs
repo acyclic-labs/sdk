@@ -1453,7 +1453,7 @@ impl From<crate::agent::Error> for Error {
 /// A Stream failure below the harness is a durable-storage failure.
 impl From<acyclic_stream::StreamError> for Error {
     fn from(error: acyclic_stream::StreamError) -> Self {
-        Self::Storage(error.to_string())
+        Self::from(crate::agent::Error::Stream(error))
     }
 }
 
