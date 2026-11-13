@@ -256,12 +256,12 @@ async fn workspace_queries_keep_subdirectory_read_grants_without_widening_them()
                 ClientFileChange {
                     path: "ui/title".into(),
                     expected: None,
-                    text: "scoped title".into(),
+                    text: Some("scoped title".into()),
                 },
                 ClientFileChange {
                     path: "outside".into(),
                     expected: None,
-                    text: "must not be disclosed".into(),
+                    text: Some("must not be disclosed".into()),
                 },
             ],
         )
