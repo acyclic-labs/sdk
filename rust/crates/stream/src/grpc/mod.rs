@@ -46,7 +46,7 @@ pub enum ConnectError {
     /// Endpoint URI was invalid or the TLS connection failed.
     #[error("invalid or unavailable Stream endpoint: {0}")]
     Endpoint(#[from] tonic::transport::Error),
-    /// The endpoint URI was representable but URL admission could not parse it.
+    /// Shared URL admission could not parse the endpoint.
     #[error("invalid Stream endpoint URL: {0}")]
     EndpointUrl(#[source] acyclic_auth::credential::EndpointError),
     /// Endpoint violates the selected TLS or loopback transport policy.
