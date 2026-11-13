@@ -85,18 +85,7 @@ impl crate::tool::ToolProjection for ShellProjection {
         result: &crate::tool::ToolResult,
         work: acyclic_fs::NativeWork<'_>,
     ) -> Result<(serde_json::Value, acyclic_fs::NativeCustody)> {
-        let text = result
-            .value
-            .get("text")
-            .or_else(|| result.value.get("error"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                Error::Invalid(
-                    "shell presentation is absent; recovery: bind the shared workspace executor"
-                        .into(),
-                )
-            })?;
-        crate::tool::schema::project_text(text, work)
+        project_result(result, work)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -108,57 +97,89 @@ impl crate::tool::ToolProjection for ShellProjection {
     }
 }
 
-pub(super) fn presentation(fields: &serde_json::Map<String, serde_json::Value>) -> String {
-    use std::fmt::Write;
-    if let Some(error) = fields.get("error").and_then(serde_json::Value::as_str) {
-        return format!("Tool failed: {error}");
-    }
-    let exit = fields
-        .get("exit_code")
-        .and_then(serde_json::Value::as_i64)
-        .map_or_else(|| "unavailable".into(), |code| code.to_string());
-    let stdout = fields
-        .get("stdout")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let stderr = fields
-        .get("stderr")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    let mut text = format!("Exit code: {exit}");
-    if let Some(omitted) = fields
-        .get("omitted_bytes")
-        .and_then(serde_json::Value::as_u64)
-        .filter(|omitted| *omitted > 0)
-    {
-        let _ = write!(
-            text,
-            "\n[{omitted} earlier bytes omitted; stdout tail then stderr tail follow"
-        );
-        if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
-            let _ = write!(text, "; complete output: {spill}");
-        } else if let (Some(volume), Some(directory)) = (
-            fields.get("output_volume"),
-            fields
-                .get("output_directory")
-                .and_then(serde_json::Value::as_str),
-        ) {
-            let _ = write!(
-                text,
-                "; complete output: volume {volume}, directory {directory}"
-            );
+/// Projects the canonical stdout/stderr result once, without retaining a second
+/// copy beside those fields. Native allocation stays on the original ledger.
+pub fn project_result(
+    result: &crate::tool::ToolResult,
+    work: acyclic_fs::NativeWork<'_>,
+) -> Result<(serde_json::Value, acyclic_fs::NativeCustody)> {
+    let fields = result.value.as_object().ok_or_else(|| {
+        Error::Invalid(
+            "shell result is not an object; recovery: bind the shared workspace executor".into(),
+        )
+    })?;
+    crate::tool::schema::project_text(presentation(fields), work)
+}
+
+pub(super) struct Presentation<'a>(&'a serde_json::Map<String, serde_json::Value>);
+
+pub(super) fn presentation(
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Presentation<'_> {
+    Presentation(fields)
+}
+
+impl std::fmt::Display for Presentation<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fields = self.0;
+        if let Some(error) = fields.get("error").and_then(serde_json::Value::as_str) {
+            return write!(f, "Tool failed: {error}");
         }
-        text.push(']');
+        // A background start is an acknowledgement, not captured process
+        // output. It has one text field and no canonical output channels.
+        if !fields.contains_key("stdout")
+            && !fields.contains_key("stderr")
+            && let Some(text) = fields.get("text").and_then(serde_json::Value::as_str)
+        {
+            return f.write_str(text);
+        }
+        let exit = fields.get("exit_code").and_then(serde_json::Value::as_i64);
+        let stdout = fields
+            .get("stdout")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let stderr = fields
+            .get("stderr")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        match exit {
+            Some(exit) => write!(f, "Exit code: {exit}")?,
+            None => f.write_str("Exit code: unavailable")?,
+        }
+        if let Some(omitted) = fields
+            .get("omitted_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|omitted| *omitted > 0)
+        {
+            write!(
+                f,
+                "\n[{omitted} earlier bytes omitted; stdout tail then stderr tail follow"
+            )?;
+            if let Some(spill) = fields.get("spill").and_then(serde_json::Value::as_str) {
+                write!(f, "; complete output: {spill}")?;
+            } else if let (Some(volume), Some(directory)) = (
+                fields.get("output_volume"),
+                fields
+                    .get("output_directory")
+                    .and_then(serde_json::Value::as_str),
+            ) {
+                write!(
+                    f,
+                    "; complete output: volume {volume}, directory {directory}"
+                )?;
+            }
+            f.write_str("]")?;
+        }
+        write!(f, "\n{stdout}{stderr}")?;
+        if let Some(message) = fields
+            .get("stop")
+            .and_then(|stop| stop.get("message"))
+            .and_then(serde_json::Value::as_str)
+        {
+            write!(f, "\n{message}")?;
+        }
+        Ok(())
     }
-    let _ = write!(text, "\n{stdout}{stderr}");
-    if let Some(message) = fields
-        .get("stop")
-        .and_then(|stop| stop.get("message"))
-        .and_then(serde_json::Value::as_str)
-    {
-        let _ = write!(text, "\n{message}");
-    }
-    text
 }
 
 /// A command in the calling task's view; workspace selection is host-owned.

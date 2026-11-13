@@ -175,7 +175,12 @@ mod tests {
             fields["omitted_bytes"].as_u64().unwrap(),
             (stdout.len() + stderr.len() - output.len() - error.len()) as u64
         );
-        let text = fields["text"].as_str().unwrap();
+        assert!(
+            fields.get("text").is_none(),
+            "canonical output has no duplicate presentation"
+        );
+        let projected = crate::tools::shell::project_result(&result, None)?.0;
+        let text = projected["parts"][0]["text"].as_str().unwrap();
         let (notice, shown) = text.split_once("]\n").unwrap();
         assert!(notice.contains("earlier bytes omitted; stdout tail then stderr tail follow"));
         assert!(notice.contains(spill_path));
@@ -226,7 +231,8 @@ mod tests {
             let (result, _) = tail.settle(crate::tool::ToolResult {
                 value: serde_json::json!({"exit_code": 0, "spill": "volume:///home/output"}),
             }, render)?;
-            let projected = serde_json::json!({"kind":"parts", "parts":[{"kind":"text", "text":result.value["text"]}]}).to_string();
+            prop_assert!(result.value.get("text").is_none());
+            let projected = crate::tools::shell::project_result(&result, None)?.0.to_string();
             prop_assert!(projected.len() as u64 <= render);
             let omitted = result.value["omitted_bytes"].as_u64().unwrap();
             if omitted > 0 {

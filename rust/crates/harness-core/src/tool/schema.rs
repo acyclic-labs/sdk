@@ -142,7 +142,21 @@ enum TextProjection<'a> {
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum TextPart<'a> {
-    Text { text: &'a str },
+    Text {
+        #[schemars(with = "str")]
+        text: DisplayText<'a>,
+    },
+}
+
+struct DisplayText<'a>(&'a dyn std::fmt::Display);
+
+impl Serialize for DisplayText<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self.0)
+    }
 }
 
 pub(crate) fn text_projection_schema() -> Result<Value> {
@@ -150,12 +164,14 @@ pub(crate) fn text_projection_schema() -> Result<Value> {
 }
 
 pub(crate) fn project_text(
-    text: &str,
+    text: impl std::fmt::Display,
     work: acyclic_fs::NativeWork<'_>,
 ) -> Result<(Value, acyclic_fs::NativeCustody)> {
     super::value(
         &TextProjection::Parts {
-            parts: [TextPart::Text { text }],
+            parts: [TextPart::Text {
+                text: DisplayText(&text),
+            }],
         },
         None,
         work,
