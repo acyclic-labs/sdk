@@ -862,6 +862,56 @@ async fn integrate<D: TurnDriver>(
 }
 
 #[tokio::test]
+async fn durable_answers_wait_for_workspace_integration_before_replying() -> Result {
+    use acyclic_stream::{MemoryStream, StreamProviderExt as _};
+    let provider = MemoryStream::default();
+    super::create(&provider, id(1)).await?;
+    let path = AgentPath::root(&id(1));
+    let (script, driver) = driver(vec![ready()]);
+    let completed = step(
+        &driver,
+        &path,
+        Some(AgentState::adopted(path.clone(), &adopted(id(1)))?),
+        (1, 0),
+        Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::Message(Message {
+                from: super::user(),
+                id: intent("answer"),
+                body: Box::new(file("prompt.md")?),
+                re: None,
+                attachments: None,
+            }),
+        },
+        acyclic_actors::guest::CancellationToken::new(),
+    )
+    .await?;
+    assert!(matches!(
+        provider
+            .commit(lower(
+                &completed,
+                2,
+                delivery_key(&completed.state, "durable-answer")?,
+            )?)
+            .await?,
+        acyclic_stream::CommitOutcome::Committed(_)
+    ));
+    let saved = answer(&provider, &path, 0).await?;
+    let mut state = completed.state;
+    assert_eq!(
+        reply(&provider, &mut state, 2, &intent("answer"), 1).await?,
+        Reply::Pending
+    );
+    let mut integrated = integrate(&driver, state, 2, &[&provider]).await?;
+    assert!(matches!(
+        reply(&provider, &mut integrated, 2, &intent("answer"), 1).await?,
+        Reply::Answered { sequence: 0, entry, .. } if entry == saved
+    ));
+    assert_eq!(script.operations.lock().expect("lock").len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn completed_answer_commits_before_workspace_settlement_failure() -> Result {
     use acyclic_stream::{MemoryStream, StreamProviderExt as _};
     let provider = MemoryStream::default();
@@ -1063,6 +1113,25 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
                 .and_then(|rest| rest.strip_suffix(":1"))
                 .expect("first continuation of the original goal"),
         )?;
+        assert_eq!(
+            reply(
+                &provider,
+                &mut settled.state,
+                sequence + 1,
+                &intent("m1"),
+                1
+            )
+            .await?,
+            Reply::Continuing { run },
+            "durable goal answers still await workspace integration"
+        );
+        settled.state = integrate(
+            &driver,
+            settled.state,
+            sequence + 1,
+            &[&provider, &missing_completion, &wrong_completion],
+        )
+        .await?;
         let answer = reply(
             &provider,
             &mut settled.state,
@@ -1109,13 +1178,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
                 Reply::Continuing { run }
             );
         }
-        state = integrate(
-            &driver,
-            settled.state,
-            sequence + 1,
-            &[&provider, &missing_completion, &wrong_completion],
-        )
-        .await?;
+        state = settled.state;
     }
     // Two continuations of one loop, then the allowance blocks the goal.
     assert_eq!(sent.len(), 2);
@@ -1167,6 +1230,7 @@ ship it
             provider.commit(commit).await?,
             CommitOutcome::Committed(_)
         ));
+        settled.state = integrate(&driver, settled.state, sequence + 1, &[&provider]).await?;
         assert!(
             matches!(reply(&provider, &mut settled.state, sequence + 1, &intent(&format!("m{sequence}")), sequence).await?,
             Reply::Answered { origin: None, entry, .. } if entry.inbox == sequence)
@@ -1175,7 +1239,7 @@ ship it
             matches!(reply(&provider, &mut settled.state, sequence + 1, &intent("m1"), 1).await?,
             Reply::Answered { sequence: 2, entry, origin: Some(origin), .. } if entry.inbox == 3 && origin.inbox == 1)
         );
-        state = integrate(&driver, settled.state, sequence + 1, &[&provider]).await?;
+        state = settled.state;
     }
     assert_eq!(goal.rewrites.lock().expect("lock").len(), 1);
     Ok(())

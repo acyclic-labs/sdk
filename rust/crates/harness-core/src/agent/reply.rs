@@ -254,6 +254,15 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     steering: Option<SteeringReply>,
 ) -> Result<Reply, Error> {
     let Some(run) = request.goal else {
+        // An answer is durable before its host finishes workspace integration.
+        // The retained turn is the settlement barrier shared by every reader.
+        if state
+            .turn
+            .as_ref()
+            .is_some_and(|turn| turn.inbox == request.inbox)
+        {
+            return Ok(Reply::Pending);
+        }
         return Ok(Reply::Answered {
             sequence,
             entry: request,
@@ -299,6 +308,13 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
     let entry = entry(provider, &state.path.conversation()?, completed.sequence).await?;
     if completed.sequence < sequence || !entry.continues_goal(&state.path, run) {
         return Err(Error::Record("goal completion names another run"));
+    }
+    if state
+        .turn
+        .as_ref()
+        .is_some_and(|turn| turn.inbox == entry.inbox)
+    {
+        return Ok(Reply::Continuing { run });
     }
     Ok(Reply::Answered {
         sequence: completed.sequence,
