@@ -108,8 +108,8 @@ async fn fixture() -> Result<(Host, AgentState)> {
         TurnAdmission::LocalRoot,
         Arc::new(Executors(Arc::new(executor()?))),
         TurnLimits {
-            maximum_bytes: 1024 * 1024,
-            history_turns: Some(8),
+            maximum_bytes: Some(1024 * 1024),
+            history_turns: 8,
         },
         Default::default(),
     )
