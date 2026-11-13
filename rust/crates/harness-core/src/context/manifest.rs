@@ -238,11 +238,14 @@ impl ContextManifest {
     pub async fn bind(
         reference: FileRef,
         reader: &dyn ContentResidencyVerifier,
+        publisher: Option<&dyn ContentPublisher>,
         tools: ToolRegistry,
         limits: Limits,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
-        let (tools, stage, _) =
-            Self::bind_observed(reference, reader, reader, tools, limits, None, true).await?;
+        let (tools, stage, _) = Self::bind_observed(
+            reference, reader, reader, publisher, tools, limits, None, true,
+        )
+        .await?;
         Ok((tools, stage))
     }
 }

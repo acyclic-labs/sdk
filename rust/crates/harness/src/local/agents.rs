@@ -127,9 +127,10 @@ impl crate::hosting::Platform for LocalUser {
 
     fn prompt_command<'a>(
         &'a self,
+        agent: &'a AgentPath,
         text: &'a str,
     ) -> BoxProviderFuture<'a, Result<Option<String>>> {
-        Box::pin(async move { self.harness()?.resolve_prompt_command(text).await })
+        Box::pin(async move { self.harness()?.resolve_prompt_command(agent, text).await })
     }
 
     fn attachments<'a>(
@@ -319,6 +320,7 @@ impl TurnContext for LocalContext {
                     &epoch,
                     journal_content.reader.clone(),
                     authority.content.reader.clone(),
+                    journal_content.writer.clone(),
                 )
                 .await?;
             #[cfg(not(target_arch = "wasm32"))]

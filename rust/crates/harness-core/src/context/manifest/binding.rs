@@ -12,6 +12,7 @@ impl ContextManifest {
         reference: FileRef,
         manifest_reader: &dyn ContentResidencyVerifier,
         reader: &dyn ContentResidencyVerifier,
+        publisher: Option<&dyn crate::conversation::ContentPublisher>,
         mut tools: ToolRegistry,
         limits: Limits,
         io: Option<&PreparationIo>,
@@ -117,6 +118,14 @@ impl ContextManifest {
             let message = skill
                 .invoke_observed(
                     reader,
+                    publisher.ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            ErrorCode::Unauthorized,
+                            "selected skills require journal publication authority",
+                        )
+                    })?,
+                    manifest_reader,
                     remaining.into_iter().chain(limits.file_bytes).min(),
                     io,
                 )

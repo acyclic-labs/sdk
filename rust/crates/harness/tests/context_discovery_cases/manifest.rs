@@ -19,7 +19,7 @@ fn tools() -> Result<ToolRegistry> {
     Ok(tools)
 }
 
-async fn storage(
+pub(super) async fn storage(
     fixture: &Fixture,
 ) -> Result<(
     Arc<dyn ContentPublisher>,
@@ -297,8 +297,14 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         reads: AtomicUsize::new(0),
         prefix: std::sync::Mutex::new(None),
     };
-    let (selected, stage) =
-        ContextManifest::bind(reference.clone(), &counted, tools()?, limits).await?;
+    let (selected, stage) = ContextManifest::bind(
+        reference.clone(),
+        &counted,
+        Some(publisher.as_ref()),
+        tools()?,
+        limits,
+    )
+    .await?;
     assert_eq!(counted.reads.load(Ordering::Relaxed), 1);
     assert_eq!(selected.definitions(None)?, manifest.tools);
     let input = ContextInput {
@@ -329,6 +335,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
             &ContextEpoch::from_manifest(reference.clone()),
             reader.clone(),
             reader.clone(),
+            Some(publisher.clone()),
         )
         .await?;
     assert!(
@@ -337,7 +344,8 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
             .with_context_epoch(
                 &ContextEpoch::from_manifest(reference.clone()),
                 reader.clone(),
-                reader.clone()
+                reader.clone(),
+                Some(publisher.clone())
             )
             .await
             .is_err()
@@ -369,6 +377,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
             &ContextEpoch::from_manifest(reference),
             reader.clone(),
             reader.clone(),
+            Some(publisher.clone()),
         )
         .await?;
     let recovered = fixture
@@ -409,8 +418,14 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
         reads: AtomicUsize::new(0),
         prefix: std::sync::Mutex::new(None),
     };
-    let (selected, stage) =
-        ContextManifest::bind(reference.clone(), &counted, tools()?, limits).await?;
+    let (selected, stage) = ContextManifest::bind(
+        reference.clone(),
+        &counted,
+        Some(publisher.as_ref()),
+        tools()?,
+        limits,
+    )
+    .await?;
     let pipeline = ContextPipeline::new([stage.clone()]);
     for step in 0..2 {
         let context = pipeline
@@ -445,6 +460,7 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
         ContextManifest::bind(
             reference,
             &counted,
+            Some(publisher.as_ref()),
             tools()?,
             Limits {
                 context_messages: std::num::NonZeroUsize::new(1),
@@ -507,7 +523,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
     assert!(matches!(
         ContextManifest::bind(
             reference.clone(),
-            &counted,
+            &counted,Some(publisher.as_ref()),
             ToolRegistry::default(),
             Limits { path_bytes: std::num::NonZeroUsize::new(16), ..limits },
         ).await,
@@ -517,6 +533,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
     ContextManifest::bind(
         reference,
         &counted,
+        Some(publisher.as_ref()),
         ToolRegistry::default(),
         Limits {
             path_bytes: std::num::NonZeroUsize::new("skills/long-name/SKILL.md".len()),
@@ -619,9 +636,15 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
             prefix: std::sync::Mutex::new(None),
         };
         assert!(
-            ContextManifest::bind(reference, &counted, tools()?, limits)
-                .await
-                .is_err()
+            ContextManifest::bind(
+                reference,
+                &counted,
+                Some(publisher.as_ref()),
+                tools()?,
+                limits
+            )
+            .await
+            .is_err()
         );
         assert_eq!(counted.reads.load(Ordering::Relaxed), 0);
     }
@@ -637,6 +660,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         ContextManifest::bind(
             reference.clone(),
             reader.as_ref(),
+            Some(publisher.as_ref()),
             tools()?,
             Limits {
                 render_bytes: Some(1),
@@ -647,9 +671,15 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         .is_err()
     );
     assert!(
-        ContextManifest::bind(reference.clone(), fixture.reader.as_ref(), tools()?, limits)
-            .await
-            .is_err()
+        ContextManifest::bind(
+            reference.clone(),
+            fixture.reader.as_ref(),
+            Some(publisher.as_ref()),
+            tools()?,
+            limits
+        )
+        .await
+        .is_err()
     );
     let mut duplicated = base.clone();
     duplicated.selected_skills.push("inspect".into());

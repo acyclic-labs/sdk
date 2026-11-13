@@ -92,6 +92,40 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn capture_private_path<'a>(
+        &'a self,
+        capture: crate::conversation::ContentCapture<'a>,
+        maximum_bytes: Option<u64>,
+        access: crate::conversation::ContentAccess<'a, 'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes)>>
+    {
+        crate::conversation::BoundedContentFuture::new(access.io, || async move {
+            self.verify_exact_file(None, access.io)?;
+            let mut history = access.io.map(PreparationIo::history_io);
+            let grant = ContentGrant::verify_directory_read(
+                self.authority.verifier(),
+                self.authority.scope(),
+                capture.source.volume,
+                capture.source.granted_prefix,
+                &mut history
+                    .as_mut()
+                    .map(|observer| observer as &mut dyn crate::store::history::HistoryIo),
+            )?;
+            let _grant_hold = access
+                .io
+                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                .transpose()?;
+            self.host
+                .capture_private_path(
+                    &grant,
+                    capture,
+                    maximum_bytes.into_iter().chain(self.maximum_bytes).min(),
+                    access,
+                )
+                .await
+        })
+    }
+
     fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
         if self
             .exact_file

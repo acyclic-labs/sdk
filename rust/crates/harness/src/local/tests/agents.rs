@@ -2645,15 +2645,16 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     );
     let operation =
         super::super::context::publication_operation(b"acyclic.local.mention-copies/v1\0", key);
-    let publisher = harness
+    let content = harness
         .agents
         .get()
         .expect("hosted")
         .server()
         .bound()
-        .input_publisher(&root, None)
+        .input_content(&root, None)
         .await
         .map_err(agent)?;
+    let publisher = content.writer.as_ref().expect("host journal writer");
     publisher
         .stage_changes(
             publisher.volume(),
@@ -3203,14 +3204,14 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     assert_ne!(child_skills, parent_skills);
     for command in ["/context-checkpoint", "/CONTEXT-CHECKPOINT"] {
         assert!(matches!(
-            harness.resolve_prompt_command(command).await,
+            harness.resolve_prompt_command(&root, command).await,
             Err(Error::Conflict(_))
         ));
     }
     // An unambiguous name must still expand in the same catalog.
     assert!(
         harness
-            .resolve_prompt_command("/candidate-search")
+            .resolve_prompt_command(&root, "/candidate-search")
             .await?
             .is_some()
     );

@@ -9,16 +9,222 @@ use futures::FutureExt as _;
 
 type MemoryFs = Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+type Reader = crate::filesystem::FilesystemContentVerifier<
+    acyclic_fs::MemoryAuthorityBackend,
+    acyclic_fs::MemoryObjectBackend,
+>;
+type Publisher = crate::filesystem::FilesystemContentPublisher<
+    acyclic_fs::MemoryAuthorityBackend,
+    acyclic_fs::MemoryObjectBackend,
+>;
+
+struct CaptureBindings {
+    reader: Arc<Reader>,
+    publisher: Arc<Publisher>,
+    journal_reader: Arc<Reader>,
+    _owner: AuthorityRoot,
+}
+
+impl Fixture {
+    fn source_reader(&self, host: Arc<Host>) -> Result<Arc<Reader>> {
+        let scope = self._issuer.bootstrap_scope(
+            "source-reader",
+            &Capabilities::new([self.volume.capability(VolumeOperation::Read, &mut None)?]),
+            Some(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )?;
+        Reader::new(host, &self._issuer.verifier(&mut None)?, &scope, None, None)
+    }
+
+    async fn capture_bindings(&self) -> Result<CaptureBindings> {
+        let journal = crate::conversation::journal_volume(
+            self.volume.provider().clone(),
+            &crate::agent::AgentId::from_bytes([2; 16]),
+        )?;
+        self.host.create_volume(&journal).await?;
+        let owner = AuthorityRoot::host_owned(
+            "skill-capture",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "capture".into(),
+            },
+        );
+        let scope = owner.bootstrap_scope(
+            "capture",
+            &Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+                journal.capability(VolumeOperation::Read, &mut None)?,
+                journal.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(AgentId::from_bytes([2; 16])),
+            &mut None,
+        )?;
+        let verifier = owner.verifier(&mut None)?;
+        Ok(CaptureBindings {
+            reader: self.source_reader(self.host.clone())?,
+            publisher: Publisher::new(self.host.clone(), &journal, &verifier, &scope, None, None)?,
+            journal_reader: Reader::new(self.host.clone(), &verifier, &scope, None, None)?,
+            _owner: owner,
+        })
+    }
+}
+
+#[tokio::test]
+async fn captured_skill_replays_from_separate_journal_and_rejects_another_source() -> Result<()> {
+    use crate::conversation::{
+        ContentAccess, ContentCapture, ContentPath, ContentPublisher, ContentResidencyVerifier,
+    };
+    let fixture = fixture().await?;
+    let bindings = fixture.capture_bindings().await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let capture = |index: usize| {
+        let source = &fixture.skills[index].source;
+        ContentCapture {
+            source: ContentPath {
+                volume: &source.root.volume,
+                granted_prefix: &source.root.directory,
+                path: &source.path,
+                generation: &source.generation,
+            },
+            publisher: bindings.publisher.as_ref(),
+            reader: bindings.journal_reader.as_ref(),
+            operation: crate::OperationId::from_bytes([29; 16]),
+            path: "inputs/skills/captured/SKILL.md",
+            media_type: "text/markdown",
+            display_name: "SKILL.md",
+        }
+    };
+    let access = ContentAccess {
+        ceiling: None,
+        io: Some(&io),
+    };
+    let (original, captured_bytes) = bindings
+        .reader
+        .capture_private_path(capture(0), Some(4096), access)?
+        .await?;
+    assert!(String::from_utf8_lossy(&captured_bytes).contains("first body"));
+    assert_eq!(original.volume(), bindings.publisher.volume());
+    assert_ne!(original.volume(), &fixture.volume);
+    let bytes = bindings
+        .journal_reader
+        .read(&original, 4096, None, Some(&io))?
+        .await?;
+    assert!(String::from_utf8_lossy(&bytes).contains("first body"));
+    assert!(
+        fixture
+            .host
+            .stat_private_path(
+                &fixture.volume,
+                &fixture.grant,
+                &fixture.skills[0].source.path,
+                None,
+                access
+            )
+            .await?
+            .is_none()
+    );
+
+    // Lose both native bodies and all process-local materialization state.
+    for name in ["first", "second"] {
+        std::fs::remove_file(fixture.home.path().join(name).join("SKILL.md"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+    }
+    let sources = NativeSkills::new(
+        fixture.filesystem.stream_provider(),
+        fixture.volume.clone(),
+        None,
+        Vec::new(),
+    )?;
+    let reopened =
+        FilesystemHost::new(fixture.filesystem.clone(), fixture.volume.provider(), None)?
+            .with_native_skills(sources)?;
+    let reader = fixture.source_reader(reopened)?;
+    assert_eq!(
+        reader
+            .capture_private_path(capture(0), Some(4096), access)?
+            .await?
+            .0,
+        original
+    );
+    // Recovering by operation alone, or deriving a new operation from the
+    // changed source, would accept a request that the original receipt never bound.
+    assert_eq!(
+        reader
+            .capture_private_path(capture(1), Some(4096), access)?
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Conflict
+    );
+    assert_eq!(
+        reader
+            .capture_private_path(capture(0), Some(8), access)?
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Invalid
+    );
+    for (path, expires_at) in [("public/**", None), ("**", Some(0))] {
+        use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+        let ceiling = Capabilities::new([Capability {
+            layers: vec![vec![Grant {
+                actions: [Action::List, Action::Read, Action::ReadHistory]
+                    .into_iter()
+                    .collect(),
+                resource: ResourcePattern {
+                    lineage_root: None,
+                    volume: None,
+                    generations: Generations::All,
+                    path: path.into(),
+                },
+            }]],
+            expires_at,
+        }
+        .to_scope_label()
+        .map_err(|error| Error::Invalid(error.to_string()))?]);
+        assert_eq!(
+            reader
+                .capture_private_path(
+                    capture(0),
+                    Some(4096),
+                    ContentAccess {
+                        ceiling: Some(&ceiling),
+                        io: Some(&io),
+                    }
+                )?
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Unauthorized
+        );
+    }
+    // Journal custody never supplies original source authority.
+    assert_eq!(
+        bindings
+            .journal_reader
+            .capture_private_path(capture(0), Some(4096), access)?
+            .await
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    Ok(())
+}
 
 struct Fixture {
     _issuer: AuthorityRoot,
     home: tempfile::TempDir,
-    retained: tempfile::TempDir,
     filesystem: MemoryFs,
     host: Arc<Host>,
     volume: VolumeRef,
     grant: ContentGrant,
-    sources: Arc<NativeSkills>,
     skills: Vec<crate::context::SkillMetadata>,
 }
 
@@ -28,7 +234,6 @@ async fn fixture() -> Result<Fixture> {
     acyclic_fs::watch::initialize_native_watch_services()
         .map_err(|error| Error::Storage(error.to_string()))?;
     let home = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let retained = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     for name in ["first", "second"] {
         let directory = home.path().join(name);
         std::fs::create_dir_all(&directory).map_err(|error| Error::Storage(error.to_string()))?;
@@ -47,7 +252,7 @@ async fn fixture() -> Result<Fixture> {
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
-        "journal".into(),
+        "private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -90,117 +295,20 @@ async fn fixture() -> Result<Fixture> {
     Ok(Fixture {
         _issuer: issuer,
         home,
-        retained,
         filesystem,
         host,
         volume,
         grant,
-        sources,
         skills,
     })
 }
 
-impl Fixture {
-    async fn read(&self, host: &Host) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_with_ceiling(host, None).await
-    }
-
-    async fn read_with_ceiling(
-        &self,
-        host: &Host,
-        ceiling: Option<&Capabilities>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::BOUNDARY_BUDGET,
-            &cancellation,
-        )
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let io = PreparationIo::from_native_work(&work)?;
-        let source = &self.skills[0].source;
-        host.read_private_path(
-            &self.volume,
-            &self.grant,
-            &source.path,
-            Some(&source.generation),
-            4096,
-            crate::conversation::ContentAccess {
-                ceiling,
-                io: Some(&io),
-            },
-        )
-        .await
-        .map(|(_, bytes)| bytes)
-    }
-}
-
-#[tokio::test]
-async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> Result<()> {
-    let fixture = fixture().await?;
-    let original = fixture.read(&fixture.host).await?;
-    let source = &fixture.skills[0].source;
-    assert!(fixture.sources.materialized(&source.generation)?.is_some());
-    let workspace = workspace_ref(
-        fixture.volume.provider().clone(),
-        &fixture.volume.storage_name(&mut None)?,
-    )?;
-    let original_generation = fixture.sources.materialized(&source.generation)?.unwrap();
-    let changed = fixture
-        .host
-        .apply(
-            &workspace,
-            Some(&original_generation),
-            &[WorkspaceMutation::PutFile {
-                path: format!("/{}", source.path),
-                bytes: b"substituted skill body".as_slice().into(),
-            }],
-            &IdempotencyKey::new("changed-skill-body")?,
-        )
-        .await?;
-    // A process restart loses the warm cache. A native sidecar must not
-    // redirect the original committed input to a later file generation.
-    let receipt = fixture.retained.path().join(format!(
-        "{}.body.json",
-        hex::encode(source.generation.as_resource().key())
-    ));
-    std::fs::write(
-        receipt,
-        serde_json::to_vec(&changed).map_err(|error| Error::Storage(error.to_string()))?,
-    )
-    .map_err(|error| Error::Storage(error.to_string()))?;
-    std::fs::remove_file(fixture.home.path().join("first/SKILL.md"))
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let sources = NativeSkills::new(
-        fixture.filesystem.stream_provider(),
-        fixture.volume.clone(),
-        None,
-        Vec::new(),
-    )?;
-    let reopened =
-        FilesystemHost::new(fixture.filesystem.clone(), fixture.volume.provider(), None)?
-            .with_native_skills(sources.clone())?;
-    assert_eq!(fixture.read(&reopened).await?, original);
-    assert_eq!(
-        sources.materialized(&source.generation)?,
-        Some(original_generation)
-    );
-    Ok(())
-}
-
 #[tokio::test]
 async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Result<()> {
-    let Fixture {
-        _issuer,
-        home: _home,
-        retained: _retained,
-        filesystem,
-        mut host,
-        volume,
-        grant,
-        sources,
-        skills,
-    } = fixture().await?;
-
+    use crate::conversation::{
+        ContentAccess, ContentCapture, ContentPath, ContentResidencyVerifier,
+    };
+    let mut fixture = fixture().await?;
     let (entered_a, at_a) = tokio::sync::oneshot::channel();
     let (entered_b, at_b) = tokio::sync::oneshot::channel();
     let (release_a, resume_a) = tokio::sync::oneshot::channel();
@@ -209,13 +317,14 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         (entered_a, resume_a),
         (entered_b, resume_b),
     ])));
-    Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+    Arc::get_mut(&mut fixture.host).unwrap().publication_pause = Some(Arc::new(move || {
         let (entered, resume) = pauses.lock().unwrap().pop_front().unwrap();
         Box::pin(async move {
             entered.send(()).unwrap();
             resume.await.unwrap();
         })
     }));
+    let bindings = fixture.capture_bindings().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work_a = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::BOUNDARY_BUDGET,
@@ -229,48 +338,58 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io_a = PreparationIo::from_native_work(&work_a)?;
     let io_b = PreparationIo::from_native_work(&work_b)?;
-    let first = host.read_private_path(
-        &volume,
-        &grant,
-        &skills[0].source.path,
-        Some(&skills[0].source.generation),
-        4096,
-        crate::conversation::ContentAccess {
+    let capture = |index: usize| {
+        let source = &fixture.skills[index].source;
+        ContentCapture {
+            source: ContentPath {
+                volume: &source.root.volume,
+                granted_prefix: &source.root.directory,
+                path: &source.path,
+                generation: &source.generation,
+            },
+            publisher: bindings.publisher.as_ref(),
+            reader: bindings.journal_reader.as_ref(),
+            operation: crate::OperationId::from_bytes([index as u8 + 41; 16]),
+            path: &source.path,
+            media_type: "text/markdown",
+            display_name: "SKILL.md",
+        }
+    };
+    let first = bindings.reader.capture_private_path(
+        capture(0),
+        Some(4096),
+        ContentAccess {
             ceiling: None,
             io: Some(&io_a),
         },
-    );
+    )?;
     tokio::pin!(first);
     tokio::select! {
         result = &mut first => panic!("first load completed before its pinned-transaction pause: {result:?}"),
         _ = at_a => {},
     }
-    // An already-running reader and a replacement registration must still
-    // share the journal owner and original retained source stream.
+    // Replacement registration retains the original source records and owner.
     let replacement = NativeSkills::new(
-        filesystem.stream_provider(),
-        volume.clone(),
+        fixture.filesystem.stream_provider(),
+        fixture.volume.clone(),
         None,
         Vec::new(),
     )?;
-    let rebound = host.clone().with_native_skills(replacement)?;
-    let registered = rebound.skill_sources(&volume)?.unwrap();
-    let second = rebound.read_private_path(
-        &volume,
-        &grant,
-        &skills[1].source.path,
-        Some(&skills[1].source.generation),
-        4096,
-        crate::conversation::ContentAccess {
+    let rebound = fixture.host.clone().with_native_skills(replacement)?;
+    let registered = rebound.skill_sources(&fixture.volume)?.unwrap();
+    let reader = fixture.source_reader(rebound)?;
+    let second = reader.capture_private_path(
+        capture(1),
+        Some(4096),
+        ContentAccess {
             ceiling: None,
             io: Some(&io_b),
         },
-    );
+    )?;
     tokio::pin!(second);
-    // Poll the other task while the first is paused after pinning HEAD. With
-    // serialization it waits for the owner. For the pre-fix negative control,
-    // let it pin the same HEAD before allowing either publication to commit.
     assert!(futures::poll!(&mut second).is_pending());
+    // Negative control: removing owner serialization pins both transactions
+    // before either commits, reproducing the former disjoint-load race.
     if registered.materializer.enter().now_or_never().is_some() {
         tokio::select! {
             result = &mut second => panic!("second load completed before its pause: {result:?}"),
@@ -280,28 +399,47 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     release_a.send(()).unwrap();
     release_b.send(()).unwrap();
     let (first, second) = futures::join!(first, second);
-    let (_, first) = first?;
-    let (_, second) = second?;
-    assert!(String::from_utf8_lossy(&first).contains("first body"));
-    assert!(String::from_utf8_lossy(&second).contains("second body"));
-    assert!(
-        sources
-            .materialized(&skills[0].source.generation)?
-            .is_some()
-    );
-    assert!(
-        sources
-            .materialized(&skills[1].source.generation)?
-            .is_some()
-    );
+    for ((file, body), expected) in [(first?, "first body"), (second?, "second body")] {
+        assert!(String::from_utf8_lossy(&body).contains(expected));
+        let bytes = bindings
+            .journal_reader
+            .read(&file, 4096, None, None)?
+            .await?;
+        assert!(String::from_utf8_lossy(&bytes).contains(expected));
+    }
+    for skill in &fixture.skills {
+        assert!(
+            fixture
+                .host
+                .stat_private_path(
+                    &fixture.volume,
+                    &fixture.grant,
+                    &skill.source.path,
+                    None,
+                    ContentAccess::default()
+                )
+                .await?
+                .is_none()
+        );
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn denied_skill_body_never_materializes_the_host_source() -> Result<()> {
+    use crate::conversation::{
+        ContentAccess, ContentCapture, ContentPath, ContentPublisher, ContentResidencyVerifier,
+    };
     use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
+    let fixture = fixture().await?;
+    let bindings = fixture.capture_bindings().await?;
+    let workspace = workspace_ref(
+        bindings.publisher.volume().provider().clone(),
+        &bindings.publisher.volume().storage_name(&mut None)?,
+    )?;
+    let original = fixture.host.resolve(&workspace, None).await?.generation;
+    let source = &fixture.skills[0].source;
     for (path, expires_at) in [("public/**", None), ("**", Some(0))] {
-        let fixture = fixture().await?;
         let ceiling = Capabilities::new([Capability {
             layers: vec![vec![Grant {
                 actions: [Action::List, Action::Read, Action::ReadHistory]
@@ -318,20 +456,49 @@ async fn denied_skill_body_never_materializes_the_host_source() -> Result<()> {
         }
         .to_scope_label()
         .map_err(|error| Error::Invalid(error.to_string()))?]);
+        let result = bindings
+            .reader
+            .capture_private_path(
+                ContentCapture {
+                    source: ContentPath {
+                        volume: &source.root.volume,
+                        granted_prefix: &source.root.directory,
+                        path: &source.path,
+                        generation: &source.generation,
+                    },
+                    publisher: bindings.publisher.as_ref(),
+                    reader: bindings.journal_reader.as_ref(),
+                    operation: crate::OperationId::from_bytes([63; 16]),
+                    path: "inputs/skills/denied/SKILL.md",
+                    media_type: "text/markdown",
+                    display_name: "SKILL.md",
+                },
+                Some(4096),
+                ContentAccess {
+                    ceiling: Some(&ceiling),
+                    io: None,
+                },
+            )?
+            .await;
         assert_eq!(
-            fixture
-                .read_with_ceiling(&fixture.host, Some(&ceiling))
-                .await
-                .unwrap_err()
-                .code(),
+            result.unwrap_err().code(),
             crate::wire::ErrorCode::Unauthorized
         );
-        // Without the admission check ahead of materialization, the final read
-        // still refuses disclosure but the host body has already been copied.
+        assert_eq!(
+            fixture.host.resolve(&workspace, None).await?.generation,
+            original
+        );
         assert!(
             fixture
-                .sources
-                .materialized(&fixture.skills[0].source.generation)?
+                .host
+                .stat_private_path(
+                    &fixture.volume,
+                    &fixture.grant,
+                    &source.path,
+                    None,
+                    ContentAccess::default()
+                )
+                .await?
                 .is_none()
         );
     }

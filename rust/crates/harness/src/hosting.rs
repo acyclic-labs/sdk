@@ -136,9 +136,10 @@ pub trait Platform: ProviderPlatform + 'static {
     /// A platform with no project of its own to read expands none.
     fn prompt_command<'a>(
         &'a self,
+        agent: &'a AgentPath,
         text: &'a str,
     ) -> BoxProviderFuture<'a, crate::Result<Option<String>>> {
-        let _ = text;
+        let _ = (agent, text);
         Box::pin(async { Ok(None) })
     }
 
@@ -1168,8 +1169,11 @@ where
                                 .map_err(turn)?,
                         ),
                         None => {
-                            let expanded =
-                                self.platform.prompt_command(source).await.map_err(turn)?;
+                            let expanded = self
+                                .platform
+                                .prompt_command(agent, source)
+                                .await
+                                .map_err(turn)?;
                             let text = expanded.as_deref().unwrap_or(source);
                             let attachments = self
                                 .platform

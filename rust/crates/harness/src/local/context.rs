@@ -490,15 +490,19 @@ impl LocalHarness {
         }
         // The manifest's own encoding bounds it: it lists files already
         // admitted under the content bounds, so it takes no content bound.
-        let publisher = self
+        let content = self
             .agents
             .get()
             .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
             .server()
             .bound()
-            .input_publisher(agent, None)
+            .input_content(agent, None)
             .await
             .map_err(Error::from)?;
+        let publisher = content
+            .writer
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("mention capture has no journal writer".into()))?;
         let operation = publication_operation(b"acyclic.local.mention-manifest/v2\0", key);
         if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
             return Ok(Some(manifest));

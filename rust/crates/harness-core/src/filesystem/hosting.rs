@@ -1201,29 +1201,21 @@ where
         self.agents.child_profile(parent, role).await
     }
 
-    /// Binds the host publisher of an existing agent's immutable inputs.
+    /// Binds host read and publication of an existing agent's immutable inputs.
     /// Source reads retain their original authority; this publisher grants no
     /// authority to read a source or to write through the agent's task scope.
     ///
     /// # Errors
     /// A foreign path, missing agent, refused admission or journal failure.
-    pub async fn input_publisher(
+    pub async fn input_content(
         &self,
         agent: &AgentPath,
         maximum_bytes: Option<u64>,
-    ) -> Result<Arc<FilesystemContentPublisher<StreamAuthorityStore<P>, O>>, Error> {
+    ) -> Result<crate::runtime::ContentBindings, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        self.input_publisher_for_state(&state, maximum_bytes).await
-    }
-
-    async fn input_publisher_for_state(
-        &self,
-        state: &crate::agent::AgentState,
-        maximum_bytes: Option<u64>,
-    ) -> Result<Arc<FilesystemContentPublisher<StreamAuthorityStore<P>, O>>, Error> {
-        let (journal, authority) = self.turns.journal_authority(state).await.map_err(turn)?;
-        FilesystemContentPublisher::new(
+        let (journal, authority) = self.turns.journal_authority(&state).await.map_err(turn)?;
+        let writer = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
             &journal,
             &authority.verifier,
@@ -1231,7 +1223,20 @@ where
             maximum_bytes,
             None,
         )
-        .map_err(turn)
+        .map_err(turn)?;
+        let reader = super::FilesystemContentVerifier::new(
+            Arc::clone(&self.volumes),
+            &authority.verifier,
+            &authority.scope,
+            maximum_bytes,
+            None,
+        )
+        .map_err(turn)?;
+        Ok(crate::runtime::ContentBindings {
+            volume: journal,
+            reader,
+            writer: Some(writer),
+        })
     }
 
     /// Stages `text` once on `agent`'s journal volume under the agent's

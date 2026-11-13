@@ -16,6 +16,7 @@ impl LocalHarness {
     /// or skills define, is a conflict; an unknown name is not found.
     pub(in crate::local) async fn resolve_prompt_command(
         &self,
+        agent: &crate::agent::AgentPath,
         text: &str,
     ) -> Result<Option<String>> {
         let Some((name, arguments)) = CommandCatalog::selected(text, None)? else {
@@ -43,8 +44,25 @@ impl LocalHarness {
             }
             (Some((_, bytes)), None) => bytes,
             (None, Some(skill)) => {
+                let content = self
+                    .agents
+                    .get()
+                    .ok_or_else(|| Error::Unsupported("local agents are not hosted".into()))?
+                    .server()
+                    .bound()
+                    .input_content(agent, None)
+                    .await
+                    .map_err(Error::from)?;
+                let publisher = content.writer.as_deref().ok_or_else(|| {
+                    Error::Unauthorized("skill capture has no journal writer".into())
+                })?;
                 let message = skill
-                    .invoke(self.context_reader()?.as_ref(), maximum)
+                    .invoke(
+                        self.context_reader()?.as_ref(),
+                        publisher,
+                        content.reader.as_ref(),
+                        maximum,
+                    )
                     .await?;
                 let crate::model::ModelContent::Text(body) = message.content else {
                     return Err(Error::Invalid("skill body is not text".into()));

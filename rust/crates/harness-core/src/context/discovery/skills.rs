@@ -148,14 +148,19 @@ impl SkillMetadata {
     pub async fn invoke(
         &self,
         reader: &dyn ContentResidencyVerifier,
+        publisher: &dyn crate::conversation::ContentPublisher,
+        journal_reader: &dyn ContentResidencyVerifier,
         maximum_bytes: Option<u64>,
     ) -> Result<ModelMessage> {
-        self.invoke_observed(reader, maximum_bytes, None).await
+        self.invoke_observed(reader, publisher, journal_reader, maximum_bytes, None)
+            .await
     }
 
     pub(crate) async fn invoke_observed(
         &self,
         reader: &dyn ContentResidencyVerifier,
+        publisher: &dyn crate::conversation::ContentPublisher,
+        journal_reader: &dyn ContentResidencyVerifier,
         maximum_bytes: Option<u64>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ModelMessage> {
@@ -170,27 +175,55 @@ impl SkillMetadata {
                 "invalid skill byte bound",
             ));
         }
-        let content_io = io;
         let source = &self.source;
-        let (file, bytes, hold) = reader
-            .read_private_path(
-                &source.root.volume,
-                &source.root.directory,
-                &source.path,
-                Some(&source.generation),
-                maximum_bytes,
-                crate::conversation::ContentAccess {
-                    ceiling: None,
-                    io: content_io,
+        let identity = (&source.root.volume, &source.path, &source.generation);
+        let digest = crate::executor::with_history_io(io, |work| {
+            let length = crate::executor::json::json_byte_length(&identity, None, work)?;
+            if let Some(work) = work.as_deref_mut() {
+                work.hashed_bytes(length)?;
+            }
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.skill-body.v1");
+            serde_json::to_writer(&mut hash, &identity)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            Ok(*hash.finalize().as_bytes())
+        })?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::executor::preparation_format(
+                format_args!(
+                    "inputs/skills/{}/SKILL.md",
+                    blake3::Hash::from_bytes(digest).to_hex()
+                ),
+                work,
+            )
+        })?;
+        let _path_hold = io
+            .map(|io| io.guard_owned(path.capacity() as u64))
+            .transpose()?;
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&digest[..16]);
+        let (file, bytes) = reader
+            .capture_private_path(
+                crate::conversation::ContentCapture {
+                    source: crate::conversation::ContentPath {
+                        volume: &source.root.volume,
+                        granted_prefix: &source.root.directory,
+                        path: &source.path,
+                        generation: &source.generation,
+                    },
+                    publisher,
+                    reader: journal_reader,
+                    operation: crate::OperationId::from_bytes(operation),
+                    path: &path,
+                    media_type: "text/markdown",
+                    display_name: "SKILL.md",
                 },
+                maximum_bytes,
+                crate::conversation::ContentAccess { ceiling: None, io },
             )?
-            .await?
-            .ok_or_else(|| {
-                stock_boundary(io, ErrorCode::NotFound, "selected skill does not exist")
-            })?;
-        if file.volume() != &source.root.volume
-            || file.path() != source.path
-            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
+            .await?;
+        if file.volume() != publisher.volume()
+            || file.path() != path
+            || maximum_bytes.is_some_and(|maximum| file.descriptor().byte_length() > maximum)
         {
             return Err(stock_boundary(
                 io,
@@ -198,7 +231,6 @@ impl SkillMetadata {
                 "pinned skill reader returned another file",
             ));
         }
-        crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
         crate::model::charge_items(io, bytes.len() as u64)?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?;
@@ -218,7 +250,6 @@ impl SkillMetadata {
             String::from_utf8(bytes)
                 .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?
         };
-        drop(hold);
         Ok(ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(text),

@@ -182,10 +182,6 @@ pub struct NativeSkills {
     journal: VolumeRef,
     workspace: Option<SkillWorkspace>,
     pub(crate) materializer: super::skill_materializer::SkillMaterializer,
-    // Warm observations only. The filesystem operation journal owns recovery;
-    // a native file must never redirect an immutable source to another body.
-    materialized:
-        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::resources::GenerationRef>>>,
     user_roots: Vec<PathBuf>,
     cache: crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalog>>,
     users: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
@@ -209,7 +205,6 @@ impl NativeSkills {
             journal,
             workspace: self.workspace.clone(),
             materializer: super::skill_materializer::SkillMaterializer::new(),
-            materialized: Arc::default(),
             user_roots: self.user_roots.clone(),
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
@@ -224,48 +219,27 @@ impl NativeSkills {
     pub(crate) fn retain_sources_from(&mut self, previous: &Self) {
         self.records = previous.records.clone();
         self.materializer = previous.materializer.clone();
-        self.materialized = Arc::clone(&previous.materialized);
     }
 
     pub(crate) fn volume(&self) -> &VolumeRef {
         &self.journal
     }
-    pub(crate) fn materialized(
-        &self,
-        generation: &crate::resources::GenerationRef,
-    ) -> Result<Option<crate::resources::GenerationRef>> {
-        Ok(self
-            .materialized
-            .lock()
-            .map_err(storage)?
-            .get(&hex::encode(generation.as_resource().key()))
-            .cloned())
-    }
-
-    pub(crate) fn retain_materialized(
-        &self,
-        source: &crate::resources::GenerationRef,
-        generation: &crate::resources::GenerationRef,
-    ) -> Result<()> {
-        self.materialized
-            .lock()
-            .map_err(storage)?
-            .insert(hex::encode(source.as_resource().key()), generation.clone());
-        Ok(())
-    }
-
     pub(crate) fn matches(
         &self,
         volume: &VolumeRef,
         generation: &crate::resources::GenerationRef,
         path: &str,
     ) -> bool {
+        let Some(digest) = path
+            .strip_prefix("inputs/skills/")
+            .and_then(|path| path.strip_suffix("/SKILL.md"))
+        else {
+            return false;
+        };
+        let mut key = [0; 32];
         volume == &self.journal
-            && path
-                == format!(
-                    "inputs/skills/{}/SKILL.md",
-                    hex::encode(generation.as_resource().key())
-                )
+            && hex::decode_to_slice(digest, &mut key).is_ok()
+            && key.as_slice() == generation.as_resource().key()
     }
     /// Binds retained source metadata to the original owner's native Streams.
     /// Source pins and body publication keep their original volume admission.
@@ -295,7 +269,6 @@ impl NativeSkills {
             journal,
             workspace,
             materializer: super::skill_materializer::SkillMaterializer::new(),
-            materialized: Arc::default(),
             user_roots,
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
@@ -985,7 +958,7 @@ mod binding_tests {
     use super::*;
     use crate::{
         Capabilities,
-        conversation::{ContentAccess, ContentGrant, VolumeClass, VolumeOperation, VolumeOwner},
+        conversation::{ContentAccess, VolumeClass, VolumeOperation, VolumeOwner},
         core::{AggregateKind, Authority, AuthorityRoot},
         filesystem::{FilesystemHost, PreparationIo},
         resources::ProviderRef,
@@ -1203,13 +1176,50 @@ mod binding_tests {
             Some(crate::AgentId::from_bytes([2; 16])),
             &mut None,
         )?;
-        let grant = ContentGrant::verify_directory_read(
+        use crate::conversation::{
+            ContentCapture, ContentPath, ContentPublisher, ContentResidencyVerifier,
+        };
+        let reader = crate::filesystem::FilesystemContentVerifier::new(
+            host.clone(),
             &issuer.verifier(&mut None)?,
             &scope,
-            &child,
-            "inputs/skills",
+            None,
+            None,
+        )?;
+        let journal = crate::conversation::journal_volume(
+            provider,
+            &crate::agent::AgentId::from_bytes([2; 16]),
+        )?;
+        host.create_volume(&journal).await?;
+        let owner = AuthorityRoot::host_owned(
+            "capture",
+            [41; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "capture".into(),
+            },
+        );
+        let scope = owner.bootstrap_scope(
+            "capture",
+            &Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+                journal.capability(VolumeOperation::Read, &mut None)?,
+                journal.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(crate::AgentId::from_bytes([2; 16])),
             &mut None,
         )?;
+        let verifier = owner.verifier(&mut None)?;
+        let publisher = crate::filesystem::FilesystemContentPublisher::new(
+            host.clone(),
+            &journal,
+            &verifier,
+            &scope,
+            None,
+            None,
+        )?;
+        let journal_reader =
+            crate::filesystem::FilesystemContentVerifier::new(host, &verifier, &scope, None, None)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = native_work(&cancellation)?;
         let io = PreparationIo::from_native_work(&work)?;
@@ -1217,41 +1227,49 @@ mod binding_tests {
             ceiling: None,
             io: Some(&io),
         };
-        // Negative controls use the actual child grant: neither the original
-        // parent reference nor relabeling its outer volume can read the body.
-        assert!(matches!(
-            host.read_private_path(
-                &parent,
-                &grant,
-                &parent_source.path,
-                Some(&parent_source.generation),
-                4096,
-                ContentAccess::default(),
-            )
-            .await,
-            Err(Error::Unauthorized(_))
-        ));
-        assert!(matches!(
-            host.read_private_path(
-                &child,
-                &grant,
-                &parent_source.path,
-                Some(&parent_source.generation),
-                4096,
-                access,
-            )
-            .await,
-            Err(Error::Unauthorized(_))
-        ));
-        let (_, bytes) = host
-            .read_private_path(
-                &child,
-                &grant,
-                &child_source.path,
-                Some(&child_source.generation),
-                4096,
-                access,
-            )
+        let request = ContentCapture {
+            source: ContentPath {
+                volume: &child,
+                granted_prefix: "inputs/skills",
+                path: &child_source.path,
+                generation: &child_source.generation,
+            },
+            publisher: publisher.as_ref(),
+            reader: journal_reader.as_ref(),
+            operation: crate::OperationId::from_bytes([8; 16]),
+            path: "inputs/skills/child/SKILL.md",
+            media_type: "text/markdown",
+            display_name: "SKILL.md",
+        };
+        // The original parent volume and a relabeled parent pin both refuse
+        // under the actual child's source grant, independently of custody.
+        for volume in [&parent, &child] {
+            let foreign = ContentCapture {
+                source: ContentPath {
+                    volume,
+                    path: &parent_source.path,
+                    generation: &parent_source.generation,
+                    ..request.source
+                },
+                ..request
+            };
+            assert_eq!(
+                reader
+                    .capture_private_path(foreign, Some(4096), access)?
+                    .await
+                    .unwrap_err()
+                    .code(),
+                crate::wire::ErrorCode::Unauthorized
+            );
+        }
+        let (captured, captured_bytes) = reader
+            .capture_private_path(request, Some(4096), access)?
+            .await?;
+        assert_eq!(captured_bytes.as_ref(), body);
+        assert_eq!(captured.volume(), publisher.volume());
+        assert_ne!(captured.volume(), &child);
+        let bytes = journal_reader
+            .read(&captured, 4096, None, Some(&io))?
             .await?;
         assert_eq!(bytes.as_ref(), body);
         Ok(())

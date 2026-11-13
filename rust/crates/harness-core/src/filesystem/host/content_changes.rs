@@ -506,6 +506,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .begin_transaction_at(&selected, operation, io, io.cancellation())
                         .await,
                 )?;
+                #[cfg(test)]
+                if let Some(pause) = &self.publication_pause {
+                    pause().await;
+                }
                 let fence = view
                     .0
                     .publication_fence()

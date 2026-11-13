@@ -49,7 +49,7 @@ proptest! {
             let input = if broken { tools.clone() } else { std::mem::take(&mut tools) };
             let before = Arc::as_ptr(&input.data);
             let (bound, _) = checked(futures::executor::block_on(ContextManifest::bind(
-                reference.clone(), &reader, input, Limits::default(),
+                reference.clone(), &reader,None, input, Limits::default(),
             )))?;
             prop_assert_eq!(Arc::as_ptr(&bound.data) == before, !broken);
             prop_assert_eq!(checked(bound.definitions(None))?, manifest.tools.clone());
