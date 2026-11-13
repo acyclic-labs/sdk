@@ -67,6 +67,87 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
         Some(AuthorityEvent::ClockLost),
         "a lost expiry producer is not an elapsed deadline",
     );
+    #[cfg(feature = "serde")]
+    {
+        use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        use std::error::Error as _;
+        let state = State::new();
+        let auth = authority(state.clone());
+        let mut slots = Slots::default();
+        auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 1)
+            .unwrap();
+        let (_, _, context) = auth
+            .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
+            .unwrap();
+        let trace = crate::Stream::new(Arc::new(MemoryStream::default()), "owner/trace").unwrap();
+        let recorder = Arc::new(Recorder::new(trace.clone(), [40; 16]));
+        let root = recorder
+            .start(
+                "expiry_owner",
+                Mechanism::ActorDelivery,
+                None,
+                Some("original_policy_request"),
+            )
+            .await
+            .unwrap()
+            .into_owned();
+        let parent = root.id();
+        let mut waiting = Box::pin(root.within(context.expires_at(signed::NOW + 1)));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        state.publish(signed::Snapshot::default(), signed::NOW + 1);
+        waiting.await.unwrap();
+        let mut lost = Box::pin(root.within(context.expires_at(signed::NOW + 2)));
+        assert!(futures::poll!(&mut lost).is_pending());
+        state.lose_clock();
+        let error = lost.await.expect_err("lost producer cannot settle expiry");
+        assert_eq!(error.category(), StreamError::Unavailable);
+        let mut source = error.source();
+        let mut retained = false;
+        while let Some(cause) = source {
+            if cause.is::<SourceClosed>() {
+                retained = true;
+                break;
+            }
+            source = cause.source();
+        }
+        assert!(retained);
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await.unwrap(),
+            Default::default(),
+        );
+        let mut succeeded = 0;
+        let mut unsettled = 0;
+        while succeeded + unsettled != 2 {
+            if let Observation::Completed {
+                start,
+                bytes,
+                result,
+                ..
+            } = query.next().await.unwrap().expect("original expiry trace")
+            {
+                assert_eq!(start.name, "stream.resource_expiry");
+                assert_eq!(start.parent, Some(parent));
+                assert_eq!(start.mechanism, Mechanism::Wait);
+                assert_eq!(
+                    start.guarantee.as_deref(),
+                    Some("protected_clock_reached_credential_expiry")
+                );
+                match result {
+                    Outcome::Succeeded => {
+                        assert_eq!(bytes, Some(0));
+                        succeeded += 1;
+                    }
+                    Outcome::Unsettled => {
+                        assert_eq!(bytes, None);
+                        unsettled += 1;
+                    }
+                    other => panic!("expiry fabricated settlement {other:?}"),
+                }
+            }
+        }
+        assert_eq!((succeeded, unsettled), (1, 1));
+        root.finish_submitted(None, Outcome::Succeeded).unwrap();
+    }
     for early in [false, true] {
         let state = State::new();
         let provider = Arc::new(MemoryStream::default());
@@ -1085,14 +1166,19 @@ async fn filesystem_context_borrows_its_resource_and_rechecks_current_authority(
             ] {
                 let error = result.expect_err("lost trust cannot authorize disclosure");
                 assert_eq!(error.category(), StreamError::AccessDenied);
-                assert!(
-                    std::iter::successors(error.source(), |source| source.source()).any(
-                        |source| matches!(
-                            source.downcast_ref::<verify::VerifyError>(),
-                            Some(verify::VerifyError::Trust)
-                        )
-                    )
-                );
+                let mut source = error.source();
+                let mut retained = false;
+                while let Some(cause) = source {
+                    if matches!(
+                        cause.downcast_ref::<verify::VerifyError>(),
+                        Some(verify::VerifyError::Trust)
+                    ) {
+                        retained = true;
+                        break;
+                    }
+                    source = cause.source();
+                }
+                assert!(retained);
             }
         }
     }
