@@ -427,10 +427,13 @@ async fn run_inner(
         let directory = acyclic_harness::local::service::Directory::for_config(&config)?;
         let owner = directory
             .own()?
-            .with_configuration(std::collections::BTreeMap::from([(
-                "catalog".into(),
-                catalog,
-            )]));
+            .with_configuration(std::collections::BTreeMap::from([
+                ("catalog".into(), catalog),
+                (
+                    "credential-mode".into(),
+                    credential_mode(args.environment_credentials),
+                ),
+            ]));
         let signal = ready
             .take()
             .ok_or("local service requires its readiness channel")?;
@@ -588,7 +591,7 @@ fn owner_arguments(args: &Args) -> Vec<OwnerArgument> {
         arguments.push(OwnerArgument {
             flag: "--environment-credentials",
             value: None,
-            reusable: false,
+            reusable: true,
         });
     }
     if args.default_config {
@@ -630,21 +633,26 @@ fn catalog_identity(registry: &Registry) -> Result<[u8; 32], Box<dyn std::error:
     .as_bytes())
 }
 
+fn credential_mode(environment: bool) -> [u8; 32] {
+    *blake3::hash(if environment {
+        b"environment"
+    } else {
+        b"configured"
+    })
+    .as_bytes()
+}
+
 async fn require_existing_owner(
     args: &Args,
     directory: &acyclic_harness::local::service::Directory,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let catalog = if args.catalog.is_some() {
-        directory.configuration().await?.get("catalog").copied()
-    } else {
-        None
-    };
-    require_owner_arguments(args, catalog)
+    let configuration = directory.configuration().await?;
+    require_owner_arguments(args, &configuration)
 }
 
 fn require_owner_arguments(
     args: &Args,
-    catalog: Option<[u8; 32]>,
+    configuration: &std::collections::BTreeMap<String, [u8; 32]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &args.catalog {
         // Compare the effective catalog without resolving model credentials.
@@ -652,9 +660,14 @@ fn require_owner_arguments(
         // a file which may have changed after startup.
         let mut requested = Registry::new(Credentials::explicit(Default::default()))?;
         requested.load_catalog(path)?;
-        if catalog != Some(catalog_identity(&requested)?) {
+        if configuration.get("catalog").copied() != Some(catalog_identity(&requested)?) {
             return Err("an existing local owner has a different --catalog; recovery: choose a fresh --host-state-directory".into());
         }
+    }
+    if args.environment_credentials
+        && configuration.get("credential-mode").copied() != Some(credential_mode(true))
+    {
+        return Err("an existing local owner has another credential mode; recovery: choose a fresh --host-state-directory".into());
     }
     if let Some(argument) = owner_arguments(args)
         .into_iter()
@@ -681,15 +694,21 @@ mod owner_arguments_tests {
         let mut registry = Registry::new(Credentials::explicit(Default::default()))?;
         registry.load_catalog(catalog.path())?;
         let admitted = catalog_identity(&registry)?;
-        require_owner_arguments(&args, Some(admitted))?;
-        assert!(require_owner_arguments(&args, None).is_err());
+        require_owner_arguments(
+            &args,
+            &std::collections::BTreeMap::from([("catalog".into(), admitted)]),
+        )?;
+        assert!(require_owner_arguments(&args, &Default::default()).is_err());
 
         // Equality is of the loaded configuration, not its pathname or JSON
         // formatting. No credentials or provider requests are needed to attach.
         let equivalent = tempfile::NamedTempFile::new()?;
         std::fs::write(equivalent.path(), b"{\n}\n")?;
         args.catalog = Some(equivalent.path().to_owned());
-        require_owner_arguments(&args, Some(admitted))?;
+        require_owner_arguments(
+            &args,
+            &std::collections::BTreeMap::from([("catalog".into(), admitted)]),
+        )?;
 
         let mut changed = registry.catalog()["openai"].as_ref().clone();
         changed.base_url = "https://different.example/v1".into();
@@ -697,7 +716,13 @@ mod owner_arguments_tests {
             equivalent.path(),
             serde_json::to_vec(&serde_json::json!({"openai": changed}))?,
         )?;
-        assert!(require_owner_arguments(&args, Some(admitted)).is_err());
+        assert!(
+            require_owner_arguments(
+                &args,
+                &std::collections::BTreeMap::from([("catalog".into(), admitted)])
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -717,7 +742,7 @@ mod owner_arguments_tests {
             argv.extend(["exec", "task"]);
             let args = Args::try_parse_from(argv)?;
             assert!(
-                require_owner_arguments(&args, None).is_err(),
+                require_owner_arguments(&args, &Default::default()).is_err(),
                 "{flag} must not disappear"
             );
             let forwarded = service_arguments(&args);
@@ -732,6 +757,20 @@ mod owner_arguments_tests {
                 );
             }
         }
+        let environment =
+            Args::try_parse_from(["graphcoder", "--environment-credentials", "exec", "task"])?;
+        assert!(
+            service_arguments(&environment)
+                .iter()
+                .any(|arg| arg == "--environment-credentials")
+        );
+        let compatible =
+            std::collections::BTreeMap::from([("credential-mode".into(), credential_mode(true))]);
+        require_owner_arguments(&environment, &compatible)?;
+        assert!(require_owner_arguments(&environment, &Default::default()).is_err());
+        let configured =
+            std::collections::BTreeMap::from([("credential-mode".into(), credential_mode(false))]);
+        assert!(require_owner_arguments(&environment, &configured).is_err());
         let mut args = Args::try_parse_from([
             "graphcoder",
             "--model",
@@ -743,7 +782,7 @@ mod owner_arguments_tests {
         ])?;
         // These fixtures have no owner catalog override, including via environment.
         args.catalog = None;
-        require_owner_arguments(&args, None)?;
+        require_owner_arguments(&args, &Default::default())?;
         assert!(
             !service_arguments(&args)
                 .iter()

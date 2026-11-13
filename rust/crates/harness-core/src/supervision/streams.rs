@@ -354,7 +354,7 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
         } else {
             None
         };
-        let transition = state
+        let mut transition = state
             .apply(
                 sequence,
                 &observation,
@@ -362,6 +362,11 @@ impl<'a, P: StreamProvider + ?Sized> Queries<'a, P> {
                 policy,
             )
             .map_err(invalid)?;
+        // The fold ordinal orders selected observations; a signal identifies
+        // its actual original source position, which can be sparse.
+        for signal in &mut transition.signals {
+            signal.sequence = source.sequence;
+        }
         let mut conditions = Vec::new();
         let mut mutations = Vec::new();
         if let Some((path, through)) = occurrence

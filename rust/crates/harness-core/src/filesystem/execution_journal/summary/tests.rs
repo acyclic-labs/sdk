@@ -146,6 +146,8 @@ proptest! {
         prop_assert!(state.require_next(&stopped, None).is_ok());
         accept(&mut state, stopped.clone()).unwrap();
         prop_assert!(state.require_next(&stopped, None).is_err());
+        let output = ExecutionEvent::ModelOutput { step, digest: Some([9; 32]) };
+        prop_assert!(state.require_next(&output, None).is_err(), "cancelled response accepted output");
         prop_assert_eq!(state.quiescent(None).unwrap(), !tool);
         if tool {
             accept(&mut state, ExecutionEvent::ToolFailed { step, call_id: "tool".into(), reason: ToolFailureKind::ExecutorRejected, cause: crate::executor::ToolFailureCause { class: crate::executor::ToolErrorClass::Failed, message: "tool failed".into() } }).unwrap();

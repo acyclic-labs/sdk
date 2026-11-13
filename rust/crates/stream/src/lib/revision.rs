@@ -45,6 +45,7 @@ pub struct Revision {
     #[cfg_attr(feature = "serde", serde(with = "serialization::incarnation"))]
     pub incarnation: u128,
     /// Monotonic publication index within that scope and incarnation.
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_u64"))]
     pub index: u64,
 }
 
@@ -623,6 +624,35 @@ impl AppliedRevisions {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn json_cuts_preserve_positions_above_javascript_integer_precision() -> serde_json::Result<()> {
+        for index in [(1 << 53) + 1, u64::MAX] {
+            let original = Revision {
+                scope: RevisionScope::new(vec![1]),
+                incarnation: 2,
+                index,
+            };
+            let encoded = serde_json::to_value(&original)?;
+            assert_eq!(encoded["index"], index.to_string());
+            assert_eq!(
+                serde_json::from_value::<Revision>(encoded.clone())?,
+                original
+            );
+            let mut rounded = encoded;
+            rounded["index"] = serde_json::Value::from(index);
+            assert!(serde_json::from_value::<Revision>(rounded).is_err());
+            let positions = std::collections::BTreeMap::from([("original".to_owned(), index)]);
+            #[derive(serde::Serialize, serde::Deserialize)]
+            struct Positions(
+                #[serde(with = "crate::serde_u64::map")] std::collections::BTreeMap<String, u64>,
+            );
+            let encoded = serde_json::to_value(Positions(positions.clone()))?;
+            assert_eq!(encoded["original"], index.to_string());
+            assert_eq!(serde_json::from_value::<Positions>(encoded)?.0, positions);
+        }
+        Ok(())
+    }
     proptest::proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(64))]
         #[test]

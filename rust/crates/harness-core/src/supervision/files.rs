@@ -50,7 +50,8 @@ impl<P: StreamProvider + ?Sized> FileView<P> for SignalFiles {
                 return Ok(Vec::new());
             };
             let queries = streams::Queries::new(provider, agent, run);
-            futures::future::try_join_all(paths.iter().map(|path| {
+            let paths: std::collections::BTreeSet<_> = paths.iter().copied().collect();
+            futures::future::try_join_all(paths.into_iter().map(|path| {
                 let queries = &queries;
                 let at_least = at_least.clone();
                 async move {
@@ -61,7 +62,7 @@ impl<P: StreamProvider + ?Sized> FileView<P> for SignalFiles {
                         .await?
                         .map(|(signal, input)| {
                             Ok(QueryFile {
-                                path: (*path).to_owned(),
+                                path: path.to_owned(),
                                 input,
                                 media_type: "application/json".into(),
                                 text: serde_json::to_string(&signal)

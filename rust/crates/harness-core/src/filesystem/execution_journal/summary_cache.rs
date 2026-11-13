@@ -62,6 +62,7 @@ impl SummaryCache {
             pending_dispatches: previous.pending_dispatches,
             latest_response: previous.latest_response,
             latest_response_output: previous.latest_response_output,
+            latest_response_completed: previous.latest_response_completed,
             model_dispatched: previous.model_dispatched,
             recovery: previous.recovery,
             pages: previous.pages,

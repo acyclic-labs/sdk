@@ -17,6 +17,7 @@ pub(super) struct ExecutionSummary {
     pub(super) pending_dispatches: u64,
     pub(super) latest_response: Option<u32>,
     pub(super) latest_response_output: bool,
+    pub(super) latest_response_completed: bool,
     pub(super) model_dispatched: bool,
     pub(super) recovery: Option<checkpoint::Recovery>,
     pub(super) pages: persistent_index::NodeCache,
@@ -102,6 +103,7 @@ impl ExecutionSummary {
             ExecutionEvent::ModelOutput { step, .. } => {
                 self.latest_response == Some(*step)
                     && !self.latest_response_output
+                    && self.latest_response_completed
                     && matches!(
                         self.models
                             .get(&(*step, crate::executor::ModelPurpose::Response), io)?,
@@ -282,6 +284,7 @@ impl ExecutionSummary {
                 if *purpose == crate::executor::ModelPurpose::Response {
                     if self.latest_response.is_none_or(|previous| *step > previous) {
                         self.latest_response_output = false;
+                        self.latest_response_completed = false;
                     }
                     self.latest_response = Some(
                         self.latest_response
@@ -325,6 +328,11 @@ impl ExecutionSummary {
                     io,
                 )?;
                 if admission.completed {
+                    if *purpose == crate::executor::ModelPurpose::Response
+                        && self.latest_response == Some(*step)
+                    {
+                        self.latest_response_completed = true;
+                    }
                     release_model(state, io)?;
                     self.pending_dispatches =
                         self.pending_dispatches.checked_sub(1).ok_or_else(|| {
