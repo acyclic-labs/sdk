@@ -26,26 +26,32 @@ pub(crate) struct BridgeText {
 
 // The decoded tree retires before its original allocation credit.
 #[derive(Debug)]
-pub(crate) struct EngineResult {
-    pub(crate) value: serde_json::Value,
+pub(crate) struct EngineResult<T = serde_json::Value> {
+    pub(crate) value: T,
     pub(crate) custody: acyclic_fs::NativeCustody,
 }
 
-impl EngineAllocator {
-    pub(crate) fn copy_result(&self, value: &serde_json::Value) -> crate::Result<EngineResult> {
-        let Some(work) = &self.work else {
-            return Ok(EngineResult {
-                value: value.clone(),
-                custody: None,
-            });
-        };
-        let (value, custody) = crate::tool::clone_value(value, None, work)?;
-        Ok(EngineResult {
-            value,
-            custody: Some(custody),
-        })
+impl<T> EngineResult<T> {
+    pub(crate) fn share<R>(
+        mut self,
+        tag: R,
+        work: acyclic_fs::NativeWork<'_>,
+    ) -> crate::Result<std::sync::Arc<(Self, R)>> {
+        if let Some(work) = work {
+            let bytes =
+                acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<(Self, R)>()?
+                    - size_of::<T>() as u64;
+            let mut metadata = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+            match &mut self.custody {
+                Some(custody) => custody.absorb(&mut metadata)?,
+                None => self.custody = Some(metadata),
+            }
+        }
+        Ok(std::sync::Arc::new((self, tag)))
     }
+}
 
+impl EngineAllocator {
     pub(crate) fn decode_result(&self, bytes: &[u8]) -> rquickjs::Result<EngineResult> {
         if let Some(work) = &self.work {
             let decode = || {
@@ -68,7 +74,7 @@ impl EngineAllocator {
                 }
             };
         }
-        crate::executor::json::json_from_slice_bounded(
+        let decoded = crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<serde_json::Value>,
             bytes,
             crate::executor::json::JsonBounds {
@@ -76,15 +82,18 @@ impl EngineAllocator {
                 maximum_items: None,
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
-            None,
+            Some(crate::wire::ErrorCode::Invalid),
             Some(&crate::executor::json::JsonValueSchema::Root),
             &mut |_| Ok(()),
         )
         .map(|value| EngineResult {
             value,
             custody: None,
+        });
+        decoded.map_err(|error| {
+            self.rejected(error);
+            rquickjs::Error::Unknown
         })
-        .map_err(|_| rquickjs::Error::Unknown)
     }
 
     pub(crate) fn copy_text(&self, text: &rquickjs::String<'_>) -> rquickjs::Result<BridgeText> {

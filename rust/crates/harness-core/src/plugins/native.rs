@@ -64,7 +64,7 @@ pub async fn load_result(
             Ok(composed) => composed,
             Err(error) => return Ok(Err(error)),
         };
-    match load_enabled(tree, value, enabler, None).await {
+    match load_enabled(tree, value.into_unbounded()?, enabler, None).await {
         Ok(enabled) => Ok(Ok(enabled)),
         Err(LoadFailure::Semantic(error)) => Ok(Err(error)),
         Err(LoadFailure::Operational(error)) => Err(error),
@@ -110,11 +110,13 @@ pub async fn load_decision(
             .await?;
     identity.update(&composition.identity());
     let result = match composition.into_result() {
-        Ok((value, _)) => match load_enabled(tree, value, enabler, Some(&mut identity)).await {
-            Ok(enabled) => Ok(enabled),
-            Err(LoadFailure::Semantic(error)) => Err(error),
-            Err(LoadFailure::Operational(error)) => return Err(error),
-        },
+        Ok((value, _)) => {
+            match load_enabled(tree, value.into_unbounded()?, enabler, Some(&mut identity)).await {
+                Ok(enabled) => Ok(enabled),
+                Err(LoadFailure::Semantic(error)) => Err(error),
+                Err(LoadFailure::Operational(error)) => return Err(error),
+            }
+        }
         Err(error) => Err(error),
     };
     Ok(Decision {
@@ -204,8 +206,13 @@ async fn load_enabled(
             identity.update(&manifest.identity());
         }
         let manifest = manifest.into_result()?;
-        let manifest: PluginManifest = serde_json::from_value(manifest.value)
-            .map_err(|error| invalid(format!("{path}: {error}")))?;
+        let manifest: PluginManifest = serde_json::from_value(
+            manifest
+                .value
+                .into_unbounded()
+                .map_err(LoadFailure::Operational)?,
+        )
+        .map_err(|error| invalid(format!("{path}: {error}")))?;
         if manifest.name != *name {
             return Err(invalid(format!("{path} names {:?}", manifest.name)).into());
         }

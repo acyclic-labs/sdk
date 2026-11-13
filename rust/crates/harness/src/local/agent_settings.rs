@@ -57,7 +57,7 @@ impl Tree<'_> {
             serde_json::json!({"model": base}),
         )
         .await?;
-        let settings: AgentConfig = serde_json::from_value(value)
+        let settings: AgentConfig = serde_json::from_value(value.into_unbounded()?)
             .map_err(|error| Error::Invalid(format!("{}: {error}", config::AGENT)))?;
         Ok(settings.model)
     }
@@ -375,7 +375,7 @@ async fn settle(
     )
     .await?
     .map_err(Refused::evaluated)?;
-    let settings: AgentConfig = serde_json::from_value(value)
+    let settings: AgentConfig = serde_json::from_value(value.into_unbounded()?)
         .map_err(|error| invalid(format!("{}: {error}", config::AGENT)))?;
     let rejected = |reason: &str| {
         Refused::Settings(

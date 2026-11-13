@@ -24,7 +24,11 @@ pub(super) fn root_retained() {
 }
 
 pub(super) fn entered() {
-    VM_ENTRIES.set(VM_ENTRIES.get().wrapping_add(1));
+    VM_ENTRIES.set(entries().wrapping_add(1));
+}
+
+pub(super) fn entries() -> usize {
+    VM_ENTRIES.get()
 }
 
 pub(super) fn dependency_checked() {

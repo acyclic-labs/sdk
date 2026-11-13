@@ -3,6 +3,17 @@ use serde_json::json;
 
 struct Missing;
 
+struct Metered<'a>(&'a crate::filesystem::PreparationIo);
+
+impl Tree for Metered<'_> {
+    fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
+        Some(self.0)
+    }
+    fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
 impl Tree for Missing {
     fn read<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(std::future::ready(Ok(None)))
@@ -12,19 +23,7 @@ impl Tree for Missing {
 #[tokio::test]
 async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_the_cache()
 -> Result<()> {
-    struct Metered<'a>(&'a crate::filesystem::PreparationIo);
-    impl Tree for Metered<'_> {
-        fn preparation_io(&self) -> Option<&crate::filesystem::PreparationIo> {
-            Some(self.0)
-        }
-        fn read<'a>(
-            &'a self,
-            _: &'a str,
-        ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
-            Box::pin(async { Ok(None) })
-        }
-    }
-    let source = b"export default {buffer: 'a'.repeat(65536)};";
+    let source = b"export default {model: 'example/' + 'a'.repeat(65536)};";
     let base = Value::Null;
     let cache = Mutex::new(None);
     let cancel = acyclic_fs::CancellationToken::new();
@@ -78,14 +77,20 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         &cache,
     )
     .await?;
-    assert_eq!(admitted.value["buffer"].as_str().unwrap().len(), 65536);
+    assert_eq!(admitted.value["model"].as_str().unwrap().len(), 65544);
+    let before_decode = roomy.live_allocation_bytes();
+    let typed = admitted.value.decode::<crate::config::AgentConfig>()?;
+    assert_eq!(typed.model.len(), 65544);
+    assert!(roomy.live_allocation_bytes() >= before_decode + 65544);
+    drop(typed);
+    assert_eq!(roomy.live_allocation_bytes(), before_decode);
     drop(admitted);
     let retained = roomy.live_allocation_bytes();
     assert!(
         retained >= 65536,
         "the cached result retains its original owner"
     );
-    let error = evaluate_cached(
+    let borrowed = evaluate_cached(
         "settings.ts",
         source,
         &Metered(&crate::filesystem::PreparationIo::from_native_work(&tight)?),
@@ -93,15 +98,147 @@ async fn native_evaluation_budget_refusals_keep_their_cause_and_do_not_poison_th
         Surface::Data,
         &cache,
     )
-    .await
-    .expect_err("a warm cache must not bypass the receiving caller's allowance");
+    .await?;
+    let error = borrowed
+        .value
+        .decode::<crate::config::AgentConfig>()
+        .expect_err("an owned decoded copy must use the receiving allowance");
     assert!(matches!(error, Error::NativeWork { .. }));
     assert_eq!(tight.live_allocation_bytes(), baseline);
+    let stopped = acyclic_fs::CancellationToken::new();
+    let stopped_work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        &stopped,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let stopped_io = crate::filesystem::PreparationIo::from_native_work(&stopped_work)?;
+    stopped.cancel();
+    let cancelled = evaluate_cached(
+        "settings.ts",
+        source,
+        &Metered(&stopped_io),
+        &base,
+        Surface::Data,
+        &cache,
+    )
+    .await
+    .expect_err("a cached value must not bypass cancellation");
+    assert_eq!(cancelled.code(), crate::wire::ErrorCode::Cancelled);
     *cache.lock().unwrap() = None;
+    assert_eq!(
+        roomy.live_allocation_bytes(),
+        retained,
+        "the returned view still owns the original cached storage"
+    );
+    drop(borrowed);
     assert!(
         roomy.live_allocation_bytes() < retained,
         "eviction retires cached ownership"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn composition_retains_its_value_after_cache_eviction() -> Result<()> {
+    let cancel = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024);
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let tree = Metered(&io);
+    let cache = Mutex::new(None);
+    let layers = [
+        Layer {
+            name: "seed",
+            generation: "one",
+            bytes: Some(b"export default {text: 'x'.repeat(65536)};"),
+        },
+        Layer {
+            name: "home",
+            generation: "two",
+            bytes: Some(b"export default base => ({...base, applied:true});"),
+        },
+    ];
+    let (value, _) =
+        composition::fold("settings.ts", &layers, &tree, Value::Null, None, &cache).await??;
+    *cache.lock().unwrap() = None;
+    assert_eq!(value["text"].as_str().unwrap().len(), 65536);
+    assert!(work.live_allocation_bytes() >= baseline + 65536);
+    assert!(
+        work.claim(
+            budget.peak_allocation_bytes - baseline - 65536 + 1,
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED
+        )
+        .is_err()
+    );
+    // A consuming API cannot detach a bounded payload from its owner.
+    assert!(matches!(
+        value.into_unbounded(),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            ..
+        })
+    ));
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_native_result_retains_its_cached_decision() -> Result<()> {
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 16 * 1024 * 1024),
+        &cancel,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let tree = Metered(&io);
+    let source = format!(
+        "let value=0; for(let i=0;i<{};i++) value=[value]; export default value;",
+        crate::executor::json::RECORD_MAXIMUM_DEPTH + 2
+    );
+    for native_first in [false, true] {
+        let cache = Mutex::new(None);
+        let before = model::entries();
+        let first_tree: &dyn Tree = if native_first { &tree } else { &Missing };
+        let second_tree: &dyn Tree = if native_first { &Missing } else { &tree };
+        let first = evaluate_decision_cached(
+            "settings.ts",
+            source.as_bytes(),
+            first_tree,
+            &Value::Null,
+            Surface::Data,
+            &cache,
+        )
+        .await?;
+        assert!(matches!(
+            first.result(),
+            Err(Error::NativeJsonAdmission {
+                kind: crate::executor::json::JsonInputError::Depth,
+                ..
+            })
+        ));
+        let second = evaluate_decision_cached(
+            "settings.ts",
+            source.as_bytes(),
+            second_tree,
+            &Value::Null,
+            Surface::Data,
+            &cache,
+        )
+        .await?;
+        assert_eq!(first.identity(), second.identity());
+        assert!(matches!(
+            second.result(),
+            Err(Error::NativeJsonAdmission {
+                kind: crate::executor::json::JsonInputError::Depth,
+                ..
+            })
+        ));
+        assert_eq!(model::entries(), before + 1);
+    }
     Ok(())
 }
 
