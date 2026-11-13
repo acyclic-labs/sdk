@@ -71,7 +71,8 @@ impl InternalContentClass {
         let permitted = match class {
             Some(class) => class.contains_path(path),
             None => {
-                !crate::conversation::is_internal_path(path)
+                path != ".system"
+                    && !path.starts_with(".system/")
                     && path != "tools/.results"
                     && !path.starts_with(Self::ToolResult.prefix())
                     && path != "tools/.model"
