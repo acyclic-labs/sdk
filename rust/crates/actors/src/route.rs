@@ -3,8 +3,8 @@
 //! a record nor an actor reference is an authority credential.
 use crate::addressing::{ActorReference, IdentityError, ResourceId};
 use acyclic_stream::{
-    AppendRecord, CommitCondition, CommitEffect, CommitMutation, CommitRequest, ReadRequest,
-    StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitEffect, CommitMutation, CommitRequest, ReadRequest, StreamError,
+    StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -20,6 +20,8 @@ mod account;
 pub use account::{AccountService, Admission, AdmissionPolicy, admit, relay_resource};
 mod serving;
 pub use serving::AccountNode;
+mod registration;
+pub use registration::{Publication, Registration, placement_resource, register};
 
 const CALL_PROTOCOL: &str = "acyclic.actors.route.account.v1";
 
@@ -170,6 +172,16 @@ impl Placement {
         paths: &Paths,
         actor: &ActorReference,
     ) -> Result<Option<Self>, Error> {
+        Ok(Self::record(provider, paths, actor)
+            .await?
+            .map(|(placement, _)| placement))
+    }
+
+    pub(super) async fn record<P: StreamProvider + ?Sized>(
+        provider: &P,
+        paths: &Paths,
+        actor: &ActorReference,
+    ) -> Result<Option<(Self, acyclic_stream::Record)>, Error> {
         let mut records = match provider
             .read(ReadRequest {
                 key: None,
@@ -195,10 +207,13 @@ impl Placement {
         {
             return Err(Error::InvalidRecord);
         }
-        Ok(Some(Self {
-            actor: found,
-            node: NodeId::new(&value.node)?,
-        }))
+        Ok(Some((
+            Self {
+                actor: found,
+                node: NodeId::new(&value.node)?,
+            },
+            record,
+        )))
     }
 }
 
@@ -245,14 +260,6 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    fn source_node(bytes: &[u8]) -> Result<NodeId, Error> {
-        let source = SourceWire::decode(bytes).map_err(|_| Error::InvalidRecord)?;
-        if source.version != 1 || source.domain != CALL_PROTOCOL {
-            return Err(Error::InvalidRecord);
-        }
-        Ok(NodeId::new(&source.source)?)
-    }
-
     /// Canonical version-one transport record, without any credential material.
     pub fn encode(&self) -> Bytes {
         self.encode_as("")
@@ -263,6 +270,10 @@ impl Envelope {
     }
 
     fn encode_as(&self, domain: &str) -> Bytes {
+        self.wire(domain).encode_to_vec().into()
+    }
+
+    fn wire(&self, domain: &str) -> EnvelopeWire {
         EnvelopeWire {
             version: 1,
             source: Bytes::copy_from_slice(self.source.as_bytes()),
@@ -271,8 +282,6 @@ impl Envelope {
             request: Some(acyclic_stream::wire_codec::commit_to_wire(&self.request)),
             domain: domain.into(),
         }
-        .encode_to_vec()
-        .into()
     }
 
     /// Decode the exact shared CommitRequest format; this never admits a grant.
@@ -286,6 +295,10 @@ impl Envelope {
 
     fn decode_as(bytes: &[u8], domain: &str) -> Result<Self, Error> {
         let value = EnvelopeWire::decode(bytes).map_err(|_| Error::InvalidRecord)?;
+        Self::from_wire(value, domain)
+    }
+
+    fn from_wire(value: EnvelopeWire, domain: &str) -> Result<Self, Error> {
         if value.version != 1 || value.domain != domain {
             return Err(Error::InvalidRecord);
         }
@@ -310,12 +323,6 @@ impl Envelope {
         if self.sender.account() != self.to.account() {
             return Err(Error::InvalidRecord);
         }
-        Ok(CommitEffect::hard(
-            Vec::new(),
-            vec![CommitMutation::Append {
-                path: paths.outbox(&self.source)?,
-                records: vec![AppendRecord::from(self.encode())],
-            }],
-        ))
+        Publication::delivery_effect(self, paths)
     }
 }

@@ -71,8 +71,12 @@ pub struct AccountService<P: StreamProvider + ?Sized> {
 
 impl<P: StreamProvider + ?Sized> AccountService<P> {
     pub(super) fn handles(&self, invocation: &[u8]) -> bool {
-        super::SourceWire::decode(invocation)
-            .is_ok_and(|header| header.domain == super::CALL_PROTOCOL)
+        super::SourceWire::decode(invocation).is_ok_and(|header| {
+            matches!(
+                header.domain.as_str(),
+                super::CALL_PROTOCOL | super::registration::PROTOCOL
+            )
+        })
     }
 
     /// Inject the account's existing provider, routing subtree and host policy.
@@ -158,8 +162,17 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
     fn target(&self, invocation: &[u8]) -> Result<CallTarget, StreamError> {
         // Credential selection needs only the source header. Decoding the
         // CommitRequest here would repeat validation before authorization.
-        let source = Envelope::source_node(invocation).map_err(stream_error)?;
-        let resource = relay_resource(&self.account, &source);
+        let header =
+            super::SourceWire::decode(invocation).map_err(|_| StreamError::InvalidArgument)?;
+        if header.version != 1 {
+            return Err(StreamError::InvalidArgument);
+        }
+        let source = NodeId::new(&header.source).map_err(|_| StreamError::InvalidArgument)?;
+        let resource = match header.domain.as_str() {
+            super::registration::PROTOCOL => super::placement_resource(&self.account, &source),
+            super::CALL_PROTOCOL => relay_resource(&self.account, &source),
+            _ => return Err(StreamError::InvalidArgument),
+        };
         CallTarget::new(resource, "actors/invoke")
     }
 
@@ -168,6 +181,24 @@ impl<P: StreamProvider + ?Sized> CallProvider for AccountService<P> {
         invocation: Bytes,
         authorization: CallAuthorization,
     ) -> BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+        if super::SourceWire::decode(invocation.as_ref())
+            .is_ok_and(|header| header.domain == super::registration::PROTOCOL)
+        {
+            let account = self.account.clone();
+            let provider = self.provider.clone();
+            let paths = self.paths.clone();
+            return Box::pin(async move {
+                super::Registration::apply(
+                    &invocation,
+                    &account,
+                    provider.as_ref(),
+                    &paths,
+                    &authorization,
+                )
+                .await
+                .map_err(stream_error)
+            });
+        }
         let message = self.message(&invocation);
         let account = self.account.clone();
         let provider = Arc::clone(&self.provider);

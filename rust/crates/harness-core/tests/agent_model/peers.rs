@@ -105,7 +105,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 .record_at(routing.paths.outbox(&routing.node)?, 0)
                 .await?
                 .ok_or("outbox missing")?;
-            let envelope = route::Envelope::decode(&record.value)?;
+            let envelope = route::Publication::decode(&record.value)?.delivery()?;
             drop(source);
             let peer = PeerRoute::parse(&envelope)?;
             if opt_out_before_delivery {
@@ -316,7 +316,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 .ok_or("outbox missing")?;
             assert_eq!(record.commit_id, marker.commit_id);
             assert_eq!(record.commit_id, receipt.commit_id);
-            let envelope = route::Envelope::decode(&record.value)?;
+            let envelope = route::Publication::decode(&record.value)?.delivery()?;
             let CommitMutation::Append { records, .. } = &envelope.request.effects[0].mutations[0]
             else {
                 return Err("message append missing".into());
@@ -355,11 +355,17 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 })
                 .await?,
         );
-        let forward = route::forward(&local, &routing.paths, &routing.node, async |envelope| {
-            envelope
-                .publish_relay(&account, &routing.paths, &destination, Vec::new())
-                .await
-        });
+        let forward = route::forward(
+            &local,
+            &routing.paths,
+            &routing.node,
+            async |_| Err(route::Error::InvalidRecord),
+            async |envelope| {
+                envelope
+                    .publish_relay(&account, &routing.paths, &destination, Vec::new())
+                    .await
+            },
+        );
         let acknowledged = changes.try_next();
         futures::pin_mut!(forward, acknowledged);
         match futures::future::select(forward, acknowledged).await {
@@ -373,7 +379,7 @@ async fn remote_send_recovers_original_admission_from_its_source_publication() -
                 .record_at(outbox.clone(), sequence as u64)
                 .await?
                 .ok_or("outbox missing")?;
-            let envelope = route::Envelope::decode(&record.value)?;
+            let envelope = route::Publication::decode(&record.value)?.delivery()?;
             let expected = Routed::Relayed {
                 key: envelope.request.idempotency_key.clone(),
                 relay_seq: sequence as u64,

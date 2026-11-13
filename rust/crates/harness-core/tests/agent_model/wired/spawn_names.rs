@@ -888,7 +888,7 @@ async fn remote_send_yields_its_original_tool_until_account_admission() -> Resul
         .record_at(outbox.clone(), 0)
         .await?
         .ok_or("outbox missing")?;
-    let original = route::Envelope::decode(&record.value)?;
+    let original = route::Publication::decode(&record.value)?.delivery()?;
     let CommitMutation::Append { records, .. } = &original.request.effects[0].mutations[0] else {
         return Err("message missing".into());
     };
@@ -911,11 +911,17 @@ async fn remote_send_yields_its_original_tool_until_account_admission() -> Resul
             })
             .await?,
     );
-    let forward = route::forward(&*stream, &routing.paths, &routing.node, async |envelope| {
-        envelope
-            .publish_relay(&account, &routing.paths, &destination, Vec::new())
-            .await
-    });
+    let forward = route::forward(
+        &*stream,
+        &routing.paths,
+        &routing.node,
+        async |_| Err(route::Error::InvalidRecord),
+        async |envelope| {
+            envelope
+                .publish_relay(&account, &routing.paths, &destination, Vec::new())
+                .await
+        },
+    );
     let acknowledged = changes.try_next();
     futures::pin_mut!(forward, acknowledged);
     match futures::future::select(forward, acknowledged).await {

@@ -1,5 +1,5 @@
 //! One follow per destination, with acknowledgement after ordinary delivery.
-use super::{Envelope, Error, NodeId, Paths, Routed, account::Reply};
+use super::{Envelope, Error, NodeId, Paths, Publication, Registration, Routed, account::Reply};
 use acyclic_stream::{
     CommitCondition, CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest,
     IdempotencyKey, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
@@ -69,8 +69,8 @@ where
         account,
         paths.relay(node)?,
         paths.relay_cursor(node)?,
-        async |envelope| {
-            deliver(envelope).await?;
+        async |bytes: bytes::Bytes| {
+            deliver(Envelope::decode(bytes)?).await?;
             Ok(None)
         },
     )
@@ -85,26 +85,37 @@ where
 /// Its compact original receipt is the acknowledgement record itself. Callers
 /// recover it through [`receipt`], including after restart or later admissions.
 /// The forwarder owns no caller's call journal or cancellation terminal.
-pub async fn forward<P, D>(
+pub async fn forward<P, R, D>(
     local: &P,
     paths: &Paths,
     node: &NodeId,
+    mut register: R,
     mut admit: D,
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
+    R: AsyncFnMut(Registration) -> Result<(), Error>,
     D: AsyncFnMut(Envelope) -> Result<Routed, Error>,
 {
     consume(
         local,
         paths.outbox(node)?,
         paths.outbox_cursor(node)?,
-        async |envelope: Envelope| {
-            if envelope.source != *node {
-                return Err(Error::InvalidRecord);
+        async |bytes: bytes::Bytes| match Publication::decode(&bytes)? {
+            Publication::Delivery(envelope) => {
+                if envelope.source != *node {
+                    return Err(Error::InvalidRecord);
+                }
+                let key = envelope.request.idempotency_key.clone();
+                Ok(Some(Reply::new(&key, admit(envelope).await?)?))
             }
-            let key = envelope.request.idempotency_key.clone();
-            Ok(Some(Reply::new(&key, admit(envelope).await?)?))
+            Publication::Placement(registration) => {
+                if registration.placement.node != *node {
+                    return Err(Error::InvalidRecord);
+                }
+                register(registration).await?;
+                Ok(None)
+            }
         },
     )
     .await
@@ -118,7 +129,7 @@ async fn consume<P, D>(
 ) -> Result<Infallible, Error>
 where
     P: StreamProvider + ?Sized,
-    D: AsyncFnMut(Envelope) -> Result<Option<Reply>, Error>,
+    D: AsyncFnMut(bytes::Bytes) -> Result<Option<Reply>, Error>,
 {
     let (mut next, mut cursor_tail) = match account.head(cursor_path.clone()).await {
         Ok(head) => {
@@ -144,7 +155,7 @@ where
         if record.sequence != next {
             return Err(Error::InvalidRecord);
         }
-        let receipt = deliver(Envelope::decode(&record.value)?).await?;
+        let receipt = deliver(record.value.clone()).await?;
         let following = next.checked_add(1).ok_or(Error::InvalidRecord)?;
         let mut key = Sha256::new();
         key.update(b"acyclic.actors.route.ack.v1\0");

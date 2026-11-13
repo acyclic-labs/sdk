@@ -33,22 +33,24 @@ pub type NodeLink = ActorSocket;
 /// reopening resumes from the original committed acknowledgement cursors.
 /// The host supplies its authenticated account provider and ordinary delivery.
 /// No reconnect, readiness probe or independent task is created here.
-pub async fn run_link<P, A, F, D>(
+pub async fn run_link<P, A, R, F, D>(
     mut link: NodeLink,
     local: &P,
     account: &A,
     paths: &Paths,
     node: &NodeId,
+    register: R,
     admit: F,
     deliver: D,
 ) -> Result<std::convert::Infallible, Error>
 where
     P: StreamProvider + ?Sized,
     A: StreamProvider + ?Sized,
+    R: AsyncFnMut(super::Registration) -> Result<(), Error>,
     F: AsyncFnMut(super::Envelope) -> Result<super::Routed, Error>,
     D: AsyncFnMut(super::Envelope) -> Result<(), Error>,
 {
-    let outgoing = super::forward(local, paths, node, admit);
+    let outgoing = super::forward(local, paths, node, register, admit);
     let incoming = super::drain(account, paths, node, deliver);
     let closed = async {
         match link.next().await? {

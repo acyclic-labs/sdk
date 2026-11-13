@@ -250,7 +250,9 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         messages.len() == 1 && values(provider, journal).await?.len() == 1,
         "sender retry duplicated an outbox or journal record",
     )?;
-    let retained = Envelope::decode(messages[0].value.clone()).map_err(violation)?;
+    let retained = crate::route::Publication::decode(&messages[0].value)
+        .and_then(crate::route::Publication::delivery)
+        .map_err(violation)?;
     require(
         retained == envelope,
         "outbox changed original sender, target, key or request bytes",
@@ -288,15 +290,21 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     )?;
     // Lose the account receipt after relay publication. The local outbox
     // cursor must remain unchanged and reconnect must resubmit the same intent.
-    let interrupted = crate::route::forward(provider, &paths, &source, async |record| {
-        let destination = Placement::read(provider, &paths, &record.to)
-            .await?
-            .ok_or(crate::route::Error::InvalidRecord)?;
-        record
-            .publish_relay(provider, &paths, &destination.node, Vec::new())
-            .await?;
-        Err(StreamError::Unavailable.into())
-    })
+    let interrupted = crate::route::forward(
+        provider,
+        &paths,
+        &source,
+        async |_| Err(crate::route::Error::InvalidRecord),
+        async |record| {
+            let destination = Placement::read(provider, &paths, &record.to)
+                .await?
+                .ok_or(crate::route::Error::InvalidRecord)?;
+            record
+                .publish_relay(provider, &paths, &destination.node, Vec::new())
+                .await?;
+            Err(StreamError::Unavailable.into())
+        },
+    )
     .await;
     require(
         matches!(
@@ -325,8 +333,14 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             relay_seq: 0,
         },
     ] {
-        let refused =
-            crate::route::forward(provider, &paths, &source, async |_| Ok(invalid.clone())).await;
+        let refused = crate::route::forward(
+            provider,
+            &paths,
+            &source,
+            async |_| Err(crate::route::Error::InvalidRecord),
+            async |_| Ok(invalid.clone()),
+        )
+        .await;
         require(
             matches!(
                 refused,
@@ -348,17 +362,23 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             "invalid receipt was retained",
         )?;
     }
-    let forward = crate::route::forward(provider, &paths, &source, async |record| {
-        if record != envelope {
-            return Err(crate::route::Error::InvalidRecord);
-        }
-        let destination = Placement::read(provider, &paths, &record.to)
-            .await?
-            .ok_or(crate::route::Error::InvalidRecord)?;
-        record
-            .publish_relay(provider, &paths, &destination.node, Vec::new())
-            .await
-    });
+    let forward = crate::route::forward(
+        provider,
+        &paths,
+        &source,
+        async |_| Err(crate::route::Error::InvalidRecord),
+        async |record| {
+            if record != envelope {
+                return Err(crate::route::Error::InvalidRecord);
+            }
+            let destination = Placement::read(provider, &paths, &record.to)
+                .await?
+                .ok_or(crate::route::Error::InvalidRecord)?;
+            record
+                .publish_relay(provider, &paths, &destination.node, Vec::new())
+                .await
+        },
+    );
     until_ack(
         provider,
         paths.outbox_cursor(&source).map_err(Error::from)?,
@@ -399,19 +419,19 @@ pub async fn storage<P: StreamProvider + ?Sized>(
     let foreign_source = envelope.clone();
     let foreign_node = placement.node.clone();
     let source_path = paths.outbox(&foreign_node).map_err(Error::from)?;
+    let mut foreign_effect = foreign_source.outbox_effect(&paths).map_err(violation)?;
+    foreign_effect.conditions.push(CommitCondition::Absent {
+        path: source_path.clone(),
+    });
+    let CommitMutation::Append { path, .. } = &mut foreign_effect.mutations[0] else {
+        return Err(violation("outbox append missing"));
+    };
+    *path = source_path;
     let inserted = provider
         .commit(CommitRequest {
             deadline_unix_millis: None,
             idempotency_key: key(&root, "foreign-source")?,
-            effects: vec![CommitEffect::hard(
-                vec![CommitCondition::Absent {
-                    path: source_path.clone(),
-                }],
-                vec![CommitMutation::Append {
-                    path: source_path,
-                    records: vec![foreign_source.encode().into()],
-                }],
-            )],
+            effects: vec![foreign_effect],
         })
         .await
         .map_err(Error::from)?;
@@ -419,9 +439,13 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         matches!(inserted, CommitOutcome::Committed(_)),
         "foreign source fixture missing",
     )?;
-    let refused = crate::route::forward(provider, &paths, &foreign_node, async |_| {
-        Err(StreamError::AccessDenied.into())
-    })
+    let refused = crate::route::forward(
+        provider,
+        &paths,
+        &foreign_node,
+        async |_| Err(crate::route::Error::InvalidRecord),
+        async |_| Err(StreamError::AccessDenied.into()),
+    )
     .await;
     require(
         matches!(refused, Err(crate::route::Error::InvalidRecord)),
@@ -592,11 +616,17 @@ pub async fn storage<P: StreamProvider + ?Sized>(
         .is_none(),
         "pending send reused an earlier receipt",
     )?;
-    let forward = crate::route::forward(provider, &paths, &source, async |record| {
-        record
-            .publish_relay(provider, &paths, &placement.node, Vec::new())
-            .await
-    });
+    let forward = crate::route::forward(
+        provider,
+        &paths,
+        &source,
+        async |_| Err(crate::route::Error::InvalidRecord),
+        async |record| {
+            record
+                .publish_relay(provider, &paths, &placement.node, Vec::new())
+                .await
+        },
+    );
     until_ack(
         provider,
         paths.outbox_cursor(&source).map_err(Error::from)?,
@@ -737,14 +767,20 @@ pub async fn storage<P: StreamProvider + ?Sized>(
             matches!(published, CommitOutcome::Committed(_)),
             "rejected send was not staged",
         )?;
-        let forward = crate::route::forward(provider, &paths, &source, async |record| {
-            if record != rejected {
-                return Err(crate::route::Error::InvalidRecord);
-            }
-            record
-                .publish_rejection(provider, &paths, reason, &notice, Vec::new())
-                .await
-        });
+        let forward = crate::route::forward(
+            provider,
+            &paths,
+            &source,
+            async |_| Err(crate::route::Error::InvalidRecord),
+            async |record| {
+                if record != rejected {
+                    return Err(crate::route::Error::InvalidRecord);
+                }
+                record
+                    .publish_rejection(provider, &paths, reason, &notice, Vec::new())
+                    .await
+            },
+        );
         let outbox_sequence = 2 + index as u64;
         until_ack(
             provider,

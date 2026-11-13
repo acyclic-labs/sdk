@@ -6,7 +6,7 @@ use acyclic_actors::route::{
 };
 use acyclic_stream::{
     CommitEffect, CommitMutation, CommitOutcome, CommitRequest, FollowRequest, IdempotencyKey,
-    StreamPath, StreamProvider as _,
+    StreamPath, StreamProvider as _, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 
@@ -144,7 +144,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         IdempotencyKey::new(b"enroll-destination".to_vec())?,
     )
     .await?;
-    for (actor, node) in [(&sender, &source), (&recipient, &destination)] {
+    for (actor, node) in [(&recipient, &destination)] {
         assert!(matches!(
             stream
                 .commit(CommitRequest {
@@ -175,6 +175,8 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
     client.register_credential(0, credential(server.resource()))?;
     let resource = route::relay_resource(sender.account(), &source);
     let socket = route::open_request(b"account", &source)?.resource();
+    let placement_resource = route::placement_resource(sender.account(), &source);
+    client.register_credential(4, credential(&placement_resource))?;
     for (slot, peer) in [(1, true), (2, false)] {
         use acyclic_auth::contract::*;
         client.register_credential(
@@ -221,6 +223,13 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             )],
         },
     };
+    let registration = route::Registration {
+        placement: RoutePlacement {
+            actor: message.sender.clone(),
+            node: source.clone(),
+        },
+        intent: IdempotencyKey::new(b"source-root-creation".to_vec())?,
+    };
     let mut presence = acyclic_stream::records_only(
         stream
             .follow(FollowRequest {
@@ -256,9 +265,46 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             key: message.request.idempotency_key.clone(),
             relay_seq: 0,
         };
-        assert_eq!(route::admit(&client, 1, &message, 4096).await?, expected);
-        assert_eq!(route::admit(&client, 1, &message, 4096).await?, expected);
-        assert_eq!(stream.tail(paths.relay(&destination)?).await?, 1);
+        assert!(
+            route::admit(&client, 1, &message, 4096).await.is_err(),
+            "unregistered sender was admitted"
+        );
+        assert!(
+            route::register(&client, 1, &paths, &registration, 4096)
+                .await
+                .is_err(),
+            "peer append grant registered a root"
+        );
+        let wrong_node = route::Registration {
+            placement: RoutePlacement {
+                actor: message.sender.clone(),
+                node: destination.clone(),
+            },
+            intent: registration.intent.clone(),
+        };
+        assert!(
+            route::register(&client, 4, &paths, &wrong_node, 4096)
+                .await
+                .is_err()
+        );
+        // The single-node case recovers the placement already created in the
+        // original adoption commit, rather than attempting a second placement.
+        let root_record = stream
+            .record_at(paths.outbox(&source)?, 0)
+            .await?
+            .ok_or("root publication missing")?;
+        let route::Publication::Placement(root_registration) =
+            route::Publication::decode(&root_record.value)?
+        else {
+            return Err("root did not publish placement".into());
+        };
+        route::register(&client, 4, &paths, &root_registration, 4096).await?;
+        assert_eq!(
+            stream
+                .tail(paths.placement(&root_registration.placement.actor)?)
+                .await?,
+            1
+        );
         assert!(
             matches!(
                 stream
@@ -274,7 +320,11 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
                     idempotency_key: IdempotencyKey::new(b"source-publication".to_vec())?,
-                    effects: vec![message.outbox_effect(&paths)?],
+                    effects: registration
+                        .effects(&paths)?
+                        .into_iter()
+                        .chain(std::iter::once(message.outbox_effect(&paths)?))
+                        .collect(),
                 })
                 .await?,
             CommitOutcome::Committed(_)
@@ -290,6 +340,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             stream.as_ref(),
             &paths,
             &source,
+            async |registration| route::register(&client, 4, &paths, &registration, 4096).await,
             async |envelope| {
                 assert_eq!(route::admit(&client, 1, &envelope, 4096).await?, expected);
                 admitted
@@ -323,10 +374,22 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
         assert!(
             !NodePresence::decode(&presence.try_next().await?.ok_or("no Close")?.value)?.online
         );
-        assert!(matches!(
-            local.tail(paths.outbox_cursor(&source)?).await,
-            Err(StreamError::NotFound)
-        ));
+        assert_eq!(local.tail(paths.outbox_cursor(&source)?).await?, 1);
+        route::register(&client, 4, &paths, &registration, 4096).await?;
+        assert_eq!(
+            RoutePlacement::read(stream.as_ref(), &paths, &message.sender).await?,
+            Some(registration.placement.clone())
+        );
+        let changed_intent = route::Registration {
+            intent: IdempotencyKey::new(b"second-placement".to_vec())?,
+            ..registration.clone()
+        };
+        assert!(
+            route::register(&client, 4, &paths, &changed_intent, 4096)
+                .await
+                .is_err()
+        );
+        assert_eq!(stream.tail(paths.placement(&message.sender)?).await?, 1);
         let link = route::open_link(&client, 1, b"account", &source).await?;
         assert!(
             NodePresence::decode(&presence.try_next().await?.ok_or("no reconnect")?.value)?.online
@@ -339,7 +402,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
             local
                 .follow(FollowRequest {
                     when_absent: acyclic_stream::WhenAbsent::Wait,
-                    ..FollowRequest::new(paths.outbox_cursor(&source)?, 0)
+                    ..FollowRequest::new(paths.outbox_cursor(&source)?, 1)
                 })
                 .await?,
         );
@@ -358,6 +421,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 stream.as_ref(),
                 &paths,
                 &source,
+                async |registration| route::register(&client, 4, &paths, &registration, 4096).await,
                 async |envelope| route::admit(&client, 1, &envelope, 4096).await,
                 async |_| Err(route::Error::InvalidRecord),
             );
@@ -367,6 +431,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                 stream.as_ref(),
                 &paths,
                 &destination,
+                async |_| Err(route::Error::InvalidRecord),
                 async |_| Err(route::Error::InvalidRecord),
                 async |envelope| match destination_store.commit(envelope.request).await? {
                     CommitOutcome::Committed(_) => Ok(()),
@@ -381,7 +446,7 @@ async fn account_routes_node_links_and_commands_share_authenticated_dispatch() -
                     .ok_or("no source acknowledgment")?;
                 drained.try_next().await?.ok_or("no drain acknowledgment")?;
                 assert_eq!(
-                    route::receipt(&local, &paths, &source, 0, &message.request.idempotency_key)
+                    route::receipt(&local, &paths, &source, 1, &message.request.idempotency_key)
                         .await?,
                     Some(expected)
                 );

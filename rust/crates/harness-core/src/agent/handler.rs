@@ -374,16 +374,21 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
                 .map_err(|_| Error::Record("agent creation does not compose"))?;
         }
         if let Some(routing) = &self.routing {
-            publish
-                .join(
-                    acyclic_actors::route::Placement {
-                        actor,
-                        node: routing.node.clone(),
-                    }
-                    .effect(&routing.paths)
-                    .map_err(super::routing::error)?,
-                )
-                .map_err(|_| Error::Record("root placement does not compose"))?;
+            let registration = acyclic_actors::route::Registration {
+                placement: acyclic_actors::route::Placement {
+                    actor,
+                    node: routing.node.clone(),
+                },
+                intent: created.request.idempotency_key.clone(),
+            };
+            for effect in registration
+                .effects(&routing.paths)
+                .map_err(super::routing::error)?
+            {
+                publish
+                    .join(effect)
+                    .map_err(|_| Error::Record("root placement does not compose"))?;
+            }
         }
         Ok(Spawn {
             child: created.child,

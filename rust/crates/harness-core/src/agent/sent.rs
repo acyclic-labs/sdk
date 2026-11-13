@@ -222,8 +222,9 @@ pub async fn sent<P: crate::store::JournalProvider + ?Sized>(
             let (paths, node) =
                 route::Paths::from_outbox(&append.path).map_err(super::routing::error)?;
             for record in append.records {
-                let envelope =
-                    route::Envelope::decode(&record.value).map_err(super::routing::error)?;
+                let envelope = route::Publication::decode(&record.value)
+                    .and_then(route::Publication::delivery)
+                    .map_err(super::routing::error)?;
                 if envelope.source != node {
                     return Err(Error::Record("send outbox source differs"));
                 }
