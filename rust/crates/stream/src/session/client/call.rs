@@ -152,26 +152,62 @@ impl Client {
         credential: u32,
         maximum_reply_bytes: usize,
     ) -> Result<Bytes, StreamError> {
-        let source = self
-            .reply_chunks(kind, credential, maximum_reply_bytes)
-            .await?;
-        let mut source = core::pin::pin!(source);
-        let mut reply = Vec::new();
-        let mut total = None;
-        while let Some(item) = source.next().await {
-            let (length, chunk) = item?;
-            if total.is_none() {
-                reply
-                    .try_reserve_exact(length)
-                    .map_err(|_| StreamError::Capacity)?;
-                total = Some(length);
+        let work = async {
+            let source = self
+                .reply_chunks(kind, credential, maximum_reply_bytes)
+                .await?;
+            let mut source = core::pin::pin!(source);
+            let mut reply = Vec::new();
+            let mut total = None;
+            while let Some(item) = source.next().await {
+                let (length, chunk) = item?;
+                if total.is_none() {
+                    reply
+                        .try_reserve_exact(length)
+                        .map_err(|_| StreamError::Capacity)?;
+                    total = Some(length);
+                }
+                #[cfg(feature = "serde")]
+                crate::trace::observe_sync(
+                    crate::trace::Request {
+                        name: "stream.reply_copy",
+                        mechanism: crate::trace::Mechanism::Copy,
+                        parent: None,
+                        guarantee: Some("contiguous_complete_reply_ownership"),
+                    },
+                    || reply.extend_from_slice(chunk.as_ref()),
+                    |_| {
+                        Some((
+                            u64::try_from(chunk.as_ref().len()).ok(),
+                            crate::trace::Outcome::Succeeded,
+                            None,
+                        ))
+                    },
+                );
+                #[cfg(not(feature = "serde"))]
+                reply.extend_from_slice(chunk.as_ref());
+                if reply.len() == length {
+                    return Ok(reply.into());
+                }
             }
-            reply.extend_from_slice(chunk.as_ref());
-            if reply.len() == length {
-                return Ok(reply.into());
-            }
+            Err(StreamError::Unavailable)
+        };
+        #[cfg(feature = "serde")]
+        {
+            crate::trace::observe(
+                crate::trace::Request {
+                    name: "stream.finite_reply",
+                    mechanism: crate::trace::Mechanism::RoundTrip,
+                    parent: None,
+                    guarantee: Some("complete_bounded_reply_on_original_session"),
+                },
+                work,
+                |reply| u64::try_from(reply.len()).ok(),
+            )
+            .await
         }
-        Err(StreamError::Unavailable)
+        #[cfg(not(feature = "serde"))]
+        work.await
     }
 
     async fn reply_chunks(
