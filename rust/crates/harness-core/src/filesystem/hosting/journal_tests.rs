@@ -762,3 +762,86 @@ async fn settled_arrivals_and_archive_do_not_end_a_retained_inbox_cut_early() ->
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn client_file_wait_ignores_unchanged_publications() -> TestResult {
+    use crate::client_files::{ClientFileChange, FileRoot};
+    let (bound, agent) = binding().await?;
+    let root = FileRoot::Private {};
+    let paths = vec!["notes.txt".to_owned()];
+    bound
+        .publish_files(
+            &agent,
+            root,
+            OperationId::from_bytes([71; 16]),
+            &[ClientFileChange {
+                path: paths[0].clone(),
+                expected: None,
+                text: Some("before".into()),
+            }],
+        )
+        .await?;
+    let original = bound.files(&agent, root, &paths, None).await?;
+    let file = original.files[&paths[0]]
+        .as_ref()
+        .ok_or("missing authored file")?
+        .original()
+        .ok_or("expected authored source")?
+        .clone();
+    let state = bound.agents().state(&agent).await?;
+    let reference = super::super::super::bounded_io::content_workspace(
+        &bound.volumes.provider,
+        state.volumes[0].volume()?,
+        None,
+    )?;
+    let workspace = bound.volumes.open(&reference, None).await?;
+    let source =
+        acyclic_fs::session::changes_path(&bound.volumes.filesystem, workspace.id().volume_id())?;
+    let before = bound.agents.provider().tail(source.clone()).await?;
+    let waiting = bound.files(&agent, root, &paths, Some(&original.cut));
+    futures::pin_mut!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let unchanged = bound
+        .publish_files(
+            &agent,
+            root,
+            OperationId::from_bytes([72; 16]),
+            &[ClientFileChange {
+                path: paths[0].clone(),
+                expected: Some(file.clone()),
+                text: Some("before".into()),
+            }],
+        )
+        .await?;
+    assert_eq!(unchanged, original.cut.generation);
+    assert!(
+        bound.agents.provider().tail(source).await? > before,
+        "unchanged publication did not exercise the changes producer"
+    );
+    assert!(
+        futures::poll!(waiting.as_mut()).is_pending(),
+        "unchanged cut ended the watch"
+    );
+    bound
+        .publish_files(
+            &agent,
+            root,
+            OperationId::from_bytes([73; 16]),
+            &[ClientFileChange {
+                path: paths[0].clone(),
+                expected: Some(file),
+                text: Some("after".into()),
+            }],
+        )
+        .await?;
+    let changed = waiting.await?;
+    assert!(!changed.cut.same_inputs(&original.cut));
+    assert_eq!(
+        changed.files[&paths[0]]
+            .as_ref()
+            .ok_or("changed file missing")?
+            .text,
+        "after"
+    );
+    Ok(())
+}
