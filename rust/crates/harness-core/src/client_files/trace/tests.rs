@@ -7,6 +7,91 @@ use futures::StreamExt as _;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn original_comparison_publications_project_through_trace_files()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    use acyclic_stream::trace::{Comparison, ComparisonKind, Recorder};
+    let provider = Arc::new(MemoryStream::default());
+    let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([40; 16]));
+    let path = source(&agent)?;
+    let stream = acyclic_stream::Stream::new(provider.clone(), path.as_str())?;
+    let originals = acyclic_stream::Stream::new(provider.clone(), "original-descriptor")?;
+    let digest = [19_u8; 32];
+    let acyclic_stream::AppendOutcome::Committed(receipt) = originals
+        .append(
+            serde_json::to_vec(&digest)?,
+            acyclic_stream::IdempotencyKey::unique(),
+        )
+        .await?
+    else {
+        return Err("original publication missing".into());
+    };
+    let previous = acyclic_stream::RetainedRecord {
+        commit_id: receipt.commit_id,
+        path: originals.path().clone(),
+        sequence: receipt.start,
+    };
+    let recorder = Arc::new(Recorder::new(stream, [10; 16]));
+    let recording = recorder
+        .start(
+            "model.request",
+            Mechanism::ProviderCall,
+            None,
+            Some("original_request_identity"),
+        )
+        .await?;
+    for kind in [
+        ComparisonKind::Request,
+        ComparisonKind::Output,
+        ComparisonKind::CachePrefix,
+    ] {
+        recording
+            .compare(Comparison {
+                kind,
+                previous: previous.clone(),
+                previous_digest: digest,
+                current_digest: if kind == ComparisonKind::CachePrefix {
+                    [20; 32]
+                } else {
+                    digest
+                },
+            })
+            .await?;
+    }
+    recording.finish(None, Outcome::Succeeded).await?;
+    let files = TraceFiles::new(acyclic_stream::trace::Registry::new(provider.clone()));
+    // Exclude the owning start/finish: equality needs its original descriptor
+    // evidence, but cannot depend on a complete span or a history scan.
+    let values = files
+        .read(
+            provider.as_ref(),
+            &agent,
+            &["live/agents/self/trace/1/3.json"],
+            &path,
+            5,
+            Default::default(),
+        )
+        .await?;
+    let value: serde_json::Value = serde_json::from_str(&values[0].text)?;
+    for field in ["repeatedCalls", "repeatedOutputs", "cachePrefixBreaks"] {
+        assert_eq!(value[field], 1);
+    }
+    assert_eq!(value["coveredFrom"], 1);
+    assert_eq!(value["coveredThrough"], 4);
+    assert_eq!(value["activeSpans"], 0);
+    assert!(
+        value["mechanisms"]
+            .as_object()
+            .ok_or("mechanisms absent")?
+            .is_empty()
+    );
+    assert_eq!(
+        value["comparisons"]["cache_prefix"]["last_different"]["sequence"],
+        3
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn bounded_trace_files_preserve_captured_cuts_and_follow_original_sources()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(MemoryStream::default());

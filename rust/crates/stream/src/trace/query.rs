@@ -1,5 +1,5 @@
 //! One pull-based projection for finite reads and live follows alike.
-use super::{Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
+use super::{Comparison, ComparisonKind, Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
 use crate::{Record, RetainedRecord, StreamError};
 use futures::{Stream, StreamExt as _};
 use std::collections::{BTreeMap, btree_map::Entry};
@@ -53,6 +53,14 @@ pub struct MechanismTotals {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuerySnapshot<'a> {
+    /// Original comparisons, including their coverage and last evidence.
+    pub comparisons: &'a BTreeMap<ComparisonKind, ComparisonTotals>,
+    /// Equal complete request digests in observed original comparisons.
+    pub repeated_calls: u128,
+    /// Equal complete output digests in observed original comparisons.
+    pub repeated_outputs: u128,
+    /// Selected cache prefixes differing from their original expected digest.
+    pub cache_prefix_breaks: u128,
     /// First selected cursor, so a suffix cannot look like complete history.
     pub covered_from: u64,
     /// Cursor after consumed rows, including rejected rows.
@@ -78,6 +86,18 @@ pub struct QuerySnapshot<'a> {
 /// One new query observation, using the caller's explicit outlier policy.
 #[derive(Debug)]
 pub enum Observation {
+    /// Equality computed from original descriptors, independent of span timing
+    /// and of whether the preceding publication is in the selected window.
+    Compared {
+        /// Original owning span.
+        id: SpanId,
+        /// Original comparison publication.
+        evidence: RetainedRecord,
+        /// Original comparison inputs and preceding publication.
+        comparison: Comparison,
+        /// Equality in this explicit comparison domain.
+        identical: bool,
+    },
     /// A start was admitted; its context is available from `active`.
     Started {
         /// Original producer identity.
@@ -113,6 +133,19 @@ pub enum Observation {
         /// Original outcome, whose failure reference remains usable.
         result: Outcome,
     },
+}
+
+/// Fixed-size comparison coverage and evidence, not a completed-call history.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct ComparisonTotals {
+    /// Original comparisons with equal canonical digests.
+    pub identical: u128,
+    /// Original comparisons with differing canonical digests.
+    pub different: u128,
+    /// Latest equal comparison's original publication.
+    pub last_identical: Option<RetainedRecord>,
+    /// Latest differing comparison's original publication.
+    pub last_different: Option<RetainedRecord>,
 }
 
 /// Invalid causal evidence, distinct from an unfinished or partially read span.
@@ -172,6 +205,7 @@ pub struct TraceQuery<S> {
     records: S,
     active: BTreeMap<SpanId, ActiveSpan>,
     totals: BTreeMap<Mechanism, MechanismTotals>,
+    comparisons: BTreeMap<ComparisonKind, ComparisonTotals>,
     thresholds_ns: BTreeMap<Mechanism, u64>,
     sequence: Option<u64>,
     active_waits: usize,
@@ -189,6 +223,7 @@ impl<S> TraceQuery<S> {
             records,
             active: BTreeMap::new(),
             totals: BTreeMap::new(),
+            comparisons: BTreeMap::new(),
             thresholds_ns,
             sequence: None,
             active_waits: 0,
@@ -228,6 +263,19 @@ impl<S> TraceQuery<S> {
         rejected: u128,
     ) -> QuerySnapshot<'_> {
         QuerySnapshot {
+            comparisons: &self.comparisons,
+            repeated_calls: self
+                .comparisons
+                .get(&ComparisonKind::Request)
+                .map_or(0, |total| total.identical),
+            repeated_outputs: self
+                .comparisons
+                .get(&ComparisonKind::Output)
+                .map_or(0, |total| total.identical),
+            cache_prefix_breaks: self
+                .comparisons
+                .get(&ComparisonKind::CachePrefix)
+                .map_or(0, |total| total.different),
             covered_from: from,
             covered_through: through,
             observed_tail,
@@ -355,6 +403,23 @@ impl<S> TraceQuery<S> {
         evidence: RetainedRecord,
     ) -> Result<Observation, QueryError> {
         let observation = match event {
+            SpanEvent::Compared { id, comparison } => {
+                let identical = comparison.previous_digest == comparison.current_digest;
+                let total = self.comparisons.entry(comparison.kind).or_default();
+                if identical {
+                    total.identical += 1;
+                    total.last_identical = Some(evidence.clone());
+                } else {
+                    total.different += 1;
+                    total.last_different = Some(evidence.clone());
+                }
+                Observation::Compared {
+                    id,
+                    evidence,
+                    comparison,
+                    identical,
+                }
+            }
             SpanEvent::Started {
                 id,
                 parent,

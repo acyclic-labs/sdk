@@ -42,6 +42,21 @@ failed reads stay unfinished until their original cause is retained. The old
 separate replay tracing span is removed. Complete request-path instrumentation,
 content correlation and deterministic crash replay remain separate requirements.
 
+Typed `Compared` deltas carry a request, output or cache-prefix comparison in
+an explicit identity domain: the preceding original publication and its
+canonical integrity digest, plus the current original digest. They contain no
+payloads or credentials. The shared query computes `repeatedCalls`,
+`repeatedOutputs` and `cachePrefixBreaks` by comparing those original digests.
+Each domain reports both equal and differing observations and retains the last
+original publication of each. Absence of comparisons establishes no correlation
+coverage; zero observed repeats does not prove there were no repeats. The
+preceding publication can lie outside the selected file window or producer
+clock domain. Equality needs no retained completed-call index or earlier-history
+scan. A comparison neither starts nor settles its owning span. Producers may
+publish one comparison per domain per span using the original idempotency key.
+Automatic correlation at every provider/tool boundary remains to be wired to
+their original canonical descriptors; names and durations never imply identity.
+
 ## Original model recovery observations
 
 Generation recovery emits `ModelEvent::Wait` through the original model stream.

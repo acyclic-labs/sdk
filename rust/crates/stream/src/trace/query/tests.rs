@@ -3,6 +3,164 @@ use crate::{AppendOutcome, IdempotencyKey, MemoryStream, OwnedBytes};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
+#[tokio::test]
+async fn repeated_calls_use_original_descriptor_evidence() -> Result<(), Box<dyn std::error::Error>>
+{
+    original_comparisons(ComparisonKind::Request, "repeatedCalls").await
+}
+
+#[tokio::test]
+async fn repeated_outputs_use_original_descriptor_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    original_comparisons(ComparisonKind::Output, "repeatedOutputs").await
+}
+
+#[tokio::test]
+async fn cache_prefix_breaks_use_original_descriptor_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    original_comparisons(ComparisonKind::CachePrefix, "cachePrefixBreaks").await
+}
+
+async fn original_comparisons(
+    kind: ComparisonKind,
+    field: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::trace::{Comparison, Recorder};
+    let provider = Arc::new(MemoryStream::default());
+    let originals = crate::Stream::new(provider.clone(), "agents/worker/requests")?;
+    let AppendOutcome::Committed(receipt) = originals
+        .append(serde_json::to_vec(&[11_u8; 32])?, IdempotencyKey::unique())
+        .await?
+    else {
+        return Err("original descriptor was not published".into());
+    };
+    let previous = RetainedRecord {
+        commit_id: receipt.commit_id,
+        path: originals.path().clone(),
+        sequence: receipt.start,
+    };
+    let stream = crate::Stream::new(provider.clone(), "agents/worker/trace")?;
+    let recorder = Arc::new(Recorder::new(stream.clone(), [9; 16]));
+    let first = recorder
+        .start(
+            "model.request",
+            Mechanism::ProviderCall,
+            None,
+            Some("original_request_identity"),
+        )
+        .await?;
+    let mut live = TraceQuery::new(
+        stream.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    assert!(matches!(
+        live.next().await?,
+        Some(Observation::Started { .. })
+    ));
+    let mut next = Some(first);
+    for identical in [true, false] {
+        let recording = match next.take() {
+            Some(first) => first,
+            None => {
+                let recording = recorder
+                    .start(
+                        "model.request",
+                        Mechanism::ProviderCall,
+                        None,
+                        Some("original_request_identity"),
+                    )
+                    .await?;
+                live.next().await?;
+                recording
+            }
+        };
+        let comparison = Comparison {
+            kind,
+            previous: previous.clone(),
+            previous_digest: [11; 32],
+            current_digest: if identical { [11; 32] } else { [12; 32] },
+        };
+        let published = recording.compare(comparison.clone()).await?;
+        assert_eq!(
+            recording.compare(comparison).await?,
+            published,
+            "retry duplicated a comparison"
+        );
+        assert!(matches!(live.next().await?, Some(Observation::Compared {
+            evidence, comparison, identical: actual, ..
+        }) if actual == identical && evidence == published && comparison.previous == previous));
+        recording.finish(None, Outcome::Succeeded).await?;
+        assert!(matches!(
+            live.next().await?,
+            Some(Observation::Completed { .. })
+        ));
+    }
+    verify_comparison_query(provider.as_ref(), &stream, &live, kind, field, &previous).await
+}
+
+async fn verify_comparison_query<S>(
+    provider: &MemoryStream,
+    stream: &crate::Stream<MemoryStream>,
+    live: &TraceQuery<S>,
+    kind: ComparisonKind,
+    field: &str,
+    previous: &RetainedRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(stream.tail().await?, 6);
+    let mut paged = TraceQuery::new((), Default::default());
+    for from in 0..6 {
+        assert_eq!(
+            paged
+                .read_page(
+                    provider,
+                    crate::ReadRequest {
+                        key: None,
+                        path: stream.path().clone(),
+                        from,
+                        limit: 1,
+                        at_least: Default::default(),
+                    }
+                )
+                .await?,
+            1
+        );
+    }
+    let finite = serde_json::to_value(paged.snapshot(0, 6, Some(6), 0))?;
+    assert_eq!(
+        finite,
+        serde_json::to_value(live.snapshot(0, 6, Some(6), 0))?
+    );
+    assert_eq!(finite[field], 1);
+    let totals = &live.comparisons[&kind];
+    assert_eq!((totals.identical, totals.different), (1, 1));
+    assert_eq!(
+        totals
+            .last_identical
+            .as_ref()
+            .ok_or("equal evidence missing")?
+            .sequence,
+        1
+    );
+    assert_eq!(
+        totals
+            .last_different
+            .as_ref()
+            .ok_or("different evidence missing")?
+            .sequence,
+        4
+    );
+    // A comparison is self-contained even when neither the owning start nor
+    // the preceding request publication lies in this selected suffix.
+    let mut suffix = TraceQuery::new(stream.read(1, 1).await?, Default::default());
+    assert!(
+        matches!(suffix.next().await?, Some(Observation::Compared { comparison, identical: true, .. }) if &comparison.previous == previous)
+    );
+    assert_eq!(suffix.active().len(), 0);
+    assert!(suffix.totals().is_empty());
+    assert_eq!(suffix.comparisons[&kind].identical, 1);
+    Ok(())
+}
+
 async fn append(
     stream: &crate::Stream<MemoryStream>,
     event: SpanEvent,

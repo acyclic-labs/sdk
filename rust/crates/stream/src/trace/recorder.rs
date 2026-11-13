@@ -1,5 +1,5 @@
 //! Explicit producer admission; no collector, background task or second store.
-use super::{Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
+use super::{Comparison, ComparisonKind, Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
 use crate::{AppendOutcome, IdempotencyKey, RetainedRecord, Stream, StreamError, StreamProvider};
 use std::sync::{
     Arc,
@@ -137,6 +137,14 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         let (id, phase) = match &event {
             SpanEvent::Started { id, .. } => (id, 0),
             SpanEvent::Finished { id, .. } => (id, 1),
+            SpanEvent::Compared { id, comparison } => (
+                id,
+                match comparison.kind {
+                    ComparisonKind::Request => 2,
+                    ComparisonKind::Output => 3,
+                    ComparisonKind::CachePrefix => 4,
+                },
+            ),
         };
         let mut key = b"acyclic.trace.v1".to_vec();
         key.extend_from_slice(&id.process);
@@ -214,6 +222,18 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
     /// Original retained publication, usable even if no terminal is published.
     pub fn start(&self) -> &RetainedRecord {
         &self.start
+    }
+
+    /// Publish a comparison made from the request path's original integrity
+    /// descriptors. At most one fact per kind belongs to a span; replaying the
+    /// same fact uses its original publication key. No history is scanned.
+    pub async fn compare(&self, comparison: Comparison) -> Result<RetainedRecord, StreamError> {
+        self.recorder
+            .publish(SpanEvent::Compared {
+                id: self.id,
+                comparison,
+            })
+            .await
     }
 
     /// Publish the caller's actual settlement observation exactly once.

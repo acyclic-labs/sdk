@@ -19,7 +19,8 @@ pub use recorder::{Observed, Recorder, Recording, Request, Settlement};
 mod query;
 #[cfg(feature = "serde")]
 pub use query::{
-    ActiveSpan, MechanismTotals, Observation, QueryError, QuerySnapshot, QueryViolation, TraceQuery,
+    ActiveSpan, ComparisonTotals, MechanismTotals, Observation, QueryError, QuerySnapshot,
+    QueryViolation, TraceQuery,
 };
 
 /// Identity assigned by one process, also identifying its monotonic clock domain.
@@ -81,12 +82,50 @@ pub enum Outcome {
     Unsettled,
 }
 
+/// What two original integrity digests describe. Producers use the canonical
+/// request/output descriptors already owned by the request path, never secrets
+/// or a second serialization of model content.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ComparisonKind {
+    /// Complete request identity, including its operation and bound inputs.
+    Request,
+    /// Complete output identity in the same comparison domain.
+    Output,
+    /// Expected reusable prefix versus the actually selected prefix.
+    CachePrefix,
+}
+
+/// Original comparison inputs, sufficient to compute equality without keeping
+/// another completed-call index. The preceding publication may be outside the
+/// selected query window; its identity is explicit rather than reconstructed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Comparison {
+    /// Typed comparison domain; unlike digests from unlike domains never join.
+    pub kind: ComparisonKind,
+    /// Original publication owning the preceding descriptor or expected prefix.
+    pub previous: RetainedRecord,
+    /// Integrity digest from that original descriptor.
+    pub previous_digest: [u8; 32],
+    /// Integrity digest from the current original descriptor.
+    pub current_digest: [u8; 32],
+}
+
 /// One span delta. Monotonic timestamps are relative to `id.process`'s origin;
 /// timestamps in distinct process domains do not establish elapsed time or order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "event", rename_all = "snake_case"))]
 pub enum SpanEvent {
+    /// Original request-path comparison; it neither starts nor settles work.
+    Compared {
+        /// Owning span, without reconstructing its parent or clock.
+        id: SpanId,
+        /// Original descriptor evidence and comparison domain.
+        comparison: Comparison,
+    },
     /// Original admission of named work.
     Started {
         /// Identity and monotonic clock domain.
