@@ -5435,14 +5435,11 @@ async fn failed_child_keeps_siblings_and_the_served_session_alive() -> Result<()
             super::ScriptedTurn::Text("parent still running".into()),
         ])
         .with_context_capacity(super::capacity())
-        // The accepted Awaited record replays the failed original dispatch.
-        // No continuation keeps that same operation pending; an exhausted
-        // reconciliation script would instead manufacture a definitive error.
-        .with_reconciliations([crate::test_support::ScriptedReconciliation {
-            orphan: false,
-            observed: Vec::new(),
-            continuation: None,
-        }])
+        // The accepted Awaited record reconciles the original dispatch. Keep
+        // that outcome unknown instead of reporting definitive unavailability.
+        .with_reconciliation_observer(|_| {
+            Box::pin(async { Err(Error::Storage("undecided child reconciliation".into())) })
+        })
         .with_dispatch_observer(move |_| {
             let dispatch = dispatches.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move {
