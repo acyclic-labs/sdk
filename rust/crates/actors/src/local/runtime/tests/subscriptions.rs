@@ -43,7 +43,12 @@ async fn observing<P: StreamProvider>(
 async fn shared_dynamic_interests<P: StreamProvider>(provider: P) -> TestResult {
     let provider = Arc::new(provider);
     let (store, actors, observed) = observers(&provider, 2).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     let retained = Arc::strong_count(&provider);
     for address in &actors {
         runtime.track(address.clone())?;
@@ -117,6 +122,7 @@ async fn shared_dynamic_interests<P: StreamProvider>(provider: P) -> TestResult 
     drop(runtime);
     // Restart reconstructs interests from their original durable cursors.
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -155,7 +161,12 @@ async fn idle_creation_with_interests_is_restored_after_its_activation_checkpoin
     let provider = Arc::new(MemoryStream::default());
     let (store, actors, observed) = observers(&provider, 1).await?;
     let shard = store.scheduling_shard(&actors[0]);
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     let mut serving = Box::pin(runtime.run(|_, error| panic!("idle delivery failed: {error}")));
     observe_while_running(serving.as_mut(), async {
         runtime.complete().await?;
@@ -170,6 +181,7 @@ async fn idle_creation_with_interests_is_restored_after_its_activation_checkpoin
     drop(serving);
     drop(runtime);
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -209,7 +221,12 @@ async fn idle_marker_of_the_longest_valid_address_is_written() -> TestResult {
     let long = ActorReference::new(b"account", &[b'n'; 128], &[b'i'; 128])?;
     let (store, actors, _) = observing(&provider, vec![long]).await?;
     let shard = store.scheduling_shard(&actors[0]);
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     let mut serving = Box::pin(runtime.run(|_, error| panic!("idle delivery failed: {error}")));
     observe_while_running(serving.as_mut(), async {
         runtime.complete().await?;
@@ -258,7 +275,12 @@ async fn restoration_completes_while_restored_actors_stay_backlogged() -> TestRe
         })
         .ok_or("no second shard")??;
     let (store, actors, observed) = observing(&provider, vec![first, second]).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
     let mut serving = Box::pin(runtime.run(|_, error| panic!("idle delivery failed: {error}")));
     observe_while_running(serving.as_mut(), async {
         runtime.complete().await?;
@@ -288,6 +310,7 @@ async fn restoration_completes_while_restored_actors_stay_backlogged() -> TestRe
         })
         .await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Stalls(Package::new()?)),
         Arc::new(SystemClock),
@@ -317,8 +340,13 @@ async fn source_failure_and_fanout_remain_bounded_and_recover_without_stopping_o
 -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let (store, actors, observed) = observers(&provider, 5).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
-        .with_limits(RuntimeLimits::new(1, 1)?);
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 1)?);
     let reported = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
     let (first, first_report) = tokio::sync::oneshot::channel();
     let first = std::sync::Mutex::new(Some(first));

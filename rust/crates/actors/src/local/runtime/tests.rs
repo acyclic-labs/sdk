@@ -43,6 +43,7 @@ fn actor(id: &str) -> Result<ActorReference, Box<dyn std::error::Error>> {
 async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() -> TestResult {
     let provider = Arc::new(Counted::new(MemoryStream::default()));
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -130,6 +131,7 @@ async fn dispatcher_returns_its_original_conflict_before_an_explicit_resend() ->
 #[test]
 fn concurrent_sharded_tracking_keeps_one_registration_per_actor() -> TestResult {
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::new(MemoryStream::default()), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -203,6 +205,7 @@ impl<P: StreamProvider> LocalTarget<P> {
     fn launch(&self) -> Result<(), StreamError> {
         // The single-node runtime is its store's placement owner.
         let runtime = Arc::new(Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(self.store.provider()), root()?),
             Arc::clone(&self.handler),
             Arc::clone(&self.clock) as Arc<dyn Clock>,
@@ -489,6 +492,7 @@ async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResu
         store.submit(create).await?;
         let runtime = Arc::new(
             Runtime::new(
+                crate::guest::Requests::default(),
                 Store::new(Arc::clone(&provider), root()?),
                 Arc::new(Package::new()?),
                 Arc::new(Manual(AtomicU64::new(100))),
@@ -614,6 +618,7 @@ async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() 
     let clock = Arc::new(Manual(AtomicU64::new(1)));
     let open = || -> Result<Host<MemoryStream>, Box<dyn std::error::Error>> {
         Ok(Host::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             address.clone(),
             remote()?,
@@ -685,6 +690,7 @@ async fn a_deleted_actor_is_terminal_and_leaves_no_orphans() -> TestResult {
     let store = Store::new(Arc::clone(&provider), root()?);
     let actor = spawn_with(&store, "deleted", &[b"set 60000"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -755,6 +761,7 @@ async fn an_externally_placed_event_host_serves_only_after_its_command() -> Test
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "external-host", &[b"emit"]).await?;
     let host = crate::hosting::Host::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         address.clone(),
         Arc::new(Package::new()?),
@@ -788,12 +795,14 @@ async fn placement_observation_tracks_committed_commands_and_runtime_replacement
         create.join(store.create(None, &address, crate::local::Creation::default())?)?;
         store.submit(create).await?;
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
         )
         .with_external_placement();
         let replacement = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(provider.clone(), root()?),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
@@ -811,6 +820,7 @@ async fn placement_observation_tracks_committed_commands_and_runtime_replacement
     }
     let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
     let restored = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider, root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -843,6 +853,7 @@ async fn first_fork_placement_resumes_once_and_preserves_later_pause() -> TestRe
         .await?;
     assert!(store.load(&child).await?.state().unwrap().paused());
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -860,6 +871,7 @@ async fn first_fork_placement_resumes_once_and_preserves_later_pause() -> TestRe
         .await?;
     assert!(store.load(&replay).await?.state().unwrap().paused());
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(provider.clone(), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -917,6 +929,7 @@ async fn generic_event_host_runs_the_original_package_over_strict_wire() -> Test
     let clock = Arc::new(Manual(AtomicU64::new(1)));
     let open = || -> Result<Host<MemoryStream>, Box<dyn std::error::Error>> {
         Ok(Host::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             address.clone(),
             remote()?,
@@ -1028,71 +1041,11 @@ impl Handler for CapturesCuts {
     }
 }
 
-struct BindsRequests {
-    package: Package,
-    requests: OnceLock<crate::guest::Requests>,
-    admitted: std::sync::Mutex<Vec<(crate::guest::RequestId, Option<(ActorReference, u64)>, u64)>>,
-}
-
-impl Handler for BindsRequests {
-    fn manifest(&self) -> &Manifest {
-        self.package.manifest()
-    }
-
-    fn on_record<'a>(
-        &'a self,
-        delivery: Delivery,
-        checkpoint: Option<&'a Checkpoint>,
-        cancellation: crate::guest::CancellationToken,
-    ) -> GuestFuture<'a, Transition> {
-        let bound = self
-            .requests
-            .get()
-            .and_then(|requests| requests.admit(delivery.request).ok());
-        self.admitted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((delivery.request, bound, delivery.epoch));
-        self.package.on_record(delivery, checkpoint, cancellation)
-    }
-}
-
-/// A host capability call's only authority is its attempt's live binding,
-/// never an actor the caller names, and the binding ends with the attempt.
 #[tokio::test]
 async fn capability_requests_are_bound_for_exactly_their_attempt() -> TestResult {
-    let provider = Arc::new(MemoryStream::default());
-    let store = Store::new(Arc::clone(&provider), root()?);
-    let address = spawn_with(&store, "bound-requests", &[b"emit", b"emit"]).await?;
-    let handler = Arc::new(BindsRequests {
-        package: Package::new()?,
-        requests: OnceLock::new(),
-        admitted: std::sync::Mutex::new(Vec::new()),
-    });
-    let runtime = Runtime::new(
-        Store::new(Arc::clone(&provider), root()?),
-        handler.clone(),
-        Arc::new(Manual(AtomicU64::new(1))),
-    );
-    handler
-        .requests
-        .set(runtime.requests().clone())
-        .map_err(|_| "requests were already bound")?;
-    runtime.host(address.clone())?;
-    assert!(runtime.drain().await.is_empty());
-    let admitted = handler
-        .admitted
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(admitted.len(), 2);
-    assert_ne!(admitted[0].0, admitted[1].0);
-    for (request, bound, epoch) in admitted.iter() {
-        assert_eq!(bound.as_ref(), Some(&(address.clone(), *epoch)));
-        assert!(runtime.requests().admit(*request).is_err());
-    }
+    crate::conformance::request_ledger(Arc::new(MemoryStream::default()), root()?).await?;
     Ok(())
 }
-
 /// Alarm resume must carry Actors' saved input cut even without a record.
 /// Resetting to zero would replay the two consumed commands after reopen.
 #[tokio::test]
@@ -1106,6 +1059,7 @@ async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> Tes
         deliveries: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(Manual(AtomicU64::new(1))),
@@ -1114,6 +1068,7 @@ async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> Tes
     assert!(runtime.drain().await.is_empty());
     drop(runtime);
     let reopened = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(Manual(AtomicU64::new(101))),
@@ -1331,6 +1286,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
             .await?,
     )?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
@@ -1390,6 +1346,7 @@ async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult 
     let observer = Counted::new((*provider).clone());
     let store = Store::new(Arc::clone(&provider), root()?);
     let runtime = Arc::new(Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -1532,6 +1489,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
     ))?;
     PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
@@ -1772,6 +1730,7 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
     let store = Store::new(Arc::clone(&provider), root()?);
     let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(SystemClock),
@@ -1867,8 +1826,13 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
     let store = Store::new(Arc::clone(&provider), root()?);
     let hot = spawn_with(&store, "duplicate-hot", &[b"emit"]).await?;
     let cold = spawn_with(&store, "duplicate-cold", &[b"emit"]).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
-        .with_limits(RuntimeLimits::new(2, 2)?);
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(2, 2)?);
     runtime.host(hot.clone())?;
     runtime.host(cold.clone())?;
     let slot = runtime.slot(&hot).ok_or("missing hot actor")?;
@@ -1921,6 +1885,7 @@ async fn a_cancelled_waiter_leaves_the_active_delivery_alarm() -> TestResult {
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "waiter-alarm", &[b"set 100"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         store,
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
@@ -1983,8 +1948,13 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
         create.join(effect)?;
     }
     store.submit(create).await?;
-    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
-        .with_limits(RuntimeLimits::new(1, 1)?);
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 1)?);
     runtime.host(address.clone())?;
     for expected in 0..64 {
         let work = runtime.ready.take().ok_or("rotation work disappeared")?;
@@ -2009,6 +1979,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     let hot = spawn_with(&store, "hot", &[b"emit".as_slice(); 8]).await?;
     let cold = spawn_with(&store, "cold", &[b"emit"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -2057,6 +2028,7 @@ async fn event_batch_yield_retains_placement_until_completion_or_abort() -> Test
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "event-lease", &[b"emit"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -2124,6 +2096,7 @@ async fn a_paused_actor_withdraws_its_due_alarm_until_resume() -> TestResult {
     let clock = Arc::new(Manual(AtomicU64::new(1)));
     let shared: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         shared,
@@ -2164,6 +2137,7 @@ async fn two_runtimes_claiming_one_cut_cannot_share_an_epoch() -> TestResult {
     let address = spawn_with(&store, "contested", &[b"emit"]).await?;
     let host = || -> Result<Runtime<MemoryStream>, Box<dyn std::error::Error>> {
         Ok(Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(&provider), root()?),
             Arc::new(Package::new()?),
             Arc::new(SystemClock),
@@ -2217,6 +2191,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     let inbox = StreamPath::new("agents/retained")?;
     let calls = Arc::new(AtomicU64::new(0));
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Invocations {
             package: Package::new()?,
@@ -2299,6 +2274,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "cancelled", &[b"emit"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Limited::new(Some(10_000), Some(1 << 16), true)?),
         Arc::new(Manual(AtomicU64::new(1))),
@@ -2337,6 +2313,7 @@ async fn a_long_state_root_still_claims_and_delivers() -> TestResult {
     let store = Store::new(Arc::clone(&provider), long.clone());
     let address = spawn_with(&store, "deep", &[b"emit"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), long),
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
@@ -2403,6 +2380,7 @@ async fn run_limited(handler: Limited) -> Result<Outcome, Box<dyn std::error::Er
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "limited", &[b"emit"]).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(handler),
         Arc::new(Manual(AtomicU64::new(1))),

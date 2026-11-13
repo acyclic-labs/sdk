@@ -56,6 +56,7 @@ async fn a_failed_alarm_delivery_waits_for_its_next_event() -> TestResult {
         transient: false,
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::clone(&handler) as Arc<dyn Handler>,
         Arc::new(clock),
@@ -123,6 +124,7 @@ async fn unavailable_delivery_resumes_its_original_alarm_without_run_failure() -
         transient: true,
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone() as Arc<dyn Handler>,
         Arc::new(clock),
@@ -359,6 +361,7 @@ async fn guard_refusals_distinguish_unchanged_observations_from_source_changes()
         let provider = store.provider();
         let seals = Arc::new(AtomicUsize::new(0));
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             Store::new(Arc::clone(provider), root()?).with_composer(Arc::new(Guard {
                 refusal,
                 seals: Arc::clone(&seals),
@@ -490,6 +493,7 @@ async fn each_handler_invocation_gets_its_own_capability_binding() -> TestResult
         failures: std::sync::Mutex::new(Vec::new()),
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(provider), root()?).with_composer(Arc::new(Guard {
             refusal: Refusal::StaleGuard,
             seals: Arc::new(AtomicUsize::new(0)),
@@ -572,6 +576,7 @@ async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResu
     }
     store.submit(create).await?;
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),

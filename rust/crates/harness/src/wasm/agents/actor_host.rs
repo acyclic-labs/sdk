@@ -57,6 +57,7 @@ impl WasmActorHost {
         );
         Ok(Self {
             host: Host::new(
+                acyclic_actors::guest::Requests::default(),
                 Store::new(stream.provider(), root),
                 actor,
                 Arc::new(handler),

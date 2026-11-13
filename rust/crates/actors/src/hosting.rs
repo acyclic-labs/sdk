@@ -28,6 +28,7 @@ pub struct Host<P: StreamProvider + ?Sized> {
 impl<P: StreamProvider + ?Sized> Host<P> {
     /// Bind exactly one actor, without selecting a backend or an application.
     pub fn new(
+        requests: crate::guest::Requests,
         store: Store<P>,
         actor: ActorReference,
         handler: Arc<dyn Handler>,
@@ -35,7 +36,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         limits: RuntimeLimits,
     ) -> Self {
         Self {
-            runtime: Runtime::new(store, handler, Arc::clone(&clock)).with_limits(limits),
+            runtime: Runtime::new(requests, store, handler, Arc::clone(&clock)).with_limits(limits),
             actor,
             clock,
             events: tokio::sync::Mutex::new(()),

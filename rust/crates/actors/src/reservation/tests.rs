@@ -218,6 +218,7 @@ async fn publish(
     }
     store.submit(create).await?;
     Ok(Host::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(store.provider()), store.root().clone()),
         actor.clone(),
         Arc::new(Package::new(

@@ -221,8 +221,14 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
-    /// One runtime per state root and handler package.
-    pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
+    /// One runtime per state root and handler package. Bind the guest capability
+    /// bridge to a clone of `requests` before constructing this runtime.
+    pub fn new(
+        requests: crate::guest::Requests,
+        store: Store<P>,
+        handler: Arc<dyn Handler>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let shards = store.scheduling_shards;
         Self {
             scheduling_shards: (0..store.scheduling_shards()).collect(),
@@ -240,7 +246,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             admission: None,
             completions: OnceLock::new(),
             subscriptions: SyncMutex::new(subscriptions::Subscriptions::default()),
-            requests: crate::guest::Requests::default(),
+            requests,
             restored: tokio::sync::watch::Sender::new(false),
         }
     }

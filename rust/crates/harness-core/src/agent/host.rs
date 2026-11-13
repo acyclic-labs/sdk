@@ -168,7 +168,13 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             agents: Agents::new(actor_store(&provider)?),
             // Agents of other bindings may share this stream's actor root;
             // this filter grants no placement or execution authority.
-            runtime: Runtime::new(published, handler, clock).within(&within),
+            runtime: Runtime::new(
+                acyclic_actors::guest::Requests::default(),
+                published,
+                handler,
+                clock,
+            )
+            .within(&within),
             provider,
             within,
             lifecycle: None,

@@ -60,6 +60,7 @@ async fn unavailable_invocation_retries_without_sealing_a_failed_call() -> TestR
         attempts: AtomicUsize::new(0),
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(SystemClock),
@@ -141,6 +142,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         calls: AtomicUsize::new(0),
     });
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(SystemClock),
