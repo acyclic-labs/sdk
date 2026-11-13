@@ -17,6 +17,7 @@ fn write_pair(
             .into_iter()
             .enumerate()
             .map(|(ordinal, bytes)| {
+                super::super::describe(|| format!("fixture write {ordinal}"));
                 if let Some((at, fault)) = cut
                     && at == ordinal
                 {
@@ -41,6 +42,15 @@ fn every_write_cut_preserves_its_exact_prefix_and_cause() {
     assert!(results.into_iter().all(|result| result.is_ok()));
     let count = schedule.durable_write_count();
     assert_eq!(count, 2, "an original file write escaped enumeration");
+    assert_eq!(
+        schedule
+            .durable_writes()
+            .iter()
+            .map(|write| write.detail.as_ref())
+            .collect::<Vec<_>>(),
+        ["fixture write 0", "fixture write 1"],
+        "durable calls lost their original operation attribution"
+    );
     for cut in 0..count {
         for fault in [
             DurableFault::Before,

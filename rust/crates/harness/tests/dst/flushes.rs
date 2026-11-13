@@ -124,7 +124,18 @@ fn measure(replies: [ScriptedTurn; 6]) -> Result<Windows> {
         };
         let cuts = cuts?;
         let writes = driver.schedule.durable_writes();
-        let window = |from: usize, to: usize| flushes(&writes[cuts[from]..cuts[to]]);
+        let window = |from: usize, to: usize| {
+            let selected = &writes[cuts[from]..cuts[to]];
+            for write in selected {
+                if flushes(std::slice::from_ref(write)) != (0, 0) {
+                    eprintln!(
+                        "durability window={from} ordinal={} operation={} owner={:?}",
+                        write.ordinal, write.operation, write.detail
+                    );
+                }
+            }
+            flushes(selected)
+        };
         Ok(Windows {
             open: window(0, 1),
             first: window(1, 2),

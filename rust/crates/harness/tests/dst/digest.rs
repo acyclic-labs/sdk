@@ -25,7 +25,7 @@ fn canonical(trace: &Trace, out: &mut impl std::io::Write) -> std::io::Result<()
         records,
         durable,
     } = trace;
-    writeln!(out, "dst-trace-v2")?;
+    writeln!(out, "dst-trace-v3")?;
     writeln!(out, "polls {}", polls.len())?;
     for (id, kind) in polls {
         writeln!(out, "poll {id} {kind:?}")?;
@@ -38,6 +38,7 @@ fn canonical(trace: &Trace, out: &mut impl std::io::Write) -> std::io::Result<()
     for DurableWrite {
         ordinal,
         operation,
+        detail,
         requested,
         transferred,
         failure,
@@ -45,7 +46,7 @@ fn canonical(trace: &Trace, out: &mut impl std::io::Write) -> std::io::Result<()
     {
         writeln!(
             out,
-            "write {ordinal} {operation:?} {requested} {transferred:?} {failure:?}"
+            "write {ordinal} {operation:?} {detail:?} {requested} {transferred:?} {failure:?}"
         )?;
     }
     for (label, value) in [
@@ -169,6 +170,7 @@ fn canonical_trace_locates_divergence_and_is_the_digest_input() {
         writes: vec![DurableWrite {
             ordinal: 0,
             operation: "write",
+            detail: "fixture publication".into(),
             requested: 3,
             transferred: Some(3),
             failure: None,
@@ -187,6 +189,14 @@ fn canonical_trace_locates_divergence_and_is_the_digest_input() {
         String::from_utf8(bytes).unwrap()
     };
     let left = lines(&trace);
+    let original_digest = pair(&trace);
+    trace.writes[0].detail = "another publication".into();
+    assert_ne!(
+        original_digest,
+        pair(&trace),
+        "write attribution escaped the replay oracle"
+    );
+    trace.writes[0].detail = "fixture publication".into();
     // Embedded newlines stay escaped: one line per element.
     assert_eq!(
         left.lines()

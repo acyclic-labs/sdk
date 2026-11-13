@@ -63,6 +63,8 @@ pub struct DurableWrite {
     pub ordinal: usize,
     /// Original production boundary.
     pub operation: &'static str,
+    /// Original logical operation description, inherited by owned workers.
+    pub detail: Arc<str>,
     /// Bytes offered to this call; zero for namespace and durability calls.
     pub requested: usize,
     /// Bytes reported by the original file call, when it ran successfully.
@@ -163,7 +165,10 @@ impl Drop for Open {
     }
 }
 
-fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::Result<Call> {
+fn begin(context: Context, operation: &'static str, requested: usize) -> io::Result<Call> {
+    // Snapshot before the controller lock: descriptions and I/O never nest it.
+    let detail = lock(&context.detail).clone();
+    let schedule = context.schedule;
     let (ordinal, fault) = {
         let mut state = schedule.0.state();
         let writes = &mut state.writes;
@@ -190,6 +195,7 @@ fn begin(schedule: Schedule, operation: &'static str, requested: usize) -> io::R
         writes.trace.push(DurableWrite {
             ordinal,
             operation,
+            detail,
             requested,
             transferred: None,
             failure: None,
@@ -253,7 +259,7 @@ pub fn durable_write(
         return write(bytes);
     };
     let _open = Open::enter(operation);
-    let call = begin(context.schedule, operation, bytes.len())?;
+    let call = begin(context, operation, bytes.len())?;
     let result = call.before().and_then(|()| {
         #[cfg(test)]
         if call.schedule.0.state().writes.skip_write {
@@ -287,7 +293,7 @@ pub fn durable_operation<T>(
         return work();
     };
     let _open = Open::enter(operation);
-    let call = begin(context.schedule, operation, 0)?;
+    let call = begin(context, operation, 0)?;
     let result = call.before().and_then(|()| {
         if let Some(fault) = &call.fault
             && matches!(fault.fault, DurableFault::Torn(_))
