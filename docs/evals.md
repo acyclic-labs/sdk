@@ -66,3 +66,9 @@ unfiltered source manifest: a post-export filename filter cannot remove bodies
 already present in a transfer closure. Selection uses the original pinned
 generation even when the source changes concurrently. Parent generation IDs are
 provenance; omitted parents' file bodies are not part of the selected closure.
+
+For Computed case files, fork the captured lazy snapshot, observe the selected
+paths in that witness, and use `exactify_cut` for exactly those paths. It returns
+a plain immutable generation or refuses unavailable original source versions.
+Apply `inherit_paths` to that generation before building its transfer manifest.
+Unrelated private file bodies need not be opened or copied to export the cases.

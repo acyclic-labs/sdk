@@ -8,6 +8,8 @@ use acyclic_fs::{CancellationToken, NativeMaterializationWork, VolumeLimits, Wor
 use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _};
 use std::sync::Arc;
 
+mod export;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 fn path(text: &str) -> NamespacePath {
     NamespacePath::from_text_in_profile(
@@ -144,7 +146,7 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
             .await?;
         entries.push(entry);
     }
-    let source = StreamProvider::new(Arc::clone(&streams), &agent)?.into_source();
+    let source = Arc::new(StreamProvider::new(Arc::clone(&streams), &agent)?.into_source());
     let cancel = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(error, _)| error)?;
@@ -217,6 +219,7 @@ async fn computed_cases_keep_original_decisions_cut_ranges_and_event_delivery() 
             .await?;
         assert_eq!(range.bytes.as_slice(), &output.bytes.as_slice()[7..26]);
     }
+    export::selected_case_export(Arc::clone(&source), &work).await?;
     let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
     let watch = source
         .watch(Arc::new(Changes(send)), &work, &cancel)?
