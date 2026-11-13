@@ -154,11 +154,12 @@ impl LocalWorkspace {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let primary = self.mounts.named(None)?.1;
         authority
             .mount_options(
                 workspace,
-                Some(&self.mounts.named(None)?.1.view.volume),
-                true,
+                Some(&primary.view.volume),
+                !primary.mode.read_only(),
                 &work,
             )
             .await
@@ -172,7 +173,12 @@ impl LocalWorkspace {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
             path,
-            (&primary.view.name, &primary.view.volume, None),
+            (
+                &primary.view.name,
+                &primary.view.volume,
+                mounts::mode(primary),
+                None,
+            ),
             self.mounts
                 .mounts()
                 .filter(|(relative, _)| !relative.is_empty())
@@ -180,6 +186,7 @@ impl LocalWorkspace {
                     (
                         mount.view.name.clone(),
                         mount.view.volume.clone(),
+                        mounts::mode(mount),
                         mount.view.source.clone(),
                     )
                 }),
@@ -243,14 +250,16 @@ impl LocalWorkspace {
         let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
-            (&primary.name, project, None),
-            mounts::auxiliary(bindings).map(|(name, volume)| {
+            (&primary.name, project, primary.mode, None),
+            mounts::auxiliary(bindings).map(|(entry, volume)| {
                 let source = self
                     .mounts
                     .mounts()
-                    .find(|(_, mount)| &mount.view.volume == volume)
+                    .find(|(_, mount)| {
+                        &mount.view.volume == volume && mounts::mode(mount) == entry.mode
+                    })
                     .and_then(|(_, mount)| mount.view.source.clone());
-                (name.clone(), volume.clone(), source)
+                (entry.name.clone(), volume.clone(), entry.mode, source)
             }),
         )?;
         mounts.scratch_root = self.mounts.scratch_root.clone();
@@ -479,10 +488,20 @@ pub(super) async fn open(
         .map_err(storage)?;
     let mut mounts = mounts::owner(
         &path,
-        ("project", volume, None),
-        attach
-            .auxiliary()
-            .map(|(name, volume)| (name.into(), volume.clone(), None)),
+        (
+            "project",
+            volume,
+            crate::agent::WorkspaceMode::ReadWrite,
+            None,
+        ),
+        attach.auxiliary().map(|(name, volume)| {
+            (
+                name.into(),
+                volume.clone(),
+                crate::agent::WorkspaceMode::ReadWrite,
+                None,
+            )
+        }),
     )?;
     mounts.scratch_root = Some(
         volumes::held_directories(&host, Path::new("scratch"))?

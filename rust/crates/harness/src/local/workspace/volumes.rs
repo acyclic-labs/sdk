@@ -87,9 +87,14 @@ pub(super) async fn attach(
             .await
             .map_err(|failure| Error::from(failure.error))?
             .value;
-        let directory = blake3::hash(mount.view.volume.storage_name(&mut None)?.as_bytes())
+        let mut directory = blake3::hash(mount.view.volume.storage_name(&mut None)?.as_bytes())
             .to_hex()
             .to_string();
+        // A read-only alias must not share the native destination and callback
+        // owner of a writable binding of the same volume.
+        if mount.mode.read_only() {
+            directory.push_str("-ro");
+        }
         let destination = root.path().join(&directory);
         let options = if native {
             Some(

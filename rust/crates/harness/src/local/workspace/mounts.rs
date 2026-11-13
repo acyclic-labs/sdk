@@ -1,6 +1,16 @@
 //! Default ownership policy, compiled through the common composed-view path.
 use super::*;
+use crate::agent::WorkspaceMode;
 use acyclic_fs::access::*;
+
+/// Retain the admitted binding mode when moving a composed native root.
+pub(super) fn mode<T>(mount: &crate::workspace::Mount<T>) -> WorkspaceMode {
+    if mount.mode.read_only() {
+        WorkspaceMode::ReadOnly
+    } else {
+        WorkspaceMode::ReadWrite
+    }
+}
 
 /// The selected cwd must retain the primary slot's name and source identity.
 pub(super) fn primary<'a>(
@@ -17,22 +27,22 @@ pub(super) fn primary<'a>(
 /// The selected task's visible volumes, excluding its primary and internal volume.
 pub(super) fn auxiliary(
     bindings: &[crate::agent::WorkspaceEntry],
-) -> impl Iterator<Item = (&String, &VolumeRef)> {
+) -> impl Iterator<Item = (&crate::agent::WorkspaceEntry, &VolumeRef)> {
     let primary = crate::agent::WorkspaceTable::primary_in(bindings).map(|entry| entry.id);
     bindings
         .iter()
         .filter(move |binding| {
             Some(binding.id) != primary && binding.role != crate::agent::WorkspaceRole::Internal
         })
-        .filter_map(|binding| binding.as_volume().map(|volume| (&binding.name, volume)))
+        .filter_map(|binding| binding.as_volume().map(|volume| (binding, volume)))
 }
 
 pub(super) fn owner<T>(
     root: &Path,
-    primary: (&str, &VolumeRef, T),
-    volumes: impl IntoIterator<Item = (String, VolumeRef, T)>,
+    primary: (&str, &VolumeRef, WorkspaceMode, T),
+    volumes: impl IntoIterator<Item = (String, VolumeRef, WorkspaceMode, T)>,
 ) -> Result<crate::workspace::MountTable<T>> {
-    let (name, volume, source) = primary;
+    let (name, volume, mode, source) = primary;
     let principal = Principal {
         kind: PrincipalKind::Agent,
         id: "owner".into(),
@@ -48,27 +58,30 @@ pub(super) fn owner<T>(
         generations: Generations::All,
         path: "**".into(),
     };
-    let actions = Action::ALL.into_iter().collect();
-    let policy = Arc::new(Policy {
-        schema_version: POLICY_SCHEMA_VERSION,
-        version: 1,
-        layers: vec![vec![Rule {
-            id: "owner".into(),
-            effect: Effect::Allow,
-            principal: PrincipalPattern::default(),
-            actions,
-            resource,
-            conditions: Conditions {
-                relation: Some(Relation::SelfTask),
-                ..Conditions::default()
-            },
-        }]],
-    });
+    let policy = |actions: &[Action]| {
+        Arc::new(Policy {
+            schema_version: POLICY_SCHEMA_VERSION,
+            version: 1,
+            layers: vec![vec![Rule {
+                id: "owner".into(),
+                effect: Effect::Allow,
+                principal: PrincipalPattern::default(),
+                actions: actions.iter().copied().collect(),
+                resource: resource.clone(),
+                conditions: Conditions {
+                    relation: Some(Relation::SelfTask),
+                    ..Conditions::default()
+                },
+            }]],
+        })
+    };
+    let writable = policy(ActionSet::Owner.actions());
+    let read_only = policy(ActionSet::MountRead.actions());
     let volumes: Vec<_> = volumes.into_iter().collect();
     let capability = Capability {
         layers: vec![
             std::iter::once(volume)
-                .chain(volumes.iter().map(|(_, volume, _)| volume))
+                .chain(volumes.iter().map(|(_, volume, _, _)| volume))
                 .flat_map(|volume| {
                     Capability::whole_volume(Some(volume.id().into()), ActionSet::Owner.actions())
                         .layers
@@ -79,7 +92,7 @@ pub(super) fn owner<T>(
         ],
         expires_at: None,
     };
-    let view = |name, volume, source| crate::workspace::VolumeView {
+    let view = |name, volume, mode, source| crate::workspace::VolumeView {
         name,
         agent: principal.id.clone(),
         volume,
@@ -87,7 +100,12 @@ pub(super) fn owner<T>(
         generation: 0,
         head: 0,
         config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
-        policy: Arc::clone(&policy),
+        // Compile each alias independently. A writable sibling of the same
+        // volume must not promote this binding's read-only mode.
+        policy: Arc::clone(match mode {
+            WorkspaceMode::ReadOnly => &read_only,
+            WorkspaceMode::ReadWrite => &writable,
+        }),
         source,
     };
     crate::workspace::compose(
@@ -98,10 +116,10 @@ pub(super) fn owner<T>(
             now: 0,
             approvals: 0,
         },
-        view(name.into(), volume.clone(), source),
+        view(name.into(), volume.clone(), mode, source),
         volumes
             .into_iter()
-            .map(|(name, volume, source)| view(name, volume, source)),
+            .map(|(name, volume, mode, source)| view(name, volume, mode, source)),
     )
 }
 
@@ -122,8 +140,8 @@ mod tests {
             let volume = |name: &str| VolumeRef::new(provider.clone(), name.into(),
                 VolumeClass::Project, VolumeOwner::Project("owner".into()), &mut None).unwrap();
             let root = std::env::current_dir().unwrap();
-            let mut mounts = owner(&root, ("project", &volume("project"), sources[0]),
-                [("data".into(), volume("data"), sources[1])]).unwrap();
+            let mut mounts = owner(&root, ("project", &volume("project"), WorkspaceMode::ReadWrite, sources[0]),
+                [("data".into(), volume("data"), WorkspaceMode::ReadWrite, sources[1])]).unwrap();
             let before: Vec<_> = mounts.mounts().map(|(path, mount)|
                 (path.to_owned(), mount.view.volume.clone(), mount.mode, mount.view.source)).collect();
             for (_, mount) in mounts.mounts_mut() {

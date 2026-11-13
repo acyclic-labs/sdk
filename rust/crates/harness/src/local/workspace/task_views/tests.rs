@@ -77,6 +77,11 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
             },
         ));
     }
+    session_bindings.push(crate::agent::WorkspaceEntry::initial_volume(
+        crate::agent::WorkspaceRole::Output,
+        "results".into(),
+        private_ui.clone(),
+    ));
     session_bindings
         .iter_mut()
         .find(|entry| entry.name == "shared")
@@ -163,6 +168,19 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
     assert_eq!(private.view.volume, private_ui);
     assert!(private.native_root.override_path().is_none());
     private.check(acyclic_fs::access::Action::Write, "bound-note", 0)?;
+    let output = second.mounts.named(Some("results"))?.1;
+    assert!(output.mode.read_only());
+    output.check(acyclic_fs::access::Action::Read, "bound-note", 0)?;
+    assert!(
+        output
+            .check(acyclic_fs::access::Action::Write, "bound-note", 0)
+            .is_err()
+    );
+    assert_ne!(
+        private.view.source.as_ref().unwrap().destination,
+        output.view.source.as_ref().unwrap().destination,
+        "different binding modes shared a native projection",
+    );
     let logical = workspace.context_task_view(
         view().await?,
         &harness.project,
@@ -193,6 +211,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         logical.mounts.named(Some("display"))?.1.view.volume,
         private_ui
     );
+    assert!(logical.mounts.named(Some("results"))?.1.mode.read_only());
     assert!(matches!(
         workspace.context_task_view(view().await?, &private_home, &session_bindings, &authority),
         Err(Error::Unauthorized(_)),
@@ -203,6 +222,42 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         harness.project
     );
     assert!(remounted.named(Some("project")).is_err());
+    assert!(remounted.named(Some("results"))?.1.mode.read_only());
+    let mut read_only_primary = session_bindings.clone();
+    read_only_primary[0].mode = crate::agent::WorkspaceMode::ReadOnly;
+    let read_only = workspace.context_task_view(
+        view().await?,
+        &harness.project,
+        &read_only_primary,
+        &authority,
+    )?;
+    let primary = read_only.mounts.named(None)?.1;
+    assert!(primary.mode.read_only());
+    primary.check(acyclic_fs::access::Action::Read, "file", 0)?;
+    assert!(
+        primary
+            .check(acyclic_fs::access::Action::Write, "file", 0)
+            .is_err()
+    );
+    let options = read_only
+        .mount_options(read_only.view().workspace())
+        .await?;
+    let access = options
+        .require_access_view()
+        .map_err(storage)?
+        .current()
+        .map_err(storage)?;
+    let now = harness.clock.now_unix_millis() / 1000;
+    assert!(
+        access
+            .decide(acyclic_fs::access::Action::Read, "file", now)
+            .allowed
+    );
+    assert!(
+        !access
+            .decide(acyclic_fs::access::Action::Write, "file", now)
+            .allowed
+    );
     {
         let selected = &second;
         let path = "bound-note";
@@ -270,7 +325,7 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
                 .as_ref(),
             b"model-visible private state",
         );
-        for name in ["interaction", "project", "unknown"] {
+        for name in ["interaction", "project", "unknown", "results"] {
             let path = format!("volume:///{name}/bound-note");
             assert!(
                 crate::conversation::ContentPublisher::stage_once(
