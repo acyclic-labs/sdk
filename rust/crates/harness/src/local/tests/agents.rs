@@ -3543,6 +3543,11 @@ async fn project_mentions_keep_their_volume_and_bounded_copy_paths() -> Result<(
             "the prompt started no attached message turn".into(),
         ));
     };
+    let journal = crate::conversation::journal_volume(
+        project.provider().clone(),
+        &client.conversation.agent().id(),
+    )?;
+    assert_eq!(manifest.volume(), &journal);
     // Every selected member lives beside its manifest on the host journal;
     // none stays on the project volume a child does not inherit.
     let (base, _) = manifest
