@@ -110,8 +110,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
         // Conflict returns the original conditional result. Unknown retains
         // the exact publication and participant custody in the returned error.
-        store
-            .submit_retained(publication)
+        transport::submit(store, publication)
             .await?
             .ok_or(Error::Invalid("dispatcher receipt has no state"))
     }

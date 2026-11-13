@@ -17,6 +17,8 @@ struct Interleaved {
     source: MemoryStream,
     writes: AtomicU64,
     before_write: Mutex<Option<Competing>>,
+    lose_acknowledgement: AtomicBool,
+    retained_request: Mutex<Option<WriteRequest>>,
 }
 
 impl Interleaved {
@@ -60,6 +62,9 @@ impl ExplicitStreamProvider for Interleaved {
     ) -> BoxProviderFuture<'_, Result<WriteOutcome, StreamError>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
+            if let Some(original) = self.retained_request.lock().unwrap().take() {
+                assert_eq!(request, original, "uncertain publication was replaced");
+            }
             let competing = self.before_write.lock().unwrap().take();
             if let Some(competing) = competing {
                 let publication = match competing {
@@ -74,7 +79,12 @@ impl ExplicitStreamProvider for Interleaved {
                 };
                 self.publish(publication).await?;
             }
-            self.source.write(request).await
+            let result = self.source.write(request.clone()).await?;
+            if self.lose_acknowledgement.swap(false, Ordering::SeqCst) {
+                *self.retained_request.lock().unwrap() = Some(request);
+                return Err(StreamError::Unavailable);
+            }
+            Ok(result)
         })
     }
 
@@ -144,6 +154,44 @@ async fn dispatcher_creation_returns_the_competing_owners_actual_result() -> Tes
     let observed = provider.requests().since(before);
     assert_eq!(observed.control(), 1);
     assert_eq!(observed.data(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatcher_lost_acknowledgements_resubmit_the_original_publication() -> TestResult {
+    let runtime = runtime()?;
+    let actor = spawn_with(runtime.store(), "retained", &[b"clear"]).await?;
+    let provider = runtime.store().provider();
+    let shard = runtime.store().scheduling_shard(&actor);
+    let (store, address) = runtime.dispatcher_store(shard)?;
+    let before = provider.inner().writes.load(Ordering::SeqCst);
+    provider
+        .inner()
+        .lose_acknowledgement
+        .store(true, Ordering::SeqCst);
+    let empty = store.load(&address).await?;
+    assert!(empty.state().is_none());
+    let original = runtime
+        .advance_dispatcher(&store, empty, shard, 1, 0, Vec::new())
+        .await?;
+    assert_eq!(original.tail, 1);
+    assert!(provider.inner().retained_request.lock().unwrap().is_none());
+    provider
+        .inner()
+        .lose_acknowledgement
+        .store(true, Ordering::SeqCst);
+    let advanced = runtime
+        .advance_dispatcher(&store, original, shard, 2, 0, Vec::new())
+        .await?;
+    assert_eq!(advanced.tail, 2);
+    assert_eq!(
+        advanced
+            .state()
+            .and_then(|state| state.cursor("activation")),
+        Some(2)
+    );
+    assert!(provider.inner().retained_request.lock().unwrap().is_none());
+    assert_eq!(provider.inner().writes.load(Ordering::SeqCst) - before, 4);
     Ok(())
 }
 

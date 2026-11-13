@@ -18,6 +18,7 @@ mod limits;
 mod pause;
 mod placement;
 mod subscriptions;
+mod transport;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Transition, Trigger};
 #[cfg(test)]
@@ -671,7 +672,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             assigned.push(self.dispatcher_store(shard)?);
         }
         let actors: Vec<_> = assigned.iter().map(|(_, actor)| actor.clone()).collect();
-        let loaded = assigned[0].0.load_all(&actors).await?;
+        let loaded = transport::retry(|| assigned[0].0.load_all(&actors)).await?;
         // Each shard's earliest pending deadline window past its consumed
         // watermark: one bounded children page per assigned shard.
         let mut consumed = BTreeMap::new();
@@ -682,8 +683,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let earliest =
             futures::future::try_join_all(self.scheduling_shards.iter().zip(&loaded).map(
                 |(&shard, dispatcher)| {
-                    self.store
-                        .next_window(shard, dispatcher::deadline_cursor(dispatcher))
+                    transport::retry(move || {
+                        self.store
+                            .next_window(shard, dispatcher::deadline_cursor(dispatcher))
+                    })
                 },
             ))
             .await?;
@@ -700,10 +703,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             dispatchers.insert(shard, Some(dispatcher));
             seen.insert(shard, from);
             completion_tail.insert(shard, from);
-            let mut request =
-                acyclic_stream::FollowRequest::new(self.store.scheduling_path(shard)?, from);
-            request.when_absent = acyclic_stream::WhenAbsent::Wait;
-            let records = acyclic_stream::records_only(provider.follow(request).await?);
+            let records = transport::follow(
+                Arc::clone(provider),
+                self.store.scheduling_path(shard)?,
+                from,
+            );
             created.push(records.map(move |record| (shard, record)));
         }
         let mut dispatching: FuturesUnordered<
@@ -750,7 +754,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .send_if_modified(|restored| !std::mem::replace(restored, true));
                 } else if let Some((shard, after)) = restore.pop() {
                     restoring = Some(Box::pin(async move {
-                        let (actors, next) = self.store.interest_holders(shard, after).await?;
+                        let (actors, next) =
+                            transport::retry(|| self.store.interest_holders(shard, after.clone()))
+                                .await?;
                         Ok((shard, actors, next))
                     }));
                 }
@@ -944,7 +950,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     for (shard, window) in
                         scheduling::open(&mut windows, &mut reading, &consumed, now)
                     {
-                        opening.push(Box::pin(self.open_window(shard, window, 0)));
+                        opening.push(Box::pin(transport::retry(move || {
+                            self.open_window(shard, window, 0)
+                        })));
                     }
                 }
                 Event::Opened(opened) => {
@@ -969,9 +977,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         }
                     }
                     match next {
-                        Next::Page(from) => {
-                            opening.push(Box::pin(self.open_window(shard, window, from)))
-                        }
+                        Next::Page(from) => opening.push(Box::pin(transport::retry(move || {
+                            self.open_window(shard, window, from)
+                        }))),
                         Next::Window(next) => scheduling::read(
                             &mut reading,
                             &mut consumed,
@@ -1023,7 +1031,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             .map_err(|_| Error::Invalid("too many scheduling shards"))?,
                         at_least: Default::default(),
                     };
-                    let view = provider.heads(request.clone()).await?;
+                    let view = transport::retry(|| async {
+                        provider.heads(request.clone()).await.map_err(Error::from)
+                    })
+                    .await?;
                     view.validate_for(&request)?;
                     for (&shard, head) in self.scheduling_shards.iter().zip(view.heads) {
                         completion_tail.insert(shard, head.map_or(0, |head| head.tail));
@@ -1201,7 +1212,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     self.handler.manifest().validate_interrupts()?;
                     Ok(admission)
                 }) {
-                    Ok(_admission) => self.deliver_retained(actor, slot, &mut inner).await,
+                    Ok(_admission) => loop {
+                        match self.deliver_retained(actor, slot, &mut inner).await {
+                            Err(error) if transport::unavailable(&error) => sleep(10).await,
+                            result => break result,
+                        }
+                    },
                     Err(error) => Err(error),
                 };
                 // Every failure keeps a wake, a conflict's included: one that
@@ -1473,6 +1489,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         transition,
                         key(&snapshot, "publish")?,
                     )?,
+                    Err(error) if transport::unavailable(&error) => return Err(error),
                     Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
                         let Some(input) = record.as_ref() else {
                             return Err(Error::Handler(failure));

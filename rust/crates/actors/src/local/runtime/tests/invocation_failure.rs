@@ -14,6 +14,72 @@ fn cause() -> GuestError {
     GuestError::Decode("original deterministic guest failure".into())
 }
 
+struct UnavailableOnce {
+    package: Package,
+    attempts: AtomicUsize,
+}
+
+impl Handler for UnavailableOnce {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        Box::pin(async move {
+            if delivery.invocation()?.is_some() && self.attempts.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                return Err(GuestError::Unavailable("connection interrupted".into()));
+            }
+            self.package
+                .on_record(delivery, checkpoint, cancellation)
+                .await
+        })
+    }
+}
+
+#[tokio::test]
+async fn unavailable_invocation_retries_without_sealing_a_failed_call() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "resumed-call", &[b"clear"]).await?;
+    let invocation = Invocation::new(
+        StreamPath::new("caller/retry")?,
+        address,
+        "inbox".into(),
+        Bytes::from_static(b"original"),
+        Bytes::from_static(b"emit"),
+    )?;
+    let ticket = store.enqueue_invoke(&invocation).await?;
+    let handler = Arc::new(UnavailableOnce {
+        package: Package::new()?,
+        attempts: AtomicUsize::new(0),
+    });
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    );
+    let mut serving =
+        Box::pin(runtime.run(|actor, error| panic!("unexpected failure for {actor:?}: {error}")));
+    let receipt = observe_while_running(serving.as_mut(), async {
+        Ok::<_, Box<dyn std::error::Error>>(store.wait_invocation(ticket.clone()).await?)
+    })
+    .await?;
+    assert_eq!(receipt.response().as_ref(), b"emit");
+    assert_eq!(store.wait_invocation(ticket).await?, receipt);
+    assert_eq!(handler.attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        records(&*provider, "out/resumed-call").await?,
+        vec![Bytes::from_static(b"r1")]
+    );
+    Ok(())
+}
+
 impl Handler for Rejects {
     fn manifest(&self) -> &Manifest {
         self.package.manifest()
