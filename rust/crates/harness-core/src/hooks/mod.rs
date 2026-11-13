@@ -36,6 +36,14 @@ pub(crate) struct BoundHooks {
     pub(crate) manifest: [u8; 32],
 }
 
+fn shared<T>(value: T, io: Option<&crate::filesystem::PreparationIo>) -> Result<Arc<T>> {
+    if let Some(io) = io {
+        let bytes = acyclic_fs::NativeMaterializationWork::shared_allocation_bytes::<T>()?;
+        io.retain_owned(bytes)?;
+        io.allocation_attempt(bytes)?;
+    }
+    Ok(Arc::new(value))
+}
 #[derive(Debug)]
 struct Binding {
     event: HookEvent,
@@ -52,7 +60,10 @@ struct Requests {
 }
 
 impl Requests {
-    fn compile(matcher: &RequestMatch) -> Result<Self> {
+    fn compile(
+        matcher: &RequestMatch,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<Self> {
         let pattern = |pattern: &Option<String>| {
             pattern
                 .as_deref()
@@ -60,8 +71,13 @@ impl Requests {
                 .transpose()
                 .map_err(|error| Error::Invalid(format!("plugin hook matcher: {error}")))
         };
+        let mut actions = Vec::new();
+        for action in &matcher.action {
+            let action = crate::executor::stock_string_copy(action, io)?;
+            crate::executor::stock_vec_push(&mut actions, action, io)?;
+        }
         Ok(Self {
-            actions: matcher.action.clone(),
+            actions,
             command: pattern(&matcher.command)?,
             path: pattern(&matcher.path)?,
         })
@@ -162,15 +178,37 @@ impl Hooks {
 
     /// Installs normalized rules atomically, compiling each group selector once.
     pub fn add_rules(&mut self, rules: impl IntoIterator<Item = HookRule>) -> Result<()> {
+        self.add_groups(
+            rules
+                .into_iter()
+                .map(|group| (group.on, group.matcher, group.hooks)),
+            None,
+        )
+    }
+
+    pub(crate) fn add_rule_with_io(
+        &mut self,
+        event: HookEvent,
+        matcher: String,
+        hooks: impl IntoIterator<Item = HookSpec>,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<()> {
+        self.add_groups([(event, matcher, hooks)], io)
+    }
+
+    fn add_groups<I: IntoIterator<Item = HookSpec>>(
+        &mut self,
+        groups: impl IntoIterator<Item = (HookEvent, String, I)>,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<()> {
         let mut bindings = Vec::new();
-        for group in rules {
-            let event = group.on;
-            let matcher = if group.matcher.is_empty()
-                || group.matcher == "*"
+        for (event, pattern, hooks) in groups {
+            let matcher = if pattern.is_empty()
+                || pattern == "*"
                 || matches!(event, HookEvent::UserPromptSubmit | HookEvent::Stop)
             {
                 None
-            } else if group.matcher.chars().any(|character| {
+            } else if pattern.chars().any(|character| {
                 matches!(
                     character,
                     '.' | '^'
@@ -188,30 +226,48 @@ impl Hooks {
                         | '\\'
                 )
             }) {
-                Some(Matcher::Pattern(Regex::new(&group.matcher).map_err(
-                    |error| Error::Invalid(format!("hook matcher: {error}")),
-                )?))
+                Some(Matcher::Pattern(Regex::new(&pattern).map_err(|error| {
+                    Error::Invalid(format!("hook matcher: {error}"))
+                })?))
             } else {
-                Some(Matcher::Exact(group.matcher))
+                Some(Matcher::Exact(pattern))
             };
-            let mut commands = Vec::with_capacity(group.hooks.len());
-            for hook in group.hooks {
+            let mut commands = Vec::new();
+            for hook in hooks {
                 hook.validate()?;
                 let requests = match &hook.run {
                     HookRun::Plugin {
                         matcher: Some(matcher),
                         ..
-                    } => Some(Requests::compile(matcher)?),
+                    } => Some(Requests::compile(matcher, io)?),
                     _ => None,
                 };
-                commands.push((Arc::new(hook), requests));
+                let hook = shared(hook, io)?;
+                crate::executor::stock_vec_push(&mut commands, (hook, requests), io)?;
             }
-            bindings.push(Arc::new(Binding {
-                event,
-                matcher,
-                commands,
-            }));
+            let binding = shared(
+                Binding {
+                    event,
+                    matcher,
+                    commands,
+                },
+                io,
+            )?;
+            crate::executor::stock_vec_push(&mut bindings, binding, io)?;
         }
+        let capacity = self
+            .bindings
+            .len()
+            .checked_add(bindings.len())
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "hook count overflow",
+                )
+            })?;
+        crate::executor::stock_vec_reserve(&mut self.bindings, capacity, io)?;
+        let bindings = crate::executor::stock_into_iter(bindings, io)?;
         self.bindings.extend(bindings);
         Ok(())
     }

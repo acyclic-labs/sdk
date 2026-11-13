@@ -198,11 +198,14 @@ pub fn check_native_patch_paths(input: &[u8]) {
                 actual.get("path").is_none(),
                 "model path competed with patch paths"
             );
-            let guard = Requests::compile(&RequestMatch {
-                action: vec!["edit".into()],
-                path: Some("^private/".into()),
-                command: None,
-            })
+            let guard = Requests::compile(
+                &RequestMatch {
+                    action: vec!["edit".into()],
+                    path: Some("^private/".into()),
+                    command: None,
+                },
+                None,
+            )
             .unwrap();
             assert_eq!(
                 guard.matches(&actual),
@@ -437,11 +440,14 @@ mod tests {
         let mut registry = crate::tools::defaults()?;
         crate::tools::native::NativeTools::new(crate::model::NativeToolProfile::Google)?
             .bind(&mut registry)?;
-        let guard = Requests::compile(&RequestMatch {
-            action: vec!["read".into(), "write".into(), "edit".into()],
-            path: Some("^private/".into()),
-            command: None,
-        })?;
+        let guard = Requests::compile(
+            &RequestMatch {
+                action: vec!["read".into(), "write".into(), "edit".into()],
+                path: Some("^private/".into()),
+                command: None,
+            },
+            None,
+        )?;
         for name in ["read_file", "write_file", "replace"] {
             let invocation = crate::tool::ToolInvocation {
                 operation_id: crate::OperationId::from_bytes([7; 16]),
