@@ -147,7 +147,7 @@ async fn run(
 #[tokio::test]
 async fn issuer_settings_share_one_cut_across_selection_admission_and_imports() -> Result<()> {
     use crate::{
-        conversation::{VolumeClass, VolumeOwner, VolumeRef},
+        conversation::{ContentResidencyVerifier, VolumeClass, VolumeOwner, VolumeRef},
         layers::PinnedLayer,
     };
     use std::sync::Arc;
