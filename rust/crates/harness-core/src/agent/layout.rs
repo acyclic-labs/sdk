@@ -40,13 +40,14 @@ pub const VOLUMES: &str = "harness/volumes";
 /// Root of status streams, mirroring agent ancestry outside fork destinations.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 6] = [
+pub const NOT_INHERITED: [&str; 7] = [
     CHILDREN,
     CLOSED,
     TARGETS,
     MACHINES,
     "context",
     "supervision",
+    "trace",
 ];
 
 const CONVERSATION: &str = "conversation";
