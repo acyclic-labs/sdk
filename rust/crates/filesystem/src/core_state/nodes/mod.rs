@@ -180,7 +180,19 @@ impl LocalCoreStateStore {
                         .as_ref()
                         .expect("bound native work")
                         .work();
-                    let paths = namespace.record(T::FAMILY, &T::address(id))?;
+                    // Immutable publication needs only its final leaf, never
+                    // the mutable journal's previous, temporary or lock paths.
+                    let mut leaf = [0_u8; 69];
+                    let encoding = crate::WorkCounters {
+                        bytes_encoded: 64,
+                        ..crate::WorkCounters::UNCHARGED
+                    };
+                    work.admit(encoding)?;
+                    hex::encode_to_slice(T::address(id), &mut leaf[..64])
+                        .map_err(std::io::Error::other)?;
+                    work.spent(encoding)?;
+                    leaf[64..].copy_from_slice(b".json");
+                    let leaf = std::str::from_utf8(&leaf).map_err(std::io::Error::other)?;
                     let mut encoded = LogBuffer {
                         bytes: Vec::new(),
                         allocation: Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
@@ -197,10 +209,6 @@ impl LocalCoreStateStore {
                                     crate::NativeDurability::Durable,
                                     &mut original,
                                 )?;
-                        let leaf = paths
-                            .current
-                            .file_name()
-                            .ok_or(crate::DemandError::InvalidRequest)?;
                         root.publish_immutable(
                             Path::new(leaf),
                             &encoded.bytes,
