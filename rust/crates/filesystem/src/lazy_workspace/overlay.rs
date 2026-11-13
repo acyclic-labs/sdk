@@ -354,6 +354,9 @@ impl<
             .shadow_records(state.shadows, record.file_id, ctx)
             .await?
             .unwrap_or_default();
+        if records.observed.is_some() {
+            return Ok(());
+        }
         records.observed = Some((source, version, record, metadata));
         let shadows = self
             .insert_shadow_records(state.shadows, record.file_id, records, ctx)
