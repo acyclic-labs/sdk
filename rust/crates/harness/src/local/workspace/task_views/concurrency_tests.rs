@@ -38,10 +38,6 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
     )
     .await?;
     let root = harness.workspace.as_ref().unwrap();
-    let authority = crate::filesystem::NativeMountAuthority::admitted(
-        harness.verifier.clone(),
-        harness.signed.copy(&mut None)?,
-    );
     let cancellation = CancellationToken::new();
     let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
     let mut forks = Vec::new();
@@ -65,6 +61,32 @@ async fn blocked_child_binding_keeps_sibling_and_root_independent() -> Result<()
             .map_err(storage)?;
         forks.push((project, view));
     }
+    let mut capabilities = harness
+        .signed
+        .capabilities()
+        .iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for (project, _) in &forks {
+        for operation in [
+            crate::conversation::VolumeOperation::Read,
+            crate::conversation::VolumeOperation::Write,
+        ] {
+            capabilities.push(project.capability(operation, &mut None)?);
+        }
+    }
+    let signed = harness
+        .root_authority
+        .as_ref()
+        .expect("signing custody")
+        .bootstrap_scope(
+            "child-bindings",
+            &crate::Capabilities::new(capabilities),
+            None,
+            &mut None,
+        )?;
+    let authority =
+        crate::filesystem::NativeMountAuthority::admitted(harness.verifier.clone(), signed);
     let (entered_tx, entered) = oneshot::channel();
     let (release, release_rx) = oneshot::channel();
     let blocked = GatedOwner {

@@ -245,12 +245,6 @@ async fn physical_binding_reuses_its_preparation_and_rejects_another_scratch() -
         b"shared",
         "a bound task's write did not reach the admitted checkout"
     );
-    assert!(
-        !workspace
-            .physical_task_path(workspace.view().workspace().id())
-            .exists(),
-        "an unchanged primary volume acquired a redundant physical copy"
-    );
     release
         .send(())
         .map_err(|_| Error::Conflict("physical binding owner stopped".into()))?;
@@ -709,4 +703,160 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
         "retired native projection retained the original binding owner"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn child_projection_does_not_read_or_materialize_the_inherited_tree() -> Result<()> {
+    let small = child_projection_work(1, false)
+        .await?
+        .expect("native projection");
+    let large = child_projection_work(6_000, false)
+        .await?
+        .expect("native projection");
+    assert_eq!(
+        large.source_bytes_read, 0,
+        "binding hydrated inherited payloads"
+    );
+    assert_eq!(large.materializations, 0, "binding copied inherited files");
+    assert_eq!(
+        large.source_entries_visited, small.source_entries_visited,
+        "child binding enumerated the inherited tree"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn child_projection_refuses_missing_provider_without_copying() -> Result<()> {
+    assert!(child_projection_work(1, true).await?.is_none());
+    Ok(())
+}
+
+async fn child_projection_work(
+    entries: usize,
+    unavailable: bool,
+) -> Result<Option<acyclic_fs::WorkCounters>> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let absent_provider = tempfile::tempdir().map_err(storage)?;
+    let payload = vec![b'x'; 10_240];
+    for index in 0..entries {
+        std::fs::write(
+            checkout.path().join(format!("file-{index:06}.bin")),
+            &payload,
+        )
+        .map_err(storage)?;
+    }
+    let mut config = crate::test_support::local_harness_config(
+        checkout.path(),
+        (
+            crate::model::Model::new("scripted".into(), "projection".into(), "1".into())?,
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+        ),
+    )?
+    .state_directory(state.path())
+    .workspace_mounting(WorkspaceMounting::Physical)
+    .without_default_tools();
+    if unavailable {
+        config =
+            config.native_mount_probe(acyclic_fs::NativeMountProbe::new(absent_provider.path()));
+    }
+    let harness = LocalHarness::open(config).await?;
+    let root = harness.workspace.as_ref().expect("checkout");
+    let project = VolumeRef::new(
+        harness.project.provider().clone(),
+        "child".into(),
+        VolumeClass::Project,
+        harness.project.owner().clone(),
+        &mut None,
+    )?;
+    let cancellation = CancellationToken::new();
+    let (view, _) = root
+        .view()
+        .fork(
+            &project.storage_name(&mut None)?,
+            acyclic_fs::IdempotencyKey::from_bytes([47; 16]),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+        )
+        .await
+        .map_err(storage)?;
+    let before = view
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    let read = project.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let write = project.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    let grants = crate::Capabilities::new(
+        harness
+            .signed
+            .capabilities()
+            .iter()
+            .chain([read.as_str(), write.as_str()]),
+    );
+    let signed = harness
+        .root_authority
+        .as_ref()
+        .expect("signing custody")
+        .bootstrap_scope("child-projection", &grants, None, &mut None)?;
+    let authority =
+        crate::filesystem::NativeMountAuthority::admitted(harness.verifier.clone(), signed);
+    let started = std::time::Instant::now();
+    let result = root
+        .bound_task_view(view, &project, &[], &AgentOwner, &authority)
+        .await;
+    if unavailable {
+        assert!(
+            matches!(result, Err(Error::MountUnavailable { .. })),
+            "missing projection provider did not refuse at admission"
+        );
+        assert!(!root.mount_directory.join(".physical").exists());
+        assert_eq!(
+            std::fs::read(checkout.path().join("file-000000.bin")).map_err(storage)?,
+            payload
+        );
+        harness.disconnect().await?;
+        return Ok(None);
+    }
+    let bound = result?;
+    let elapsed = started.elapsed();
+    let mounted = bound
+        .mounted
+        .as_ref()
+        .expect("child uses sparse projection");
+    let work = mounted.native_work().map_err(storage)?.receipt();
+    assert_eq!(
+        bound
+            .view()
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        before,
+        "binding authored inherited entries"
+    );
+    eprintln!(
+        "CHILD_PROJECTION entries={entries} elapsed_us={} work={work:?}",
+        elapsed.as_micros()
+    );
+    for index in [0, entries - 1] {
+        assert_eq!(
+            std::fs::read(bound.path.join(format!("file-{index:06}.bin"))).map_err(storage)?,
+            payload
+        );
+    }
+    std::fs::write(bound.path.join("file-000000.bin"), b"child edit").map_err(storage)?;
+    mounted.sync().await.map_err(storage)?;
+    assert_eq!(
+        std::fs::read(checkout.path().join("file-000000.bin")).map_err(storage)?,
+        payload,
+        "child mutation crossed its fork cut"
+    );
+    drop(bound);
+    harness.disconnect().await?;
+    Ok(Some(work))
 }

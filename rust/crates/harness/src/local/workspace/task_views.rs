@@ -96,137 +96,11 @@ impl LocalWorkspace {
     /// select its already admitted workspace namespace; ordinary harnesses
     /// share the process root. No host adapter mounts a task view itself.
     async fn mount_task_source(&self, view: &workspace::View) -> Result<Arc<TaskMount>> {
+        volumes::require_available(self.native_mount_probe.probe())?;
         let options = self.mount_options(view.workspace()).await?;
         view.mount_view(view_options(&self.task_view_admission, options))
             .await
             .map(Arc::new)
-            .map_err(storage)
-    }
-
-    /// Whether a project already has a physical checkout whose local edits
-    /// must participate in human Git actions, just as they do in model tools.
-    pub(in crate::local) fn has_physical_task_source(
-        &self,
-        view: &workspace::View,
-    ) -> Result<bool> {
-        if self.mounting != WorkspaceMounting::Physical {
-            return Ok(false);
-        }
-        self.physical_task_path(view.workspace().id())
-            .try_exists()
-            .map_err(storage)
-    }
-
-    fn physical_task_path(&self, project: acyclic_fs::WorkspaceId) -> PathBuf {
-        self.mount_directory
-            .join(super::PHYSICAL_VIEW_ROOT)
-            .join(hex::encode(project.into_bytes()))
-    }
-
-    /// The physical counterpart of [`Self::mount_task_source`]: `view`'s
-    /// complete visible tree as a plain directory below the checkout's
-    /// reserved view root, needing no native provider. Its first binding
-    /// materializes the view through the canonical exact-tree and
-    /// materialization engines; every later binding reuses the directory,
-    /// whose effects capture reconciles like the checkout's own.
-    async fn physical_task_source(&self, view: &workspace::View) -> Result<PathBuf> {
-        let parent = self
-            .held_task_mount_root()?
-            .create_directories(
-                Path::new(super::PHYSICAL_VIEW_ROOT),
-                acyclic_fs::NativeDurability::Durable,
-            )
-            .map_err(storage)?;
-        // The binding owns this directory. Selecting another Git workspace
-        // must neither share another agent's directory nor orphan this one.
-        let path = self.physical_task_path(self.view().workspace().id());
-        if !path.try_exists().map_err(storage)? {
-            let cancellation = CancellationToken::new();
-            // Promote every lazily inherited entry first, so the
-            // materialized bytes are the view's own exact generation.
-            let generation = view
-                .exactify(
-                    "/",
-                    acyclic_fs::PublicationPermit::Unrestricted,
-                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
-                )
-                .await
-                .map_err(storage)?;
-            let staging = super::bootstrap::staging(parent.path())?;
-            super::bootstrap::initialize(
-                async {
-                    generation
-                        .materialize(
-                            ["/"].into_iter(),
-                            &acyclic_fs::MaterializeOptions::native(&staging),
-                            WorkBudget::UNBOUNDED,
-                            &cancellation,
-                        )
-                        .await
-                        .map_err(storage)?;
-                    Ok(())
-                },
-                || {
-                    acyclic_native_runtime::durable_rename(
-                        &staging,
-                        &path,
-                        acyclic_native_runtime::RenameMode::NoReplace,
-                        None,
-                    )
-                },
-                || {
-                    acyclic_native_runtime::remove_child_directory(parent.path(), &staging)
-                        .map_err(storage)
-                },
-            )
-            .await?;
-        }
-        // These aliases are reconstructible native bindings, not SDK content.
-        // Retain the original root across forks, without traversing the omitted
-        // subtree or chaining aliases through another task's transient view.
-        for (root, target) in self.opaque_native_directories()? {
-            volumes::bind_alias(&path.join(root), &target, None)?;
-        }
-        std::fs::canonicalize(&path).map_err(storage)
-    }
-
-    /// Archive releases only the closed agent's original physical project
-    /// binding. Root checkout and shared volumes remain available to owners
-    /// that still hold them; retained logical history is independent.
-    pub(in crate::local) fn release_physical_bindings(
-        &self,
-        bindings: &[crate::agent::WorkspaceEntry],
-    ) -> Result<()> {
-        if self.mounting != WorkspaceMounting::Physical {
-            return Ok(());
-        }
-        let Some(project) = crate::agent::WorkspaceTable::primary_in(bindings)
-            .filter(|binding| binding.role == crate::agent::WorkspaceRole::User)
-        else {
-            return Ok(());
-        };
-        if project.volume()?.class() == crate::conversation::VolumeClass::SessionShared {
-            return Ok(());
-        }
-        let id = self
-            .filesystem
-            .workspace_id(project.volume()?.storage_name(&mut None)?)
-            .map_err(storage)?;
-        if id == self.view().workspace().id() {
-            return Ok(());
-        }
-        let root = self.held_task_mount_root()?;
-        let parent = match root.open_directory(Path::new(super::PHYSICAL_VIEW_ROOT)) {
-            Ok(parent) => parent,
-            Err(acyclic_fs::DemandError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound =>
-            {
-                return Ok(());
-            }
-            Err(error) => return Err(storage(error)),
-        };
-        parent
-            .remove_tree(Path::new(&hex::encode(id.into_bytes())))
             .map_err(storage)
     }
 
@@ -321,27 +195,18 @@ impl LocalWorkspace {
             };
             let selected = active.as_ref().unwrap_or_else(|| workspace.view());
             let initial_view = selected.workspace().id();
-            // A physical view stays unmounted: its commands, file tools and
-            // capture take the checkout's plain-directory path.
-            match self.mounting {
-                WorkspaceMounting::Native => {
-                    let mounted = workspace.mount_task_source(selected).await?;
-                    workspace.path = mounted.path().to_path_buf();
-                    workspace.identity = served_identity(&mounted)?;
-                    workspace.mounted = Some(mounted);
-                }
-                WorkspaceMounting::Physical => {
-                    // An auxiliary binding does not fork its primary volume.
-                    // Reuse the admitted checkout when the project is unchanged;
-                    // distinct project forks still need their own materialization.
-                    workspace.path = if reuse_primary {
-                        self.path.clone()
-                    } else {
-                        workspace.physical_task_source(selected).await?
-                    };
-                    workspace.identity =
-                        acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
-                }
+            // Only the admitted primary checkout is a plain directory. Forks
+            // retain their volume cut and demand-project through the shared
+            // native instance; binding never exactifies or copies their tree.
+            if reuse_primary {
+                workspace.path = self.path.clone();
+                workspace.identity = self.identity;
+            } else {
+                let mounted = workspace.mount_task_source(selected).await?;
+                workspace.path = mounted.path().to_path_buf();
+                workspace.identity = served_identity(&mounted)?;
+                workspace.mounted = Some(mounted);
+                workspace.mounting = WorkspaceMounting::Native;
             }
             workspace.mounts = workspace.mounts_at(&workspace.path).await?;
             workspace.context_line = workspace.mounts.context_line();

@@ -50,25 +50,6 @@ impl LocalHarness {
                 signed.copy(&mut None)?,
             );
             let view = workspace.spawned_project_view(project.volume()?).await?;
-            if workspace.has_physical_task_source(&view)? {
-                let bound = self
-                    .project_workspace(
-                        workspace,
-                        project.volume()?,
-                        &parent_state.volumes,
-                        &signed,
-                        &verifier,
-                    )
-                    .await?;
-                return self
-                    .merge_checkout(
-                        &bound,
-                        (&signed, &verifier),
-                        operation,
-                        (branch, source.workspace().id()),
-                    )
-                    .await;
-            }
             // A volume join needs no OS projection. Keep the same selected
             // checkout and original authority without minting a native grant.
             let logical = workspace.context_task_view(
