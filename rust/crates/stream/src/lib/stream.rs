@@ -111,14 +111,26 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         if_tail: Option<u64>,
         idempotency_key: IdempotencyKey,
     ) -> Result<AppendOutcome, StreamError> {
-        self.provider
-            .append(AppendRequest {
-                path: self.path.clone(),
-                records,
-                if_tail,
-                idempotency_key,
-            })
-            .await
+        let work = self.provider.append(AppendRequest {
+            path: self.path.clone(),
+            records,
+            if_tail,
+            idempotency_key,
+        });
+        #[cfg(feature = "serde")]
+        return crate::trace::observe(
+            crate::trace::Request {
+                name: "stream.append",
+                mechanism: crate::trace::Mechanism::Commit,
+                parent: None,
+                guarantee: Some("atomic_contiguous_append_decision"),
+            },
+            work,
+            |_| None,
+        )
+        .await;
+        #[cfg(not(feature = "serde"))]
+        work.await
     }
 
     /// Forks the current or selected retained prefix.

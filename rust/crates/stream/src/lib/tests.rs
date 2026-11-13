@@ -547,6 +547,18 @@ mod replay_tests {
                 .value,
             original_row.value
         );
+        assert_eq!(
+            root.within(forked.append_at("refused", 0, IdempotencyKey::unique()))
+                .await?,
+            AppendOutcome::TailConflict { actual_tail: 1 }
+        );
+        let append_key = IdempotencyKey::unique();
+        let appended = root
+            .within(forked.append("next", append_key.clone()))
+            .await?;
+        assert!(matches!(appended, AppendOutcome::Committed(_)));
+        assert_eq!(forked.append("next", append_key).await?, appended);
+        assert_eq!(forked.tail().await?, 2);
         let mut diagnostic = root.within(trace.read(0, 1)).await?;
         assert!(
             diagnostic
@@ -575,6 +587,8 @@ mod replay_tests {
                 None,
             ),
             ("stream.fork", "immutable_selected_prefix_and_origin", None),
+            ("stream.append", "atomic_contiguous_append_decision", None),
+            ("stream.append", "atomic_contiguous_append_decision", None),
         ] {
             query.next().await?;
             assert!(
@@ -588,14 +602,14 @@ mod replay_tests {
         );
         assert_eq!(
             trace.tail().await?,
-            20,
+            24,
             "diagnostic publication recursively traced its own head check"
         );
         assert_eq!(data.head().await?, original);
         drop(data.read(0, 1).await?);
         assert_eq!(
             trace.tail().await?,
-            20,
+            24,
             "completed scope leaked its owner into unrelated work"
         );
         Ok(())

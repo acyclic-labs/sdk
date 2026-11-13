@@ -133,6 +133,11 @@ names the immutable selected prefix and its origin; the child-page I/O span name
 the bounded direct-child page at its namespace cut. Both return the original
 receipt or page unchanged, report unknown bytes, and add no diagnostic wait after
 the original result. Requests without an active owner use the original futures.
+Single, conditional and batch SDK appends share `stream.append` at their original
+batch boundary. Its guarantee is the atomic contiguous append decision: both an
+original committed receipt and a linearizable tail conflict complete that
+request, without confusing a refused write with an applied effect. Bytes remain
+unknown, and the original retry key and outcome pass through unchanged.
 A registry-bound producer also carries its own admitted lease count. The final
 lease retires new inherited child observations even when the original request
 still retains its recorder or another agent remains followed. This is an inline
