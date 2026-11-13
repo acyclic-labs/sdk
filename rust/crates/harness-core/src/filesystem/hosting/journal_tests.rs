@@ -102,6 +102,7 @@ async fn waking_notices_steer_without_granting_their_journal_files() -> TestResu
         conversation::{ContentGrant, ContentResidencyVerifier, VolumeOperation},
         model::{ModelContent, ModelContentPart, ModelRole},
     };
+    use acyclic_stream::StreamProviderExt as _;
 
     let (bound, root) = binding().await?;
     let state = bound.agents().state(&root).await?;
