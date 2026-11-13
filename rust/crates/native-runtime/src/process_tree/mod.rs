@@ -304,22 +304,29 @@ impl ProcessTree {
         meter: Option<&dyn crate::NativeReadMeter>,
         retained: &mut Option<Self>,
     ) -> io::Result<()> {
-        command.boundary = Some((|| {
-            if retained.is_some() {
-                return Err(io::ErrorKind::AlreadyExists.into());
-            }
-            if let Some(meter) = meter {
-                meter.check()?;
-            }
-            let cwd = grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
-            grant.prepare_launch(Some(cwd), meter)
-        })()?);
+        if retained.is_some() {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        Self::prepare_granted_command(&mut command, grant, meter)?;
         match custody {
             Some(custody) => {
                 Self::spawn_in_custody_controlled(&mut command, custody, meter, retained)
             }
             None => Self::spawn_controlled(&mut command, meter, retained),
         }
+    }
+
+    fn prepare_granted_command(
+        command: &mut ProcessCommand,
+        grant: &crate::execution::ExecutionGrant,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<()> {
+        if let Some(meter) = meter {
+            meter.check()?;
+        }
+        let cwd = grant.validate_launch(command.get_current_dir(), command.get_env_clear())?;
+        command.boundary = Some(grant.prepare_launch(Some(cwd), meter)?);
+        Ok(())
     }
 
     /// Starts a child whose whole tree is tied to this host process and
