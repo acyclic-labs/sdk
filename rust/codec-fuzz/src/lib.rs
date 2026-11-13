@@ -811,6 +811,30 @@ fn actor_socket_input_seeds()
         let bytes: Vec<u8> = serde_json::from_value(capture["bytes"].clone())?;
         let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
         assert_eq!(wire::encode_delivery(&delivery, checkpoint.as_ref()), bytes);
+        // Retired invocation records are historical refusal inputs, not
+        // current socket-open writers. Preserve their exact captured bytes.
+        if delivery.record.as_ref().is_some_and(|record| {
+            record
+                .headers
+                .attributes()
+                .iter()
+                .any(|attribute| attribute.name == "acyclic.actors.invoke")
+        }) {
+            assert!(
+                delivery.invocation()?.is_none(),
+                "retired invocation was admitted"
+            );
+            assert!(
+                delivery.socket()?.is_none(),
+                "retired invocation opened a socket"
+            );
+            seeds.push((
+                name,
+                bytes,
+                "historical Runtime socket delivery; retired invocation marker refused",
+            ));
+            continue;
+        }
         let socket = delivery
             .socket()?
             .ok_or("socket input writer must be admitted")?;
