@@ -704,6 +704,7 @@ async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
     let resident = spawn_with(&store, "resident", &[b"emit"]).await?;
     let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
     let runtime = Runtime::new(
+        crate::guest::Requests::default(),
         Store::new(Arc::clone(&provider), root()?).with_scheduling_shards(one),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -718,6 +719,20 @@ async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
     })
     .await?;
     assert_eq!(first, dormant);
+    // A producer can publish another activation while placement is still
+    // pending. Both its receipt and the follow must retain that input without
+    // running it, reporting a failure or retiring its placement custody.
+    let outcome = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            effects: vec![store.activation(&dormant)?],
+            idempotency_key: key("unplaced/committed-activation")?,
+        })
+        .await?;
+    let acyclic_stream::CommitOutcome::Committed(receipt) = outcome else {
+        return Err(format!("activation did not commit: {outcome:?}").into());
+    };
+    runtime.wake_committed(&dormant, &receipt)?;
     observe_while_running(serving.as_mut(), async { Ok(runtime.complete().await?) }).await?;
     assert!(records(&*provider, "out/dormant").await?.is_empty());
     assert_eq!(records(&*provider, "out/resident").await?.len(), 1);
@@ -728,6 +743,7 @@ async fn due_work_on_an_unplaced_actor_requests_its_placement() -> TestResult {
     drop(runtime);
     let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
     let replacement = Runtime::new(
+        crate::guest::Requests::default(),
         store.clone(),
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
@@ -769,6 +785,7 @@ async fn an_unplaced_alarm_retains_its_window_across_restart() -> TestResult {
     for attempt in 0..2 {
         let (sender, mut requested) = tokio::sync::mpsc::unbounded_channel();
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(Package::new()?),
             Arc::clone(&clock) as Arc<dyn Clock>,

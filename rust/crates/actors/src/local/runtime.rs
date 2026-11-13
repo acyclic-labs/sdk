@@ -67,6 +67,15 @@ struct Slot {
     delivery_control: SyncMutex<DeliveryControl>,
 }
 
+impl Slot {
+    fn wake(&self) {
+        self.refresh.store(true, Ordering::Release);
+        if !self.unplaced.load(Ordering::Acquire) {
+            self.waker.wake_by_ref();
+        }
+    }
+}
+
 #[derive(Default)]
 struct DeliveryControl {
     paused: bool,
@@ -552,10 +561,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Request a delivery attempt, for example after a transient failure.
     pub fn wake(&self, actor: &ActorReference) {
         if let Some(slot) = self.slot(actor) {
-            slot.refresh.store(true, Ordering::Release);
-            if !slot.unplaced.load(Ordering::Acquire) {
-                slot.waker.wake_by_ref();
-            }
+            slot.wake();
         }
     }
 
@@ -587,8 +593,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if let Some(slot) = self.slot(actor)
             && slot.entry.fetch_max(cursor, Ordering::AcqRel) < cursor
         {
-            slot.refresh.store(true, Ordering::Release);
-            slot.waker.wake_by_ref();
+            slot.wake();
         }
     }
 
