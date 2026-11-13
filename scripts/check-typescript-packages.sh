@@ -107,7 +107,7 @@ import { PreparedAgentCommand } from "@acyclic-labs/harness/client";
 const { actors, filesystem, harness, inference, machines, objects, stream, workers } = sdk;
 if (typeof filesystem.openBrowserFs !== "function" || typeof inference.InferenceClient !== "function" ||
     typeof harness.PreparedAgentCommand !== "function" || typeof machines.SimulatedMachines !== "function" || typeof stream.StreamClient !== "function" ||
-    typeof objects !== "object" || typeof actors.HttpActorsClient !== "function" ||
+    typeof objects !== "object" || typeof actors.ActorsClient !== "function" ||
     typeof workers.WorkersDeploymentClient !== "function" || "harnessObjects" in sdk ||
     harness.PreparedAgentCommand !== PreparedAgentCommand) throw new Error("SDK exports are incomplete");
 await harness.initializeClientQueries();
