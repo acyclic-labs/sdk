@@ -76,18 +76,32 @@ pub async fn observe<T, E>(
     work: impl Future<Output = Result<T, E>>,
     bytes: impl FnOnce(&T) -> Option<u64>,
 ) -> Result<T, E> {
+    observe_outcome(request, work, |result| {
+        result
+            .as_ref()
+            .ok()
+            .map(|value| (bytes(value), super::Outcome::Succeeded))
+    })
+    .await
+}
+
+/// Classify the original result only for an admitted span. Failed classification
+/// still requires the original retained cause through Outcome's type. No
+/// classifier or terminal publication is evaluated on an unobserved request.
+pub async fn observe_outcome<T, E>(
+    request: Request,
+    work: impl Future<Output = Result<T, E>>,
+    _outcome: impl FnOnce(&Result<T, E>) -> Option<(Option<u64>, super::Outcome)>,
+) -> Result<T, E> {
     let (result, recording) = OwnedRecording::accompany(child(request), work).await;
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
     if let Some(recording) = recording
-        && let Ok(value) = &result
+        && let Some((bytes, outcome)) = _outcome(&result)
     {
-        let _completion = recording.finish_submitted(bytes(value), super::Outcome::Succeeded);
+        let _completion = recording.finish_submitted(bytes, outcome);
     }
-    #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
-    let _ = bytes;
     result
 }
-
 /// Preserve the original cursor and snapshot; only admitted readers acquire an
 /// observation wrapper. Pending diagnostic publication never owns delivery.
 pub(crate) fn records(records: crate::RecordStream) -> crate::RecordStream {

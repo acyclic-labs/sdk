@@ -150,6 +150,15 @@ cancellation. Native recorders retain the original runtime handle so terminal
 work can be submitted after leaving that runtime's scope. With no available
 executor or unsuccessful publication, the retained start still identifies missing
 coverage. Raw caller-owned `Recording` values continue to require explicit finish.
+The shared Actors Store invoke entrance, input publication and terminal wait also
+inherit the active SDK producer. Their spans name journaled actor results, stable
+input identity and original terminal receipts; known bytes come from the original
+input record or response. `trace::observe_outcome` classifies the original typed
+result only when observed. A committed guest failure references the original call
+journal terminal's commit/path/sequence, cancellation uses its committed outcome,
+and other uncertainty remains unsettled. The original handler, ticket, receipt and
+reconciliation paths are unchanged. These spans replace the three corresponding
+Actors ad-hoc operation wrappers.
 Harness Stream failures use one source-owning `StreamFailure` on ordinary,
 native and WebAssembly paths. Request-boundary classification remains explicit;
 native provenance and admitted allocation custody remain attached. Journal

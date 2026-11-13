@@ -601,6 +601,79 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
             .and_then(|state| state.cursor("inbox")),
         Some(1)
     );
+    // Observe the real public retry only after the unfollowed request budgets
+    // above: tracing must retain the original input/result and call receipt.
+    let traces = acyclic_stream::Stream::new(
+        reopened.provider.clone(),
+        format!("{}/trace", invocation.caller().as_str()),
+    )?;
+    let recorder = Arc::new(acyclic_stream::trace::Recorder::new(
+        traces.clone(),
+        [20; 16],
+    ));
+    let root = recorder
+        .start(
+            "caller.request",
+            acyclic_stream::trace::Mechanism::ActorDelivery,
+            None,
+            Some("original_actor_request"),
+        )
+        .await?;
+    let parent = root.id();
+    let root = root.into_owned();
+    assert_eq!(root.within(reopened.invoke(&invocation)).await?, committed);
+    let _terminal = root.finish_submitted(None, acyclic_stream::trace::Outcome::Succeeded)?;
+    let mut query = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut invocation_span = None;
+    let mut mechanisms = std::collections::BTreeMap::new();
+    loop {
+        match query.next().await? {
+            Some(acyclic_stream::trace::Observation::Started { id, .. }) => {
+                if query
+                    .active()
+                    .any(|(candidate, start)| *candidate == id && start.name == "actors.invoke")
+                {
+                    invocation_span = Some(id);
+                }
+            }
+            Some(acyclic_stream::trace::Observation::Completed {
+                id, start, result, ..
+            }) => {
+                if id == parent {
+                    break;
+                }
+                assert_eq!(result, acyclic_stream::trace::Outcome::Succeeded);
+                assert_eq!(
+                    start.parent,
+                    if start.name == "actors.invoke" {
+                        Some(parent)
+                    } else {
+                        invocation_span
+                    }
+                );
+                assert!(start.guarantee.is_some());
+                mechanisms.insert(start.name, start.mechanism);
+            }
+            None => panic!("original actor trace ended before completion"),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        mechanisms["actors.invoke"],
+        acyclic_stream::trace::Mechanism::ActorDelivery
+    );
+    assert_eq!(
+        mechanisms["actors.enqueue_invoke"],
+        acyclic_stream::trace::Mechanism::Commit
+    );
+    assert_eq!(
+        mechanisms["actors.wait_invocation"],
+        acyclic_stream::trace::Mechanism::Wait
+    );
+    assert_eq!(traces.tail().await?, 8);
     invocation_completion_rejects_changed_original_publication().await?;
     Ok(())
 }

@@ -193,7 +193,30 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         snapshot.state().ok_or("missing original state")?.alarm()
     );
     let reopened = Store::new(Arc::clone(&provider), root()?);
-    match reopened.invoke(&invocation).await {
+    let traces = acyclic_stream::Stream::new(
+        provider.clone(),
+        format!("{}/trace", invocation.caller().as_str()),
+    )?;
+    let recorder = Arc::new(acyclic_stream::trace::Recorder::new(
+        traces.clone(),
+        [21; 16],
+    ));
+    let root_span = recorder
+        .start(
+            "caller.failure",
+            acyclic_stream::trace::Mechanism::ActorDelivery,
+            None,
+            Some("original_actor_failure"),
+        )
+        .await?;
+    let parent = root_span.id();
+    let root_span = root_span.into_owned();
+    let cause = acyclic_stream::RetainedRecord {
+        commit_id: receipt.call().terminal.commit_id,
+        path: receipt.call().log.clone(),
+        sequence: receipt.call().terminal.sequence,
+    };
+    match root_span.within(reopened.invoke(&invocation)).await {
         Err(Error::InvocationFailed {
             source: repeated,
             receipt: original,
@@ -203,6 +226,41 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
         }
         _ => return Err("reconciliation did not retain the original failure".into()),
     }
+    let _terminal = root_span.finish_submitted(
+        None,
+        acyclic_stream::trace::Outcome::Failed {
+            cause: cause.clone(),
+        },
+    )?;
+    let mut query = acyclic_stream::trace::TraceQuery::new(
+        traces.follow(0, Default::default()).await?,
+        Default::default(),
+    );
+    let mut failures = 0;
+    loop {
+        match query.next().await? {
+            Some(acyclic_stream::trace::Observation::Completed {
+                id, start, result, ..
+            }) => {
+                if id == parent {
+                    break;
+                }
+                if start.name == "actors.invoke" || start.name == "actors.wait_invocation" {
+                    assert_eq!(
+                        result,
+                        acyclic_stream::trace::Outcome::Failed {
+                            cause: cause.clone()
+                        }
+                    );
+                    failures += 1;
+                }
+            }
+            None => return Err("original actor failure trace ended".into()),
+            _ => {}
+        }
+    }
+    assert_eq!(failures, 2);
+    assert_eq!(traces.tail().await?, 8);
     runtime.drain_actor(&address).await?;
     assert_eq!(
         handler.calls.load(Ordering::SeqCst),

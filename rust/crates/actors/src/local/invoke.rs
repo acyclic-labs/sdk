@@ -129,6 +129,36 @@ impl CommittedInvocation {
     }
 }
 
+fn trace_committed(
+    result: &Result<CommittedInvocation, Error>,
+) -> Option<(Option<u64>, acyclic_stream::trace::Outcome)> {
+    use acyclic_stream::trace::Outcome as TraceOutcome;
+    match result {
+        Ok(committed) => Some((
+            u64::try_from(committed.response.len()).ok(),
+            TraceOutcome::Succeeded,
+        )),
+        Err(Error::InvocationFailed { receipt, .. }) => Some((
+            None,
+            TraceOutcome::Failed {
+                cause: acyclic_stream::RetainedRecord {
+                    commit_id: receipt.call.terminal.commit_id,
+                    path: receipt.call.log.clone(),
+                    sequence: receipt.call.terminal.sequence,
+                },
+            },
+        )),
+        Err(Error::InvocationTerminated { receipt }) => Some((
+            None,
+            if matches!(receipt.outcome, Outcome::Cancelled(_)) {
+                TraceOutcome::Cancelled
+            } else {
+                TraceOutcome::Unsettled
+            },
+        )),
+        Err(_) => None,
+    }
+}
 impl<P: StreamProvider + ?Sized> Store<P> {
     /// Retire a cancelled inline delivery without adopting any guest writes.
     /// The original state anchor and call marker authorize this one consume.
@@ -155,15 +185,20 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// different bytes under that identity fail with IdempotencyMismatch.
     /// This never drives a handler, so paused actors retain queued requests.
     pub async fn invoke(&self, invocation: &Invocation) -> Result<CommittedInvocation, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.actors.invoke",
-            Error::kind,
-            acyclic_native_runtime::obs::OperationSpan::new,
+        acyclic_stream::trace::observe_outcome(
+            acyclic_stream::trace::Request {
+                name: "actors.invoke",
+                mechanism: acyclic_stream::trace::Mechanism::ActorDelivery,
+                parent: None,
+                guarantee: Some("journaled_actor_result"),
+            },
             async {
                 let ticket = self.enqueue_invoke(invocation).await?;
                 self.wait_invocation(ticket).await
-            }
+            },
+            trace_committed,
         )
+        .await
     }
 
     /// Enqueue without waiting. Uncertain transport failures are retried with
@@ -178,10 +213,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         invocation: &Invocation,
         joined: impl FnOnce(&StreamPath) -> Result<Vec<CommitEffect>, Error>,
     ) -> Result<InvocationTicket, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.actors.enqueue_invoke",
-            Error::kind,
-            acyclic_native_runtime::obs::OperationSpan::new,
+        acyclic_stream::trace::observe(
+            acyclic_stream::trace::Request {
+                name: "actors.enqueue_invoke",
+                mechanism: acyclic_stream::trace::Mechanism::Commit,
+                parent: None,
+                guarantee: Some("stable_actor_input_identity"),
+            },
             async {
                 let snapshot = self.load(invocation.actor()).await?;
                 let input = snapshot
@@ -253,8 +291,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     record: record.clone(),
                     revision: receipt.revision,
                 })
-            }
+            },
+            |ticket: &InvocationTicket| u64::try_from(ticket.record.value.len()).ok(),
         )
+        .await
     }
 
     /// Observe the original reply after its explicit committed input cut.
@@ -266,10 +306,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         ticket: InvocationTicket,
     ) -> Result<CommittedInvocation, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.actors.wait_invocation",
-            Error::kind,
-            acyclic_native_runtime::obs::OperationSpan::new,
+        acyclic_stream::trace::observe_outcome(
+            acyclic_stream::trace::Request {
+                name: "actors.wait_invocation",
+                mechanism: acyclic_stream::trace::Mechanism::Wait,
+                parent: None,
+                guarantee: Some("original_actor_terminal_receipt"),
+            },
             async {
                 if self.path(ticket.invocation.actor())? != ticket.state {
                     return Err(Error::Conflict);
@@ -377,8 +420,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         })
                     }
                 }
-            }
+            },
+            trace_committed,
         )
+        .await
     }
 
     pub(super) fn invocation_completion(
