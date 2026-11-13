@@ -1284,6 +1284,13 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
             "review ran before the source cut committed"
         );
         assert!(host.opened.lock().unwrap().is_empty());
+        if !parked {
+            assert_eq!(
+                frozen.state.settled_before(2),
+                1,
+                "a frozen review reported its input settled"
+            );
+        }
         *host.policy.lock().unwrap() = file("policy-changed.md")?;
         let review = step(
             &driver,
@@ -1328,6 +1335,13 @@ async fn approval_selection_replays_its_policy_before_any_worker_context() -> Re
         assert_eq!(review.state.turn, worker_turn);
         assert_eq!(review.state.phase, worker_phase);
         assert!(review.state.approval_control.is_none());
+        if !parked {
+            assert_eq!(
+                review.state.settled_before(2),
+                2,
+                "completed control retained unfinished input"
+            );
+        }
         if escalated {
             let notices: Vec<_> = review
                 .outs

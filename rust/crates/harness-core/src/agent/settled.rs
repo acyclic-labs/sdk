@@ -69,6 +69,9 @@ async fn observe<P: crate::store::JournalProvider + ?Sized + 'static>(
         .as_ref()
         .map(|turn| turn.inbox)
         .or_else(|| state.queued.front().map(|queued| queued.inbox));
+    if let Some(control) = &state.approval_control {
+        input = Some(input.map_or(control.range.start, |input| input.min(control.range.start)));
+    }
     let pending_from = state.overflow.unwrap_or(cursor);
     if input.is_none()
         && !settled
