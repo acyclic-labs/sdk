@@ -249,7 +249,7 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
         recorder: Option<&Arc<crate::trace::Recorder<P>>>,
         parent: Option<crate::trace::SpanId>,
     ) -> crate::trace::Observed<Option<Vec<Record>>, StreamError, P> {
-        crate::trace::Recorder::observe(
+        let observed = crate::trace::Recorder::observe(
             recorder,
             crate::trace::Request {
                 name: "stream.replay_page",
@@ -257,14 +257,24 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
                 parent,
                 guarantee: Some("gapless_committed_prefix"),
             },
-            self.next_page(),
-            |page| {
+            self.read_page(),
+            |(page, _, _)| {
                 page.iter().flatten().try_fold(0_u64, |bytes, record| {
                     bytes.checked_add(u64::try_from(record.value.len()).ok()?)
                 })
             },
         )
-        .await
+        .await;
+        // No suspension after committing the cursor: cancellation while the
+        // diagnostic terminal is pending must leave this page deliverable.
+        crate::trace::Observed {
+            result: observed.result.map(|(page, next, done)| {
+                self.next = next;
+                self.done = done;
+                page
+            }),
+            observation: observed.observation,
+        }
     }
 
     /// Stops before `sequence`, even if the stream grows while pages are read.
@@ -277,10 +287,16 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
 
     /// The next page in order, or `None` once the tail is reached.
     pub async fn next_page(&mut self) -> Result<Option<Vec<Record>>, StreamError> {
+        let (page, next, done) = self.read_page().await?;
+        self.next = next;
+        self.done = done;
+        Ok(page)
+    }
+
+    async fn read_page(&self) -> Result<(Option<Vec<Record>>, u64, bool), StreamError> {
         use futures::{StreamExt as _, TryStreamExt as _};
         if self.done || self.until.is_some_and(|end| self.next >= end) {
-            self.done = true;
-            return Ok(None);
+            return Ok((None, self.next, true));
         }
         let limit = match self.until {
             Some(end) => u32::try_from((end - self.next).min(u64::from(REPLAY_PAGE)))
@@ -324,9 +340,8 @@ impl<P: StreamProvider + ?Sized> Replay<P> {
             return Err(StreamError::Unavailable
                 .with_source(ReplayViolation::IncompletePrefix { cursor: next, end }));
         }
-        self.next = next;
-        self.done = page.is_empty() || self.until == Some(self.next);
-        Ok((!page.is_empty()).then_some(page))
+        let done = page.is_empty() || self.until == Some(next);
+        Ok(((!page.is_empty()).then_some(page), next, done))
     }
 
     /// The sequence after the last record returned.

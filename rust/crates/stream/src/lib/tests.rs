@@ -168,6 +168,7 @@ mod replay_tests {
         inner: MemoryStream,
         missing: u64,
         extra_records: u32,
+        pause_write: Option<Arc<std::sync::atomic::AtomicUsize>>,
     }
 
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -194,6 +195,13 @@ mod replay_tests {
             '_,
             std::result::Result<crate::WriteOutcome, crate::StreamError>,
         > {
+            if self
+                .pause_write
+                .as_ref()
+                .is_some_and(|writes| writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1)
+            {
+                return Box::pin(std::future::pending());
+            }
             self.inner.write(request)
         }
 
@@ -244,6 +252,7 @@ mod replay_tests {
             inner: MemoryStream::default(),
             missing: u64::MAX,
             extra_records: 0,
+            pause_write: None,
         };
         let path = StreamPath::new("native-refusal")?;
         let request = AppendRequest {
@@ -509,6 +518,44 @@ mod replay_tests {
         assert!(
             matches!(observed.observation, Err(error) if error.category() == StreamError::Capacity)
         );
+
+        // Pause the second trace write after the real data page has arrived.
+        // Dropping the observed future must not commit an undelivered cursor.
+        let inner = MemoryStream::default();
+        inner
+            .append(AppendRequest {
+                path: StreamPath::new("data")?,
+                records: vec!["not skipped".into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = Arc::new(Gapped {
+            inner,
+            missing: u64::MAX,
+            extra_records: 0,
+            pause_write: Some(writes.clone()),
+        });
+        let data = Stream::new(provider.clone(), "data")?;
+        let traces = Stream::new(provider, "trace")?;
+        let recorder = Arc::new(Recorder::new(traces.clone(), [5; 16]));
+        let mut replay = data.replay(0);
+        let mut cancelled = Box::pin(replay.next_page_observed(Some(&recorder), None));
+        assert!(futures::poll!(&mut cancelled).is_pending());
+        assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        drop(cancelled);
+        assert_eq!(replay.cursor(), 0);
+        assert_eq!(traces.tail().await?, 1);
+        let retried = replay.next_page_observed(Some(&recorder), None).await;
+        assert_eq!(
+            retried.result?.ok_or("cancelled read skipped page")?[0]
+                .value
+                .as_ref(),
+            b"not skipped"
+        );
+        assert!(matches!(retried.observation?, Settlement::Finished(_)));
+        assert_eq!(replay.cursor(), 1);
         Ok(())
     }
 
@@ -521,6 +568,7 @@ mod replay_tests {
                     inner,
                     missing,
                     extra_records: 0,
+                    pause_write: None,
                 },
                 2_100,
             )
@@ -551,6 +599,7 @@ mod replay_tests {
                 inner: MemoryStream::default(),
                 missing: u64::MAX,
                 extra_records: 1,
+                pause_write: None,
             },
             2_500,
         )
