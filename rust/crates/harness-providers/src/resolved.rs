@@ -488,6 +488,17 @@ impl ModelProvider for ResolvedModel {
         self.validate(model)?;
         Ok(self.admitted_capacity())
     }
+    fn reported_input_tokens(
+        &self,
+        model: &Model,
+        metadata: &serde_json::Value,
+    ) -> Result<Option<u64>> {
+        self.validate(model)?;
+        Ok(crate::accounting::input_tokens(
+            self.config.adapter,
+            metadata,
+        ))
+    }
 
     fn count_tokens<'a>(
         &'a self,

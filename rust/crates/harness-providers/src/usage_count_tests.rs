@@ -5,6 +5,116 @@ use acyclic_harness_core::model::{
 use proptest::prelude::*;
 use serde_json::json;
 
+#[tokio::test]
+async fn cached_input_observations_preserve_total_through_forwarders()
+-> acyclic_harness_core::Result<()> {
+    use acyclic_harness_core::model::{
+        Divergence, DivergenceSink, ModelEvent, ModelProvider, RecordedModel, Recording,
+    };
+    use futures::TryStreamExt as _;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Quiet;
+    impl DivergenceSink for Quiet {
+        fn diverged(&self, _: Divergence) {}
+    }
+    struct Reply {
+        body: String,
+        sent: AtomicUsize,
+    }
+    impl crate::HttpTransport for Reply {
+        fn send(
+            &self,
+            _: crate::HttpRequest,
+        ) -> acyclic_stream::BoxProviderFuture<'_, acyclic_harness_core::Result<crate::HttpResponse>>
+        {
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            let body = self.body.clone();
+            Box::pin(async move {
+                Ok(crate::HttpResponse {
+                    request_id: None,
+                    retry_after: None,
+                    status: 200,
+                    body: crate::tests::chunks(body, 1),
+                })
+            })
+        }
+        fn delay(
+            &self,
+            duration: std::time::Duration,
+        ) -> acyclic_stream::BoxProviderFuture<'static, acyclic_harness_core::Result<()>> {
+            crate::fixtures::delay(duration)
+        }
+        fn now(&self) -> std::time::Duration {
+            crate::fixtures::now()
+        }
+    }
+    for (adapter, fixture) in crate::fixtures::fixtures() {
+        let cases = if adapter == crate::Adapter::Anthropic {
+            vec![
+                (json!(11), Some(23)),
+                (json!("invalid"), None),
+                (json!(u64::MAX), None),
+            ]
+        } else {
+            vec![(json!(4), Some(5))]
+        };
+        for (cached, total) in cases {
+            let body = match adapter {
+                crate::Adapter::Anthropic => fixture.replace("\"input_tokens\":5", &format!("\"input_tokens\":5,\"cache_read_input_tokens\":{cached},\"cache_creation_input_tokens\":7")),
+                crate::Adapter::Responses => fixture.replace("\"input_tokens\":5", &format!("\"input_tokens\":5,\"input_tokens_details\":{{\"cached_tokens\":{cached}}}")),
+                crate::Adapter::Chat => fixture.replace("\"prompt_tokens\":5", &format!("\"prompt_tokens\":5,\"prompt_tokens_details\":{{\"cached_tokens\":{cached}}}")),
+                crate::Adapter::Gemini => fixture.replace("\"promptTokenCount\":5", &format!("\"promptTokenCount\":5,\"cachedContentTokenCount\":{cached}")),
+            };
+            let transport = Arc::new(Reply {
+                body,
+                sent: AtomicUsize::new(0),
+            });
+            let provider =
+                crate::tests::provider_with(adapter, "http://127.0.0.1:1234/v1", transport.clone());
+            let (request, dispatch) = crate::tests::request(&provider)?;
+            let recorded = Arc::new(RecordedModel::new(
+                Arc::new(provider),
+                Arc::new(Recording::default()),
+                Arc::new(Quiet),
+            ));
+            let wrapped = acyclic_stream::testing::Counted::new(recorded);
+            let events: Vec<_> = wrapped.generate(&request, dispatch).try_collect().await?;
+            let metadata = events
+                .iter()
+                .find_map(|event| match event {
+                    ModelEvent::Completed { metadata } => Some(metadata),
+                    _ => None,
+                })
+                .expect("the native stream completed");
+            let raw = match adapter {
+                crate::Adapter::Chat => &metadata["usage"]["prompt_tokens"],
+                crate::Adapter::Gemini => &metadata["usage"]["promptTokenCount"],
+                _ => &metadata["usage"]["input_tokens"],
+            };
+            assert_eq!(
+                raw.as_u64(),
+                Some(5),
+                "billing counters must remain original"
+            );
+            assert_eq!(
+                wrapped.reported_input_tokens(&request.request().model, metadata)?,
+                total,
+                "{adapter:?}"
+            );
+            assert_eq!(
+                transport.sent.load(Ordering::SeqCst),
+                1,
+                "interpreting completed usage must not make another request"
+            );
+        }
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     #[test]

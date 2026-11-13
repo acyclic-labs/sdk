@@ -1852,6 +1852,9 @@ impl ModelProvider for RecordedModel {
     fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
         self.live.context_capacity(model)
     }
+    fn reported_input_tokens(&self, model: &Model, metadata: &Value) -> Result<Option<u64>> {
+        self.live.reported_input_tokens(model, metadata)
+    }
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,
