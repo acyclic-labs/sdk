@@ -1,16 +1,16 @@
 import { HeadProjection, ReadOrder, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validateChildrenPage as validateChildrenPageWire, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitEffectSchema, CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema, HeadRequestSchema, HeadsRequestSchema,
-  ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
+  ChildrenPageRequestSchema, ChildrenPageResponseSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
-import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitEffect, ProviderCommitRequest, Revision } from "./types.js";
+import type { AppendOptions, ChildrenPage, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitEffect, ProviderCommitRequest, Revision } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
 
@@ -49,8 +49,8 @@ function initializeStreamWasmSync(): boolean {
   return true;
 }
 
-function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly decodeReadResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly streamResource: unknown; readonly streamResourcePath: unknown; readonly __wbindgen_free: unknown }): void {
-  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.decodeReadResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.streamResource !== "function" || typeof instance.streamResourcePath !== "function" || typeof instance.__wbindgen_free !== "function") {
+function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly decodeReadResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly publicHttpErrorCode: unknown; readonly validateAppendRequest: unknown; readonly validateChildrenPage: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly streamResource: unknown; readonly streamResourcePath: unknown; readonly __wbindgen_free: unknown }): void {
+  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.decodeReadResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.validateChildrenPage !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.publicHttpErrorCode !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.streamResource !== "function" || typeof instance.streamResourcePath !== "function" || typeof instance.__wbindgen_free !== "function") {
     throw new StreamError("configuration", "stream WASM exports do not match the packaged contract");
   }
 }
@@ -65,6 +65,28 @@ export function readResponseRecords(frame: ReadResponse): WireRecord[] {
 }
 
 export { checkedRecord } from "./record.js";
+
+/** Apply the native request-bound contract at a JavaScript provider boundary. */
+export function checkedChildrenPage(request: Uint8Array, page: ChildrenPage): ChildrenPage {
+  try {
+    const response = toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+      hierarchyVersion: page.hierarchyVersion,
+      children: page.children.map(child => ({
+        ...child,
+        ...(child.tailRecord === undefined ? {} : { tailRecord: {
+          ...child.tailRecord,
+          keys: [...child.tailRecord.keys],
+          attributes: child.tailRecord.attributes.map(attribute => ({ ...attribute })),
+        } }),
+      })),
+      ...(page.nextAfter === undefined ? {} : { nextAfter: page.nextAfter }),
+    }));
+    validateChildrenPageWire(request, response);
+    return page;
+  } catch {
+    throw new StreamError("invalid_response", "children page violates its original selection");
+  }
+}
 
 /** Validates one path through the canonical Rust Stream parser. */
 export function validatePathValue(value: unknown): void {

@@ -41,7 +41,7 @@ class RustStreamProvider implements StreamProvider {
 
   async #project<Result>(operation: string, request: Uint8Array): Promise<Result> {
     const response = await this.#dispatch(operation, request);
-    try { return projectMemoryResponse(operation, response) as Result; }
+    try { return projectMemoryResponse(operation, response, operation === "children_page" ? request : undefined) as Result; }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new StreamError("invalid_response", `Rust ${operation} response is invalid: ${message}`);
@@ -117,8 +117,7 @@ class RustStreamProvider implements StreamProvider {
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
       limit: request.limit,
     };
-    await validateWireRequest(authored);
-    const input = wireRequest(authored);
+    const input = await validateWireRequest(authored);
     return this.#project<ChildrenPage>("children_page", input);
   }
 

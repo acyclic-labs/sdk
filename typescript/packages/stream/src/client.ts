@@ -8,8 +8,8 @@ import type {
   IdempotencyKey, IdempotencyObservation, ReadOptions, Sequence, StreamEnvironment,
   StreamProvider, ProviderCommitEffect, ProviderCommitRequest,
 } from "./types.js";
-import { StreamError, commitId, compareStreamPaths } from "./types.js";
-import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
+import { StreamError, commitId } from "./types.js";
+import { checkedChildrenPage, validateWireRequest, ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
 
 export interface Codec<Value> {
   encode(value: Value): Uint8Array;
@@ -79,34 +79,8 @@ export class StreamClient {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
     positiveInteger(authored.limit, "limit");
-    const page = await this.provider.childrenPage(authored);
-    if (page.hierarchyVersion.byteLength !== 32) throw new StreamError("invalid_page", "provider returned an invalid hierarchy version");
-    const expectedVersion = authored.hierarchyVersion;
-    if (expectedVersion !== undefined &&
-        page.hierarchyVersion.some((byte, index) => byte !== expectedVersion[index])) {
-      throw new StreamError("hierarchy_changed", "provider changed hierarchy version during pagination");
-    }
-    if (page.children.length > authored.limit) {
-      throw new StreamError("invalid_page", "provider returned an invalid child continuation");
-    }
-    let previous = authored.after;
-    for (const child of page.children) {
-      validatePathValue(child.path);
-      if (directParent(child.path) !== (authored.parent ?? "") ||
-          (previous !== undefined && compareStreamPaths(previous, child.path) >= 0)) {
-        throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
-      }
-      previous = child.path;
-    }
-    if (page.nextAfter !== undefined) {
-      validatePathValue(page.nextAfter);
-      if (directParent(page.nextAfter) !== (authored.parent ?? "") ||
-          (authored.after !== undefined && compareStreamPaths(page.nextAfter, authored.after) <= 0) ||
-          (previous !== undefined && compareStreamPaths(page.nextAfter, previous) < 0)) {
-        throw new StreamError("invalid_page", "provider returned an invalid child continuation");
-      }
-    }
-    return page;
+    const input = await validateWireRequest({ kind: "children_page", ...authored });
+    return checkedChildrenPage(input, await this.provider.childrenPage(authored));
   }
 
   async commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {

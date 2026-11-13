@@ -201,6 +201,14 @@ fn page_tail_records_keep_keys_and_attributes() {
         }],
         next_after: None,
     };
+    let mut request = wire::ChildrenPageRequest {
+        parent: Some("agents".to_owned()),
+        limit: 1,
+        ..Default::default()
+    };
+    assert!(validate_children_page(&request.encode_to_vec(), &response.encode_to_vec()).is_err());
+    request.tail_stream = Some("status".to_owned());
+    assert!(validate_children_page(&request.encode_to_vec(), &response.encode_to_vec()).is_ok());
     let page =
         http::decode_wire_response("children_page", &response.encode_to_vec()).expect("valid page");
     let get = |value: &JsValue, name: &str| Reflect::get(value, &JsValue::from_str(name)).unwrap();

@@ -243,8 +243,8 @@ export class GrpcStreamProvider implements StreamProvider {
       throw failure;
     }
   }
-  #project<T>(operation: string, bytes: Uint8Array): T {
-    try { return projectMemoryResponse(operation, bytes) as T; }
+  #project<T>(operation: string, bytes: Uint8Array, childrenRequest?: Uint8Array): T {
+    try { return projectMemoryResponse(operation, bytes, childrenRequest) as T; }
     catch { throw new StreamError("invalid_response", `invalid ${operation} response`); }
   }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
@@ -316,7 +316,7 @@ export class GrpcStreamProvider implements StreamProvider {
     };
     const input = await validateWireRequest(authored);
     const response = await this.#call("children_page", () => this.#client.childrenPage(fromBinary(wire.ChildrenPageRequestSchema, input)));
-    return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response));
+    return this.#project("children_page", toBinary(wire.ChildrenPageResponseSchema, response), input);
   }
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
     const input = await normalizeWireCommitBytes(structuredClone(request), structuredClone(options));

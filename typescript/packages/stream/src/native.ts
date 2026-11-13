@@ -251,9 +251,9 @@ export class NativeStreamProvider implements StreamProvider {
       ...(request.after === undefined ? {} : { after: request.after }),
       ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion.slice() }),
     };
-    await validateWireRequest(authored);
-    const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(wireRequest(authored)))));
-    return this.project("children_page", value) as ChildrenPage;
+    const input = await validateWireRequest(authored);
+    const value = await this.operation("children_page", this.request(client => client.childrenPageResult(Buffer.from(input))));
+    return this.project("children_page", value, input) as ChildrenPage;
   }
 
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
@@ -280,8 +280,8 @@ export class NativeStreamProvider implements StreamProvider {
     }
   }
 
-  private project(operation: string, value: Uint8Array): unknown {
-    try { return projectMemoryResponse(operation, value); }
+  private project(operation: string, value: Uint8Array, childrenRequest?: Uint8Array): unknown {
+    try { return projectMemoryResponse(operation, value, childrenRequest); }
     catch (error) { throw invalidResponse(operation, error); }
   }
 }
