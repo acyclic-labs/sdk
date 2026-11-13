@@ -104,6 +104,130 @@ async fn native_root_capture_and_teardown_use_the_existing_checkout() -> Result<
 }
 
 #[tokio::test]
+async fn read_only_bindings_require_read_but_not_write() -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::write(checkout.path().join("source.txt"), b"read-only source").map_err(storage)?;
+    let harness = LocalHarness::open(
+        LocalHarnessConfig::native_host(checkout.path())
+            .workspace_mounting(WorkspaceMounting::Physical)
+            .state_directory(state.path().join("runtime")),
+    )
+    .await?;
+    let workspace = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("fixture workspace".into()))?;
+    let project_read = harness
+        .project
+        .capability(VolumeOperation::Read, &mut None)?;
+    let project_write = harness
+        .project
+        .capability(VolumeOperation::Write, &mut None)?;
+    let agent_id = crate::AgentId::from_bytes([3; 16]);
+    let agent = AgentPath::root(&agent_id);
+    let signer = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("test signing custody".into()))?;
+    let read_only = signer.bootstrap_scope(
+        "read-only-project",
+        &crate::Capabilities::new(
+            harness
+                .signed
+                .capabilities()
+                .iter()
+                .filter(|capability| *capability != project_write.as_str()),
+        ),
+        Some(agent_id),
+        &mut None,
+    )?;
+    let authority = workspace
+        .mount_authority
+        .as_ref()
+        .ok_or(Error::FilesystemAccessConfiguration(
+            "fixture mount authority",
+        ))?
+        .for_scope(&read_only)?;
+    let mut bindings = harness.session_bindings().to_vec();
+    let primary_id = crate::agent::WorkspaceTable::primary_in(&bindings)
+        .ok_or_else(|| Error::NotFound("fixture primary".into()))?
+        .id;
+    bindings
+        .iter_mut()
+        .find(|entry| entry.id == primary_id)
+        .unwrap()
+        .mode = crate::agent::WorkspaceMode::ReadOnly;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let view = workspace
+        .view()
+        .open_related(
+            workspace.view().workspace().clone(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            },
+        )
+        .await
+        .map_err(storage)?;
+    let selected = workspace
+        .bound_task_view(view, &harness.project, &bindings, &AgentOwner, &authority)
+        .await?;
+    let host = HostWorkspace::attach(
+        Arc::clone(&selected),
+        agent.clone(),
+        &read_only,
+        &harness.verifier,
+        selected.held_task_mount_root()?,
+    )
+    .await?;
+    host.verify().await?;
+    assert_eq!(
+        std::fs::read(host.host_cwd().join("source.txt")).map_err(storage)?,
+        b"read-only source"
+    );
+    // The same scope cannot attach the original writable primary.
+    assert!(matches!(
+        HostWorkspace::attach(
+            Arc::clone(workspace),
+            agent.clone(),
+            &read_only,
+            &harness.verifier,
+            workspace.held_task_mount_root()?,
+        )
+        .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let denied = signer.bootstrap_scope(
+        "missing-project-read",
+        &crate::Capabilities::new(
+            read_only
+                .capabilities()
+                .iter()
+                .filter(|capability| *capability != project_read.as_str()),
+        ),
+        Some(agent_id),
+        &mut None,
+    )?;
+    assert!(matches!(
+        HostWorkspace::attach(
+            Arc::clone(&selected),
+            agent,
+            &denied,
+            &harness.verifier,
+            selected.held_task_mount_root()?,
+        )
+        .await,
+        Err(Error::Unauthorized(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn attachment_rejects_an_arbitrary_in_checkout_mount_root() -> Result<()> {
     let fixture = Fixture::open().await?;
     let mounts = fixture.checkout.path().join("authored-directory");
