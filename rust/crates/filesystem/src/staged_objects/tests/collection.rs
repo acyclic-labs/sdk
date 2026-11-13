@@ -1,6 +1,69 @@
 use super::*;
 use crate::workspace::ForkOptions;
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[tokio::test]
+async fn collection_deallocates_private_blocks_without_moving_a_live_peer()
+-> Result<(), Box<dyn std::error::Error>> {
+    fn allocation(file: &std::fs::File) -> std::io::Result<u64> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(file.metadata()?.blocks() * 512)
+        }
+        #[cfg(windows)]
+        {
+            let stat =
+                crate::native_host::stat_file(file, &mut crate::native_host::ordinary_work())
+                    .map_err(crate::native_host::ordinary_error)?;
+            u64::try_from(stat.raw.AllocationSize).map_err(std::io::Error::other)
+        }
+    }
+    for omit_collection in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let (store, _provider) = open_staged(directory.path()).await?;
+        let cancel = CancellationToken::new();
+        let (dead, _) =
+            spill_bytes_fixture(&store, &cancel, vec![17; 4 * 1024 * 1024].into()).await?;
+        let peer_bytes = vec![29; 1024 * 1024];
+        let (peer, _) = spill_bytes_fixture(&store, &cancel, peer_bytes.clone().into()).await?;
+        let (before, peer_offset) = {
+            let spill = store.spill_io.read().await;
+            let offset = match store.index().lookup(peer) {
+                Lookup::Spilled { offset, .. } => offset,
+                _ => return Err("peer was not spilled".into()),
+            };
+            (
+                allocation(spill.as_ref().ok_or("missing spill")?.as_file())?,
+                offset,
+            )
+        };
+        let collecting = store.collection.begin().await;
+        if !omit_collection {
+            let marked = HashSet::from([peer.digest]);
+            assert_eq!(
+                store
+                    .sweep_private(&collecting, &marked, &cancel)
+                    .await?
+                    .removed,
+                1
+            );
+            assert!(matches!(store.index().lookup(dead), Lookup::Absent));
+        }
+        let spill = store.spill_io.read().await;
+        let file = spill.as_ref().ok_or("live peer lost its file")?;
+        let after = allocation(file.as_file())?;
+        assert_eq!(
+            after < before,
+            !omit_collection,
+            "physical allocation oracle missed omitted-collection negative control"
+        );
+        let recovered = read_spilled(file, &[(peer, peer_offset, peer_bytes.len() as u64)]).await?;
+        assert_eq!(recovered[0], peer_bytes);
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn real_collection_retains_unfinished_children_and_detects_early_root_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -187,15 +250,9 @@ async fn collection_waits_for_an_accepted_spill_identity_before_offset_reuse()
         // This proof schedules primitive events, independently of Tokio's task budget.
         let sweep = tokio::task::unconstrained(store.sweep_private(&collecting, &marked, &cancel));
         tokio::pin!(sweep);
-        let first = futures::poll!(sweep.as_mut());
-        assert_eq!(
-            first.is_ready(),
-            early_release,
-            "collector did not obey the accepted-read lease"
-        );
         let actual;
-        if let std::task::Poll::Ready(result) = first {
-            assert_eq!(result?.removed, 1);
+        if early_release {
+            assert_eq!(sweep.await?.removed, 1);
             // Keeping the peer spilled makes this the same real physical file.
             spill_bytes_fixture(&store, &cancel, vec![13; 64].into()).await?;
             let file = store.spill_io.read().await;
@@ -207,6 +264,10 @@ async fn collection_waits_for_an_accepted_spill_identity_before_offset_reuse()
             .pop()
             .ok_or("missing recovered bytes")?;
         } else {
+            assert!(
+                futures::poll!(sweep.as_mut()).is_pending(),
+                "collector did not obey the accepted-read lease"
+            );
             let file = accepted.as_ref().ok_or("accepted lease was lost")?;
             actual = read_spilled(
                 file.as_ref().ok_or("missing spill")?,

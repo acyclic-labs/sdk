@@ -113,6 +113,17 @@ pub(super) struct Index {
 }
 
 impl Index {
+    /// A bounded page in the existing best-fit order. The caller holds the
+    /// spill lease through deallocation so these extents cannot be reused.
+    pub(super) fn free_page(&self, after: Option<(u64, u64)>, limit: usize) -> Vec<(u64, u64)> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.free
+            .range((after.map_or(Unbounded, Excluded), Unbounded))
+            .take(limit)
+            .copied()
+            .collect()
+    }
+
     pub(super) fn lookup(&self, object_id: ObjectId) -> Lookup {
         self.lookup_representation(object_id, false)
     }

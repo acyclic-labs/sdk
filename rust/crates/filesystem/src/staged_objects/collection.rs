@@ -157,6 +157,41 @@ impl<S> StagedObjects<S> {
                 }
             }
         }
+        // Free ranges include read promotions as well as swept objects. Each
+        // bounded native operation joins the same file ordering as writes. If
+        // cancelled after submission, a later reuse is still ordered after it.
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        {
+            let mut after = None;
+            loop {
+                let spill = accounting.wait_for(self.spill_io.write()).await?;
+                let Some(file) = spill.as_ref() else { break };
+                let ranges = {
+                    let index = self.index();
+                    if index.spilled.is_empty() {
+                        break;
+                    }
+                    index.free_page(after, PAGE)
+                };
+                let Some(&last) = ranges.last() else { break };
+                after = Some(last);
+                let operation = file
+                    .control_async(
+                        move |file, meter| {
+                            for (length, offset) in ranges {
+                                crate::native_host::punch_hole(file, offset, length, meter)?;
+                            }
+                            Ok(())
+                        },
+                        None,
+                    )
+                    .map_err(ObjectStoreError::from)?;
+                accounting
+                    .wait_for(operation)
+                    .await?
+                    .map_err(ObjectStoreError::from)?;
+            }
+        }
         // Reads can promote every extent without deleting an object, so this
         // terminal also handles an empty file left by accepted recovery.
         let mut spill = accounting.wait_for(self.spill_io.write()).await?;
