@@ -38,10 +38,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
             'a,
-            (
-                acyclic_harness::conversation::FileRef,
-                acyclic_stream::OwnedBytes,
-            ),
+            acyclic_harness::conversation::CapturedContent<'a>,
         >,
     > {
         self.reads.fetch_add(1, Ordering::Relaxed);

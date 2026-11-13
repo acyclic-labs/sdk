@@ -105,7 +105,7 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
         ceiling: None,
         io: Some(&io),
     };
-    let (original, captured_bytes) = bindings
+    let (original, captured_bytes, _original_hold) = bindings
         .reader
         .capture_private_path(capture(0), Some(4096), access)?
         .await?;
@@ -117,6 +117,23 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
         .read(&original, 4096, None, Some(&io))?
         .await?;
     assert!(String::from_utf8_lossy(&bytes).contains("first body"));
+    let workspace = workspace_ref(
+        original.volume().provider().clone(),
+        &original.volume().storage_name(&mut None)?,
+    )?;
+    let cut = fixture.host.resolve(&workspace, None).await?.generation;
+    fixture
+        .host
+        .apply(
+            &workspace,
+            Some(&cut),
+            &[WorkspaceMutation::PutFile {
+                path: format!("/{}", original.path()),
+                bytes: b"substituted later body".as_slice().into(),
+            }],
+            &IdempotencyKey::new("later-captured-body")?,
+        )
+        .await?;
     assert!(
         fixture
             .host
@@ -146,20 +163,19 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
         FilesystemHost::new(fixture.filesystem.clone(), fixture.volume.provider(), None)?
             .with_native_skills(sources)?;
     let reader = fixture.source_reader(reopened)?;
-    assert_eq!(
-        reader
-            .capture_private_path(capture(0), Some(4096), access)?
-            .await?
-            .0,
-        original
-    );
+    let (recovered, recovered_bytes, _recovered_hold) = reader
+        .capture_private_path(capture(0), Some(4096), access)?
+        .await?;
+    assert_eq!(recovered, original);
+    assert_eq!(recovered_bytes.as_ref(), captured_bytes.as_ref());
     // Recovering by operation alone, or deriving a new operation from the
     // changed source, would accept a request that the original receipt never bound.
     assert_eq!(
         reader
             .capture_private_path(capture(1), Some(4096), access)?
             .await
-            .unwrap_err()
+            .err()
+            .expect("capture must refuse")
             .code(),
         crate::wire::ErrorCode::Conflict
     );
@@ -167,7 +183,8 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
         reader
             .capture_private_path(capture(0), Some(8), access)?
             .await
-            .unwrap_err()
+            .err()
+            .expect("capture must refuse")
             .code(),
         crate::wire::ErrorCode::Invalid
     );
@@ -200,7 +217,8 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
                     }
                 )?
                 .await
-                .unwrap_err()
+                .err()
+                .expect("capture must refuse")
                 .code(),
             crate::wire::ErrorCode::Unauthorized
         );
@@ -211,7 +229,52 @@ async fn captured_skill_replays_from_separate_journal_and_rejects_another_source
             .journal_reader
             .capture_private_path(capture(0), Some(4096), access)?
             .await
-            .unwrap_err()
+            .err()
+            .expect("capture must refuse")
+            .code(),
+        crate::wire::ErrorCode::Unauthorized
+    );
+    // Revoke real original source authority during the destination read. A
+    // check only before receipt lookup would disclose the already read body.
+    struct RevokingReader<'a> {
+        inner: &'a dyn ContentResidencyVerifier,
+        owner: &'a AuthorityRoot,
+        scope: &'a crate::core::Scope,
+    }
+    impl ContentResidencyVerifier for RevokingReader<'_> {
+        fn read<'a>(
+            &'a self,
+            reference: &'a FileRef,
+            maximum: u64,
+            ceiling: Option<&'a Capabilities>,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
+        {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                let bytes = self.inner.read(reference, maximum, ceiling, io)?.await?;
+                self.owner.revoke_workload(self.scope)?;
+                Ok(bytes)
+            })
+        }
+    }
+    let revoker = RevokingReader {
+        inner: bindings.journal_reader.as_ref(),
+        owner: &fixture._issuer,
+        scope: reader.authority.scope(),
+    };
+    assert_eq!(
+        reader
+            .capture_private_path(
+                ContentCapture {
+                    reader: &revoker,
+                    ..capture(0)
+                },
+                Some(4096),
+                access
+            )?
+            .await
+            .err()
+            .expect("capture must refuse")
             .code(),
         crate::wire::ErrorCode::Unauthorized
     );
@@ -365,7 +428,7 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     )?;
     tokio::pin!(first);
     tokio::select! {
-        result = &mut first => panic!("first load completed before its pinned-transaction pause: {result:?}"),
+        result = &mut first => panic!("first load completed before its pinned-transaction pause: {:?}", result.err()),
         _ = at_a => {},
     }
     // Replacement registration retains the original source records and owner.
@@ -392,14 +455,14 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     // before either commits, reproducing the former disjoint-load race.
     if registered.materializer.enter().now_or_never().is_some() {
         tokio::select! {
-            result = &mut second => panic!("second load completed before its pause: {result:?}"),
+            result = &mut second => panic!("second load completed before its pause: {:?}", result.err()),
             _ = at_b => {},
         }
     }
     release_a.send(()).unwrap();
     release_b.send(()).unwrap();
     let (first, second) = futures::join!(first, second);
-    for ((file, body), expected) in [(first?, "first body"), (second?, "second body")] {
+    for ((file, body, _hold), expected) in [(first?, "first body"), (second?, "second body")] {
         assert!(String::from_utf8_lossy(&body).contains(expected));
         let bytes = bindings
             .journal_reader
@@ -481,7 +544,7 @@ async fn denied_skill_body_never_materializes_the_host_source() -> Result<()> {
             )?
             .await;
         assert_eq!(
-            result.unwrap_err().code(),
+            result.err().expect("capture must refuse").code(),
             crate::wire::ErrorCode::Unauthorized
         );
         assert_eq!(

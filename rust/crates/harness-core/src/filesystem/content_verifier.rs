@@ -97,8 +97,9 @@ where
         capture: crate::conversation::ContentCapture<'a>,
         maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'a>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes)>>
-    {
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<'a, crate::conversation::CapturedContent<'a>>,
+    > {
         crate::conversation::BoundedContentFuture::new(access.io, || async move {
             self.verify_exact_file(None, access.io)?;
             let mut history = access.io.map(PreparationIo::history_io);

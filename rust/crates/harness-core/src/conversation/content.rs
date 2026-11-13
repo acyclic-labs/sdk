@@ -4,6 +4,9 @@ use super::*;
 pub type ContentIo = crate::filesystem::PreparationIo;
 /// Retained content metadata ownership.
 pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
+/// Captured bytes, their actual destination, and destination metadata ownership
+/// in the original ledger, released when the caller drops the result.
+pub type CapturedContent<'a> = (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>);
 
 /// Caller authority ceiling and accounting for a content operation.
 /// The ceiling can only narrow the adapter's authenticated workload authority.
@@ -216,7 +219,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _capture: ContentCapture<'a>,
         _maximum_bytes: Option<u64>,
         access: ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes)>> {
+    ) -> Result<BoundedContentFuture<'a, CapturedContent<'a>>> {
         Err(content_error(
             access.io,
             crate::wire::ErrorCode::Unsupported,
@@ -865,7 +868,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         capture: ContentCapture<'a>,
         maximum_bytes: Option<u64>,
         access: ContentAccess<'a, 'a>,
-    ) -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes)>> {
+    ) -> Result<BoundedContentFuture<'a, CapturedContent<'a>>> {
         self.bound_reader(capture.source.volume, access.io)?
             .capture_private_path(capture, maximum_bytes, access)
     }

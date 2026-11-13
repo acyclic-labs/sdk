@@ -14,7 +14,7 @@ pub struct SkillMetadata {
     pub fields: BTreeMap<String, serde_json::Value>,
     /// Stable original source identity, independent of the retained body version.
     pub identity: String,
-    /// Exact lazy body location and provenance.
+    /// Pinned original source. Invocation captures its body into the recipient's journal.
     pub source: PinnedContextPath,
 }
 
@@ -179,13 +179,16 @@ impl SkillMetadata {
         let identity = (&source.root.volume, &source.path, &source.generation);
         let digest = crate::executor::with_history_io(io, |work| {
             let length = crate::executor::json::json_byte_length(&identity, None, work)?;
+            const DOMAIN: &str = "acyclic.harness.skill-body.v1";
             if let Some(work) = work.as_deref_mut() {
-                work.hashed_bytes(length)?;
+                work.hashed_bytes(length.checked_add(DOMAIN.len() as u64).ok_or_else(|| {
+                    Error::Invalid("skill capture identity length overflows".into())
+                })?)?;
             }
-            let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.skill-body.v1");
+            let mut hash = blake3::Hasher::new_derive_key(DOMAIN);
             serde_json::to_writer(&mut hash, &identity)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-            Ok(*hash.finalize().as_bytes())
+            Ok::<_, Error>(*hash.finalize().as_bytes())
         })?;
         let path = crate::executor::with_history_io(io, |work| {
             crate::executor::preparation_format(
@@ -201,7 +204,7 @@ impl SkillMetadata {
             .transpose()?;
         let mut operation = [0; 16];
         operation.copy_from_slice(&digest[..16]);
-        let (file, bytes) = reader
+        let (file, bytes, hold) = reader
             .capture_private_path(
                 crate::conversation::ContentCapture {
                     source: crate::conversation::ContentPath {
@@ -250,6 +253,7 @@ impl SkillMetadata {
             String::from_utf8(bytes)
                 .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?
         };
+        drop(hold);
         Ok(ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(text),

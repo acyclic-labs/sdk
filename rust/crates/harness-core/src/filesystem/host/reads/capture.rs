@@ -5,26 +5,26 @@ use crate::conversation::{
 };
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    pub(in crate::filesystem) async fn capture_private_path(
+    pub(in crate::filesystem) async fn capture_private_path<'io>(
         &self,
         grant: &ContentGrant,
         capture: ContentCapture<'_>,
         maximum_bytes: Option<u64>,
-        access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        access: crate::conversation::ContentAccess<'_, 'io>,
+    ) -> Result<crate::conversation::CapturedContent<'io>> {
         let ContentPath {
             volume,
             path,
             generation,
             ..
         } = capture.source;
-        crate::executor::with_history_io(access.io, |work| {
+        crate::executor::with_history_io(access.io, |work| -> Result<_> {
             volume.validate(work)?;
             generation.validate(work)?;
             crate::conversation::validate_content_path(capture.path, work)?;
             Ok(())
         })?;
-        if generation.provider() != volume.provider() || maximum_bytes == Some(0) {
+        if generation.as_resource().provider() != volume.provider() || maximum_bytes == Some(0) {
             return Err(stock_boundary(
                 access.io,
                 crate::wire::ErrorCode::Invalid,
@@ -62,7 +62,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None => None,
         };
         let binding = capture.source_binding(access.io)?;
-        let binding_path = crate::executor::with_history_io(access.io, |work| {
+        let binding_path = crate::executor::with_history_io(access.io, |work| -> Result<_> {
             crate::executor::preparation_format(format_args!("{}.capture-v1", capture.path), work)
         })?;
         let _binding_path_hold = io.guard_owned(binding_path.capacity() as u64)?;
@@ -81,9 +81,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 publication_access,
             )?
             .await?;
-        if let Some(hold) = hold {
-            hold.into_retained()?;
-        }
         if let Some(prior) = prior {
             selected.recheck(grant, io).await?;
             let file = capture_result(
@@ -98,11 +95,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .reader
                 .read(&file, file.descriptor().byte_length(), None, access.io)?
                 .await?;
-            crate::executor::with_history_io(access.io, |work| {
+            crate::executor::with_history_io(access.io, |work| -> Result<_> {
                 file.descriptor().verify(&bytes, work)
             })?;
             selected.recheck(grant, io).await?;
-            return Ok((file, bytes));
+            return Ok((file, bytes, hold));
         }
         let bytes;
         #[cfg(not(target_arch = "wasm32"))]
@@ -153,9 +150,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 publication_access,
             )?
             .await?;
-        if let Some(hold) = hold {
-            hold.into_retained()?;
-        }
         let file = capture_result(
             &capture,
             captured,
@@ -168,7 +162,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // not read the newly published body back just to assemble a prompt.
         crate::executor::with_history_io(access.io, |work| file.descriptor().verify(&bytes, work))?;
         selected.recheck(grant, io).await?;
-        Ok((file, bytes))
+        Ok((file, bytes, hold))
     }
 
     async fn read_capture_source(

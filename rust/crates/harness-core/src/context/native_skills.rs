@@ -1257,12 +1257,13 @@ mod binding_tests {
                 reader
                     .capture_private_path(foreign, Some(4096), access)?
                     .await
-                    .unwrap_err()
+                    .err()
+                    .expect("capture must refuse")
                     .code(),
                 crate::wire::ErrorCode::Unauthorized
             );
         }
-        let (captured, captured_bytes) = reader
+        let (captured, captured_bytes, _capture_hold) = reader
             .capture_private_path(request, Some(4096), access)?
             .await?;
         assert_eq!(captured_bytes.as_ref(), body);
