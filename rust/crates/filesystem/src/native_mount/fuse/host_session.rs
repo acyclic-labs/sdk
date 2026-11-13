@@ -1,4 +1,4 @@
-//! Physical host session over the common packet entry.
+//! SDK source endpoint for the external native FUSE server.
 
 use super::host_io::{Connection, HostIo, Received};
 use super::notification::{CacheNotifier, PacketSink};
@@ -19,6 +19,7 @@ pub(super) struct HostSession {
     _cancellation: crate::Cancelled<'static>,
     io: Arc<HostIo>,
     work: NativeMaterializationWork,
+    #[cfg(test)]
     owner_uid: u32,
     buffers: PacketBufferPool<PacketBuffers>,
     #[cfg(test)]
@@ -35,7 +36,7 @@ impl HostSession {
         worker: &mut Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
         operation: &std::cell::Cell<&'static str>,
     ) -> Result<(), NativeMountError> {
-        operation.set("read and reply FUSE INIT");
+        operation.set("join FUSE initialization");
         self.after_init(path, || Ok(()))?;
         let io = self.transport();
         // Publish worker custody before any post-INIT namespace access.
@@ -60,7 +61,7 @@ impl HostSession {
         acquire: impl FnOnce() -> Result<T, NativeMountError>,
     ) -> Result<T, NativeMountError> {
         self.initialize()
-            .map_err(|error| error.during("read/reply FUSE INIT", path))?;
+            .map_err(|error| error.during("join FUSE initialization", path))?;
         acquire()
     }
 
@@ -80,13 +81,15 @@ impl HostSession {
             PacketBuffers::new(maximum_write as usize + 4096, work)
         })?;
         let cancellation = super::packet_cancellation::register(work, &io)?;
+        let protocol = source_protocol(router, &io, maximum_write, page_size, &buffers)?;
         Ok(Self {
-            protocol: PacketSession::new(router, maximum_write, page_size)?,
+            protocol,
             #[cfg(test)]
             worker_lifetime: Arc::new(()),
             _cancellation: cancellation,
             io,
             work: work.clone(),
+            #[cfg(test)]
             owner_uid: nix::unistd::geteuid().as_raw(),
             buffers,
             #[cfg(test)]
@@ -181,7 +184,8 @@ impl HostSession {
             }
             Ok(())
         };
-        if !owner_allowed(self.owner_uid, &request) {
+        #[cfg(test)]
+        if !self.io.framed && !owner_allowed(self.owner_uid, &request) {
             let output = buffers
                 .output
                 .get_mut(..super::packet::OUTPUT_HEADER)
@@ -291,10 +295,87 @@ impl Drop for PendingReply<'_> {
     }
 }
 
+#[cfg(test)]
 fn owner_allowed(owner_uid: u32, request: &PacketRequest<'_>) -> bool {
-    request.owner.0 == owner_uid
-        || matches!(
-            request.opcode,
-            2 | 15 | 16 | 18 | 20 | 26 | 28 | 29 | 30 | 38 | 42 | 44
-        )
+    acyclic_native_runtime::fuse_protocol::Request {
+        opcode: request.opcode,
+        unique: request.unique,
+        inode: request.inode,
+        owner: request.owner,
+        body: request.body,
+    }
+    .owner_allowed(owner_uid)
+}
+
+fn source_protocol(
+    router: PacketRouter,
+    io: &HostIo,
+    maximum_write: u32,
+    page_size: std::num::NonZeroU32,
+    _buffers: &PacketBufferPool<PacketBuffers>,
+) -> Result<PacketSession, NativeMountError> {
+    // Only the explicit old-path control owns an in-process physical device.
+    #[cfg(test)]
+    if !io.framed {
+        return PacketSession::new(router, maximum_write, page_size);
+    }
+    let capabilities = router.cache_capabilities()?.bits();
+    // Original source admission survives the positive physical INIT receipt.
+    let _initialization = router
+        .initialize()
+        .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
+    #[cfg(test)]
+    let capture = super::tests::packets::Capture::current();
+    #[cfg(test)]
+    let trace = capture
+        .as_ref()
+        .map(|_| {
+            rustix::fs::memfd_create(
+                c"fuse-initialization-capture",
+                rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
+            )
+            .map_err(std::io::Error::from)
+            .map(std::fs::File::from)
+        })
+        .transpose()?;
+    #[cfg(not(test))]
+    let trace: Option<std::fs::File> = None;
+    io.start_fuse(
+        acyclic_native_runtime::fuse_protocol::Configuration {
+            maximum_write,
+            page_size: page_size.get(),
+            cache_capabilities: capabilities,
+        },
+        trace.as_ref(),
+    )?;
+    #[cfg(test)]
+    if let (Some(capture), Some(mut trace)) = (capture, trace) {
+        use std::io::{Read, Seek};
+        trace.rewind()?;
+        let mut buffers = _buffers.take(0)?;
+        let capacity = maximum_write as usize + 4096;
+        loop {
+            let mut lengths = [0; 16];
+            if trace.read(&mut lengths[..1])? == 0 {
+                break;
+            }
+            trace.read_exact(&mut lengths[1..])?;
+            let request_length = usize::try_from(u64::from_ne_bytes(
+                lengths[..8].try_into().map_err(|_| libc::EPROTO)?,
+            ))
+            .map_err(|_| libc::EOVERFLOW)?;
+            let reply_length = usize::try_from(u64::from_ne_bytes(
+                lengths[8..].try_into().map_err(|_| libc::EPROTO)?,
+            ))
+            .map_err(|_| libc::EOVERFLOW)?;
+            let request = PacketBuffers::input_for(&mut buffers.input, request_length, capacity)?;
+            trace.read_exact(request)?;
+            let reply = PacketBuffers::input_for(&mut buffers.output, reply_length, capacity)?;
+            trace.read_exact(reply)?;
+            let sequence = capture.begin();
+            capture.completed(sequence, request, Some(reply));
+        }
+        _buffers.put(0, buffers)?;
+    }
+    PacketSession::backend(router, maximum_write, page_size)
 }

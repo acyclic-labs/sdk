@@ -1,7 +1,7 @@
 //! One event-driven host for packet devices. The owner retains only a stream.
 //! No callback, namespace lookup, or wait for an owner runs in this process.
 
-use super::{receive_handles, sys};
+use super::{fuse_protocol, receive_handles, sys};
 use core::ptr;
 use sys::{Errno, Fd};
 
@@ -15,6 +15,7 @@ struct Packet {
     capacity: usize,
     filled: usize,
     sent: usize,
+    routed: bool,
 }
 
 impl Packet {
@@ -24,6 +25,7 @@ impl Packet {
             capacity,
             filled: 0,
             sent: 0,
+            routed: false,
         })
     }
 
@@ -55,6 +57,19 @@ struct Session {
     stream: Fd,
     input: Option<Packet>,
     output: Option<Packet>,
+    protocol: Option<fuse_protocol::Session>,
+    response: Response,
+    initializing: bool,
+    initialization_trace: Fd,
+}
+
+enum Response {
+    Backend,
+    Session {
+        transition: Option<fuse_protocol::Transition>,
+        failure: Option<fuse_protocol::Error>,
+        close: bool,
+    },
 }
 
 // Both supported Linux architectures have pages of at least 4096 bytes.
@@ -81,6 +96,10 @@ impl Session {
                 stream: -1,
                 input: None,
                 output: None,
+                protocol: None,
+                response: Response::Backend,
+                initializing: false,
+                initialization_trace: -1,
             })
         };
         Ok(base)
@@ -97,14 +116,27 @@ impl Session {
                 base | DEVICE,
             )?;
             self.device_registered = true;
-        } else if self.mounted {
+        } else if self.mounted
+            && let Some(protocol) = &self.protocol
+        {
             let input = self.input.as_ref().ok_or(Errno(sys::EINVAL))?;
             let output = self.output.as_ref().ok_or(Errno(sys::EINVAL))?;
             let complete = output.filled >= 4 && output.filled == frame_length(output);
-            let device_events = if input.filled == 0 { sys::EPOLL_IN } else { 0 }
-                | if complete { sys::EPOLL_OUT } else { 0 };
-            let stream_events = if complete { 0 } else { sys::EPOLL_IN }
-                | if input.filled != 0 { sys::EPOLL_OUT } else { 0 };
+            let device_events = if input.filled == 0 && output.filled == 0 && !protocol.closed() {
+                sys::EPOLL_IN
+            } else {
+                0
+            } | if complete { sys::EPOLL_OUT } else { 0 };
+            let stream_events =
+                if !complete && protocol.ready() && matches!(self.response, Response::Backend) {
+                    sys::EPOLL_IN
+                } else {
+                    0
+                } | if input.filled != 0 && input.routed {
+                    sys::EPOLL_OUT
+                } else {
+                    0
+                };
             sys::interest(
                 queue,
                 self.device,
@@ -166,6 +198,31 @@ impl Session {
     fn command(&mut self, queue: Fd) -> Result<(), Errno> {
         let mut body = [0_u8; 20];
         let request = receive_handles(self.control, &mut body)?.ok_or(Errno(sys::EPIPE))?;
+        if request.length == 20 && request.count <= 1 && body[..4] == 2_u32.to_ne_bytes() {
+            if !self.mounted || self.waiting_helper || self.protocol.is_some() {
+                request.close();
+                return Err(Errno(sys::EINVAL));
+            }
+            if request.count == 1 {
+                // A memfd cannot perform a lookup or callback into an owner's
+                // mount. Never accept a caller's arbitrary filesystem here.
+                self.initialization_trace = request.descriptors[0];
+                sys::memory_file(self.initialization_trace)?;
+            }
+            let word = |offset| u32::from_ne_bytes(super::array4(&body[offset..offset + 4]));
+            self.protocol = Some(
+                fuse_protocol::Session::new(fuse_protocol::Configuration {
+                    maximum_write: word(4),
+                    page_size: word(8),
+                    cache_capabilities: u64::from_ne_bytes(
+                        body[12..20].try_into().map_err(|_| Errno(sys::EINVAL))?,
+                    ),
+                })
+                .map_err(Errno)?,
+            );
+            self.initializing = true;
+            return self.interest(queue);
+        }
         if request.count != 1 || request.length != 20 || self.mounted || self.waiting_helper {
             request.close();
             return Err(Errno(sys::EINVAL));
@@ -241,66 +298,195 @@ impl Session {
         Ok(())
     }
     fn progress(&mut self) -> Result<(), Errno> {
-        let input = self.input.as_mut().ok_or(Errno(sys::EINVAL))?;
-        if input.filled == 0 {
-            if let Some(count) = read(self.device, input.slice(0, input.capacity))? {
-                if count == 0 {
-                    return Err(Errno(sys::EPIPE));
-                }
-                input.filled = count;
-            }
-        }
-        if input.filled != 0 {
-            if let Some(count) = write(self.stream, input.slice(input.sent, input.filled))? {
-                if count == 0 {
-                    return Err(Errno(sys::EPIPE));
-                }
-                input.sent += count;
-                if input.sent == input.filled {
-                    input.sent = 0;
-                    input.filled = 0;
-                }
-            }
-        }
+        let protocol = self.protocol.as_ref().ok_or(Errno(sys::EINVAL))?;
         let output = self.output.as_mut().ok_or(Errno(sys::EINVAL))?;
-        let needed = if output.filled < 4 {
-            4
-        } else {
-            frame_length(output)
-        };
-        if needed < 4 || needed > output.capacity {
-            return Err(Errno(sys::EINVAL));
-        }
-        if output.filled < needed {
-            if let Some(count) = read(self.stream, output.slice(output.filled, needed))? {
+        if protocol.ready() && matches!(self.response, Response::Backend) {
+            let needed = if output.filled < 4 {
+                4
+            } else {
+                frame_length(output)
+            };
+            if needed < 4 || needed > output.capacity {
+                return Err(Errno(sys::EINVAL));
+            }
+            if output.filled < needed
+                && let Some(count) = read(self.stream, output.slice(output.filled, needed))?
+            {
                 if count == 0 {
                     return Err(Errno(sys::EPIPE));
                 }
                 output.filled += count;
             }
         }
-        if output.filled >= 4 {
-            let needed = frame_length(output);
-            if needed < 4 || needed > output.capacity {
-                return Err(Errno(sys::EINVAL));
+        self.publish()?;
+        let input = self.input.as_mut().ok_or(Errno(sys::EINVAL))?;
+        let output = self.output.as_mut().ok_or(Errno(sys::EINVAL))?;
+        let protocol = self.protocol.as_ref().ok_or(Errno(sys::EINVAL))?;
+        if input.filled == 0
+            && output.filled == 0
+            && !protocol.closed()
+            && let Some(count) = read(self.device, input.slice(0, input.capacity))?
+        {
+            if count == 0 {
+                return Err(Errno(sys::EPIPE));
             }
-            if output.filled == needed {
-                if let Some(count) = write(self.device, output.slice(0, needed))? {
-                    // A short device publication is uncertain: close, never replay.
-                    if count != needed {
-                        return Err(Errno(sys::EPIPE));
+            input.filled = count;
+        }
+        let mut local = false;
+        if input.filled != 0 && !input.routed && output.filled == 0 {
+            let request =
+                fuse_protocol::Request::parse(input.slice(0, input.filled)).map_err(Errno)?;
+            let prepared = if request.owner_allowed(sys::effective_user()) {
+                protocol.prepare(&request, output.slice(0, output.capacity))
+            } else {
+                Err(fuse_protocol::Error::Errno(sys::EACCES))
+            };
+            match prepared {
+                Ok(fuse_protocol::Prepared::Backend) => input.routed = true,
+                Ok(fuse_protocol::Prepared::Reply { length, transition }) => {
+                    output.filled = length;
+                    self.response = Response::Session {
+                        transition,
+                        failure: None,
+                        close: request.opcode == 38,
+                    };
+                    local = true;
+                }
+                Err(error) => {
+                    // Reference-release messages have no physical response.
+                    if matches!(request.opcode, 2 | 42) {
+                        return Err(Errno(error.errno()));
                     }
-                    output.filled = 0;
+                    output.filled = fuse_protocol::reply(
+                        output.slice(0, output.capacity),
+                        request.unique,
+                        &[],
+                        Some(error.errno()),
+                    )
+                    .map_err(Errno)?;
+                    self.response = Response::Session {
+                        transition: None,
+                        failure: Some(error),
+                        close: request.opcode == 26
+                            || matches!(error, fuse_protocol::Error::Closed),
+                    };
+                    local = true;
+                }
+            }
+            if local && self.initialization_trace < 0 {
+                input.filled = 0;
+                input.sent = 0;
+            }
+        }
+        if input.filled != 0
+            && input.routed
+            && let Some(count) = write(self.stream, input.slice(input.sent, input.filled))?
+        {
+            if count == 0 {
+                return Err(Errno(sys::EPIPE));
+            }
+            input.sent += count;
+            if input.sent == input.filled {
+                input.sent = 0;
+                input.filled = 0;
+                input.routed = false;
+            }
+        }
+        if local {
+            self.publish()?;
+        }
+        Ok(())
+    }
+
+    /// The only positive publication boundary is the physical device write.
+    fn publish(&mut self) -> Result<(), Errno> {
+        let output = self.output.as_mut().ok_or(Errno(sys::EINVAL))?;
+        if output.filled < 4 {
+            return Ok(());
+        }
+        let needed = frame_length(output);
+        if needed < 4 || needed > output.capacity {
+            return Err(Errno(sys::EINVAL));
+        }
+        if output.filled != needed {
+            return Ok(());
+        }
+        let Some(count) = write(self.device, output.slice(0, needed))? else {
+            return Ok(());
+        };
+        if count != needed {
+            return Err(Errno(sys::EPIPE));
+        }
+        if self.initialization_trace >= 0 && matches!(self.response, Response::Session { .. }) {
+            let input = self.input.as_mut().ok_or(Errno(sys::EINVAL))?;
+            let mut lengths = [0; 16];
+            lengths[..8].copy_from_slice(&(input.filled as u64).to_ne_bytes());
+            lengths[8..].copy_from_slice(&(needed as u64).to_ne_bytes());
+            write_memory(self.initialization_trace, &lengths)?;
+            write_memory(self.initialization_trace, input.slice(0, input.filled))?;
+            write_memory(self.initialization_trace, output.slice(0, needed))?;
+            input.filled = 0;
+            input.sent = 0;
+        }
+        output.filled = 0;
+        let response = core::mem::replace(&mut self.response, Response::Backend);
+        match response {
+            Response::Backend => {
+                if sys::write(self.control, &[1])? != 1 {
+                    return Err(Errno(sys::EPIPE));
+                }
+            }
+            Response::Session {
+                transition,
+                failure,
+                close,
+            } => {
+                if let Some(transition) = transition {
+                    let protocol = self.protocol.as_ref().ok_or(Errno(sys::EINVAL))?;
+                    protocol.delivered(transition);
+                    if protocol.ready() && self.initializing {
+                        self.initializing = false;
+                        self.initialized(None)?;
+                    }
+                }
+                if close {
+                    if self.initializing {
+                        self.initializing = false;
+                        self.initialized(failure)?;
+                    }
+                    return Err(Errno(sys::EPIPE));
                 }
             }
         }
         Ok(())
     }
 
+    fn initialized(&mut self, failure: Option<fuse_protocol::Error>) -> Result<(), Errno> {
+        if self.initialization_trace >= 0 {
+            sys::close(self.initialization_trace);
+            self.initialization_trace = -1;
+        }
+        let mut response = [0; 12];
+        if let Some(error) = failure {
+            response[..4].copy_from_slice(&(-error.errno()).to_ne_bytes());
+            if let fuse_protocol::Error::UnsupportedCapabilities(flags) = error {
+                response[4..].copy_from_slice(&flags.to_ne_bytes());
+            }
+        }
+        if sys::write(self.control, &response)? != response.len() {
+            return Err(Errno(sys::EPIPE));
+        }
+        Ok(())
+    }
     fn close(&mut self, queue: Fd) {
         self.active = false;
         // Device closure must precede the control EOF acknowledging retirement.
-        for file in [&mut self.device, &mut self.stream, &mut self.owner] {
+        for file in [
+            &mut self.device,
+            &mut self.stream,
+            &mut self.owner,
+            &mut self.initialization_trace,
+        ] {
             if *file >= 0 {
                 sys::unwatch(queue, *file);
                 sys::close(*file);
@@ -336,6 +522,20 @@ fn write(file: Fd, bytes: &[u8]) -> Result<Option<usize>, Errno> {
     }
 }
 
+// Only an admitted memfd reaches this writer. A diagnostic record may span
+// writes; the physical FUSE reply above must always remain one atomic write.
+fn write_memory(file: Fd, mut bytes: &[u8]) -> Result<(), Errno> {
+    while !bytes.is_empty() {
+        match sys::write(file, bytes) {
+            Ok(0) => return Err(Errno(sys::EPIPE)),
+            Ok(written) => bytes = &bytes[written..],
+            Err(Errno(sys::EINTR)) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 fn accept(listener: Fd, queue: Fd, first: &mut *mut Session) -> Result<(), Errno> {
     loop {
         let control = match sys::accept(listener) {
@@ -350,11 +550,29 @@ fn accept(listener: Fd, queue: Fd, first: &mut *mut Session) -> Result<(), Errno
         }
         let session = match Session::new(control) {
             Ok(session) => session,
-            Err(error) => {
+            Err(_) => {
                 sys::close(control);
-                return Err(error);
+                continue;
             }
         };
+        if sys::interest(
+            queue,
+            control,
+            true,
+            sys::EPOLL_IN,
+            session.addr() as u64 | CONTROL,
+        )
+        .is_err()
+        {
+            sys::close(control);
+            // SAFETY: admission has not published this mapping or any token;
+            // a failed epoll registration installs no interest.
+            unsafe {
+                ptr::drop_in_place(session);
+                sys::unmap(session.cast(), core::mem::size_of::<Session>());
+            }
+            continue;
+        }
         // SAFETY: a fresh initialized mapping; list mutations are single-threaded.
         unsafe {
             (*session).next = *first;
@@ -363,13 +581,6 @@ fn accept(listener: Fd, queue: Fd, first: &mut *mut Session) -> Result<(), Errno
             }
             *first = session;
         }
-        sys::interest(
-            queue,
-            control,
-            true,
-            sys::EPOLL_IN,
-            session.addr() as u64 | CONTROL,
-        )?;
     }
 }
 

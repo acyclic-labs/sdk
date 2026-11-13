@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// A host-owned physical device and the consuming owner's stream endpoint.
@@ -77,7 +78,7 @@ impl PacketDevice {
             stream: File::from(OwnedFd::from(stream)),
             retirement: PacketDeviceRetirement {
                 control,
-                retired: false,
+                retired: AtomicBool::new(false),
                 host,
             },
         })
@@ -133,7 +134,7 @@ impl PacketDevice {
 /// Original host custody. Its EOF acknowledges actual device closure.
 pub struct PacketDeviceRetirement {
     control: UnixStream,
-    retired: bool,
+    retired: AtomicBool,
     host: u32,
 }
 
@@ -143,18 +144,89 @@ impl PacketDeviceRetirement {
         self.host
     }
 
+    /// Starts kernel negotiation in the external host. Success acknowledges
+    /// actual INIT publication, without running a kernel session in the caller.
+    /// An optional memfd receives pairs of original request/reply lengths
+    /// (native-endian u64) followed by their actual bytes, after publication.
+    /// The host closes this writer before acknowledging initialization.
+    pub fn start_fuse(
+        &mut self,
+        configuration: crate::fuse_protocol::Configuration,
+        initialization_trace: Option<&File>,
+    ) -> io::Result<()> {
+        let configuration = configuration
+            .validate()
+            .map_err(io::Error::from_raw_os_error)?;
+        let mut request = [0; 20];
+        request[..4].copy_from_slice(&2_u32.to_ne_bytes());
+        request[4..8].copy_from_slice(&configuration.maximum_write.to_ne_bytes());
+        request[8..12].copy_from_slice(&configuration.page_size.to_ne_bytes());
+        request[12..].copy_from_slice(&configuration.cache_capabilities.to_ne_bytes());
+        let descriptors = initialization_trace.map(|file| [file.as_raw_fd()]);
+        runner::send_message(
+            &self.control,
+            descriptors.as_ref().map_or(&[], |files| &files[..]),
+            &request,
+        )?;
+        let mut response = [0; 12];
+        (&self.control).read_exact(&mut response)?;
+        let status = i32::from_ne_bytes(response[..4].try_into().map_err(io::Error::other)?);
+        let missing = u64::from_ne_bytes(response[4..].try_into().map_err(io::Error::other)?);
+        if missing != 0 {
+            return Err(io::Error::other(
+                crate::fuse_protocol::Error::UnsupportedCapabilities(missing),
+            ));
+        }
+        match status {
+            0 => Ok(()),
+            status if status < 0 => Err(io::Error::from_raw_os_error(-status)),
+            _ => Err(io::ErrorKind::InvalidData.into()),
+        }
+    }
+
+    /// Joins one physical reply publication. Callers retain the original
+    /// payload and work until this receipt, not merely until socket acceptance.
+    pub fn publication(&self) -> io::Result<()> {
+        let mut receipt = [0];
+        (&self.control).read_exact(&mut receipt)?;
+        match receipt[0] {
+            1 => Ok(()),
+            0 => {
+                self.retired.store(true, Ordering::Release);
+                Err(io::Error::from_raw_os_error(libc::ENODEV))
+            }
+            _ => Err(io::ErrorKind::InvalidData.into()),
+        }
+    }
+
+    /// Closes admission without closing the receipt reader. This OS half-close
+    /// interrupts a concurrent publication wait through the host's retirement
+    /// receipt, after its physical device and packet storage have closed.
+    pub fn request_stop(&self) -> io::Result<()> {
+        match self.control.shutdown(std::net::Shutdown::Write) {
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+            result => result,
+        }
+    }
+
     /// Stop admission and wait for EOF, published only after device closure.
     pub fn retire(&mut self) -> io::Result<()> {
-        if self.retired {
+        if self.retired.load(Ordering::Acquire) {
             return Ok(());
         }
-        self.control.shutdown(std::net::Shutdown::Write)?;
-        let mut byte = [1];
-        self.control.read_exact(&mut byte)?;
-        if byte != [0] {
-            return Err(io::ErrorKind::InvalidData.into());
+        self.request_stop()?;
+        loop {
+            let mut byte = [0];
+            self.control.read_exact(&mut byte)?;
+            match byte[0] {
+                0 => break,
+                // Stop may interrupt the publisher after the host has already
+                // completed its reply. Drain that receipt before retirement.
+                1 => {}
+                _ => return Err(io::ErrorKind::InvalidData.into()),
+            }
         }
-        self.retired = true;
+        self.retired.store(true, Ordering::Release);
         Ok(())
     }
 }
