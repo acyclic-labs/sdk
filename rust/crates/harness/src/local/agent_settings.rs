@@ -338,23 +338,12 @@ async fn record(
             &unbounded
         }
     };
-    let mut agent_text = uuid::Uuid::encode_buffer();
-    let identity = uuid::Uuid::from_bytes(agent.into_bytes());
-    let agent = identity.hyphenated().encode_lower(&mut agent_text);
-    let record = crate::executor::PreparationIo::joined_text(
-        &[
-            "live/agents/",
-            agent,
-            "/admissions/",
-            path,
-            "/",
-            cut,
-            "/",
-            version,
-            ".json",
-        ],
-        io,
-    )?;
+    let record = crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(
+            format_args!("live/agents/{agent}/admissions/{path}/{cut}/{version}.json"),
+            work,
+        )
+    })?;
     crate::executor::with_history_io(io, |work| -> Result<()> {
         if let Some(work) = work.as_deref_mut() {
             work.hashed_bytes(bytes.len() as u64)?;
@@ -362,23 +351,13 @@ async fn record(
         Ok(())
     })?;
     let digest = blake3::hash(bytes).to_hex();
-    let (key, hold) = crate::executor::PreparationIo::joined_text(
-        &[
-            "admission:",
-            agent,
-            ":",
-            path,
-            ":",
-            cut,
-            ":",
-            version,
-            ":",
-            digest.as_str(),
-        ],
-        io,
-    )?;
-    // Keep the constructed key before its original storage owner on every exit.
-    let key = (crate::IdempotencyKey::new(key)?, hold);
+    let key = crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(
+            format_args!("admission:{agent}:{path}:{cut}:{version}:{digest}"),
+            work,
+        )
+    })?;
+    let key = crate::IdempotencyKey::new(key)?;
     let grant = crate::executor::with_history_io(io, |work| {
         ContentGrant::verify(
             volumes.verifier,
@@ -393,12 +372,12 @@ async fn record(
         .put_content(
             volumes.journal,
             &grant,
-            &record.0,
+            &record,
             bytes,
             "application/json",
             "admission",
             volumes.maximum_bytes,
-            &key.0,
+            &key,
             None,
             ContentAccess {
                 io,
