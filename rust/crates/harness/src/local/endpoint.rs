@@ -106,6 +106,22 @@ impl Connection {
         )
         .await
         .map_err(|error| {
+            let unavailable = match &error {
+                Error::Exchange { source, .. } => {
+                    source
+                        .downcast_ref::<AgentExchangeError>()
+                        .is_some_and(|cause| cause.code() == "unavailable")
+                        || source
+                            .downcast_ref::<acyclic_stream::StreamError>()
+                            .is_some_and(|cause| {
+                                cause.category() == acyclic_stream::StreamError::Unavailable
+                            })
+                }
+                _ => false,
+            };
+            if !unavailable {
+                return error;
+            }
             Error::exchange(
                 ExchangeStep::Session,
                 OwnerFailure {
@@ -231,11 +247,14 @@ impl Connection {
     /// Commands retain the original caller; a native host may enroll read-only
     /// access to the selected child's private output on that same session.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
-        let (controls, tools) = self
-            .controls
-            .select(agent.clone())
-            .await
-            .map_err(|error| Error::exchange(ExchangeStep::Step("select agent"), error))?;
+        let (controls, tools) = self.controls.select(agent.clone()).await.map_err(|error| {
+            self.command_failure(
+                &AgentCommand::Bind {
+                    agent: Some(agent.clone()),
+                },
+                error,
+            )
+        })?;
         Ok(Self {
             session: self.session.clone(),
             controls: Arc::new(controls),
@@ -464,11 +483,19 @@ impl LocalHarness {
             let Some(agent) = agent else {
                 return Ok(connection);
             };
-            let (controls, tools) = connection
-                .controls
-                .select(agent.clone())
-                .await
-                .map_err(|error| Error::exchange(ExchangeStep::Step("select agent"), error))?;
+            let (controls, tools) =
+                connection
+                    .controls
+                    .select(agent.clone())
+                    .await
+                    .map_err(|error| {
+                        connection.command_failure(
+                            &AgentCommand::Bind {
+                                agent: Some(agent.clone()),
+                            },
+                            error,
+                        )
+                    })?;
             Ok(Connection {
                 session: connection.session,
                 controls: Arc::new(controls),

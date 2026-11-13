@@ -187,9 +187,9 @@ impl Directory {
         bytes.resize(length, 0);
         connection.read_exact(&mut bytes).await.map_err(storage)?;
         let descriptor: Descriptor = serde_json::from_slice(&bytes).map_err(storage)?;
-        if descriptor.version != 1 {
+        if descriptor.version != 2 {
             return Err(Error::Unsupported(
-                "local service descriptor requires version 1".into(),
+                "local service descriptor requires version 2".into(),
             ));
         }
         Ok((crate::server::LocalConnection::new(connection), descriptor))
@@ -224,7 +224,7 @@ impl Owner {
             .as_ref()
             .ok_or_else(|| Error::Invalid("local service requires a client credential".into()))?;
         let bytes = serde_json::to_vec(&Descriptor {
-            version: 1,
+            version: 2,
             owner: self.exit.incarnation(),
             credential: observation.credential.clone(),
             configuration: self.configuration.clone(),

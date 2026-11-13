@@ -102,6 +102,7 @@ pub struct Canonical<'a> {
 
 /// The parts of one status, as decoded from or encoded to the wire.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
 #[ts(export_to = "auth/RefusalStatus.ts", rename = "RefusalStatus")]
 pub struct Parts {
     /// gRPC status code number.

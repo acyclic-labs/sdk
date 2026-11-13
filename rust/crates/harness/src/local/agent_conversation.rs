@@ -98,14 +98,14 @@ pub struct PreparedPeerMessage {
     command: AgentCommand,
 }
 
-/// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
-/// closed conversation, is a refusal; any other failure after the request
-/// left may have committed it.
 /// A sent message whose commit the session could not decide.
 #[derive(Debug, thiserror::Error)]
 #[error("the message's commit outcome is unknown; resend it")]
 struct UnknownOutcome;
 
+/// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
+/// closed conversation, is a refusal; any other failure after the request
+/// left may have committed it.
 fn sent(exchange: super::endpoint::Exchange) -> Result<Sent> {
     // A command that never left, such as one over the command limit,
     // committed nothing: it is refused.

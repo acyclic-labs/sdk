@@ -25,7 +25,7 @@ struct Record {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 enum State {
     Running,
     Stopped,
@@ -319,6 +319,17 @@ mod tests {
         assert!(serving.await.map_err(failed)?.is_err());
         let bytes = std::fs::read(&original.path).map_err(failed)?;
         assert!(!String::from_utf8_lossy(&bytes).contains(&credential));
+        let mut malformed: serde_json::Value = serde_json::from_slice(&bytes).map_err(failed)?;
+        malformed["state"]["status"]["unknown"] = true.into();
+        assert!(serde_json::from_value::<Record>(malformed).is_err());
+        let selected = connection.select(connection.root().clone()).await;
+        let error = selected
+            .err()
+            .ok_or_else(|| Error::Invalid("closed owner selected an agent".into()))?;
+        assert!(
+            error.to_string().contains("open original journal"),
+            "{error}"
+        );
         let next = directory.own()?;
         assert_ne!(next.exit.incarnation(), original.incarnation);
         let old = connection.stream_failure(acyclic_stream::StreamError::Unavailable);
