@@ -38,6 +38,7 @@ pub(super) struct Tree<'a> {
     configuration: std::borrow::Cow<'a, [Option<crate::layers::PinnedLayer>; 4]>,
     io: Option<&'a crate::executor::PreparationIo>,
     _cut_hold: Option<crate::conversation::ContentHold<'a>>,
+    _construction_custody: Option<crate::filesystem::PreparationCustody>,
 }
 
 mod step_cut;
@@ -238,7 +239,12 @@ impl<'a> Tree<'a> {
         generation: crate::resources::GenerationRef,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        let read = Self::read_grant(volumes, io)?;
+        let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;
+        let temporary = attempt.as_ref();
+        let read = Self::read_grant(volumes, temporary)?;
+        let custody = temporary
+            .map(crate::executor::PreparationIo::take_all_owned_custody)
+            .transpose()?;
         Ok(Self {
             volumes,
             read,
@@ -246,6 +252,7 @@ impl<'a> Tree<'a> {
             configuration: std::borrow::Cow::Borrowed(volumes.configuration),
             io,
             _cut_hold: None,
+            _construction_custody: custody,
         })
     }
     pub(super) async fn new(
@@ -253,7 +260,9 @@ impl<'a> Tree<'a> {
         entrypoint: &str,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        let read = Self::read_grant(volumes, io)?;
+        let attempt = io.map(crate::executor::PreparationIo::scoped).transpose()?;
+        let temporary = attempt.as_ref();
+        let read = Self::read_grant(volumes, temporary)?;
         let generation = volumes
             .files
             .select_private_generation(
@@ -262,11 +271,14 @@ impl<'a> Tree<'a> {
                 entrypoint,
                 None,
                 ContentAccess {
-                    io,
+                    io: temporary,
                     ..ContentAccess::default()
                 },
             )
             .await?;
+        let custody = temporary
+            .map(crate::executor::PreparationIo::take_all_owned_custody)
+            .transpose()?;
         Ok(Self {
             volumes,
             read,
@@ -274,6 +286,7 @@ impl<'a> Tree<'a> {
             configuration: std::borrow::Cow::Borrowed(volumes.configuration),
             io,
             _cut_hold: None,
+            _construction_custody: custody,
         })
     }
 }
@@ -745,6 +758,12 @@ mod tests {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let project = volume(directory.path()).await?;
         let harness = LocalHarness::open(volume_config(directory.path(), project, text())?).await?;
+        crate::local::tests::settings::write(
+            &harness,
+            config::AGENT,
+            "export default base => base;",
+        )
+        .await?;
         let volumes = Volumes {
             files: &harness.files,
             verifier: &harness.verifier,
@@ -802,6 +821,33 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let io = crate::executor::PreparationIo::from_native_work(&work)?;
+        let generation = Tree::new(&volumes, config::AGENT, None).await?.generation;
+        for pinned in [false, true] {
+            // A warm-up may retain a shared filesystem cache. A later tree's
+            // grant and selected-generation metadata must retire independently.
+            let warm = if pinned {
+                Tree::pinned(&volumes, generation.clone(), Some(&io))?
+            } else {
+                Tree::new(&volumes, config::AGENT, Some(&io)).await?
+            };
+            drop(warm);
+            let baseline = work.live_allocation_bytes();
+            let tree = if pinned {
+                Tree::pinned(&volumes, generation.clone(), Some(&io))?
+            } else {
+                Tree::new(&volumes, config::AGENT, Some(&io)).await?
+            };
+            assert!(
+                work.live_allocation_bytes() > baseline,
+                "a live settings tree must retain its original grant storage"
+            );
+            drop(tree);
+            assert_eq!(
+                work.live_allocation_bytes(),
+                baseline,
+                "dropping a settings tree must retire its original preparation metadata"
+            );
+        }
         let occupied = work.claim(
             work.remaining()?.peak_allocation_bytes,
             1,
