@@ -302,3 +302,7 @@ candidate commit, but it must not maintain a competing customer schema.
 Every extraction must follow [ARCHITECTURE.md](ARCHITECTURE.md) and include a
 deletion summary for the private repository. Copying code without centralizing
 ownership is not accepted.
+
+## Source polling policy
+
+Run `bun run check:no-polling` to compare working and untracked source with HEAD. To audit committed changes, pass the immutable predecessor: `bun run check:no-polling <base-sha>`. The qualification policy check supplies the pull request base or the previous push commit; a dispatched source check uses the qualified commit's parent. CI requires this explicit comparison base, and an absent Git object fails closed.

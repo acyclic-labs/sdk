@@ -407,6 +407,9 @@ case "$lane" in
     ;;
   policy)
     source scripts/ensure-bun.sh
+    bun install --frozen-lockfile
+    node --test scripts/no-polling.test.mjs
+    node scripts/check-no-polling.mjs "${SDK_POLICY_BASE:?source policy comparison base is required}"
     node --test scripts/check-cargo-lock.test.mjs
     node scripts/check-cargo-lock.mjs
     node --test scripts/check-feature-matrix.test.mjs scripts/check-cloud-native-features.test.mjs scripts/run-command.test.mjs

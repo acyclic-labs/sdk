@@ -479,7 +479,10 @@ test('SQLite busy policies invalidate exact source review', () => {
 
 test('the entry point compares real Git objects and rejects modified and untracked sources', async () => {
  const root = mkdtempSync(join(tmpdir(), 'sdk-no-polling-'));
- const checker = resolve('scripts/check-no-polling.mjs');
+ const advertised = JSON.parse(readFileSync(resolve('package.json'), 'utf8')).scripts['check:no-polling'].split(' ');
+ assert.equal(advertised[0], 'node');
+ const checker = resolve(advertised[1]);
+ const packageArgs = advertised.slice(2);
  const absent = process.platform === 'win32' ? 'NUL' : '/dev/null';
  const env = {...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: absent, GIT_CONFIG_COUNT: '0'};
  const git = args => execFileSync('git', args, {cwd: root, env, maxBuffer: Infinity});
@@ -517,7 +520,8 @@ test('the entry point compares real Git objects and rejects modified and untrack
   git(['add', '.']);
   git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'source baseline']);
   rmSync(join(root, deleted));
-  assert.equal(checkCli('HEAD').status, 0);
+  assert.equal(checkCli(...packageArgs).status, 0);
+  const baseline = git(['rev-parse', 'HEAD']).toString().trim();
   write(plugin, 'export async function ready() { await new Promise(resolve => setTimeout(resolve, 10)); }\n'
    + "import {settle} from '../../typescript/packages/example/test/helper.js'; export async function indirect() { await settle(); }\n");
   const pluginChild = 'plugin/tests/hosts/child.py';
@@ -527,7 +531,7 @@ test('the entry point compares real Git objects and rejects modified and untrack
   write(rust, 'fn current() { std::thread::sleep(duration); }\n');
   write(caller, beforeCaller.replace('operation() {}', 'operation() { await settle(); }'));
   write(script, 'setTimeout(probe, 1);\n');
-  const modified = checkCli('HEAD');
+  const modified = checkCli(...packageArgs);
   assert.notEqual(modified.status, 0);
   for (const diagnostic of [
    /file=plugin\/tests\/ready.mjs:1 kind=timer-or-readiness/,
@@ -556,7 +560,12 @@ test('the entry point compares real Git objects and rejects modified and untrack
   const missingBase = await check('missing-source-baseline');
   assert.notEqual(missingBase.status, 0);
   assert.match(missingBase.output, /step=no-polling.*recovery command:/s);
-  for (const args of [[], ['HEAD', 'extra-argument'], ['--inventory']]) {
+  git(['add', '.']);
+  git(['-c', 'user.name=Contract', '-c', 'user.email=contract@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'committed polling mutation']);
+  const committed = await check(baseline);
+  assert.notEqual(committed.status, 0);
+  assert.match(committed.output, /file=plugin\/tests\/ready.mjs:1 kind=timer-or-readiness/);
+  for (const args of [['HEAD', 'extra-argument'], ['--inventory']]) {
    const invalid = await check(...args);
    assert.equal(invalid.status, 1);
    assert.match(invalid.output, /step=no-polling expected one baseline Git revision.*recovery command:/s);

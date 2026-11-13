@@ -20,6 +20,7 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
   CI_HEAD_SHA: ${{ inputs.source_ref }}
+  SDK_POLICY_BASE: ${{ github.event.pull_request.base.sha || github.event.before || format('{0}^', inputs.source_ref) }}
 
 jobs:
   plan:

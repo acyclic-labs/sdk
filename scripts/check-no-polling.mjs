@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {gitBatchSources} from './source-policy/git.mjs';
 
 export async function checkNoPolling(args, {cwd = process.cwd(), env = process.env, logger = console} = {}) {
- const [base, output] = args;
+ const [base = "HEAD", output] = args;
  const inventory = base === '--inventory';
  const recovery = 'node scripts/check-no-polling.mjs ' + (inventory
   ? '--inventory ' + JSON.stringify(output ?? 'no-polling-census.json')
@@ -13,7 +13,7 @@ export async function checkNoPolling(args, {cwd = process.cwd(), env = process.e
   const {sourceInScope} = await import('./no-polling-scope.mjs');
   const {newProjectPollingSites, projectPollingSites} = await import('./source-policy/project.mjs');
   if (inventory ? args.length !== 2 || !output || output.startsWith('-')
-   : args.length !== 1 || !base || base.startsWith('-'))
+   : args.length > 1 || !base || base.startsWith('-'))
    throw new Error('expected one baseline Git revision, or --inventory followed by a new output file');
   const git = (args, options) => execFileSync('git', args, {cwd, env, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: Infinity, ...options});
   const files = git(['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {encoding: 'utf8'})
