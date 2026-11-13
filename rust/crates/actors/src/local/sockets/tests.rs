@@ -799,6 +799,7 @@ struct ControlledStream {
     accepted:
         std::sync::Mutex<Option<(acyclic_stream::WriteRequest, acyclic_stream::WriteOutcome)>>,
     replays: AtomicUsize,
+    durability_fault: std::sync::Mutex<Option<StreamError>>,
 }
 
 impl ControlledStream {
@@ -834,6 +835,14 @@ async fn paused(
 impl StreamProvider for ControlledStream {
     fn context(&self) -> acyclic_stream::ProviderContext<'_> {
         acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
+            .with_deferred_durability()
+    }
+    async fn durability_barrier(&self) -> Result<(), StreamError> {
+        self.inner.durability_barrier().await?;
+        match self.durability_fault.lock().unwrap().take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
     async fn heads(
         &self,
@@ -1727,5 +1736,42 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
     assert!(outbound.next().await.is_none());
     assert_eq!(records(&shared.store, &inbox).await?.len(), 2);
     assert!(sockets.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn accepted_open_retries_uncertain_durability_without_closing() -> TestResult {
+    for error in [StreamError::Unavailable, StreamError::InvalidResponse] {
+        let provider = Arc::new(ControlledStream::default());
+        let sockets = Sockets::open(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(PlatformExecutor),
+            Arc::new(SystemClock),
+        )
+        .await?;
+        let (connection, inbox, _last, open, _frames) =
+            close_fixture(&sockets, "durability-open").await?;
+        // Record the real acceptance so the adapter checks byte-identical replay.
+        let (release, entered) = provider.pause_write(true);
+        release.send(()).map_err(|_| "lost Open release")?;
+        *provider.durability_fault.lock().unwrap() = Some(error);
+        assert!(matches!(
+            sockets.shared.commit_open(&connection, &open).await?,
+            Opened::Committed(_)
+        ));
+        entered.await?;
+        assert_eq!(provider.replays.load(Ordering::Acquire), 1);
+        assert_eq!(records(&sockets.shared.store, &inbox).await?.len(), 1);
+        assert_eq!(
+            records(
+                &sockets.shared.store,
+                &sockets.shared.layout.socket(&connection)?
+            )
+            .await?
+            .len(),
+            1
+        );
+        assert_eq!(sockets.shared.live.load(Ordering::Acquire), 1);
+    }
     Ok(())
 }

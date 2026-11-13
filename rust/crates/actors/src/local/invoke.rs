@@ -209,14 +209,30 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     &mut publication.request,
                     |_| Ok::<(), StreamError>(()),
                 )??;
-                let acyclic_stream::AcceptedCommitOutcome::Committed { receipt, envelope } = self
-                    .provider
-                    .commit_accepted(publication.request.clone())
-                    .await?
+                // Only deferred providers need a retained request if persistence
+                // confirmation fails. Other providers consume the original.
+                let outcome = if self.provider.context().deferred_durability() {
+                    let outcome = self
+                        .provider
+                        .commit_accepted(publication.request.clone())
+                        .await?;
+                    if matches!(
+                        &outcome,
+                        acyclic_stream::AcceptedCommitOutcome::Committed { .. }
+                    ) {
+                        self.confirm_durable(publication).await?;
+                    }
+                    outcome
+                } else {
+                    self.provider
+                        .commit_accepted(publication.into_request()?)
+                        .await?
+                };
+                let acyclic_stream::AcceptedCommitOutcome::Committed { receipt, envelope } =
+                    outcome
                 else {
                     return Err(Error::Conflict);
                 };
-                self.confirm_durable(publication).await?;
                 // Both views come from the original acceptance or exact-key replay.
                 // Join that fact to the request, never reconstructing caller bodies.
                 if envelope.commit_id != receipt.commit_id
