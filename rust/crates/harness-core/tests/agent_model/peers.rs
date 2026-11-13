@@ -299,6 +299,10 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             };
             drop(account);
             let peer = PeerRoute::parse(&envelope)?;
+            let receiving = Routing {
+                paths: routing.paths.clone(),
+                node: recipient_node,
+            };
             if opt_out_before_delivery {
                 host.set_peer_membership(&recipient, &user(), &intent("off"), false)
                     .await?;
@@ -311,7 +315,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             let activation = actor_store(&destination)?.activation(&host.actor(&recipient)?)?;
             let activation_path = activation.mutations[0].path().clone();
             let before_activation = destination.tail(activation_path.clone()).await?;
-            assert_eq!(peer.deliver(&host, &receipt).await?, expected);
+            assert_eq!(peer.deliver(&host, &receiving, &receipt).await?, expected);
             assert_eq!(
                 destination.tail(activation_path).await?,
                 before_activation + u64::from(!opt_out_before_delivery),
@@ -325,7 +329,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             )
             .await?;
             assert_eq!(
-                peer.deliver(&host, &receipt).await?,
+                peer.deliver(&host, &receiving, &receipt).await?,
                 expected,
                 "exact replay changed its original outcome"
             );
@@ -333,6 +337,27 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 destination.tail(recipient.inbox()?).await?,
                 if opt_out_before_delivery { 1 } else { 2 }
             );
+            let return_outbox = receiving.paths.outbox(&receiving.node)?;
+            if opt_out_before_delivery {
+                assert_eq!(destination.tail(return_outbox.clone()).await?, 1);
+                let result = destination
+                    .record_at(return_outbox, 0)
+                    .await?
+                    .ok_or("refusal result missing")?;
+                assert_eq!(
+                    route::Publication::decode(&result.value)?.delivery()?,
+                    peer.result(receiving.node.clone(), &receipt, SentReplyStatus::Dropped)?,
+                    "replayed refusal must publish the original terminal Notice"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        destination.tail(return_outbox).await,
+                        Err(StreamError::NotFound)
+                    ),
+                    "ordinary accepted delivery must not publish a refusal"
+                );
+            }
             host.drain(&recipient).await?;
             assert_eq!(
                 calls.load(Ordering::SeqCst),
@@ -369,7 +394,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
             identity[0] ^= 1;
             changed.commit_id = acyclic_stream::CommitId::from_bytes(identity);
             assert!(
-                peer.deliver(&host, &changed).await.is_err(),
+                peer.deliver(&host, &receiving, &changed).await.is_err(),
                 "a retry replaced its original relay reference"
             );
             let mut altered = envelope.clone();
@@ -433,7 +458,7 @@ async fn routed_peer_delivery_uses_only_owning_node_membership_and_retains_refus
                 ActorReference::new(b"other-account", b"agents", envelope.to.id().as_bytes())?;
             assert!(
                 PeerRoute::parse(&altered)?
-                    .deliver(&host, &receipt)
+                    .deliver(&host, &receiving, &receipt)
                     .await
                     .is_err(),
                 "foreign account reached an owning-node writer"

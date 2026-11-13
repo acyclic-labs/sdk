@@ -142,9 +142,12 @@ impl<'a> PeerRoute<'a> {
     /// Deliver on the recipient's owning node through its ordinary inbox writer.
     /// The caller must have admitted the account relay and its sender grant.
     /// Only the recipient's local membership is read; the source may be offline.
+    /// A refusal returns only after its terminal Notice is durable in this
+    /// node's outbox, so the caller can then acknowledge the original relay.
     pub async fn deliver<P: crate::store::JournalProvider + ?Sized + 'static>(
         &self,
         host: &super::AgentHost<P>,
+        routing: &Routing,
         receipt: &route::RelayReceipt,
     ) -> Result<super::Delivered, Error> {
         if host.actor(&self.recipient)? != self.envelope.to {
@@ -181,6 +184,29 @@ impl<'a> PeerRoute<'a> {
         // skipped append. A crash before routing its Notice cannot later turn
         // that refusal into delivery after the user rejoins.
         request.effects[0].soft = true;
-        host.deliver(&self.recipient, request).await
+        let delivered = host.deliver(&self.recipient, request).await?;
+        if delivered == super::Delivered::Closed {
+            // The drain may acknowledge only after the return publication is
+            // durable. A crash between these commits replays the retained
+            // refusal and this same result intent, never a new delivery.
+            let result = self.result(
+                routing.node.clone(),
+                receipt,
+                super::SentReplyStatus::Dropped,
+            )?;
+            let outcome = super::submit(
+                host.provider().as_ref(),
+                acyclic_stream::CommitRequest {
+                    deadline_unix_millis: None,
+                    idempotency_key: result.request.idempotency_key.clone(),
+                    effects: vec![result.outbox_effect(&routing.paths).map_err(error)?],
+                },
+            )
+            .await?;
+            if !matches!(outcome, super::Submitted::Committed(_)) {
+                return Err(Error::Record("peer refusal result was not published"));
+            }
+        }
+        Ok(delivered)
     }
 }
