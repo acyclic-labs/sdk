@@ -78,7 +78,9 @@ the shared transition encoder. Refresh only these Actors captures with
 `cargo run --locked --example capture -- --only-actors --extend-goldens`.
 Run `node capture-actors.mjs` to refresh the actual Runtime socket deliveries,
 capture current Actors writers and replay the retained corpus. The temporary
-socket observer is restored before codec capture. Runtime packets are addressed
+socket observer is restored before codec capture, including on SIGINT and SIGTERM
+after the owned Cargo process stops. Run `node --test capture-actors-interruption.mjs`
+to check interruption and exact source restoration. Runtime packets are addressed
 by their full SHA-256, preserving original clock and commit context across refreshes.
 Deterministic writers still compare exact bytes against their named goldens.
 Full and Actors-only capture retain every historical Actors input and its provenance.
