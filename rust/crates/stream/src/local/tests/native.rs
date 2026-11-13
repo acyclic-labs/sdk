@@ -51,7 +51,7 @@ async fn lease_replays_pin_success_across_visibility_and_publication_waits()
         // its examination event until the held lock suspends it. No readiness
         // loop or sleep chooses this race boundary.
         tokio::select! {
-            result = &mut replay => return Err(format!("replay missed its held lock: {result:?}").into()),
+            _ = &mut replay => return Err("replay missed its held lock".into()),
             result = examined => result?,
         }
         lease.settle().await?;

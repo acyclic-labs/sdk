@@ -33,11 +33,12 @@ async fn native_append_replay_cannot_spend_unreserved_write_credit_after_lease_r
     settling.await?;
     let output = match first {
         std::task::Poll::Ready(result) => result??,
-        std::task::Poll::Pending => replay.await??,
+        std::task::Poll::Pending => replay.as_mut().await??,
     };
     assert_eq!(output.value(), &crate::WriteOutcome::Append(original));
     assert_eq!(provider.tail(root).await, Err(StreamError::NotFound));
     drop(output);
+    drop(replay);
     drop(provider);
     meter.assert_refunded();
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
