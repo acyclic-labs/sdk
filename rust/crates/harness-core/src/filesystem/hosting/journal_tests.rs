@@ -33,19 +33,21 @@ pub(in crate::filesystem) async fn binding_with(
     executors: Arc<dyn TurnExecutors>,
     approval_policy: crate::approvals::ApprovalPolicy,
 ) -> TestResult<(Binding, AgentPath)> {
-    binding_configured(executors, approval_policy, None).await
+    binding_configured(executors, approval_policy, None, false).await
 }
 
-async fn binding_with_routing(
+async fn binding_with_metadata(
     routing: Option<crate::agent::Routing>,
+    home: bool,
 ) -> TestResult<(Binding, AgentPath)> {
-    binding_configured(Arc::new(NoTurns), Default::default(), routing).await
+    binding_configured(Arc::new(NoTurns), Default::default(), routing, home).await
 }
 
 async fn binding_configured(
     executors: Arc<dyn TurnExecutors>,
     approval_policy: crate::approvals::ApprovalPolicy,
     routing: Option<crate::agent::Routing>,
+    home: bool,
 ) -> TestResult<(Binding, AgentPath)> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let stream = Arc::new(MemoryStream::default());
@@ -83,23 +85,41 @@ async fn binding_configured(
         },
     )?;
     let id = AgentId::from_bytes([1; 16]);
+    let fresh = [
+        (
+            crate::agent::WorkspaceRole::Private,
+            PRIVATE_VOLUME,
+            "private",
+        ),
+        (
+            crate::agent::WorkspaceRole::Home,
+            crate::filesystem::HOME_VOLUME,
+            "home",
+        ),
+    ]
+    .into_iter()
+    .filter(|(role, _, _)| home || *role == crate::agent::WorkspaceRole::Private)
+    .map(|(role, mount, name)| {
+        Ok(WorkspaceEntry::initial_volume(
+            role,
+            mount.into(),
+            VolumeRef::new(
+                provider.clone(),
+                name.into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes(id.to_bytes())),
+                &mut None,
+            )?,
+        ))
+    })
+    .collect::<crate::Result<Vec<_>>>()?;
     let RootSubmission::Created(root) = bound
         .create_root(
             &IntentId::try_from("root")?,
             RootRequest {
                 peer: true,
                 agent: id.clone(),
-                fresh: vec![WorkspaceEntry::initial_volume(
-                    crate::agent::WorkspaceRole::Private,
-                    PRIVATE_VOLUME.into(),
-                    VolumeRef::new(
-                        provider,
-                        "private".into(),
-                        VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(crate::AgentId::from_bytes(id.to_bytes())),
-                        &mut None,
-                    )?,
-                )],
+                fresh,
                 retained: Vec::new(),
                 brief: None,
                 policy: None,
@@ -113,8 +133,29 @@ async fn binding_configured(
     Ok((bound, root))
 }
 
+fn file_runtime(
+    bound: &Binding,
+    root: &AgentPath,
+) -> TestResult<(acyclic_actors::local::Runtime<MemoryStream>, ActorReference)> {
+    let actor = bound.agents().actor(root)?;
+    let control = ActorReference::new(
+        actor.account().as_bytes(),
+        actor.namespace().as_str().as_bytes(),
+        format!("file-controls-{}", root.id()).as_bytes(),
+    )?;
+    Ok((
+        acyclic_actors::local::Runtime::new(
+            acyclic_actors::guest::Requests::default(),
+            crate::agent::actor_store(bound.agents().provider())?.with_composer(bound.composer()),
+            bound.handler(),
+            bound.clock.clone(),
+        ),
+        control,
+    ))
+}
+
 #[tokio::test]
-sync fn waking_notices_steer_without_granting_their_journal_files() -> TestResult {
+async fn waking_notices_steer_without_granting_their_journal_files() -> TestResult {
     use crate::filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, agent_internal::AgentInternalFiles,
         agent_steering::FilesystemBoundary, agent_turns::AdmittedAgent,
@@ -479,22 +520,12 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
         paths: acyclic_actors::route::Paths::new(acyclic_stream::StreamPath::new("routing")?),
         node: acyclic_actors::route::NodeId::new(b"node")?,
     };
-    let (bound, root) = binding_with_routing(Some(routing.clone())).await?;
+    let (bound, root) = binding_with_metadata(Some(routing.clone()), false).await?;
     let provider = bound.agents().provider().clone();
     let actor = bound.agents().actor(&root)?;
     let row_path = SessionPublication::row_path(&actor)?;
     let initial = provider.tail(row_path.clone()).await?;
-    let control = ActorReference::new(
-        actor.account().as_bytes(),
-        actor.namespace().as_str().as_bytes(),
-        format!("file-controls-{}", root.id()).as_bytes(),
-    )?;
-    let mut runtime = acyclic_actors::local::Runtime::new(
-        acyclic_actors::guest::Requests::default(),
-        crate::agent::actor_store(&provider)?.with_composer(bound.composer()),
-        bound.handler(),
-        bound.clock.clone(),
-    );
+    let (mut runtime, control) = file_runtime(&bound, &root)?;
     for (index, title) in ["First", "First", "Second"].into_iter().enumerate() {
         let files = bound.agent_files(&root, &["ui/title".into()], None).await?;
         let expected = files
@@ -544,12 +575,7 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
             // Reopen the actual actor store: the committed source cursor must
             // prevent the same file event from publishing another revision.
             drop(runtime);
-            runtime = acyclic_actors::local::Runtime::new(
-                acyclic_actors::guest::Requests::default(),
-                crate::agent::actor_store(&provider)?.with_composer(bound.composer()),
-                bound.handler(),
-                bound.clock.clone(),
-            );
+            runtime = file_runtime(&bound, &root)?.0;
             runtime.drain_actor(&control).await?;
             assert_eq!(provider.tail(row_path.clone()).await?, head.tail);
         }
@@ -609,6 +635,129 @@ async fn title_events_publish_once_without_losing_file_controls() -> TestResult 
             .profile
             .ok_or("metadata removed")?
             .title
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_events_use_only_home_and_publish_bounded_utf8_changes() -> TestResult {
+    use crate::{
+        agent::{SessionPublication, SessionRow},
+        client_files::{ClientFileChange, FileRoot},
+    };
+    use acyclic_stream::StreamProviderExt as _;
+    let routing = crate::agent::Routing {
+        paths: acyclic_actors::route::Paths::new(acyclic_stream::StreamPath::new("routing")?),
+        node: acyclic_actors::route::NodeId::new(b"node")?,
+    };
+    let (bound, root) = binding_with_metadata(Some(routing), true).await?;
+    let provider = bound.agents().provider();
+    let actor = bound.agents().actor(&root)?;
+    let path = SessionPublication::row_path(&actor)?;
+    let initial = provider.tail(path.clone()).await?;
+    let (mut runtime, control) = file_runtime(&bound, &root)?;
+    let prefix = "a".repeat(255);
+    for (index, suffix) in ["first", "changed outside preview"].into_iter().enumerate() {
+        let files = bound
+            .files(&root, FileRoot::Home {}, &["GOAL.md".into()], None)
+            .await?;
+        let original = files
+            .files
+            .get("GOAL.md")
+            .and_then(Option::as_ref)
+            .and_then(crate::client_files::ClientFile::original)
+            .cloned();
+        let mut changes = vec![ClientFileChange {
+            path: "GOAL.md".into(),
+            expected: original,
+            text: Some(format!("{prefix}€{suffix}")),
+        }];
+        if index == 1 {
+            // Private controls and titles have no meaning in the home volume.
+            changes.extend([
+                ClientFileChange {
+                    path: "ui/title".into(),
+                    expected: None,
+                    text: Some("home title".into()),
+                },
+                ClientFileChange {
+                    path: "control/pause".into(),
+                    expected: None,
+                    text: Some(String::new()),
+                },
+            ]);
+        }
+        let generation = bound
+            .publish_files(&root, FileRoot::Home {}, OperationId::new(), &changes)
+            .await?;
+        assert_ne!(generation, files.cut.generation);
+        runtime.drain_actor(&control).await?;
+        let head = provider.head(path.clone()).await?;
+        assert_eq!(
+            head.tail,
+            initial + 1,
+            "changes after the preview must publish no row"
+        );
+        let profile = SessionRow::decode(&head.last.ok_or("goal row missing")?.value)?
+            .profile
+            .ok_or("goal row removed")?;
+        assert_eq!(profile.goal_preview, prefix);
+        assert!(profile.title.is_empty());
+        assert!(
+            !crate::agent::actor_store(provider)?
+                .load(&actor)
+                .await?
+                .state()
+                .ok_or("root actor missing")?
+                .paused()
+        );
+    }
+    bound
+        .publish_agent_files(
+            &root,
+            OperationId::new(),
+            &[ClientFileChange {
+                path: "GOAL.md".into(),
+                expected: None,
+                text: Some("private text".into()),
+            }],
+        )
+        .await?;
+    runtime.drain_actor(&control).await?;
+    assert_eq!(provider.tail(path.clone()).await?, initial + 1);
+    drop(runtime);
+    runtime = file_runtime(&bound, &root)?.0;
+    runtime.drain_actor(&control).await?;
+    assert_eq!(provider.tail(path.clone()).await?, initial + 1);
+    let files = bound
+        .files(&root, FileRoot::Home {}, &["GOAL.md".into()], None)
+        .await?;
+    let expected = files.files["GOAL.md"]
+        .as_ref()
+        .and_then(crate::client_files::ClientFile::original)
+        .ok_or("authored goal missing")?
+        .clone();
+    bound
+        .publish_files(
+            &root,
+            FileRoot::Home {},
+            OperationId::new(),
+            &[ClientFileChange {
+                path: "GOAL.md".into(),
+                expected: Some(expected),
+                text: None,
+            }],
+        )
+        .await?;
+    runtime.drain_actor(&control).await?;
+    let head = provider.head(path).await?;
+    assert_eq!(head.tail, initial + 2);
+    assert!(
+        SessionRow::decode(&head.last.ok_or("goal row missing")?.value)?
+            .profile
+            .ok_or("goal row removed")?
+            .goal_preview
             .is_empty()
     );
     Ok(())

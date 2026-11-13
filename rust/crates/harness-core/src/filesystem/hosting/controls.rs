@@ -21,6 +21,7 @@ const STEER: &str = "file-steer";
 const CLOSED: &str = "file-closed";
 const JOBS: &str = "job-created";
 const TITLE: &str = "session-title";
+const GOAL: &str = "session-goal";
 
 mod presence;
 
@@ -29,13 +30,28 @@ mod presence;
 struct State {
     version: u32,
     agent: AgentPath,
-    private: WorkspaceEntry,
+    sources: crate::agent::WorkspaceTable,
     steer: Option<crate::resources::GenerationRef>,
     source_sequence: Option<u64>,
+    home_sequence: Option<u64>,
     paused: bool,
 }
 
 impl State {
+    fn private(&self) -> Result<&WorkspaceEntry, Error> {
+        self.sources
+            .entries()
+            .iter()
+            .find(|entry| entry.role == crate::agent::WorkspaceRole::Private)
+            .ok_or(Error::Record("control private binding missing"))
+    }
+    fn home(&self) -> Option<&WorkspaceEntry> {
+        self.sources
+            .entries()
+            .iter()
+            .find(|entry| entry.role == crate::agent::WorkspaceRole::Home)
+    }
+
     fn transition(&self, effects: Vec<CommitEffect>, retired: bool) -> Result<Transition, Error> {
         Ok(Transition {
             response: None,
@@ -57,7 +73,7 @@ impl State {
 fn codec() -> CodecIdentity {
     CodecIdentity {
         name: "harness.file-controls".into(),
-        version: "5".into(),
+        version: "6".into(),
     }
 }
 fn guest(error: impl std::fmt::Display) -> GuestError {
@@ -93,6 +109,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             CLOSED,
             JOBS,
             TITLE,
+            GOAL,
             super::quiet::ACTIVITY,
             super::quiet::COMPLETED,
             super::quiet::LIFECYCLE,
@@ -107,7 +124,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         code.update(include_bytes!("quiet.rs"));
         code.update(include_bytes!("../../supervision/tool_jobs.rs"));
         Ok(Self {
-            ordered: [PAUSE, STOP, STEER, TITLE].map(str::to_owned).into(),
+            ordered: [PAUSE, STOP, STEER, TITLE, GOAL].map(str::to_owned).into(),
             routing,
             store: crate::agent::actor_store(&volumes.filesystem.stream_provider())?,
             composer: std::sync::OnceLock::new(),
@@ -180,7 +197,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             .ok_or(Error::Record("control checkpoint codec"))?;
         let mut state: State = serde_json::from_slice(&checkpoint.bytes)
             .map_err(|_| Error::Record("control checkpoint"))?;
-        if state.version != 5 || self.actor(&delivery.actor, &state.agent)? != delivery.actor {
+        if state.version != 6 || self.actor(&delivery.actor, &state.agent)? != delivery.actor {
             return Err(Error::Record("control checkpoint identity"));
         }
         let (subscription, sequence) = delivery
@@ -220,7 +237,15 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
         }
         let mut retired = subscription == CLOSED;
         if !retired {
-            let source = self.source(state.private.volume()?).map_err(turn)?;
+            let selected = if subscription == GOAL {
+                state
+                    .home()
+                    .ok_or(Error::Record("goal has no home binding"))?
+            } else {
+                state.private()?
+            };
+            let private_source = selected.as_volume() == state.private()?.as_volume();
+            let source = self.source(selected.volume()?).map_err(turn)?;
             if record.origin != source {
                 return Err(Error::Record("control record origin differs"));
             }
@@ -250,19 +275,25 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
             // One publication can span several records. Deduplicate the same
             // record selected by multiple control keys, never its whole
             // authority revision: later records can carry another control.
-            if state
-                .source_sequence
-                .is_none_or(|through| sequence > through)
-            {
-                let bindings = [state.private.clone()];
+            let through = if private_source {
+                state.source_sequence
+            } else {
+                state.home_sequence
+            };
+            if through.is_none_or(|through| sequence > through) {
+                let bindings = if private_source {
+                    std::slice::from_ref(state.private()?)
+                } else {
+                    state.sources.entries()
+                };
                 let authority =
-                    agent_authority(&self.issuer, &self.admission, &state.agent, &bindings, &[])
+                    agent_authority(&self.issuer, &self.admission, &state.agent, bindings, &[])
                         .await
                         .map_err(turn)?;
                 let grant = crate::conversation::ContentGrant::verify_directory_read(
                     &authority.verifier,
                     &authority.scope,
-                    state.private.volume()?,
+                    selected.volume()?,
                     "",
                     &mut None,
                 )
@@ -274,26 +305,32 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                         .binary_search_by(|key| key.as_ref().cmp(path))
                         .is_ok()
                 };
-                if changed(b"ui/title") {
+                if changed(b"ui/title") || changed(b"GOAL.md") {
                     effects.extend(
                         self.metadata_effects(
                             &delivery,
                             &state,
+                            selected,
                             &generation,
                             &grant,
                             authority.scope.capabilities(),
                         )
                         .await?,
                     );
-                    if ![
-                        b"control/pause".as_slice(),
-                        b"control/stop",
-                        b"control/steer.md",
-                    ]
-                    .into_iter()
-                    .any(changed)
+                    if !private_source
+                        || ![
+                            b"control/pause".as_slice(),
+                            b"control/stop",
+                            b"control/steer.md",
+                        ]
+                        .into_iter()
+                        .any(changed)
                     {
-                        state.source_sequence = Some(sequence);
+                        if private_source {
+                            state.source_sequence = Some(sequence);
+                        } else {
+                            state.home_sequence = Some(sequence);
+                        }
                         return state.transition(effects, false);
                     }
                 }
@@ -302,7 +339,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     present[index] = self
                         .volumes
                         .stat_private_path(
-                            state.private.volume()?,
+                            state.private()?.volume()?,
                             &grant,
                             path,
                             Some(&generation),
@@ -412,7 +449,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                     let Some(delta) = self
                         .volumes
                         .read_private_append(
-                            state.private.volume()?,
+                            state.private()?.volume()?,
                             &grant,
                             "control/steer.md",
                             &generation,
@@ -438,7 +475,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Con
                                 &self.issuer,
                                 &self.admission,
                                 &state.agent,
-                                &bindings,
+                                bindings,
                             )
                             .map_err(turn)?
                             .journal_authority(self.volumes.as_ref(), &[], &[])
@@ -617,6 +654,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Han
             STOP => Some(Bytes::from_static(b"control/stop")),
             STEER => Some(Bytes::from_static(b"control/steer.md")),
             TITLE => Some(Bytes::from_static(b"ui/title")),
+            GOAL => Some(Bytes::from_static(b"GOAL.md")),
             JOBS => Some(Bytes::from_static(
                 crate::supervision::tool_jobs::STARTED_KEY,
             )),
@@ -654,49 +692,75 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
         let source = self.source(private.volume()?).map_err(turn)?;
         let actor = self.actor(within, agent)?;
         let state = State {
-            version: 5,
+            version: 6,
             agent: agent.clone(),
-            private: private.clone(),
+            sources: crate::agent::WorkspaceTable::new(
+                volumes
+                    .iter()
+                    .filter(|entry| {
+                        entry.role == crate::agent::WorkspaceRole::Private
+                            || (agent.depth() == 0
+                                && self.routing.is_some()
+                                && entry.role == crate::agent::WorkspaceRole::Home)
+                    })
+                    .cloned()
+                    .collect(),
+            )?,
             steer: Default::default(),
             source_sequence: None,
+            home_sequence: None,
             paused: false,
         };
         let metadata = (agent.depth() == 0 && self.routing.is_some())
             .then_some([TITLE])
             .into_iter()
             .flatten();
-        let subscriptions = [PAUSE, STOP, STEER]
-            .into_iter()
-            .chain(metadata)
-            .map(|id| {
-                (
-                    id.into(),
-                    Subscription {
-                        path: source.clone(),
-                        cursor: 0,
-                        paused: false,
-                    },
-                )
-            })
-            .chain([
-                (
-                    CLOSED.into(),
-                    Subscription {
-                        path: agent.closed()?,
-                        cursor: 0,
-                        paused: false,
-                    },
-                ),
-                (
-                    JOBS.into(),
-                    Subscription {
-                        path: crate::supervision::tool_jobs::path(agent).map_err(turn)?,
-                        cursor: 0,
-                        paused: false,
-                    },
-                ),
-            ])
-            .collect();
+        let mut subscriptions: std::collections::BTreeMap<String, Subscription> =
+            [PAUSE, STOP, STEER]
+                .into_iter()
+                .chain(metadata)
+                .map(|id| {
+                    (
+                        id.into(),
+                        Subscription {
+                            path: source.clone(),
+                            cursor: 0,
+                            paused: false,
+                        },
+                    )
+                })
+                .chain([
+                    (
+                        CLOSED.into(),
+                        Subscription {
+                            path: agent.closed()?,
+                            cursor: 0,
+                            paused: false,
+                        },
+                    ),
+                    (
+                        JOBS.into(),
+                        Subscription {
+                            path: crate::supervision::tool_jobs::path(agent).map_err(turn)?,
+                            cursor: 0,
+                            paused: false,
+                        },
+                    ),
+                ])
+                .collect();
+        if agent.depth() == 0
+            && self.routing.is_some()
+            && let Some(home) = state.home()
+        {
+            subscriptions.insert(
+                GOAL.into(),
+                Subscription {
+                    path: self.source(home.volume()?).map_err(turn)?,
+                    cursor: 0,
+                    paused: false,
+                },
+            );
+        }
         Ok(vec![
             self.store
                 .create(
