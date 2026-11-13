@@ -133,8 +133,15 @@ pub(crate) fn decode_command(encoded: &[u8]) -> Result<WriteRequest, StreamError
             wire_codec::commit_from_wire(request).map(WriteRequest::Commit)
         }
     }?;
-    // Persist only canonical bytes emitted by the current first-party writer.
-    if command.encode_to_vec() != encoded {
+    // Compare against the one canonical writer without allocating another command.
+    let mut remaining = encoded;
+    command.encode_with(&mut |bytes| -> Result<(), StreamError> {
+        remaining = remaining
+            .strip_prefix(bytes)
+            .ok_or(StreamError::InvalidArgument)?;
+        Ok(())
+    })?;
+    if !remaining.is_empty() {
         return Err(StreamError::InvalidArgument);
     }
     Ok(command)
