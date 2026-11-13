@@ -158,9 +158,23 @@ mod tests {
             let opened = self.inner.follow(request).await?;
             if attempt == 1 {
                 Ok(opened.map_cursor(|cursor| {
-                    Box::pin(cursor.take(2).chain(futures::stream::once(async {
-                        Err(StreamError::Unavailable)
-                    })))
+                    Box::pin(
+                        futures::stream::unfold(
+                            (cursor, false),
+                            |(mut cursor, delivered)| async move {
+                                if delivered {
+                                    return None;
+                                }
+                                let item = cursor.next().await?;
+                                let delivered =
+                                    matches!(&item, Ok(acyclic_stream::FollowUpdate::Record(_)));
+                                Some((item, (cursor, delivered)))
+                            },
+                        )
+                        .chain(futures::stream::once(async {
+                            Err(StreamError::Unavailable)
+                        })),
+                    )
                 }))
             } else {
                 Ok(opened)
