@@ -918,9 +918,11 @@ async fn a_live_boundary_preserves_notice_events_and_admits_only_its_frozen_pref
     let next_open = next_host
         .open(
             &next,
-            OperationId::from_bytes([220; 16]),
-            10,
-            5,
+            acyclic_harness_core::agent::TurnIdentity::new(
+                OperationId::from_bytes([220; 16]),
+                10,
+                5,
+            ),
             &ModelContent::Text("next turn".into()),
             acyclic_actors::guest::CancellationToken::new(),
         )
