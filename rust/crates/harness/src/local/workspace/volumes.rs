@@ -444,18 +444,31 @@ pub(in crate::local) async fn native_scope<T>(
     mounts: &Mounts,
     body: impl AsyncFnOnce(Claims) -> Result<(T, Claims)>,
 ) -> Result<T> {
+    // Volumes are independent: every view is entered at once, so a command
+    // waits for its slowest volume, not for the sum of them.
     let mut views = Vec::new();
     let mut entered = Ok(());
-    for (address, mount) in ordered_mounts(mounts)? {
-        if let Some(source) = &mount.view.source
-            && source.options.is_some()
-        {
+    let entries = ordered_mounts(mounts)?
+        .into_iter()
+        .filter_map(|(address, mount)| {
+            let source = mount
+                .view
+                .source
+                .as_ref()
+                .filter(|source| source.options.is_some())?;
             let read_only = mount.mode.read_only();
-            match Box::pin(source.command_view(address, &mount.view.volume, read_only)).await {
-                Ok(view) => views.push(view),
-                Err(error) => {
+            Some(Box::pin(source.command_view(
+                address,
+                &mount.view.volume,
+                read_only,
+            )))
+        });
+    for view in futures::future::join_all(entries).await {
+        match view {
+            Ok(view) => views.push(view),
+            Err(error) => {
+                if entered.is_ok() {
                     entered = Err(error);
-                    break;
                 }
             }
         }
@@ -483,9 +496,12 @@ pub(in crate::local) async fn native_scope<T>(
     // verification must not abandon a verified view's hand-back.
     let conflicts = spawn(async move {
         let mut handed = Ok(Vec::new());
-        for view in views {
+        let results = futures::future::join_all(views.into_iter().map(|view| async move {
             let address = view.address.clone();
-            let result = Box::pin(view.hand_back()).await;
+            (address, Box::pin(view.hand_back()).await)
+        }))
+        .await;
+        for (address, result) in results {
             if let Ok(conflicts) = &mut handed {
                 match result {
                     Ok(paths) => conflicts.extend(paths.into_iter().map(|path| {
