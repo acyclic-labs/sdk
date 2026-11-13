@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const driver = fileURLToPath(new URL("./native-record-filter-driver.ts", import.meta.url));
-for (const fault of ["", "dropped-filter", "consecutive", "dropped-headers"]) {
+for (const fault of ["", "dropped-filter", "consecutive", "dropped-headers", "missing-opening"]) {
   test(`native record filtering boundary ${fault || "production"}`, () => {
     const result = spawnSync(process.execPath, [driver], { encoding: "utf8",
       env: { ...process.env, STREAM_RECORD_FAULT: fault } });
@@ -12,7 +12,8 @@ for (const fault of ["", "dropped-filter", "consecutive", "dropped-headers"]) {
     else {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(fault === "dropped-filter" ? "native follow dropped its requested filter"
-        : fault === "dropped-headers" ? "native follow dropped record keys" : "stream response contains an invalid record cursor");
+        : fault === "dropped-headers" ? "native follow dropped record keys"
+        : fault === "missing-opening" ? "native open omitted its receipt or cursor" : "stream response contains an invalid record cursor");
     }
   });
 }

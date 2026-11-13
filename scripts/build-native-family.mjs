@@ -43,6 +43,7 @@ function qualificationPolicy(qualificationDev = false) {
 function usage() {
   return `usage:
   node ${family.buildScript} build --target <rust-triple> --output <native-bundle> [--target-dir <cargo-target-dir>] [--qualification-dev]
+  node ${family.buildScript} build-host
   node ${family.buildScript} stage --bundle <native-bundle> [--output <package-native-dir>]
   node ${family.buildScript} check [--output <package-native-dir>] [--qualification-dev]
 
@@ -56,6 +57,7 @@ function parseArgs(argv) {
   const command = argv[0]?.startsWith("-") ? "build" : (argv[0] ?? "check");
   const rest = argv[0]?.startsWith("-") ? argv : argv.slice(1);
   const options = { command };
+  if (command === "build-host" && rest.length !== 0) throw new Error(`build-host takes no options; it builds and stages the installed Rust host target\n\n${usage()}`);
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--target") options.target = rest[++index];
@@ -1186,6 +1188,22 @@ async function build(options) {
   }
 }
 
+// Package tests consume the same attested product as installed clients. This
+// command supplies the native host and temporary bundle to the existing sole
+// build/stage implementations; no test-only addon or guessed platform triple.
+async function buildHost() {
+  const compiler = requiredCommandIdentity("rustc", ["--version", "--verbose"]);
+  const target = compiler.output.match(/^host: (.+)$/m)?.[1];
+  if (target === undefined) throw new Error("native host compiler did not report its target");
+  const directory = await mkdtemp(resolve(tmpdir(), `acyclic-${family.key}-native-host-`));
+  const bundle = resolve(directory, "bundle");
+  try {
+    await build({ target, output: bundle });
+    await stage({ bundle });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
 async function stage(options) {
   if (options.bundle === undefined) throw new Error(`stage requires --bundle <native-bundle>\n\n${usage()}`);
   const bundle = resolve(options.bundle);
@@ -1228,6 +1246,7 @@ async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help) console.log(usage());
   else if (options.command === "build") await build(options);
+  else if (options.command === "build-host") await buildHost();
   else if (options.command === "stage") await stage(options);
   else if (options.command === "check") await check(options);
   else throw new Error(`unknown command ${options.command}\n\n${usage()}`);
