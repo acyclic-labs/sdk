@@ -1138,11 +1138,17 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         }
         assert!(encode_agent_reply(&reply, &command).is_err());
     }
-    // A client reads the settled output from the root's private volume.
-    let output = harness
-        .client_reader()?
-        .read(&entry.output, 1 << 20, None, None)?
-        .await?;
+    // Workspace authority does not disclose the host journal. The authenticated
+    // conversation reads its original published output instead.
+    let ungranted = async {
+        harness
+            .client_reader()?
+            .read(&entry.output, 1 << 20, None, None)?
+            .await
+    }
+    .await;
+    assert!(matches!(ungranted, Err(Error::Unauthorized(_))));
+    let output = client.text(&entry.output).await?;
     assert!(!output.is_empty());
     // The same authenticated connection queries an original status cut; a
     // caller cannot choose a foreign owner or invent a missing status record.
@@ -1176,9 +1182,20 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     ))
     .await
     .map_err(agent)?;
+    let private = {
+        let state = agents.state(&root).await.map_err(agent)?;
+        state
+            .volumes
+            .iter()
+            .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+            .ok_or_else(|| Error::NotFound("private volume".into()))?
+            .volume()?
+            .clone()
+    };
+    assert_ne!(&private, entry.output.volume());
     let private = filesystem
         .open_workspace(
-            entry.output.volume().storage_name(&mut None)?,
+            private.storage_name(&mut None)?,
             acyclic_fs::WorkBudget::UNBOUNDED,
             &cancellation,
         )
