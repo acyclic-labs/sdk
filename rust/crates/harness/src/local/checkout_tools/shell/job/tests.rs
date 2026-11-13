@@ -80,7 +80,7 @@ async fn listener_executor(
     .map_err(storage)?;
     Ok(workspace
         .executor(
-            (&harness.project, &harness.files, 1 << 20),
+            (&harness.project, &harness.files, Some(1 << 20)),
             harness.clock.clone(),
             &harness.signed,
             &harness.verifier,
@@ -154,7 +154,7 @@ async fn terminal(harness: &LocalHarness, directory: &str) -> Result<serde_json:
                 &grant,
                 &format!("{directory}/result.json"),
                 None,
-                1 << 20,
+                Some(1 << 20),
                 Default::default(),
             )
             .await?

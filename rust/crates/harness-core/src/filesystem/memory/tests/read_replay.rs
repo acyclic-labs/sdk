@@ -94,7 +94,7 @@ async fn read_calls_clip_eof_and_page_pinned_bytes() -> Result<()> {
         )
         .await?;
     let limits = Limits {
-        file_bytes: 65_536,
+        file_bytes: Some(65_536),
         render_bytes: Some(32_768),
         ..Limits::default()
     };

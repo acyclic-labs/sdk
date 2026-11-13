@@ -54,7 +54,7 @@ pub(super) struct ContentPublication<'a> {
     pub path: &'a str,
     pub media_type: &'a str,
     pub display_name: &'a str,
-    pub maximum_bytes: u64,
+    pub maximum_bytes: Option<u64>,
     pub idempotency_key: &'a IdempotencyKey,
     pub internal_class: Option<InternalContentClass>,
     pub expected_generation: Option<&'a GenerationRef>,

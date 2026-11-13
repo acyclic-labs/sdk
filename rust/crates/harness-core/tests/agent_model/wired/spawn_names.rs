@@ -532,7 +532,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             None,
         )?;
         let bytes = reader
-            .read(manifest, LIMITS.maximum_bytes, None, None)?
+            .read(manifest, manifest.descriptor().byte_length(), None, None)?
             .await?;
         let items = acyclic_harness_core::conversation::decode_attachment_manifest(
             manifest, &bytes, None, None,
@@ -542,7 +542,7 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
         };
         assert_eq!(
             reader
-                .read(&item.file, LIMITS.maximum_bytes, None, None)?
+                .read(&item.file, item.file.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),
             ORIGINAL
@@ -593,14 +593,14 @@ async fn send_pins_files_written_after_the_child_fork_without_granting_the_sende
             .ok_or("child did not receive the immutable finding")?;
         assert_eq!(
             reader
-                .read(projected, LIMITS.maximum_bytes, None, None)?
+                .read(projected, projected.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),
             ORIGINAL
         );
         assert_eq!(
             reader
-                .read(&item.file, LIMITS.maximum_bytes, None, None)?
+                .read(&item.file, item.file.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),
             ORIGINAL

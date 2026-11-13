@@ -82,11 +82,7 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
 
 #[tokio::test]
 async fn streamed_publication_replays_one_contract_and_refuses_changed_content() -> Result<()> {
-    // Hosted agents admit the portable file ceiling, which exceeds the
-    // volume's staging capacity even when the actual artifact is small.
-    let storage =
-        MemoryHarnessStorage::new(AgentId::new(), crate::conversation::MAX_EXACT_JS_INTEGER)
-            .await?;
+    let storage = MemoryHarnessStorage::new(AgentId::new(), None).await?;
     let operation = OperationId::new();
     let bytes: Vec<u8> = (0..65537).map(|index| (index % 251) as u8).collect();
     let mut source = futures::io::Cursor::new(bytes.as_slice());
@@ -176,7 +172,7 @@ async fn streamed_publication_replays_one_contract_and_refuses_changed_content()
             .observe_staged_once(
                 refused,
                 None,
-                4,
+                Some(4),
                 crate::conversation::ContentAccess::default()
             )?
             .await?
@@ -241,7 +237,7 @@ async fn streaming_producer_retirement_and_cancellation_leave_no_publication() -
                 .observe_staged_once(
                     operation,
                     None,
-                    4096,
+                    Some(4096),
                     crate::conversation::ContentAccess::default()
                 )?
                 .await?
@@ -270,18 +266,18 @@ proptest::proptest! {
             let key = IdempotencyKey::new(key)?;
             let original = storage.host.put_content(
                 &storage.volume, &write, "original", &body, "application/octet-stream",
-                "original", 1024, &key, None, crate::conversation::ContentAccess::default(),
+                "original", Some(1024), &key, None, crate::conversation::ContentAccess::default(),
             ).await?;
             storage.host.put_content(
                 &storage.volume, &write, "original", b"replacement", "text/plain",
-                "replacement", 1024, &IdempotencyKey::new("later-head/edit")?,
+                "replacement", Some(1024), &IdempotencyKey::new("later-head/edit")?,
                 None, crate::conversation::ContentAccess::default(),
             ).await?;
             assert_eq!(storage.host.content_for_operation(
-                &storage.volume, &write, &key, "original", 1024, crate::conversation::ContentAccess::default(),
+                &storage.volume, &write, &key, "original", Some(1024), crate::conversation::ContentAccess::default(),
             ).await?, Some(original));
             assert!(storage.host.content_for_operation(
-                &storage.volume, &write, &key, "different", 1024, crate::conversation::ContentAccess::default(),
+                &storage.volume, &write, &key, "different", Some(1024), crate::conversation::ContentAccess::default(),
             ).await.is_err());
             Ok::<_, Error>(())
         });
@@ -352,7 +348,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             b"root upload",
             "text/plain",
             "caller-selected-key",
-            1024,
+            Some(1024),
             &colliding_string,
             None,
             crate::conversation::ContentAccess::default(),
@@ -411,7 +407,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&committed_io),
@@ -509,7 +505,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .observe_staged_once(
             operation,
             None,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&observed_io),
@@ -629,7 +625,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 denied_operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&observed_io)
@@ -834,7 +830,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 b"never",
                 "text/plain",
                 "never",
-                1024,
+                Some(1024),
                 &key,
                 None,
                 crate::conversation::ContentAccess {
@@ -862,7 +858,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &write,
                 &key,
                 ".system/private",
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&path_io)
@@ -893,7 +889,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             b"original",
             "application/json",
             "original.json",
-            1024,
+            Some(1024),
             &key,
             None,
             crate::conversation::ContentAccess {
@@ -912,7 +908,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             b"later",
             "text/plain",
             "later.txt",
-            1024,
+            Some(1024),
             &IdempotencyKey::new("head-edit")?,
             None,
             crate::conversation::ContentAccess::default(),
@@ -925,7 +921,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
             &write,
             &key,
             "turns/.canonical",
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io),
@@ -952,7 +948,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 b"original",
                 "text/plain",
                 "changed.txt",
-                1024,
+                Some(1024),
                 &key,
                 None,
                 crate::conversation::ContentAccess {
@@ -972,7 +968,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &write,
                 &key,
                 "inputs/changed.json",
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&io)
@@ -989,7 +985,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &write,
                 &IdempotencyKey::new("proven-absent-operation")?,
                 "turns/.canonical",
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&io)
@@ -1018,7 +1014,7 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
                 &write,
                 &key,
                 "turns/.canonical",
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&io)

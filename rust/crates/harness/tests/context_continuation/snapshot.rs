@@ -186,7 +186,7 @@ pub(super) async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_m
             .run(
                 &input,
                 Limits {
-                    file_bytes: narrow_file_bytes,
+                    file_bytes: Some(narrow_file_bytes),
                     ..limits
                 },
                 None

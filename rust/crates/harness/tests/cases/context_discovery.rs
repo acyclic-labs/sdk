@@ -87,7 +87,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -379,7 +379,7 @@ impl Fixture {
                 bytes,
                 "text/plain",
                 "source.md",
-                1_000_000,
+                Some(1_000_000),
                 &IdempotencyKey::new(key)?,
                 None,
                 acyclic_harness::conversation::ContentAccess::default(),
@@ -459,14 +459,24 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
         reads: AtomicUsize::new(0),
         prefix: std::sync::Mutex::new(None),
     };
-    let message = skill.invoke(&reader, 512).await?;
+    let message = skill.invoke(&reader, Some(512)).await?;
     let ModelContent::Text(text) = message.content else {
         return Err(Error::Invalid("expected skill text".into()));
     };
     assert_eq!(text.as_bytes(), original);
     assert_eq!(reader.reads.load(Ordering::Relaxed), 1);
-    assert!(skill.invoke(fixture.reader.as_ref(), 8).await.is_err());
-    assert!(skill.invoke(fixture.reader.as_ref(), 0).await.is_err());
+    assert!(
+        skill
+            .invoke(fixture.reader.as_ref(), Some(8))
+            .await
+            .is_err()
+    );
+    assert!(
+        skill
+            .invoke(fixture.reader.as_ref(), Some(0))
+            .await
+            .is_err()
+    );
     for (key, byte) in [("nul-body", 0), ("invalid-body", 255)] {
         let mut body = original.to_vec();
         body.push(byte);
@@ -474,7 +484,7 @@ async fn skill_invocation_loads_the_pinned_body_and_enforces_limits() -> Result<
         let captured = declaration.capture(fixture.reader.as_ref()).await?;
         assert!(
             first_skill(&captured)?
-                .invoke(fixture.reader.as_ref(), 512)
+                .invoke(fixture.reader.as_ref(), Some(512))
                 .await
                 .is_err()
         );

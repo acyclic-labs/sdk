@@ -122,6 +122,9 @@ pub(super) fn stock_json_bound<T: Serialize>(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let maximum = maximum.into();
+    if maximum.is_none() && io.is_none() {
+        return Ok(());
+    }
     if let Some(io) = io {
         io.check_cancellation()?;
         return crate::executor::json::count_json_bytes_trusted(

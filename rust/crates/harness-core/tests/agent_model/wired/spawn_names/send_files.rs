@@ -47,7 +47,7 @@ impl ContentPublisher for PausedPublisher {
         &'a self,
         volume: &'a VolumeRef,
         operation: OperationId,
-        maximum: u64,
+        maximum: Option<u64>,
         access: ContentAccess<'a, 'io>,
     ) -> Result<BoundedContentFuture<'a, (Option<ContentChanges>, Option<ContentHold<'io>>)>> {
         self.inner
@@ -75,7 +75,7 @@ impl ContentPublisher for PausedPublisher {
         &'a self,
         operation: OperationId,
         replacement: Option<(&'a VolumeRef, &'a str)>,
-        maximum: u64,
+        maximum: Option<u64>,
         access: ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         self.inner

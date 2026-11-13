@@ -406,12 +406,15 @@ impl WasmAgentServer {
         file: JsValue,
     ) -> std::result::Result<Vec<u8>, JsValue> {
         self.owned(async {
+            let file: FileRef = from_js(file)?;
             self.bound
                 .read_file(
                     &AgentPath::try_from(agent).map_err(agent_error)?,
-                    &from_js(file)?,
+                    &file,
                     0,
-                    self.observation.maximum_bytes,
+                    self.observation
+                        .maximum_bytes
+                        .unwrap_or(file.descriptor().byte_length()),
                 )
                 .await
                 .map(|(bytes, _length)| bytes)

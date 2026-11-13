@@ -42,15 +42,19 @@ test("WASM model validators preserve Rust limits and tool-name checks", async ()
   expect(() => validateModelContent({ kind: "tool_call", callId: "call", name: "bad name", arguments: {} }, fixtureLimits)).toThrow();
   expect(() => validateModelContent({ kind: "text", text: "x".repeat(fixtureLimits.render_bytes + 1) }, fixtureLimits)).toThrow();
   expect(() => validateModelContent({ kind: "unknown", value: true } as never, fixtureLimits)).toThrow();
-  const unbounded = { ...fixtureLimits, render_bytes: null };
+  const unbounded = { ...fixtureLimits, file_bytes: null, render_bytes: null };
   const body = "x".repeat(fixtureLimits.render_bytes + 1) + "λ🙂";
   expect(contracts.validateContract("limits", unbounded, undefined).render_bytes).toBeNull();
+  expect(contracts.validateContract("limits", unbounded, undefined).file_bytes).toBeNull();
   expect(() => validateModelContent({ kind: "text", text: body }, unbounded)).not.toThrow();
   const bytes = new TextEncoder().encode(body);
   const source = contracts.validateContract("file_ref", {
     ...content, path: "docs/AGENTS.md", display_name: "AGENTS.md",
     descriptor: contracts.fileDescriptor(bytes, "text/markdown"),
   }, undefined) as WasmFileRefWire;
+  const wholeFile = { kind: "file" as const, file: source, policy: "bounded_full" as const };
+  expect(() => validateModelContent(wholeFile, { ...unbounded, file_bytes: fixtureLimits.file_bytes })).toThrow();
+  expect(() => validateModelContent(wholeFile, unbounded)).not.toThrow();
   const identity = { volume: source.volume, path: source.path };
   const frame = contracts.frameInstructions(source, identity, bytes, null);
   expect(frame).toBe(`# AGENTS.md instructions for docs\n\n<INSTRUCTIONS>\n${body}\n</INSTRUCTIONS>`);

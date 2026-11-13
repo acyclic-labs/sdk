@@ -32,7 +32,7 @@ async fn waiting_reads_cover_media_and_effective_paths_and_can_be_dropped() -> R
                         "tool:call:read".into(),
                     ]),
                     Limits {
-                        file_bytes: 4096,
+                        file_bytes: Some(4096),
                         render_bytes: Some(4096),
                         ..Limits::default()
                     },
@@ -174,7 +174,7 @@ impl ContentResidencyVerifier for AdvanceAfterSelection {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-        maximum: u64,
+        maximum: Option<u64>,
         access: ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
@@ -199,7 +199,7 @@ impl ContentResidencyVerifier for AdvanceAfterSelection {
 
 #[tokio::test]
 async fn effective_projections_keep_the_original_selection_after_head_advances() -> Result<()> {
-    let cases: [(&str, &[u8], &[u8], &str, Option<Value>, Option<&str>); 6] = [
+    let cases: [(&str, &[u8], &[u8], &str, Option<Value>, Option<&str>); 8] = [
         ("skills/text", b"original", b"changed!", "text/plain", None, Some("original")),
         ("skills/lines", b"original\nsecond\n", b"changed!\nsecond\n", "text/plain",
             Some(json!({"kind":"lines","offset":0,"limit":1})), Some("original\n")),
@@ -208,6 +208,8 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
             Some(json!({"kind":"cells","offset":0,"limit":1})), None),
         ("skills/auto.ipynb", br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[{"cell_type":"markdown","id":"one","metadata":{},"source":["original"]}]}"#,
             br#"{"nbformat":4,"nbformat_minor":5,"metadata":{},"cells":[{"cell_type":"markdown","id":"one","metadata":{},"source":["changed!"]}]}"#, "application/json", None, None),
+        ("skills/image", b"original", b"changed!", "image/png", Some(json!({"kind":"image","detail":"auto"})), None),
+        ("skills/auto.png", include_bytes!("../../../../tests/fixtures/notebook-output.png"), b"changed!", "image/png", None, None),
         // Authored byte inputs exercise selection, not PDF parsing or rendering.
         ("skills/media", b"original", b"changed!", "application/pdf", Some(json!({"kind":"pdf"})), None),
         ("skills/auto", b"%PDF-original", b"%PDF-changed!", "application/pdf", None, None),
@@ -237,7 +239,7 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                 });
                 content.reader = reader.clone();
                 let limits = Limits {
-                    file_bytes: 4096,
+                    file_bytes: Some(4096),
                     render_bytes: Some(4096),
                     ..Limits::default()
                 };
@@ -311,12 +313,12 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                     .await?;
                 assert!(!selected.same_source(&FileReadSource::Authored(current)));
                 assert_eq!(reader.heads.load(Ordering::SeqCst), 2);
-                if *path == "skills/text" {
+                if matches!(*path, "skills/text" | "skills/lines") {
                     // A returned version names its concrete layer. A later
                     // effective-view change cannot substitute that source.
                     let version = super::super::version::encode_source(&selected, None)?.0;
                     let pinned = ToolInvocation {
-                        arguments: json!({"path":format!("{}{path}", crate::layers::HOME_PATH), "version":version}),
+                        arguments: json!({"path":format!("{}{path}", crate::layers::HOME_PATH), "version":version, "selection":projection}),
                         ..invocation.clone()
                     };
                     assert_eq!(
@@ -324,7 +326,19 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                             .execute(pinned, Some(context.clone()))
                             .await?
                             .value["text"],
-                        "original"
+                        text.unwrap()
+                    );
+                    assert_eq!(reader.heads.load(Ordering::SeqCst), 2);
+                    let effective = ToolInvocation {
+                        arguments: json!({"path":format!("{}{path}", crate::layers::EFFECTIVE_PATH), "version":version, "selection":projection}),
+                        ..invocation.clone()
+                    };
+                    assert_eq!(
+                        tool.executor
+                            .execute(effective, Some(context.clone()))
+                            .await?
+                            .value["text"],
+                        text.unwrap()
                     );
                     assert_eq!(reader.heads.load(Ordering::SeqCst), 2);
                     let denied = ToolContext::new(
@@ -409,6 +423,144 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                 acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
             );
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn effective_layers_preserve_fallback_suppression_and_version_authority() -> Result<()> {
+    for (path, home_bytes, expected_heads, hidden) in [
+        ("skills/text", None, 1, false),
+        ("skills/text", Some(b"off: true".as_slice()), 1, true),
+        ("sys/kernel.md", Some(b"shadow".as_slice()), 0, false),
+    ] {
+        let home = Arc::new(MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?);
+        let seed = MemoryHarnessStorage::new(crate::AgentId::new(), 4096).await?;
+        let seed_file = seed
+            .stage(
+                OperationId::new(),
+                path,
+                b"seed content",
+                "text/plain",
+                "seed",
+            )
+            .await?;
+        if let Some(bytes) = home_bytes {
+            home.stage(OperationId::new(), path, bytes, "text/plain", "home")
+                .await?;
+        }
+        let mut binding = home.content_bindings();
+        let reader = Arc::new(AdvanceAfterSelection {
+            storage: home.clone(),
+            inner: binding.reader.clone(),
+            armed: AtomicBool::new(true),
+            heads: AtomicUsize::new(0),
+            replacement: b"replacement",
+            media_type: "text/plain",
+        });
+        binding.reader = reader.clone();
+        let home_grant = binding.volume.directory_read_capability("", &mut None)?;
+        let seed_binding = seed.content_bindings();
+        let seed_grant = seed_binding
+            .volume
+            .directory_read_capability("", &mut None)?;
+        let (selected_seed, _, _) = seed_binding
+            .reader
+            .read_private_range(
+                &seed_binding.volume,
+                path.rsplit_once('/').map_or("", |(parent, _)| parent),
+                path,
+                None,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 32,
+                },
+                ContentAccess {
+                    ceiling: None,
+                    io: None,
+                },
+            )?
+            .await?;
+        let task = crate::runtime::Bindings {
+            scope: RuntimeScope::new(
+                Capabilities::new([
+                    home_grant.clone(),
+                    seed_grant.clone(),
+                    "tool:call:read".into(),
+                ]),
+                Limits {
+                    file_bytes: Some(4096),
+                    ..Limits::default()
+                },
+            )?,
+            seed: Some(crate::layers::PinnedLayer {
+                volume: seed_binding.volume.clone(),
+                generation: selected_seed.generation,
+            }),
+            content: Some(seed_binding),
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?
+        .agent_context(&Capabilities::default(), binding)?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "layer-selection".into(),
+            name: "read".into(),
+            arguments: json!({"path":format!("{}{path}", crate::layers::EFFECTIVE_PATH)}),
+        };
+        let context =
+            ToolContext::new(Arc::new(task), invocation.operation_id, &invocation.call_id)?;
+        let tool = read()?;
+        let result = tool
+            .executor
+            .execute(invocation.clone(), Some(context.clone()))
+            .await;
+        assert_eq!(reader.heads.load(Ordering::SeqCst), expected_heads);
+        if hidden {
+            assert_eq!(result.unwrap_err().code(), crate::wire::ErrorCode::NotFound);
+        } else {
+            let result = result?;
+            assert_eq!(result.value["text"], "seed content");
+            let selected: FileReadSource = serde_json::from_value(result.value["file"].clone())
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(selected.same_source(&FileReadSource::Content(seed_file.clone())));
+        }
+        // An explicit source keeps its layer even when home now shadows it.
+        let version =
+            super::super::version::encode_source(&FileReadSource::Content(seed_file), None)?.0;
+        let pinned = ToolInvocation {
+            arguments: json!({"path":format!("{}{path}", crate::layers::EFFECTIVE_PATH), "version":version}),
+            ..invocation.clone()
+        };
+        assert_eq!(
+            tool.executor
+                .execute(pinned.clone(), Some(context.clone()))
+                .await?
+                .value["text"],
+            "seed content"
+        );
+        let heads = reader.heads.load(Ordering::SeqCst);
+        let denied = ToolContext::new(
+            Arc::new(context.task().scoped(
+                Capabilities::new([home_grant, "tool:call:read".into()]),
+                context.effective_scope().limits().clone(),
+            )?),
+            invocation.operation_id,
+            &invocation.call_id,
+        )?;
+        assert_eq!(
+            tool.executor
+                .execute(pinned, Some(denied))
+                .await
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            reader.heads.load(Ordering::SeqCst),
+            heads,
+            "version admission must precede any home probe"
+        );
     }
     Ok(())
 }

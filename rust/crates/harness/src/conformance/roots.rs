@@ -191,7 +191,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     let turns = Turns {
         executors: Arc::new(Never),
         limits: TurnLimits {
-            maximum_bytes: 64 * 1024,
+            maximum_bytes: Some(64 * 1024),
             history_turns: 8,
         },
         actors: vectors::limits()?,

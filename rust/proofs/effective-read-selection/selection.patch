@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/tool/files/read.rs
++++ b/rust/crates/harness-core/src/tool/files/read.rs
+@@ -48,7 +48,7 @@
+                 )
+                 .await?;
+             input.0.path = layer.into_owned();
+-            if let Some((selected, custody)) = selected {
++            if let Some((selected, custody)) = selected.filter(|_| false) {
+                 source = super::source::ReadSource {
+                     source: Some(FileReadSource::Authored(selected).into()),
+                     custody,

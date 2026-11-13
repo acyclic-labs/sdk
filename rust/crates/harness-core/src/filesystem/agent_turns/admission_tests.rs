@@ -111,7 +111,7 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
             },
             Arc::new(NoDispatch),
             TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
             },
             Default::default(),
@@ -120,12 +120,12 @@ async fn announcement_publication_preserves_workload_and_delegated_authority() -
         let documents = host.journal_storage(&admitted, &[]).await?.files;
         assert!(
             documents
-                .create("targets.json", br#"{"targets":[]}"#, 1024)
+                .create("targets.json", br#"{"targets":[]}"#, Some(1024))
                 .await?
                 .is_none()
         );
         let document = documents
-            .read("targets.json", 1024)
+            .read("targets.json", Some(1024))
             .await?
             .ok_or_else(|| Error::NotFound("host announcement".into()))?;
         assert_eq!(document.as_ref(), br#"{"targets":[]}"#);
@@ -311,9 +311,13 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             None,
         )?;
         for ceiling in [None, Some(parent.capabilities())] {
-            let denied = async { reader.read(&control, file_bytes, ceiling, None)?.await }
-                .await
-                .expect_err("guest read host data through the persisted policy");
+            let denied = async {
+                reader
+                    .read(&control, control.descriptor().byte_length(), ceiling, None)?
+                    .await
+            }
+            .await
+            .expect_err("guest read host data through the persisted policy");
             assert_eq!(denied.code(), crate::wire::ErrorCode::Unauthorized);
         }
         let guest_write = ContentGrant::verify(
@@ -370,7 +374,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
         )?;
         assert_eq!(
             input_reader
-                .read(&input, file_bytes, None, None)?
+                .read(&input, input.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),
             b"selected input"
@@ -391,7 +395,7 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .await?;
         assert_eq!(
             reader
-                .read(&published, file_bytes, None, None)?
+                .read(&published, published.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),
             b"published announcement"
@@ -405,14 +409,14 @@ async fn external_interactions_require_host_custody_even_under_broad_guest_grant
             .await?;
         assert_eq!(
             input_reader
-                .read(&input, file_bytes, None, None)?
+                .read(&input, input.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),
             b"selected input"
         );
         assert_eq!(
             reader
-                .read(&published, file_bytes, None, None)?
+                .read(&published, published.descriptor().byte_length(), None, None)?
                 .await?
                 .as_ref(),
             b"published announcement"
@@ -487,7 +491,7 @@ async fn local_workspace_reads_and_writes_respect_role_mode_and_root() -> Result
                 name.as_bytes(),
                 "text/plain",
                 "file",
-                1024,
+                Some(1024),
                 &crate::IdempotencyKey::new(name)?,
                 None,
                 Default::default(),
@@ -703,7 +707,7 @@ async fn wait_selection_survives_reopening_and_reference_replacement() -> Result
         admission: TurnAdmission::LocalRoot,
         agent: agent.clone(),
         volumes: volumes.clone(),
-        maximum_bytes: 64 * 1024,
+        maximum_bytes: Some(64 * 1024),
     };
     let first = agent
         .child(&AgentId::from_bytes([203; 16]))
@@ -881,7 +885,7 @@ async fn opening_history_is_cancelled_and_source_loss_is_terminal() -> Result<()
             TurnAdmission::LocalRoot,
             Arc::new(NoDispatch),
             TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
             },
             Default::default(),

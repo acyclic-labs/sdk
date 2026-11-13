@@ -20,7 +20,7 @@ pub(in crate::filesystem) struct FilesystemTurnEffects<P: ?Sized, A: 'static, O:
     within: acyclic_actors::addressing::ActorReference,
     agent: AgentPath,
     directory: String,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
@@ -43,7 +43,7 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
         within: acyclic_actors::addressing::ActorReference,
         agent: AgentPath,
         (turn, segment): (OperationId, u32),
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Self {
         Self {
             files,
@@ -236,7 +236,7 @@ mod tests {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             agent,
             (OperationId::from_bytes([5; 16]), 0),
-            4096,
+            Some(4096),
         );
         let effect = |name: &str| -> Result<TurnEffect> {
             Ok(TurnEffect::Spawn {
@@ -284,7 +284,7 @@ mod tests {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
             (OperationId::from_bytes([5; 16]), 1),
-            4096,
+            Some(4096),
         );
         assert!(!alone.holds(own).await?);
         alone
@@ -309,7 +309,7 @@ mod tests {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
             AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
             (OperationId::from_bytes([5; 16]), 2),
-            4096,
+            Some(4096),
         );
         // Change only the writer's version. Even a valid current payload must
         // be refused before it can be replayed under another format.
@@ -320,7 +320,7 @@ mod tests {
                 .create(
                     &format!("{}/0000000001-a.msgpack", old.directory),
                     &saved,
-                    4096
+                    Some(4096)
                 )
                 .await?,
             None
@@ -344,12 +344,12 @@ mod tests {
         // a stale observation cannot replace the first creator's effect.
         let raced_path = "create-observation/race.msgpack";
         let InternalFileCreation::Vacant(first_creation) =
-            files.prepare_create(raced_path, 4096).await?
+            files.prepare_create(raced_path, Some(4096)).await?
         else {
             panic!("new file already exists");
         };
         let InternalFileCreation::Vacant(later_creation) =
-            files.prepare_create(raced_path, 4096).await?
+            files.prepare_create(raced_path, Some(4096)).await?
         else {
             panic!("preparation created a file");
         };
@@ -362,7 +362,7 @@ mod tests {
             .expect("original winner");
         assert_eq!(decode(&replayed)?, first);
         let InternalFileCreation::Existing(existing) =
-            files.prepare_create(raced_path, 4096).await?
+            files.prepare_create(raced_path, Some(4096)).await?
         else {
             panic!("published original is missing");
         };
@@ -370,12 +370,12 @@ mod tests {
         let abandoned_path = "create-observation/abandoned.msgpack";
         {
             let InternalFileCreation::Vacant(_abandoned) =
-                files.prepare_create(abandoned_path, 4096).await?
+                files.prepare_create(abandoned_path, Some(4096)).await?
             else {
                 panic!("new file already exists");
             };
         }
-        assert!(files.read(abandoned_path, 4096).await?.is_none());
+        assert!(files.read(abandoned_path, Some(4096)).await?.is_none());
 
         // Removing a file after selection changes a fresh read, but cannot
         // remove its body from the retained original generation.
@@ -398,11 +398,11 @@ mod tests {
             ))
             .await
             .map_err(super::super::map_error)?;
-        assert!(files.read(&removed, 4096).await?.is_none());
+        assert!(files.read(&removed, Some(4096)).await?.is_none());
         let mut retained = Vec::new();
         for name in ["0000000001-a.msgpack", "0000000002-b.msgpack"] {
             let bytes = reader
-                .read(&format!("{}/{name}", effects.directory), 4096)
+                .read(&format!("{}/{name}", effects.directory), Some(4096))
                 .await?
                 .ok_or_else(|| Error::Storage("selected effect disappeared".into()))?;
             retained.push(decode(&bytes)?);
@@ -421,7 +421,7 @@ mod tests {
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
                 (OperationId::from_bytes([5; 16]), 3),
-                4096,
+                Some(4096),
             );
             let prefix = format!(
                 "/{}{}",

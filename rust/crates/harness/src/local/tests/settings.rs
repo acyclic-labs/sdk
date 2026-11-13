@@ -72,7 +72,7 @@ pub(in crate::local) async fn write(
             source.as_bytes(),
             "text/typescript",
             path.rsplit('/').next().unwrap_or(path),
-            u64::MAX,
+            None,
             &IdempotencyKey::new(format!(
                 "settings:{path}:{}",
                 blake3::hash(source.as_bytes())
@@ -102,7 +102,7 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
                 harness.root
             ),
             None,
-            u64::MAX,
+            None,
             ContentAccess::default(),
         )
         .await?
@@ -219,7 +219,7 @@ async fn effective_media_versions_require_current_source_authority() -> Result<(
             include_bytes!("../../../../harness-core/tests/fixtures/notebook-output.png"),
             "image/png",
             path,
-            u64::MAX,
+            None,
             &IdempotencyKey::new("media-authority-control")?,
             None,
             ContentAccess::default(),
@@ -665,7 +665,7 @@ async fn effective_skill_reads_stay_within_the_reader_allowance() -> Result<()> 
     let project = volume(directory.path()).await?;
     let harness = super::open_scripted(volume_config(directory.path(), project, text())?.limits(
         crate::conversation::Limits {
-            file_bytes: FILE_BYTES,
+            file_bytes: Some(FILE_BYTES),
             ..Default::default()
         },
     ))

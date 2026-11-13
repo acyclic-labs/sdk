@@ -42,7 +42,7 @@ mod settlement;
 mod spawn_names;
 
 const LIMITS: TurnLimits = TurnLimits {
-    maximum_bytes: 64 * 1024,
+    maximum_bytes: Some(64 * 1024),
     history_turns: 8,
 };
 
@@ -185,7 +185,7 @@ fn executors_with_render_bytes(
                 base
             } else {
                 acyclic_harness_core::conversation::Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..base
                 }
             },

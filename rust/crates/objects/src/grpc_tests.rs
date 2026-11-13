@@ -5,6 +5,7 @@ use crate::MemoryObjects;
 use acyclic_stream::AppliedRevisions;
 use std::sync::Mutex;
 use std::time::Duration;
+use tonic::transport::Endpoint;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 

@@ -153,7 +153,7 @@ async fn ui_agent_override_and_turn_receipts_ignore_old_asks() -> Result<()> {
                 b"forged output",
                 "application/json",
                 "output.json",
-                1024,
+                Some(1024),
                 &crate::IdempotencyKey::new("guest-output-forgery")?,
                 super::super::super::InternalContentClass::Conversation,
                 None,

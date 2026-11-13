@@ -3,10 +3,7 @@
 pub use crate::client::BearerAuth;
 use crate::wire;
 use prost::Message;
-use tonic::{
-    Status,
-    transport::{Channel, Endpoint},
-};
+use tonic::{Status, transport::Channel};
 use tracing::field::Empty;
 
 /// Generated client with account authentication on every request.
@@ -81,8 +78,7 @@ pub enum ConnectError {
 
 /// Connects a bounded TLS channel.
 async fn connect_channel(endpoint: &str, ca: Option<&[u8]>) -> Result<Channel, ConnectError> {
-    let configured = Endpoint::from_shared(endpoint.to_owned())?
-        .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
+    let configured = acyclic_auth::channel::endpoint(endpoint)?;
     let peer = if let Some(ca) = ca {
         if ca.is_empty() {
             return Err(ConnectError::InvalidCaCertificate);

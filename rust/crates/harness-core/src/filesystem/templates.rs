@@ -265,7 +265,7 @@ mod tests {
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?,
             path.clone(),
             (crate::OperationId::new(), 0),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
         ));
         let mut root_adoption = adopted;
         root_adoption.profile = Some(parent.clone());
@@ -277,7 +277,7 @@ mod tests {
             &state,
             (effects.clone(), None),
             writer.clone(),
-            crate::conversation::MAX_EXACT_JS_INTEGER,
+            Some(crate::conversation::MAX_EXACT_JS_INTEGER),
             (&["spawn".into()], Some(templates.clone())),
         )?;
         let tool = registry

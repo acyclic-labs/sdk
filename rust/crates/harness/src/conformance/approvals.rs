@@ -224,7 +224,7 @@ async fn asked(backend: &dyn Backend, policy: ApprovalPolicy, capture: bool) -> 
         Turns {
             executors: Arc::new(Approving(Arc::clone(&calls))),
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 history_turns: 8,
             },
             actors: vectors::limits()?,

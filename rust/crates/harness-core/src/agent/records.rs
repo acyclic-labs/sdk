@@ -147,7 +147,7 @@ pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Er
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
 )]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 #[heap_layout(as = String)]
 pub struct IntentId(String);
 crate::core::ownership::owned_tuple!(IntentId, (text));

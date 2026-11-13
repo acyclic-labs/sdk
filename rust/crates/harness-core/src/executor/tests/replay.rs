@@ -259,7 +259,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
     assert_eq!(model.requests().len(), 0);
     let _ = base.execute(input.clone(), &journal).await?;
     let changed = Limits {
-        file_bytes: Limits::default().file_bytes - 1,
+        file_bytes: Some(crate::conversation::MAX_EXACT_JS_INTEGER - 1),
         ..Limits::default()
     };
     assert!(matches!(

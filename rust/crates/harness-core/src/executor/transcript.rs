@@ -69,7 +69,9 @@ pub(crate) struct RequestManifest {
 /// Admission is monotone in these bounds. Control-loop limits do not affect
 /// `ModelRequest` validation and therefore are not part of this comparison.
 pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
-    admitted.file_bytes <= current.file_bytes
+    current
+        .file_bytes
+        .is_none_or(|maximum| admitted.file_bytes.is_some_and(|limit| limit <= maximum))
         && current
             .path_bytes
             .is_none_or(|maximum| admitted.path_bytes.is_some_and(|limit| limit <= maximum))

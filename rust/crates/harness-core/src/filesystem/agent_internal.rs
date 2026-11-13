@@ -81,7 +81,7 @@ pub(in crate::filesystem) enum InternalFileCreation<'a, A: 'static, O: 'static> 
 pub(in crate::filesystem) struct VacantInternalFile<'a, A: 'static, O: 'static> {
     files: &'a AgentInternalFiles<A, O>,
     path: &'a str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> VacantInternalFile<'_, A, O> {
@@ -191,7 +191,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> InternalRe
     pub(in crate::filesystem) async fn read(
         &self,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<OwnedBytes>> {
         AgentInternalFiles::read_at(
             &self.generation,
@@ -332,7 +332,7 @@ where
                 bytes,
                 media_type,
                 name,
-                bytes.len() as u64,
+                Some(bytes.len() as u64),
                 &key,
                 InternalContentClass::Conversation,
                 None,
@@ -382,7 +382,7 @@ where
     pub(in crate::filesystem) async fn read(
         &self,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<OwnedBytes>> {
         self.reader().await?.read(path, maximum_bytes).await
     }
@@ -391,7 +391,7 @@ where
     async fn read_at(
         head: &acyclic_fs::Generation<A, O>,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<OwnedBytes>> {
         let read = head
             .read(
@@ -420,7 +420,7 @@ where
         &self,
         path: &str,
         bytes: &[u8],
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<OwnedBytes>> {
         match self.prepare_create(path, maximum_bytes).await? {
             InternalFileCreation::Existing(existing) => Ok(Some(existing)),
@@ -433,7 +433,7 @@ where
     pub(in crate::filesystem) async fn prepare_create<'a>(
         &'a self,
         path: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<InternalFileCreation<'a, A, O>> {
         match self.read(path, maximum_bytes).await? {
             Some(existing) => Ok(InternalFileCreation::Existing(existing)),
@@ -514,7 +514,7 @@ where
                     for entry in &page.entries {
                         let chunk = filename(entry.name.as_bytes())?;
                         if let Some(bytes) =
-                            Self::read_at(&head, &format!("{reply}/{chunk}"), u64::MAX).await?
+                            Self::read_at(&head, &format!("{reply}/{chunk}"), None).await?
                         {
                             text.extend_from_slice(&bytes);
                         }
@@ -538,7 +538,7 @@ where
     fn read<'a>(
         &'a self,
         path: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
         Box::pin(async move {
             Ok(Self::read(self, path, maximum_bytes)
@@ -551,7 +551,7 @@ where
         &'a self,
         path: &'a str,
         bytes: Vec<u8>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async move {
             Ok(

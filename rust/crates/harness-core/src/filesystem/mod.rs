@@ -159,7 +159,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         input: &'a B,
         media_type: &'a str,
         display_name: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         idempotency_key: &'a IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&'a GenerationRef>,
@@ -229,9 +229,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ));
         }
         if volume.provider() != &self.provider
-            || input
-                .bytes()
-                .is_some_and(|bytes| bytes.len() as u64 > maximum_bytes)
+            || input.bytes().is_some_and(|bytes| {
+                maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
+            })
         {
             return Err(stock_boundary(
                 io,
@@ -370,16 +370,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     // Replay needs the request digest, never new content puts.
                     let mut chunk = [0; 8192];
                     loop {
-                        let remaining = maximum_bytes.checked_sub(source.length)
-                            .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                                "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"))?;
-                        let read = source.read(&mut chunk, remaining.saturating_add(1), active_io.cancellation())
+                        let remaining = maximum_bytes.map(|maximum| maximum.saturating_sub(source.length));
+                        let maximum = remaining.map_or(chunk.len() as u64, |remaining| remaining.saturating_add(1));
+                        let read = source.read(&mut chunk, maximum, active_io.cancellation())
                             .await.map_err(|error| {
                                 if active_io.cancellation().is_cancelled() { Error::Cancelled }
                                 else { Error::Storage(format!("content source read failed: {error}; recovery: recreate the complete original source and replay the same publication")) }
                             })?;
                         active_io.charge(acyclic_fs::WorkCounters { source_bytes_read: read as u64, ..Default::default() })?;
-                        if source.length > maximum_bytes {
+                        if maximum_bytes.is_some_and(|maximum| source.length > maximum) {
                             return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                                 "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
                         }
@@ -389,11 +388,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     let transaction = active_io.sdk(opened.begin_transaction(
                         operation, active_io, active_io.cancellation()).await)?;
                     // The publisher's independent byte credit funds staging.
-                    let staging_bytes = maximum_bytes.max(1);
+                    let staging_bytes = maximum_bytes.map(|maximum| maximum.max(1));
                     let content = active_io.sdk(transaction.stage_content(
                         &mut source, staging_bytes, active_io, active_io.cancellation()).await)
                         .map_err(|error| if active_io.cancellation().is_cancelled() { Error::Cancelled } else { error })?;
-                    if source.length > maximum_bytes {
+                    if maximum_bytes.is_some_and(|maximum| source.length > maximum) {
                         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                             "content source exceeds admitted size; recovery: supply content within the publisher's byte credit"));
                     }

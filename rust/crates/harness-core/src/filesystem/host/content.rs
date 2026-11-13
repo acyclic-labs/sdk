@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         key: &IdempotencyKey,
         expected_generation: Option<&GenerationRef>,
         access: crate::conversation::ContentAccess<'_, '_>,
@@ -49,7 +49,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         key: &IdempotencyKey,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<Option<FileRef>> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
@@ -84,7 +84,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         key: &IdempotencyKey,
         class: InternalContentClass,
         io: Option<&PreparationIo>,
@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         items: &[Attachment],
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         idempotency_key: &IdempotencyKey,
     ) -> Result<ReferencedAttachments>
     where

@@ -399,7 +399,7 @@ impl TaskContext {
         content: &ContentBindings,
         selection: (&VolumeRef, &str, &str, Option<&GenerationRef>),
         scope: &RuntimeScope,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, OwnedBytes, u64)> {
         let (volume, granted_prefix, path, expected_generation) = selection;
@@ -410,7 +410,10 @@ impl TaskContext {
                 granted_prefix,
                 path,
                 expected_generation,
-                maximum_bytes.min(scope.limits().file_bytes),
+                maximum_bytes
+                    .into_iter()
+                    .chain(scope.limits().file_bytes)
+                    .min(),
                 crate::conversation::ContentAccess {
                     ceiling: Some(scope.grants()),
                     io,

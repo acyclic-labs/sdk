@@ -634,6 +634,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             }
         }
         state.need = 2;
+        state.reserved_spawns = 3;
         state.turn = Some(Progress {
             inbox: 17,
             checkpoint: vec![0, 1, 255],
@@ -665,6 +666,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
                 }
                 state.awaiting.clear();
                 state.need = 0;
+                state.reserved_spawns = 0;
                 state.turn = None;
 
                 state.phase = Phase::Idle;

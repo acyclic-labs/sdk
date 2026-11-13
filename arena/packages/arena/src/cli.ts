@@ -43,7 +43,7 @@ async function main(): Promise<number> {
     const ac = new Acyclic(repo); console.log(`acyclic:  ${ac.available() ? "ok" : "not found (optional: forks fall back to git worktrees)"}`);
     try { console.log(`forks:    ${pickForker(repo).name}`); } catch (e) { console.log(`forks:    ${String(e)}`); }
     console.log(`OPENROUTER_API_KEY: ${process.env.OPENROUTER_API_KEY ? "set" : "MISSING"}`);
-    try { const j = new Jev(); const r = await j.decide("ping", { ok: { type: "noul", instructions: "This is a test." } }); console.log(`jev:      ok (${r.model}, $${r.usage.cost})`); } catch (e) { console.log(`jev:      FAILED ${String(e).slice(0, 200)}`); }
+    try { const j = new Jev(); const r = await j.decide("ping", { ok: { type: "noul", instructions: "This is a test." } }); console.log(`jev:      ok (${r.model}, $${r.usage.cost})`); } catch (e) { console.log(`jev:      FAILED ${String(e)}`); }
     return 0;
   }
   if (cmd === "route") {
@@ -63,6 +63,8 @@ async function main(): Promise<number> {
       ? [{ task: pos.slice(1).join(" "), kind: str(flags.kind), models: str(flags.models)?.split(",") }]
       : (JSON.parse(readFileSync(pos[1]!, "utf8")) as Array<{ task: string; kind?: string; models?: string[]; test?: string }>);
     const forceModels = str(flags.models)?.split(",");
+    const workerTimeout = str(flags.timeout);
+    const testTimeout = str(flags["test-timeout"]);
     // the budget is checked between races against everything paid so far (routing, workers, judge); a race
     // that is already running is never cut short, so the final spend can exceed the budget by one race
     let total = 0;
@@ -79,7 +81,7 @@ async function main(): Promise<number> {
         log.note("route", { task: t.task, ...r });
         total += r.cost;
       }
-      const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: t.test ?? str(flags.test), promote: flags.promote === true, workerTimeoutMs: Number(str(flags.timeout, "600")) * 1000, onEvent: say });
+      const res = await race(forker, jev, log, { task: t.task, models, kind, testCommand: t.test ?? str(flags.test), promote: flags.promote === true, workerTimeoutMs: workerTimeout === undefined ? undefined : Number(workerTimeout) * 1000, testTimeoutMs: testTimeout === undefined ? undefined : Number(testTimeout) * 1000, onEvent: say });
       total += res.judgeCost + res.workerCost;
       if (saveStates) {
         const verdict = res.forks.map((f) => `fork ${f.fork.label} (${f.model}): pWin ${f.pWin.toFixed(2)} safe ${f.safe.toFixed(2)} complete ${f.complete.toFixed(2)} tests ${f.probeOk}`).join("\n");
@@ -104,8 +106,9 @@ async function main(): Promise<number> {
 
   arena doctor
   arena route "<task>"
-  arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
+  arena race "<task>" [--models a,b,c] [--promote] [--test "<cmd>"] [--kind <kind>] [--timeout <s>] [--test-timeout <s>] [--log arena.jsonl] [--forks auto|acyclic|git]
   arena run tasks.json [--promote] [--test "<cmd>"] [--models a,b] [--budget <usd>] [--save-states dir]
+      worker and test deadlines are unlimited unless --timeout or --test-timeout is supplied
       --budget is checked between races (routing + workers + judge so far); a running race is never cut short
   arena board [--log arena.jsonl] [--badge badge.svg] [--json board.json] [--min-races 3]
 

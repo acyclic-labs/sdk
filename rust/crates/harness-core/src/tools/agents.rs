@@ -133,7 +133,7 @@ struct Turn {
     /// What `wait` observes; `None` when the host observes no children.
     observer: Option<Arc<dyn TurnChildren>>,
     writer: Arc<dyn ContentPublisher>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     /// This agent's creation snapshot and the host's template reader; spawn refuses
     /// when either is absent.
     templates: Option<(CreationConfig, Arc<dyn SpawnTemplates>)>,
@@ -264,24 +264,32 @@ impl AgentTool {
                     let destination = format!("messages/{operation}/files/{index}");
                     let exhausted =
                         || Error::tool_rejected("selected files exceed the send byte budget");
-                    remaining = remaining
-                        .checked_sub(
-                            destination.len() as u64
-                                + std::mem::size_of::<(
-                                    String,
-                                    crate::conversation::FileRef,
-                                    acyclic_stream::OwnedBytes,
-                                )>() as u64,
-                        )
-                        .ok_or_else(exhausted)?;
+                    if let Some(budget) = remaining {
+                        remaining = Some(
+                            budget
+                                .checked_sub(
+                                    destination.len() as u64
+                                        + std::mem::size_of::<(
+                                            String,
+                                            crate::conversation::FileRef,
+                                            acyclic_stream::OwnedBytes,
+                                        )>() as u64,
+                                )
+                                .ok_or_else(exhausted)?,
+                        );
+                    }
                     let (file, bytes, _) = context
                         .read_tool_path_bounded(path, None, remaining, None)
                         .await?;
-                    let metadata_bytes = file.logical_owned_bytes()?;
-                    remaining = remaining
-                        .checked_sub(bytes.len() as u64)
-                        .and_then(|remaining| remaining.checked_sub(metadata_bytes))
-                        .ok_or_else(exhausted)?;
+                    if let Some(budget) = remaining {
+                        let metadata_bytes = file.logical_owned_bytes()?;
+                        remaining = Some(
+                            budget
+                                .checked_sub(bytes.len() as u64)
+                                .and_then(|remaining| remaining.checked_sub(metadata_bytes))
+                                .ok_or_else(exhausted)?,
+                        );
+                    }
                     sources.push((destination, file, bytes));
                 }
                 let changes = sources
@@ -355,7 +363,11 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                if input.task.is_empty() || input.task.len() as u64 > turn.maximum_bytes {
+                if input.task.is_empty()
+                    || turn
+                        .maximum_bytes
+                        .is_some_and(|maximum| input.task.len() as u64 > maximum)
+                {
                     return Ok(rejected("task is empty or too large"));
                 }
                 let Ok(intent) = spawn_intent(&input.name, 0) else {
@@ -452,7 +464,10 @@ impl AgentTool {
                         "send requires a parent, open child or authorized peer inbox",
                     ));
                 };
-                if input.message.len() as u64 > turn.maximum_bytes {
+                if turn
+                    .maximum_bytes
+                    .is_some_and(|maximum| input.message.len() as u64 > maximum)
+                {
                     return Ok(rejected("message is too large"));
                 }
                 let attachments = self
@@ -1099,7 +1114,7 @@ pub fn bind_agent_tools(
     agent: &AgentState,
     (effects, observer): (Arc<dyn TurnEffects>, Option<Arc<dyn TurnChildren>>),
     writer: Arc<dyn ContentPublisher>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     (names, templates): (&[String], Option<Arc<dyn SpawnTemplates>>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {
@@ -1202,7 +1217,7 @@ mod tests {
                     writer: Arc::new(crate::runtime::test_context::PrivateVolume(
                         crate::runtime::test_context::private_volume(71)?,
                     )),
-                    maximum_bytes: u64::MAX,
+                    maximum_bytes: None,
                     templates: None,
                     volumes: Vec::new(),
                     released: AtomicBool::new(false),

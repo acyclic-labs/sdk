@@ -755,7 +755,7 @@ async fn actor_delivery(
 async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements<'_>) -> Result {
     let cancellation = CancellationToken::new();
     let volume = fixture.volume(&id(0)?)?;
-    let name = volume.volume.storage_name(&mut None)?;
+    let name = volume.volume()?.storage_name(&mut None)?;
     let workspace = Box::pin(fixture.fs.open_workspace(
         &name,
         WorkBudget::UNBOUNDED,
