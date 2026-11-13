@@ -1,6 +1,15 @@
 use super::*;
 
 impl StockExecutor {
+    /// Applies a host-admitted complete configuration before each model step.
+    /// The source pins its original file selection in this execution's journal;
+    /// model and tool dispatch continue through the same stock engine.
+    #[must_use]
+    pub fn with_step_configuration(mut self, source: Arc<dyn StepConfiguration>) -> Self {
+        self.step_configuration = Some(source);
+        self
+    }
+
     /// Install admitted plugin descriptions and pure after-hooks. Descriptions
     /// are a stable prefix; settlement notices append to the journaled turn.
     #[cfg(not(target_arch = "wasm32"))]
@@ -47,6 +56,7 @@ impl StockExecutor {
         tools: ToolRegistry,
     ) -> Self {
         Self {
+            step_configuration: None,
             intervention: None,
             model,
             sampling: Default::default(),

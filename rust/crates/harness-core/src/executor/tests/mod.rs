@@ -5,6 +5,7 @@ mod code_mode;
 mod feedback;
 mod pre_dispatch;
 mod saved_admission;
+mod step_configuration;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod policy_identity;
