@@ -24,13 +24,14 @@ test("installed NAPI generator retains native loading causes with an unpatched c
     const assert = require("node:assert/strict");
     let failure;
     try { require(process.argv[1]); } catch (error) { failure = error; }
-    assert.ok(failure instanceof AggregateError, "NAPI loader lost individual causes");
+    assert.ok(failure instanceof AggregateError, "NAPI loader lost individual causes: " + failure?.stack);
     assert.ok(failure.errors.length > 0, "NAPI loader lost its concrete load failures");
     assert.ok(failure.errors.every(error => error instanceof Error && error.message.length > 0));
     assert.ok(failure.errors.some(error => error.code === "MODULE_NOT_FOUND" && error.message.includes("missing.node")));
   `;
   const env = { ...process.env, NODE_PATH: "", NAPI_RS_NATIVE_LIBRARY_PATH: join(directory, "missing.node") };
   delete env.NAPI_RS_FORCE_WASI;
+  delete env.NAPI_RS_WASI_FLAVOR;
   const run = (name, bytes) => {
     const path = join(directory, name);
     writeFileSync(path, bytes);
