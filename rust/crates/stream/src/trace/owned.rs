@@ -33,6 +33,10 @@ impl<P: StreamProvider + ?Sized> Terminal for Recording<P> {
     }
 }
 
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+#[derive(Debug, thiserror::Error)]
+#[error("owned trace terminal was already transferred")]
+struct TerminalTransferred;
 struct TerminalGuard(Option<Box<dyn Terminal>>);
 
 impl TerminalGuard {
@@ -45,7 +49,7 @@ impl TerminalGuard {
         // Only this consuming method or Drop can take the private terminal.
         self.0
             .take()
-            .expect("owned recording retains its sole terminal")
+            .ok_or_else(|| StreamError::InvalidResponse.with_source(TerminalTransferred))?
             .submit(bytes, result)
     }
 }
