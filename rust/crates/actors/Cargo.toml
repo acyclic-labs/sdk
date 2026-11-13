@@ -1,0 +1,103 @@
+[package]
+autotests = false
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**"]
+name = "acyclic-actors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Public Actors v1 contract and validation"
+readme = "README.md"
+
+[[bin]]
+name = "actors-rpc-inventory"
+path = "src/bin/actors-rpc-inventory.rs"
+test = false
+
+[features]
+conformance = ["acyclic-stream/conformance"]
+model-checking = ["dep:loom", "acyclic-stream/model-checking"]
+test-support = [
+    "acyclic-auth/test-support",
+    "acyclic-grpc-observability/test-support",
+    "acyclic-native-runtime/test-support",
+    "acyclic-objects/test-support",
+    "acyclic-stream/test-support"]
+
+[dependencies]
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+loom = { version = "0.7.3", features = ["futures"], optional = true }
+acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+uuid.workspace = true
+bytes = { workspace = true, features = ["serde"] }
+futures.workspace = true
+http.workspace = true
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
+http-body = "1.1.0"
+prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
+serde_json.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+ts-rs = "=12.0.1"
+thiserror.workspace = true
+sha2.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
+tokio-util = { version = "=0.7.20", features = ["rt"] }
+tonic-prost.workspace = true
+tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["grpc"] }
+# Actor sockets are channels of the in-process session protocol.
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+tokio = { version = "1.48.0", default-features = false, features = ["time"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
+reqwest.workspace = true
+rustls.workspace = true
+tonic = { workspace = true, features = ["codegen", "router", "transport", "tls-ring"] }
+tracing.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "wasm"] }
+tonic = { workspace = true, features = ["codegen"] }
+url = "=2.5.8"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde", "wasm", "conformance"] }
+wasm-bindgen-test = "=0.3.67"
+
+[dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+http-body-util = "0.1.5"
+async-trait.workspace = true
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance", "test-support"] }
+acyclic-test-support = { path = "../test-support" }
+proptest.workspace = true
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+rcgen = "0.14.10"
+tempfile = "3.27.0"
+tracing-subscriber.workspace = true
+
+
+[build-dependencies]
+acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
