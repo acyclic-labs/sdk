@@ -22,6 +22,8 @@ pub(super) struct InvalidationQueue {
     pub(super) processed: Option<ViewStamp>,
     pub(super) deferred: FuseOwned<Vec<KernelCacheItem>>,
     pub(super) in_flight: bool,
+    deferred_taken: usize,
+    deferred_processed: usize,
     /// A notification failed; the view's terminal receipt owns its cause.
     pub(super) denied: bool,
 }
@@ -31,13 +33,29 @@ impl InvalidationQueue {
         self.processed < target || !self.deferred.is_empty() || self.in_flight
     }
 
-    pub(super) fn take_deferred(&mut self) -> FuseOwned<std::vec::IntoIter<KernelCacheItem>> {
+    fn deferred_target(&self) -> Result<usize, NativeMountError> {
+        self.deferred_taken
+            .checked_add(self.deferred.len())
+            .ok_or_else(|| crate::WorkError::Overflow.into())
+    }
+
+    fn pending_through(&self, target: Option<ViewStamp>, deferred: usize) -> bool {
+        self.processed < target || self.deferred_processed < deferred
+    }
+
+    pub(super) fn take_deferred(
+        &mut self,
+    ) -> Result<FuseOwned<std::vec::IntoIter<KernelCacheItem>>, NativeMountError> {
+        self.deferred_taken = self.deferred_target()?;
         self.in_flight = true;
-        std::mem::take(&mut self.deferred).map(Vec::into_iter)
+        Ok(std::mem::take(&mut self.deferred).map(Vec::into_iter))
     }
 
     pub(super) fn finish(&mut self, through: Option<ViewStamp>) {
         self.processed = self.processed.max(through);
+        if !self.denied {
+            self.deferred_processed = self.deferred_taken;
+        }
         self.in_flight = false;
     }
 }
@@ -125,6 +143,9 @@ impl ProjectionCore {
         target: Option<ViewStamp>,
         work: &Work,
     ) -> Result<(), NativeMountError> {
+        // Later notifications belong to later callers, even if another pass
+        // has already started by the time this waiter wakes.
+        let deferred = state.invalidation.deferred_target()?;
         let mut cancellation = None;
         loop {
             work.charge(Items.delta(1))?;
@@ -136,7 +157,7 @@ impl ProjectionCore {
                     "a FUSE callback failure stopped this view",
                 ));
             }
-            if !state.invalidation.is_pending(target) {
+            if !state.invalidation.pending_through(target, deferred) {
                 return Ok(());
             }
             if cancellation.is_none() {
@@ -290,7 +311,7 @@ pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl Ke
 fn invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
     let mut through = None;
     let result = core.request(|work| {
-        let mut items = core.state_to_finish().invalidation.take_deferred();
+        let mut items = core.state_to_finish().invalidation.take_deferred()?;
         loop {
             drop_kernel_caches(notifier, &mut items, work)?;
             if through.is_some() {
@@ -350,4 +371,37 @@ fn drop_kernel_caches(
         }
         Ok(())
     })
+}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settlement_cuts_preserve_earlier_notifications_without_waiting_for_later_passes() {
+        let work = super::super::tests::fuse_fixture_work();
+        for later_in_flight in [false, true] {
+            let mut queue = InvalidationQueue::default();
+            fuse_reserve(&mut queue.deferred, 2, &work).unwrap();
+            queue.deferred.push(KernelCacheItem::Inode(10));
+            let first = queue.deferred_target().unwrap();
+            let first_batch = queue.take_deferred().unwrap();
+            assert!(queue.pending_through(None, first));
+            queue.deferred.push(KernelCacheItem::Inode(20));
+            let second = queue.deferred_target().unwrap();
+            drop(first_batch);
+            queue.finish(None);
+            let later_batch = later_in_flight.then(|| queue.take_deferred().unwrap());
+            assert!(!queue.pending_through(None, first));
+            assert!(queue.pending_through(None, second));
+            assert!(queue.is_pending(None));
+            drop(later_batch);
+            if !later_in_flight {
+                drop(queue.take_deferred().unwrap());
+            }
+            queue.finish(None);
+            assert!(!queue.pending_through(None, second));
+            assert!(!queue.is_pending(None));
+        }
+    }
 }
