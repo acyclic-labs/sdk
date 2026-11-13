@@ -151,7 +151,7 @@ impl StreamError {
     #[must_use]
     pub fn not_before_authority(&self) -> Option<u64> {
         if let Self::Caused(failure) = self {
-            return failure.category().not_before_authority();
+            return failure.classification().not_before_authority();
         }
         let Self::Refused(refusal) = self else {
             return None;
@@ -173,7 +173,7 @@ impl StreamError {
     #[must_use]
     pub fn category(&self) -> Self {
         match self {
-            Self::Caused(failure) => failure.category().category(),
+            Self::Caused(failure) => failure.classification().category(),
             Self::Refused(refusal) => refusal.original().map_or(Self::Unavailable, |parts| {
                 Self::from_grpc_status(parts.code, &parts.message)
             }),
@@ -220,7 +220,7 @@ impl StreamError {
             Self::AccessDenied => "access_denied",
             Self::Unavailable => "unavailable",
             Self::Refused(_) => self.category().code(),
-            Self::Caused(failure) => failure.category().code(),
+            Self::Caused(failure) => failure.classification().code(),
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",
