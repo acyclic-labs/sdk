@@ -47,7 +47,7 @@ pub enum StreamError {
     /// A member's original status beyond its canonical category. Recovery
     /// follows [`Self::category`]; diagnostics never grant retry permission.
     #[error("stream member refused{0}")]
-    Refused(acyclic_auth::refusal::Refusal),
+    Refused(#[source] acyclic_auth::refusal::Refusal),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
     DeadlineElapsed,
