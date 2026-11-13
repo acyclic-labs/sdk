@@ -451,20 +451,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Observe this actor's next failed delivery, including a failure already
-    /// retained by this runtime. Registration admits no work. Observers
+    /// retained by this runtime. Observation registers no resident slot or work. Observers
     /// survive hibernation without retaining actor I/O. Recovery clears the
     /// current failure, but cannot erase an event from an earlier observer.
     pub fn delivery_failure(
         &self,
         actor: &ActorReference,
     ) -> Result<BoxProviderFuture<'static, DeliveryFailure>, Error> {
-        self.track(actor.clone())?;
-        let slot = self.slot(actor).ok_or(Error::CompletionStopped)?;
-        let failure = slot
-            .failure
-            .get_or_init(|| self.failures.signal(actor))
-            .clone();
-        Ok(failure.observe())
+        if !self.includes(actor) {
+            return Err(Error::Invalid("actor is outside this runtime's scope"));
+        }
+        // Signals outlive idle slots. Register directly in their shared index,
+        // so concurrent release cannot turn healthy hibernation into failure.
+        Ok(self.failures.signal(actor).observe())
     }
 
     /// Register an actor and request its first delivery attempt, as after

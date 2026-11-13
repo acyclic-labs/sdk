@@ -8,6 +8,11 @@ async fn failure_observers_survive_hibernation_and_unpolled_recovery() -> TestRe
     let runtime = Runtime::new(store.clone(), handler.clone(), Arc::new(SystemClock));
     let address = spawn_with(&store, "failure-observed", &[b"emit"]).await?;
     let mut failed = runtime.delivery_failure(&address)?;
+    assert_eq!(
+        runtime.counts(),
+        (0, 0),
+        "observation registered an actor slot that hibernation could remove"
+    );
     assert!(runtime.release(&address));
     assert_eq!(
         runtime.counts(),
