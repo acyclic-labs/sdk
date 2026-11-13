@@ -16,6 +16,10 @@ mod drain;
 pub use drain::{drain, forward};
 mod admission;
 pub use admission::{Delivered, Rejection, Routed};
+mod account;
+pub use account::{AccountService, Admission, AdmissionPolicy, admit, relay_resource};
+
+const CALL_PROTOCOL: &str = "acyclic.actors.route.account.v1";
 
 /// Opaque, nonempty node identity, encoded by the shared resource-ID primitive.
 pub type NodeId = ResourceId;
@@ -194,6 +198,20 @@ struct EnvelopeWire {
     to: Bytes,
     #[prost(message, optional, tag = "5")]
     request: Option<acyclic_stream::wire::CommitRequest>,
+    #[prost(string, tag = "6")]
+    domain: String,
+}
+
+// Admission selects a node from this header before decoding the opaque inbox
+// request. The same protobuf decoder skips the remaining length-delimited data.
+#[derive(Clone, PartialEq, prost::Message)]
+struct SourceWire {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(bytes = "bytes", tag = "2")]
+    source: Bytes,
+    #[prost(string, tag = "6")]
+    domain: String,
 }
 
 /// The original sender, target and opaque ordinary-delivery request. Its intent
@@ -211,14 +229,31 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    fn source_node(bytes: &[u8]) -> Result<NodeId, Error> {
+        let source = SourceWire::decode(bytes).map_err(|_| Error::InvalidRecord)?;
+        if source.version != 1 || source.domain != CALL_PROTOCOL {
+            return Err(Error::InvalidRecord);
+        }
+        Ok(NodeId::new(&source.source)?)
+    }
+
     /// Canonical version-one transport record, without any credential material.
     pub fn encode(&self) -> Bytes {
+        self.encode_as("")
+    }
+
+    fn encode_invocation(&self) -> Bytes {
+        self.encode_as(CALL_PROTOCOL)
+    }
+
+    fn encode_as(&self, domain: &str) -> Bytes {
         EnvelopeWire {
             version: 1,
             source: Bytes::copy_from_slice(self.source.as_bytes()),
             sender: self.sender.encode().into(),
             to: self.to.encode().into(),
             request: Some(acyclic_stream::wire_codec::commit_to_wire(&self.request)),
+            domain: domain.into(),
         }
         .encode_to_vec()
         .into()
@@ -226,8 +261,16 @@ impl Envelope {
 
     /// Decode the exact shared CommitRequest format; this never admits a grant.
     pub fn decode(bytes: impl AsRef<[u8]>) -> Result<Self, Error> {
-        let value = EnvelopeWire::decode(bytes.as_ref()).map_err(|_| Error::InvalidRecord)?;
-        if value.version != 1 {
+        Self::decode_as(bytes.as_ref(), "")
+    }
+
+    fn decode_invocation(bytes: &[u8]) -> Result<Self, Error> {
+        Self::decode_as(bytes, CALL_PROTOCOL)
+    }
+
+    fn decode_as(bytes: &[u8], domain: &str) -> Result<Self, Error> {
+        let value = EnvelopeWire::decode(bytes).map_err(|_| Error::InvalidRecord)?;
+        if value.version != 1 || value.domain != domain {
             return Err(Error::InvalidRecord);
         }
         let sender = ActorReference::decode(&value.sender)?;
