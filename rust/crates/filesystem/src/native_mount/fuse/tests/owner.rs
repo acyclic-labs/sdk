@@ -4,6 +4,11 @@ use super::*;
 
 #[test]
 fn current_thread_embedder_writes_through_its_own_view() -> Result<(), Box<dyn std::error::Error>> {
+    if acyclic_native_runtime::private_file::with_isolated_user_home(
+        "native_mount::fuse::tests::owner::current_thread_embedder_writes_through_its_own_view",
+    )? {
+        return Ok(());
+    }
     crate::initialize_native_mount_services()?;
     let storage = tempfile::tempdir()?;
     let destination = tempfile::tempdir()?;
@@ -70,6 +75,7 @@ fn killed_owner_with_pending_request_retires_without_fusectl()
         let root =
             std::path::PathBuf::from(std::env::var_os(OWNER_ROOT).ok_or("owner root absent")?);
         if case == "controller" {
+            acyclic_native_runtime::private_file::initialize_isolated_user_home()?;
             return controller(&root);
         }
         return pending_owner(&root, case == "old");

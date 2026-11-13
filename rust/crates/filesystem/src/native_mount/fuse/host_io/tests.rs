@@ -107,6 +107,11 @@ fn publish(
 #[test]
 fn hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_it()
 -> Result<(), Box<dyn std::error::Error>> {
+    if acyclic_native_runtime::private_file::with_isolated_user_home(
+        "native_mount::fuse::host_io::tests::hosted_publication_keeps_original_payload_until_device_write_and_stop_joins_it",
+    )? {
+        return Ok(());
+    }
     let work = fuse_fixture_work();
     // SAFETY: sysconf has no pointer arguments or ownership effects.
     let page = u32::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })?;

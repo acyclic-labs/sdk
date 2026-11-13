@@ -330,10 +330,7 @@ fn admission_file() -> io::Result<File> {
     use std::os::unix::fs::MetadataExt;
     let namespace =
         |name| std::fs::metadata(format!("/proc/self/ns/{name}")).map(|file| file.ino());
-    let root = dirs::runtime_dir()
-        .or_else(dirs::home_dir)
-        .filter(|path| path.is_absolute())
-        .ok_or_else(|| io::Error::other("mount-host private user directory unavailable"))?;
+    let root = crate::private_file::user_home_directory()?;
     let directory = admission_directory(&root)?;
     let path = directory.join(format!("{}-{}.lock", namespace("mnt")?, namespace("net")?));
     // Never unlink this authority inode: replacing it would split the lock.

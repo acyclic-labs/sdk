@@ -39,9 +39,28 @@ fn exited(event: &OwnedFd, timeout: i32) -> io::Result<bool> {
 #[test]
 fn concurrent_admission_survives_startup_and_last_owner_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os(CASE).is_some_and(|case| case == "foreign-env") {
+        let refusal =
+            crate::FileLock::try_acquire(admission_file()?, crate::FileLockMode::Exclusive)
+                .unwrap_err();
+        assert_eq!(
+            refusal.kind(),
+            io::ErrorKind::WouldBlock,
+            "a different HOME/XDG_RUNTIME_DIR must still contend on the original authority"
+        );
+        return Ok(());
+    }
     if std::env::var_os(CASE).is_none() {
         let output = std::process::Command::new("unshare")
-            .args(["--user", "--map-root-user", "--mount", "--net", "--"])
+            .args([
+                "--user",
+                "--map-root-user",
+                "--mount",
+                "--net",
+                "--propagation",
+                "private",
+                "--",
+            ])
             .arg(std::env::current_exe()?)
             .args([TEST, "--exact", "--nocapture"])
             .env(CASE, "1")
@@ -54,6 +73,7 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
         );
         return Ok(());
     }
+    crate::private_file::initialize_isolated_user_home()?;
 
     // An attacker can reserve the former public pathname without any access
     // to the user's private root. Actual admission must ignore that entry.
@@ -92,6 +112,22 @@ fn concurrent_admission_survives_startup_and_last_owner_retirement()
     );
     std::fs::remove_file(alias)?;
     admission_directory(private.path())?;
+
+    {
+        let _held = crate::FileLock::acquire(admission_file()?, crate::FileLockMode::Exclusive)?;
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([TEST, "--exact", "--nocapture"])
+            .env(CASE, "foreign-env")
+            .env("HOME", private.path())
+            .env("XDG_RUNTIME_DIR", private.path())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     let (first, second) = std::thread::scope(|scope| -> Result<_, Box<dyn std::error::Error>> {
         let (bound, saw_bound) = sync_channel(1);
