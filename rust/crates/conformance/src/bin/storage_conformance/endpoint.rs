@@ -280,7 +280,11 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                     break entry;
                 }
             };
-            let turn = checked(phase, "read-turn", conversation.turn(&entry).await)?;
+            let turn = checked(
+                phase,
+                "read-turn",
+                conversation.turn_at(observer.seen() - 1, &entry).await,
+            )?;
             assert_eq!(
                 (
                     turn.prompt.as_deref(),

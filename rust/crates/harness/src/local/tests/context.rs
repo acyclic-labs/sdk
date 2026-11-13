@@ -120,7 +120,10 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
             instructions: Some(_)
         })
     ));
-    let turn = client.conversation.turn(&entry).await?;
+    let turn = client
+        .conversation
+        .turn_at(client.observer.seen() - 1, &entry)
+        .await?;
     assert_eq!(
         (turn.prompt, turn.answer.as_str()),
         (None, "CHECKPOINT_SUMMARY")
@@ -161,7 +164,11 @@ async fn checkpoints_select_later_context_and_survive_a_reopen() -> Result<()> {
     );
     assert_eq!(provider.request_count(), 3);
     assert_eq!(
-        client.conversation.turn(&entry).await?.answer,
+        client
+            .conversation
+            .turn_at(client.observer.seen() - 1, &entry)
+            .await?
+            .answer,
         "CHECKPOINT_SUMMARY"
     );
     client.send("kept", "KEPT_PROMPT").await?;
@@ -232,7 +239,11 @@ async fn a_cancelled_turn_settles_durably_without_a_model_request() -> Result<()
     let entry = client.settled(inbox).await?;
     assert_eq!(entry.outcome, crate::agent::TurnOutcome::Cancelled);
     assert_eq!(checkpoint(&entry), None);
-    let prompt = client.conversation.turn(&entry).await?.prompt;
+    let prompt = client
+        .conversation
+        .turn_at(client.observer.seen() - 1, &entry)
+        .await?
+        .prompt;
     assert_eq!(prompt.as_deref(), Some("CANCELLED_PROMPT"));
     assert_eq!(provider.request_count(), 1);
     // The cancelled prompt stays in the later context.
