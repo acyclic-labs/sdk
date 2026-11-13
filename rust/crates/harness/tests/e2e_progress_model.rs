@@ -2,8 +2,20 @@
 #![cfg(loom)]
 #[path = "support/progress_registry.rs"]
 mod registry;
+use loom::sync::atomic::{AtomicBool, Ordering};
 use registry::Registry;
+use std::{
+    future::Future,
+    task::{Context, Wake, Waker},
+};
 use std::{path::Path, sync::Arc};
+
+struct Observer(AtomicBool);
+impl Wake for Observer {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
 
 #[test]
 fn registration_reporting_and_cancel_or_panic_cleanup_are_atomic() {
@@ -83,11 +95,22 @@ fn wake_oracle(broken: bool) {
         };
         let polling = admitted.polling();
         assert!(registry.blocked_snapshot(registry.snapshot().0).is_none());
+        let observer = Arc::new(Observer(AtomicBool::new(false)));
+        let waker = Waker::from(observer.clone());
+        let mut cx = Context::from_waker(&waker);
+        let revision = registry.snapshot().0;
+        let mut quiescent = Box::pin(registry.quiescent(revision));
+        assert!(quiescent.as_mut().poll(&mut cx).is_pending());
         let worker = loom::thread::spawn(move || wake.wake());
         // The real wake races with Pending publication and reporter snapshots.
         assert!(registry.blocked_snapshot(registry.snapshot().0).is_none());
         drop(polling);
         worker.join().unwrap();
+        assert!(
+            observer.0.load(Ordering::SeqCst),
+            "registry transition wake lost"
+        );
+        assert!(quiescent.as_mut().poll(&mut cx).is_ready());
         assert!(
             registry.blocked_snapshot(registry.snapshot().0).is_none(),
             "a runnable task was reported blocked"

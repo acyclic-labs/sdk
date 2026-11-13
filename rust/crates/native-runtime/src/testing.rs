@@ -111,6 +111,7 @@ struct State {
     active: usize,
     native_active: usize,
     idle: Option<Waker>,
+    native_idle: Option<Waker>,
     cancelled: bool,
     trace: Vec<String>,
     ready_reads: usize,
@@ -176,14 +177,22 @@ pub(crate) struct Context {
 pub(crate) struct Active(pub(crate) Context, bool);
 impl Drop for Active {
     fn drop(&mut self) {
-        let idle = {
+        let (idle, native_idle) = {
             let mut state = self.0.schedule.0.state();
             // Only `Context::accept` constructs an `Active`, after counting it.
             state.active -= 1;
             state.native_active -= usize::from(self.1);
-            (state.active == 0).then(|| state.idle.take()).flatten()
+            (
+                (state.active == 0).then(|| state.idle.take()).flatten(),
+                (state.native_active == 0)
+                    .then(|| state.native_idle.take())
+                    .flatten(),
+            )
         };
         if let Some(idle) = idle {
+            idle.wake();
+        }
+        if let Some(idle) = native_idle {
             idle.wake();
         }
     }
@@ -277,16 +286,30 @@ impl Schedule {
 
     /// Waits for accepted operations to reach their physical terminal.
     pub async fn drained(&self) {
+        self.wait_drained(false).await;
+    }
+
+    async fn wait_drained(&self, native_only: bool) {
         std::future::poll_fn(|cx| {
             if let Some(executor) = &self.0.executor {
                 executor.poll_owned(cx);
             }
             self.poll_wall_alarms(cx);
             let mut state = self.0.state();
-            if state.active == 0 {
+            if if native_only {
+                state.native_active
+            } else {
+                state.active
+            } == 0
+            {
                 Poll::Ready(())
             } else {
-                state.idle = Some(cx.waker().clone());
+                let waiter = if native_only {
+                    &mut state.native_idle
+                } else {
+                    &mut state.idle
+                };
+                *waiter = Some(cx.waker().clone());
                 Poll::Pending
             }
         })
@@ -302,6 +325,12 @@ impl Schedule {
     /// Task owners waiting on streams are excluded; they cannot hide a missing follow.
     pub fn pending_native_work(&self) -> usize {
         self.0.state().native_active
+    }
+
+    /// Waits for physical native/blocking retirement, excluding stream-follow tasks.
+    /// One driver owns this waiter, independently of the all-owner drain waiter.
+    pub async fn native_drained(&self) {
+        self.wait_drained(true).await;
     }
 
     /// Original submissions and their completion trace, including cancellation.

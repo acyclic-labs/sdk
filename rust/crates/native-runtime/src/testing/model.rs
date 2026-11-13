@@ -41,6 +41,11 @@ fn native_progress_reporting_races_physical_completion_and_unwind() {
             assert_eq!(schedule.pending_native_work(), 1);
             let blocking = task.0.accept("blocking");
             assert_eq!(schedule.pending_native_work(), 2);
+            let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+            let waker = Waker::from(flag.clone());
+            let mut cx = PollContext::from_waker(&waker);
+            let mut retired = Box::pin(schedule.native_drained());
+            assert!(retired.as_mut().poll(&mut cx).is_pending());
             let worker = thread::spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let _native = native;
@@ -57,9 +62,20 @@ fn native_progress_reporting_races_physical_completion_and_unwind() {
                 1,
                 "completion lost another owner"
             );
+            assert!(
+                !flag.0.load(Ordering::SeqCst),
+                "native drain woke before retirement"
+            );
             drop(blocking);
             assert_eq!(schedule.pending_native_work(), 0, "native cleanup hid idle");
+            assert!(flag.0.load(Ordering::SeqCst), "native terminal wake lost");
+            assert!(retired.as_mut().poll(&mut cx).is_ready());
+            // The stream-follow owner is still alive: an all-owner drain is
+            // deliberately a different predicate with an independent waiter.
+            let mut drained = Box::pin(schedule.drained());
+            assert!(drained.as_mut().poll(&mut cx).is_pending());
             drop(task);
+            assert!(drained.as_mut().poll(&mut cx).is_ready());
         });
     }
 }

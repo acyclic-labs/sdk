@@ -67,6 +67,8 @@ impl Guard {
         tokio::pin!(idle);
         tokio::pin!(future);
         let mut revision = self.registry.snapshot().0;
+        let registry = self.registry.clone();
+        let io = self.io.clone();
         loop {
             tokio::select! {
                 biased;
@@ -78,7 +80,13 @@ impl Guard {
                     event.release();
                     idle.as_mut().reset(tokio::time::Instant::now() + quiet);
                 }
-                _ = &mut idle => {
+                _ = async {
+                    idle.as_mut().await;
+                    // Once quiet, wait for the predicates' transitions rather
+                    // than rechecking accepted work on another timer tick.
+                    io.native_drained().await;
+                    registry.quiescent(revision).await;
+                } => {
                     if let Some(open) = self.registry.blocked_snapshot(revision)
                         && self.io.pending_native_work() == 0 {
                         return Err(if open.is_empty() {
@@ -87,8 +95,11 @@ impl Guard {
                             format!("stalled: {} at {on}", path.display())
                         }).collect::<Vec<_>>().join("\n") });
                     }
-                    revision = self.registry.snapshot().0;
-                    idle.as_mut().reset(tokio::time::Instant::now() + quiet);
+                    let current = self.registry.snapshot().0;
+                    if current != revision {
+                        revision = current;
+                        idle.as_mut().reset(tokio::time::Instant::now() + quiet);
+                    }
                 }
             }
         }

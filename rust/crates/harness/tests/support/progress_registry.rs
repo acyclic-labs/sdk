@@ -7,7 +7,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
-    task::{Wake, Waker},
+    task::{Poll, Wake, Waker},
 };
 
 /// The guarded state stays consistent across a panicking holder: each critical
@@ -22,6 +22,7 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
 struct State {
     next: usize,
     revision: usize,
+    observer: Option<Waker>,
     open: BTreeMap<usize, Entry>,
 }
 
@@ -45,25 +46,59 @@ pub struct Registration {
 }
 
 impl Registry {
+    fn change<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
+        let (result, observer) = {
+            let mut state = lock(&self.state);
+            let result = change(&mut state);
+            (result, state.observer.take())
+        };
+        if let Some(observer) = observer {
+            observer.wake();
+        }
+        result
+    }
+
+    /// Waits until the observed revision changes or every scenario is blocked.
+    /// Subscription and the predicate share the same lock as every transition.
+    pub async fn quiescent(&self, revision: usize) {
+        std::future::poll_fn(|cx| {
+            let mut state = lock(&self.state);
+            if state.revision != revision
+                || state
+                    .open
+                    .values()
+                    .all(|entry| !entry.ready && !entry.polling)
+            {
+                Poll::Ready(())
+            } else {
+                state.observer = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+
     pub fn register(self: &Arc<Self>, path: &Path) -> Registration {
-        let mut state = lock(&self.state);
-        let id = state.next;
-        state.next += 1;
-        state.revision += 1;
-        assert!(
-            state
-                .open
-                .insert(
-                    id,
-                    Entry {
-                        path: path.into(),
-                        label: "admitted",
-                        ready: true,
-                        polling: false,
-                    }
-                )
-                .is_none()
-        );
+        let id = self.change(|state| {
+            let id = state.next;
+            state.next += 1;
+            state.revision += 1;
+            assert!(
+                state
+                    .open
+                    .insert(
+                        id,
+                        Entry {
+                            path: path.into(),
+                            label: "admitted",
+                            ready: true,
+                            polling: false,
+                        }
+                    )
+                    .is_none()
+            );
+            id
+        });
         Registration {
             registry: self.clone(),
             id,
@@ -101,13 +136,15 @@ impl Registry {
 
 impl Registration {
     pub fn waiting(&self, label: &'static str) -> Waiting {
-        let mut state = lock(&self.registry.state);
-        // An open entry outlives its sole Registration, which removes it on drop.
-        let previous = state
-            .open
-            .get_mut(&self.id)
-            .map_or(label, |entry| std::mem::replace(&mut entry.label, label));
-        state.revision += 1;
+        let previous = self.registry.change(|state| {
+            // An open entry outlives its sole Registration, which removes it on drop.
+            let previous = state
+                .open
+                .get_mut(&self.id)
+                .map_or(label, |entry| std::mem::replace(&mut entry.label, label));
+            state.revision += 1;
+            previous
+        });
         Waiting {
             registry: self.registry.clone(),
             id: self.id,
@@ -116,12 +153,13 @@ impl Registration {
     }
 
     pub fn polling(&self) -> Polling<'_> {
-        let mut state = lock(&self.registry.state);
-        if let Some(entry) = state.open.get_mut(&self.id) {
-            assert!(!entry.polling);
-            entry.ready = false;
-            entry.polling = true;
-        }
+        self.registry.change(|state| {
+            if let Some(entry) = state.open.get_mut(&self.id) {
+                assert!(!entry.polling);
+                entry.ready = false;
+                entry.polling = true;
+            }
+        });
         // A reporter may cause another poll of an unchanged Pending future.
         // Polling alone is not progress; only observed wakes and lifecycle
         // changes advance the idle revision.
@@ -144,21 +182,23 @@ pub struct Waiting {
 }
 impl Drop for Waiting {
     fn drop(&mut self) {
-        let mut state = lock(&self.registry.state);
-        if let Some(entry) = state.open.get_mut(&self.id) {
-            entry.label = self.previous;
-            state.revision += 1;
-        }
+        self.registry.change(|state| {
+            if let Some(entry) = state.open.get_mut(&self.id) {
+                entry.label = self.previous;
+                state.revision += 1;
+            }
+        });
     }
 }
 
 pub struct Polling<'a>(&'a Registration);
 impl Drop for Polling<'_> {
     fn drop(&mut self) {
-        let mut state = lock(&self.0.registry.state);
-        if let Some(entry) = state.open.get_mut(&self.0.id) {
-            entry.polling = false;
-        }
+        self.0.registry.change(|state| {
+            if let Some(entry) = state.open.get_mut(&self.0.id) {
+                entry.polling = false;
+            }
+        });
         // Preserve readiness and its revision if a wake raced this return.
     }
 }
@@ -173,21 +213,21 @@ impl Wake for Ready {
         self.wake_by_ref();
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        {
-            let mut state = lock(&self.registry.state);
+        self.registry.change(|state| {
             if let Some(entry) = state.open.get_mut(&self.id) {
                 entry.ready = true;
                 state.revision += 1;
             }
-        }
+        });
         self.parent.wake_by_ref();
     }
 }
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        let mut state = lock(&self.registry.state);
-        assert!(state.open.remove(&self.id).is_some());
-        state.revision += 1;
+        self.registry.change(|state| {
+            assert!(state.open.remove(&self.id).is_some());
+            state.revision += 1;
+        });
     }
 }
