@@ -398,6 +398,8 @@ impl TurnContext for LocalContext {
                 .turn_bindings(agent, issuer, scope, content, None)
                 .await?;
             let roster = bindings.harness.targets().map(|targets| targets.roster());
+            #[cfg(any(test, not(target_arch = "wasm32")))]
+            let native = super::open::uses_native_execution(&local.tools)?;
             let exposures = agent
                 .volumes
                 .iter()
@@ -409,7 +411,8 @@ impl TurnContext for LocalContext {
                         .workspace
                         .as_ref()
                         .and_then(|workspace| {
-                            if !entry.root.is_empty()
+                            if !native
+                                || !entry.root.is_empty()
                                 || entry.mode != crate::agent::WorkspaceMode::ReadWrite
                             {
                                 return None;

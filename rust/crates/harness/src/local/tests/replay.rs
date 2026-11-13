@@ -61,21 +61,44 @@ impl Divergences {
 
 /// Runs `inputs` on a fresh harness and returns the run's recording.
 async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> Result<Recording> {
-    let directory = tempfile::tempdir().map_err(agent)?;
-    let project = volume(directory.path()).await?;
-    let harness = Arc::new(
-        super::open_scripted(
-            volume_config(directory.path(), project, provider)?
-                .compaction(crate::context::CompactionPolicy::Disabled)
-                .tool(tool),
-        )
-        .await?,
-    );
-    let mut client = ObservedConversation::open(&harness).await?;
-    for input in inputs {
-        client.send(input, input).await?;
+    // Identical fixture inputs include identities, not just prompt text. Drive
+    // the original scheduler and entropy boundary; never normalize requests.
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(71);
+    let mut running = Box::pin(schedule.scope(async {
+        let directory = tempfile::tempdir().map_err(agent)?;
+        let project = volume(directory.path()).await?;
+        let harness = Arc::new(
+            super::open_scripted(
+                volume_config(directory.path(), project, provider)?
+                    .without_user_settings()
+                    .without_default_tools()
+                    .compaction(crate::context::CompactionPolicy::Disabled)
+                    .tool(tool),
+            )
+            .await?,
+        );
+        let mut client = ObservedConversation::open(&harness).await?;
+        for input in inputs {
+            client.send(input, input).await?;
+        }
+        client.conversation.recording().await
+    }));
+    let result = loop {
+        tokio::select! {
+            biased;
+            event = events.recv() => event.expect("replay boundary producer").release(),
+            result = &mut running => break result,
+        }
+    };
+    drop(running);
+    loop {
+        tokio::select! {
+            biased;
+            event = events.recv() => event.expect("replay drain producer").release(),
+            () = schedule.drained() => break,
+        }
     }
-    client.conversation.recording().await
+    result
 }
 
 /// A source run whose first turn reasons with native bytes and calls a tool.
@@ -112,10 +135,37 @@ async fn source(tool: Tool) -> Result<(Recording, Vec<ModelRequest>)> {
     ]);
     let recording = run(provider.clone(), tool, &["first", "second"]).await?;
     assert_eq!(recording.len(), 3);
-    Ok((recording, provider.requests()))
+    let requests = provider.requests();
+    let document = requests[0]
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::Text { text, .. } => {
+                serde_json::from_str::<serde_json::Value>(text).ok()
+            }
+            _ => None,
+        })
+        .find(|document| document.get("workspaces").is_some())
+        .expect("original workspace announcement");
+    assert!(
+        document["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| {
+                entry["paths"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .all(serde_json::Value::is_null)
+            }),
+        "logical bindings advertised an OS path"
+    );
+    Ok((recording, requests))
 }
 
-/// Compare answers while retaining the distinct original dispatches of runs.
+/// Compare answers while retaining each call's original dispatch attribution.
 fn same_answers(left: &Recording, right: &Recording) {
     assert_eq!(left.len(), right.len());
     let right = right.calls().collect::<std::collections::HashMap<_, _>>();
@@ -141,8 +191,17 @@ fn refused() -> Tool {
     failing("replayed tool ran")
 }
 
-#[tokio::test]
-async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
+#[test]
+fn a_run_replays_its_source_until_input_changes() -> Result<()> {
+    acyclic_native_runtime::testing::seeded_runtime(71)
+        .map_err(agent)?
+        .block_on(async {
+            tokio::time::pause();
+            replays_until_input_changes().await
+        })
+}
+
+async fn replays_until_input_changes() -> Result<()> {
     let (source, requests) = source(super::tool("example.echo")).await?;
     let expected = Arc::new(source);
     let live = super::scripted([]);
@@ -266,8 +325,17 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
+#[test]
+fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
+    acyclic_native_runtime::testing::seeded_runtime(71)
+        .map_err(agent)?
+        .block_on(async {
+            tokio::time::pause();
+            replays_failed_tool_call().await
+        })
+}
+
+async fn replays_failed_tool_call() -> Result<()> {
     let (source, requests) = source(failing("source failure")).await?;
     let expected = Arc::new(source);
     let live = super::scripted([]);
