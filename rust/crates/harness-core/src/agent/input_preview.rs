@@ -24,7 +24,8 @@ pub enum InputSelection {
 /// One credited source step, including work that disclosed no message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputPreviewStep {
-    /// One source record was consumed without selecting a message.
+    /// One bounded source-work step, including a filtered record or a
+    /// structured envelope chunk, was consumed without selecting a message.
     Progress,
     /// One contiguous range of an original selected message. The complete
     /// original length is in `preview.bytes`; no file identity consumes credit.
