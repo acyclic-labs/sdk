@@ -692,27 +692,20 @@ mod tests {
         let (finish, finishing) = oneshot::channel();
         let (intervened, intervening) = oneshot::channel();
         let (release_input, input_released) = oneshot::channel();
-        let (independent_continued, independent_continuing) = oneshot::channel();
-        let (finish_independent, independent_finishing) = oneshot::channel();
         let gate = Mutex::new(std::collections::VecDeque::from([
             (entered, released),
             (intervened, input_released),
             (continued, finishing),
-            (independent_continued, independent_finishing),
         ]));
         let provider = Arc::new(
-            ScriptedModelProvider::new(
-                ["first", "independent input", "done", "independent goal completed"].map(|text| {
-                    ScriptedTurn::Events(vec![
-                        ScriptedEvent::Event(crate::model::ModelEvent::Content {
-                            delta: text.into(),
-                        }),
-                        ScriptedEvent::Event(crate::model::ModelEvent::Completed {
-                            metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
-                        }),
-                    ])
-                }),
-            )
+            ScriptedModelProvider::new(["first", "independent input", "done"].map(|text| {
+                ScriptedTurn::Events(vec![
+                    ScriptedEvent::Event(crate::model::ModelEvent::Content { delta: text.into() }),
+                    ScriptedEvent::Event(crate::model::ModelEvent::Completed {
+                        metadata: serde_json::json!({"usage":{"input_tokens":1,"output_tokens":1}}),
+                    }),
+                ])
+            }))
             .with_dispatch_observer(move |_| {
                 let selected = gate.lock().unwrap().pop_front();
                 Box::pin(async move {
@@ -869,23 +862,8 @@ mod tests {
             result = &mut run => panic!("run ended before the independent input: {result:?}"),
             result = intervening => result.map_err(failed)?,
         }
-        release_input.send(()).unwrap();
-        tokio::select! {
-            result = &mut run => panic!("run ended before the continued model admission: {result:?}"),
-            result = continuing => result.map_err(failed)?,
-        }
-        // While A's continuation is held, B's completed actor transition is
-        // the committed state. In-flight driver state is not observable here.
-        assert!(
-            bound
-                .agents()
-                .state(conversation.agent())
-                .await
-                .map_err(failed)?
-                .run_admission
-                .is_none(),
-            "independent input inherited another run's admission",
-        );
+        // B is an independent user turn, not a second unattended goal loop.
+        // Complete the shared goal before B settles; A already queued its continuation.
         let goal = conversation
             .files(FileRoot::Home {}, vec!["GOAL.md".into()], None)
             .await?;
@@ -907,12 +885,28 @@ mod tests {
                 }],
             )
             .await?;
+        release_input.send(()).unwrap();
+        tokio::select! {
+            result = &mut run => panic!("run ended before the continued model admission: {result:?}"),
+            result = continuing => result.map_err(failed)?,
+        }
+        // While A's continuation is held, B's completed actor transition is
+        // the committed state. In-flight driver state is not observable here.
+        assert!(
+            bound
+                .agents()
+                .state(conversation.agent())
+                .await
+                .map_err(failed)?
+                .run_admission
+                .is_none(),
+            "independent input inherited another run's admission",
+        );
         finish.send(()).unwrap();
-        let (outcome, independent) = tokio::join!(&mut run, independent_continuing);
-        independent.map_err(failed)?;
+        let outcome = (&mut run).await;
         assert!(matches!(outcome?, RunOutcome::Goal { goal } if goal.status == GoalStatus::Done));
-        // B's continuation is held after A committed its own restored
-        // admission, so this reads A's actual preceding transition.
+        // B has no continuation. A's completed transition is now the durable
+        // state, so this checks its restored original admission.
         assert_eq!(
             bound
                 .agents()
@@ -923,7 +917,6 @@ mod tests {
             Some(operation),
             "continuation lost its original owner admission",
         );
-        finish_independent.send(()).unwrap();
         let mut interleaved_events = conversation.observe(None).await?;
         assert!(matches!(
             conversation
