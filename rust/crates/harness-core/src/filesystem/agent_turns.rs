@@ -923,6 +923,112 @@ where
         agents.send(agent, &from, &wake).await
     }
 
+    /// Reviews a child's exact action with its retained parent's original model,
+    /// outside the worker context. The embedding selects an immutable policy
+    /// file on the parent's private volume; child data cannot supply policy.
+    /// An allow or deny uses the existing decision owner and original wake.
+    /// Ask returns only an escalation reason and grants no authority.
+    ///
+    /// Replaying the same source/request and policy reuses the original journaled
+    /// inference and repairs an interrupted decision/wake publication.
+    ///
+    /// # Errors
+    /// Foreign children, non-parent stages and foreign policy files refuse before
+    /// inference. Changed policy replay, storage and uncertain wake failures retain
+    /// their original errors rather than dispatching another review.
+    pub async fn review_child_approval(
+        &self,
+        agents: &crate::agent::AgentHost<P>,
+        parent: &AgentPath,
+        child: &AgentPath,
+        request: &crate::agent::IntentId,
+        policy: &FileRef,
+    ) -> std::result::Result<(crate::approvals::RuleVerdict, Option<String>), crate::agent::Error>
+    {
+        use crate::agent::Error as AgentError;
+        use crate::approvals::{ApprovalRequest, ApprovalResponder, RuleVerdict};
+        let fail = |error| AgentError::Turn(Box::new(error));
+        let parent = agents.state(parent).await?;
+        let child_state = agents.state(child).await?;
+        if !child.is_child_of(&parent.path) || child_state.parent.as_ref() != Some(&parent.path) {
+            return Err(AgentError::Record(
+                "review source is not the retained direct child",
+            ));
+        }
+        if policy.volume().class() != VolumeClass::AgentPrivate
+            || policy.volume().owner()
+                != &VolumeOwner::Agent(crate::AgentId::from_bytes(parent.path.id_bytes()))
+        {
+            return Err(AgentError::Record(
+                "review policy is not private to the parent",
+            ));
+        }
+        let (_, child_bindings, files) = self.approval_journal(&child_state).await.map_err(fail)?;
+        let (child_policy, _) = self
+            .approvals(&child_state, child_bindings.journal.reader.as_ref())
+            .await
+            .map_err(fail)?;
+        let parent_id = parent.path.id();
+        let bytes = child_policy
+            .parent_request(files.as_ref(), request.as_str(), &parent_id)
+            .await
+            .map_err(fail)?;
+        let view = ApprovalRequest::new(
+            request.as_str(),
+            &bytes,
+            self.executors.content_limits().file_bytes,
+        )
+        .map_err(fail)?;
+        let (journal, bindings, _) = self
+            .journal(
+                self.admit(&parent).map_err(fail)?,
+                &[],
+                std::slice::from_ref(policy),
+                None,
+                None,
+            )
+            .await
+            .map_err(fail)?;
+        let policy_bytes = bindings
+            .content
+            .reader
+            .read(policy, policy.descriptor().byte_length(), None, None)
+            .map_err(fail)?
+            .await
+            .map_err(fail)?;
+        let policy_text = std::str::from_utf8(&policy_bytes)
+            .map_err(|_| fail(Error::Invalid("review policy is not UTF-8".into())))?;
+        let principal = format!("parent:{parent_id}");
+        let (verdict, reason) = self
+            .executors
+            .review(
+                &parent,
+                (&journal, None),
+                (child, &view),
+                &principal,
+                policy_text,
+            )
+            .await
+            .map_err(fail)?;
+        let decision = match verdict {
+            RuleVerdict::Allow => Some(crate::interaction::ApprovalVerdict::Approve),
+            RuleVerdict::Deny => Some(crate::interaction::ApprovalVerdict::Deny),
+            RuleVerdict::Ask => None,
+        };
+        if let Some(decision) = decision {
+            self.respond(
+                agents,
+                child,
+                request,
+                ApprovalResponder::Parent(&parent_id),
+                decision,
+                reason.clone(),
+            )
+            .await?;
+        }
+        Ok((verdict, reason))
+    }
+
     /// Approval `id` of `agent` as `principal` already decided it, read from
     /// its request file whether or not the turn still waits on it: an
     /// identical decision retried after the agent resumed replays.
