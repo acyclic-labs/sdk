@@ -1734,8 +1734,11 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("parent answer".into()),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("child answer".into()),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("later child answer".into()),
+        ScriptedTurn::Text("none".into()),
     ]));
     let (host, binding) = private_in(&stream, &parent).await?;
     let turn_host = Arc::new(FilesystemTurnHost::new(
@@ -1835,15 +1838,15 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     assert!(matches!(answer(&*stream, &child, latest).await?.input,
         TurnInput::ApprovalRequested { id, .. } if id == intent("c2")));
     let requests = model.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 6);
     assert!(
-        requests[1]
+        requests[2]
             .messages
             .iter()
             .any(|message| message.role == ModelRole::Assistant
                 && message.content == ModelContent::Text("parent answer".into())),
         "the child's first request lacks its parent's settled turn: {:?}",
-        requests[1].messages
+        requests[2].messages
     );
     preparation::check(&stream, &host, &parent, &child).await?;
     Ok(())

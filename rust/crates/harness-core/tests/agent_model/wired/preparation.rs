@@ -231,10 +231,14 @@ pub(super) async fn check(
     let model = Arc::new(ScriptedModelProvider::new([
         wait(child),
         ScriptedTurn::Text("child advanced after selection".into()),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("selected answer retained".into()),
+        ScriptedTurn::Text("none".into()),
         wait(child),
         ScriptedTurn::Text("child releases deferred wait".into()),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("deferred wait finished".into()),
+        ScriptedTurn::Text("none".into()),
     ]));
     let executors = Executors {
         original: StockExecutors::new(
@@ -320,6 +324,7 @@ async fn observe(
         "wait replaced the original answer position"
     );
     let value = result(model);
+    assert_eq!(value["reason"]["kind"], "need_met");
     assert_eq!(value["settled"][0]["answer"], "later child answer");
     assert_eq!(value["settled"][0]["agent"], child.as_str());
     assert_eq!(value["unsettled"], serde_json::json!([]));
@@ -360,6 +365,10 @@ async fn observe(
         record.event,
         acyclic_harness_core::executor::ExecutionEvent::ToolCompleted { .. }
     )));
+    assert_eq!(
+        result(model)["reason"],
+        serde_json::json!({"kind":"settlement", "child":child.as_str()})
+    );
     assert_eq!(
         result(model)["settled"][0]["answer"],
         "child releases deferred wait"
@@ -485,7 +494,9 @@ async fn deadlines(
         selected(&[child], Some(10), None),
         selected(&[child], Some(20), None),
         ScriptedTurn::Text("both original deadlines completed".into()),
+        ScriptedTurn::Text("none".into()),
         ScriptedTurn::Text("child releases deferred wait".into()),
+        ScriptedTurn::Text("none".into()),
     ]);
     let first = deliver(host, parent, requested("independent-deadlines", parent)).await?;
     assert_eq!(
@@ -508,9 +519,10 @@ async fn deadlines(
         "second wait reused the first deadline release"
     );
     assert_eq!(model.requests().len(), requests + 2);
+    assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running" }])
     );
     control.advance_to(129)?;
     host.drain(parent).await?;
@@ -518,11 +530,12 @@ async fn deadlines(
     control.advance_to(130)?;
     host.drain(parent).await?;
     assert_eq!(host.state(parent).await?.phase, Phase::Idle);
-    assert_eq!(model.requests().len(), requests + 3);
+    assert_eq!(model.requests().len(), requests + 4);
     assert_eq!(result(model)["settled"], serde_json::json!([]));
+    assert_eq!(result(model)["reason"]["kind"], "deadline");
     assert_eq!(
         result(model)["unsettled"],
-        serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
+        serde_json::json!([{ "name": child.as_str(), "phase": "running" }])
     );
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 4);
     host.drain(child).await?;
@@ -550,6 +563,7 @@ async fn admission(
         model.extend([
             selected(&children, None, Some(1)),
             ScriptedTurn::Text("invalid selection corrected".into()),
+            ScriptedTurn::Text("none".into()),
         ]);
         probe.answers.lock().unwrap().clear();
         let before = model.requests().len();
@@ -570,7 +584,7 @@ async fn admission(
             probe.answers.lock().unwrap().is_empty(),
             "an invalid selection read a settled answer",
         );
-        assert_eq!(model.requests().len(), before + 2);
+        assert_eq!(model.requests().len(), before + 3);
         probe.reads.store(0, Ordering::SeqCst);
     }
     Ok(())
@@ -605,7 +619,10 @@ async fn parallel(
     };
     let (_, other) = requested_child(parent, inbox)?;
     host.drain(parent).await?;
-    model.extend([ScriptedTurn::Text("parallel child answer".into())]);
+    model.extend([
+        ScriptedTurn::Text("parallel child answer".into()),
+        ScriptedTurn::Text("none".into()),
+    ]);
     host.drain(&other).await?;
     let selected = [
         settled(stream, &within(), child).await?.answer.unwrap(),
@@ -614,6 +631,7 @@ async fn parallel(
     model.extend([
         wait_selected(&[child, &other]),
         ScriptedTurn::Text("parallel wait finished".into()),
+        ScriptedTurn::Text("none".into()),
     ]);
     probe.answers.lock().unwrap().clear();
     let (release, gate) = oneshot::channel();

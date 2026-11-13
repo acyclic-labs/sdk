@@ -120,7 +120,7 @@ pub use lower::{delivery_key, lower};
 pub use machine::{
     AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_QUEUED, MAX_QUEUED_BYTES, OVERSIZED_STATE, Out,
     Progress, Queued, SpawnOutcome, SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput,
-    TurnStep, Until, Wait, Wake, requested_child, step,
+    TurnStep, Until, Wait, WaitReason, WaitResume, Wake, requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, Cancellation, ChildDone, ChildSettled,

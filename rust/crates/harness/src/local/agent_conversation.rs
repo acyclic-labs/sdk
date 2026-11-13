@@ -535,8 +535,9 @@ impl Conversation {
         }
     }
 
-    /// Stop the active input selected by one settlement observation, returning
-    /// its identity. Later queued inputs keep their original admission.
+    /// Stop the current input, including accepted work not yet checkpointed. The conversation
+    /// stays open; a newer queued prompt is never selected in its place.
+    /// Returns `None` when the host has no current input.
     ///
     /// # Errors
     /// Session, host or decoding failures.

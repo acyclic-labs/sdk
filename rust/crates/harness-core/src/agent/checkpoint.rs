@@ -19,8 +19,8 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent.workspace-snapshot".into(),
-            // Input-scoped cancellation and selected-input journal policy.
-            version: "5".into(),
+            // Retain the exact deferred invocation and its typed wake event.
+            version: "6".into(),
         });
     &IDENTITY
 }
@@ -35,6 +35,16 @@ pub(crate) struct Head {
 }
 
 impl Head {
+    pub(crate) fn initial(mut state: AgentState) -> Result<Self, Error> {
+        let table = TableRef::of(&state.volumes)?;
+        let initial = Some(std::mem::take(&mut state.volumes));
+        Ok(Self {
+            state,
+            table,
+            initial,
+        })
+    }
+
     pub(crate) fn restore(
         mut self,
         entries: Vec<super::WorkspaceEntry>,
@@ -45,11 +55,11 @@ impl Head {
     }
 
     pub(crate) async fn load<P: acyclic_stream::StreamProvider + ?Sized>(
-        self,
+        mut self,
         provider: &P,
     ) -> Result<AgentState, Error> {
-        let entries = match &self.initial {
-            Some(entries) => entries.clone(),
+        let entries = match self.initial.take() {
+            Some(entries) => entries,
             None => self.table.load(provider).await?,
         };
         self.restore(entries)
@@ -94,14 +104,7 @@ pub(crate) fn committed_head(
         Some(parent) => parent.child(&adopted.agent)?,
         None => super::AgentPath::root(&adopted.agent),
     };
-    let mut state = AgentState::adopted(path, &adopted)?;
-    let table = TableRef::of(&state.volumes)?;
-    let initial = Some(std::mem::take(&mut state.volumes));
-    Ok(Head {
-        state,
-        table,
-        initial,
-    })
+    Head::initial(AgentState::adopted(path, &adopted)?)
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -623,67 +626,78 @@ mod tests {
                         .expect("membership insertion");
                 }
             });
-            for outcome in outcomes() {
-                let state = AgentState {
-                    spawned_children: open_children.clone(),
-                    reserved_spawns: u64::MAX,
-                    topology_refusals: open_children.clone(),
-                    child_settlements: Some(u64::MAX),
-                    profile: adopted.profile.clone(),
-                    parent: path.parent(),
-                    path: path.clone(),
-                    volumes: adopted.volumes.clone(),
-                    policy: adopted.policy.clone(),
-                    brief: Some([u8::MAX; 32]),
-                    conversation_base: u64::MAX,
-                    committed_actions: true,
-                    conversation_tail: u64::MAX,
-                    steered_through: u64::MAX,
-                    steering_tail: u64::MAX,
-                    pending_notices: Some(0..u64::MAX),
-                    dropped_before: u64::MAX,
-                    checkpoint: Some(u64::MAX),
-                    announcements: [(crate::agent::AnnouncementKind::Targets, [u8::MAX; 32])]
-                        .into(),
-                    status_tail: u64::MAX,
-                    phase: Phase::Done { outcome },
-                    archive_pending: open_children.clone(),
-                    archive_refused: true,
-                    awaiting: open_children.clone(),
-                    need: u32::MAX,
-                    awaited: true,
-                    open_children: open_children.clone(),
-                    queued: Default::default(),
-                    overflow: None,
-                    taken: BTreeSet::new(),
-                    closed: true,
-                    reported: true,
-                    turn: None,
-                };
-                let bytes = encode(&state).expect("encodes");
-                assert!(
-                    bytes.len() + TAIL_SLACK <= MAX_CHECKPOINT_BYTES,
-                    "{} > {MAX_CHECKPOINT_BYTES}",
-                    bytes.len() + TAIL_SLACK
-                );
-                assert_eq!(
-                    decode(&bytes)
-                        .expect("decodes")
-                        .restore(state.volumes.clone())
-                        .expect("table identity"),
-                    state
-                );
-                // Retired tag 1 cannot override Actors' committed cut. Keep
-                // the same artifact decoder for checkpoints carrying it.
-                let mut with_retired_cursor = bytes;
-                with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
-                assert_eq!(
-                    decode(&with_retired_cursor)
-                        .expect("retired cursor")
-                        .restore(state.volumes.clone())
-                        .expect("table identity"),
-                    state
-                );
+            for reason in [
+                super::super::WaitReason::Input { inbox: u64::MAX },
+                super::super::WaitReason::Settlement {
+                    child: deepest.clone(),
+                },
+            ] {
+                for outcome in outcomes() {
+                    let state = AgentState {
+                        wait_resume: Some(super::super::WaitResume {
+                            operation: crate::OperationId::from_bytes([u8::MAX; 16]),
+                            reason: Some(reason.clone()),
+                        }),
+                        spawned_children: open_children.clone(),
+                        reserved_spawns: u64::MAX,
+                        topology_refusals: open_children.clone(),
+                        child_settlements: Some(u64::MAX),
+                        profile: adopted.profile.clone(),
+                        parent: path.parent(),
+                        path: path.clone(),
+                        volumes: adopted.volumes.clone(),
+                        policy: adopted.policy.clone(),
+                        brief: Some([u8::MAX; 32]),
+                        conversation_base: u64::MAX,
+                        committed_actions: true,
+                        conversation_tail: u64::MAX,
+                        steered_through: u64::MAX,
+                        steering_tail: u64::MAX,
+                        pending_notices: Some(0..u64::MAX),
+                        dropped_before: u64::MAX,
+                        checkpoint: Some(u64::MAX),
+                        announcements: [(crate::agent::AnnouncementKind::Targets, [u8::MAX; 32])]
+                            .into(),
+                        status_tail: u64::MAX,
+                        phase: Phase::Done { outcome },
+                        archive_pending: open_children.clone(),
+                        archive_refused: true,
+                        awaiting: open_children.clone(),
+                        need: u32::MAX,
+                        awaited: true,
+                        open_children: open_children.clone(),
+                        queued: Default::default(),
+                        overflow: None,
+                        taken: BTreeSet::new(),
+                        closed: true,
+                        reported: true,
+                        turn: None,
+                    };
+                    let bytes = encode(&state).expect("encodes");
+                    assert!(
+                        bytes.len() + TAIL_SLACK <= MAX_CHECKPOINT_BYTES,
+                        "{} > {MAX_CHECKPOINT_BYTES}",
+                        bytes.len() + TAIL_SLACK
+                    );
+                    assert_eq!(
+                        decode(&bytes)
+                            .expect("decodes")
+                            .restore(state.volumes.clone())
+                            .expect("table identity"),
+                        state
+                    );
+                    // Retired tag 1 cannot override Actors' committed cut. Keep
+                    // the same artifact decoder for checkpoints carrying it.
+                    let mut with_retired_cursor = bytes;
+                    with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
+                    assert_eq!(
+                        decode(&with_retired_cursor)
+                            .expect("retired cursor")
+                            .restore(state.volumes.clone())
+                            .expect("table identity"),
+                        state
+                    );
+                }
             }
         }
         // Wrapped in the actor state record with its one inbox subscription.

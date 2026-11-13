@@ -38,7 +38,7 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<Settlement, Error> {
-    Ok(snapshot(provider, within, agent).await?.1)
+    Ok(observe(provider, within, agent).await?.1)
 }
 
 pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static>(
@@ -46,14 +46,24 @@ pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<(super::AgentState, Settlement), Error> {
+    let (head, settlement) = observe(provider, within, agent).await?;
+    Ok((head.load(provider.as_ref()).await?, settlement))
+}
+
+async fn observe<P: crate::store::JournalProvider + ?Sized + 'static>(
+    provider: &Arc<P>,
+    within: &acyclic_actors::addressing::ActorReference,
+    agent: &AgentPath,
+) -> Result<(super::checkpoint::Head, Settlement), Error> {
     let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
     let agents = super::handler::Agents::new(super::actor_store(provider)?);
-    let (inbox, (state, cursor)) =
-        futures::try_join!(inbox_tail(&**provider, agent), agents.state(&actor, agent))?;
+    let (inbox, (head, cursor)) =
+        futures::try_join!(inbox_tail(&**provider, agent), agents.head(&actor, agent))?;
+    let state = &head.state;
     let settled = matches!(state.phase, Phase::Done { .. })
         || matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
             && state.settled_before(cursor) >= inbox;
-    let mut phase = super::machine::published(&state);
+    let mut phase = super::machine::published(state);
     let mut input = state
         .turn
         .as_ref()
@@ -111,7 +121,7 @@ pub(super) async fn snapshot<P: crate::store::JournalProvider + ?Sized + 'static
         answer: (settled && state.conversation_tail > state.conversation_base)
             .then(|| state.conversation_tail - 1),
     };
-    Ok((state, settlement))
+    Ok((head, settlement))
 }
 
 /// `agent`'s immutable answer at the exact position selected by [`settled`].
