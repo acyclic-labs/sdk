@@ -338,3 +338,28 @@ impl StockExecution<'_> {
         Ok(pending)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appended_tool_tables_obey_portable_preparation_credit() -> Result<()> {
+        let bytes = br#"[{"name":"selected","revision":"v1","description":"original table","input_schema":{},"output_schema":{},"projection_schema":{}}]"#;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(100_000, 1_000_000);
+        let io = PreparationIo::from_budget(budget, &cancellation)?;
+        let table = decode_tool_table(bytes, Some(&io), crate::wire::ErrorCode::Invalid)?;
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[0].name, "selected");
+        drop(table);
+        let mut denied = budget;
+        denied.allocation_operations = 0;
+        let io = PreparationIo::from_budget(denied, &cancellation)?;
+        assert!(
+            decode_tool_table(bytes, Some(&io), crate::wire::ErrorCode::Invalid).is_err(),
+            "appended tool table bypassed supplied portable preparation credit",
+        );
+        Ok(())
+    }
+}
