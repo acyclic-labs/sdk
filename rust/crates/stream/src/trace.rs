@@ -244,7 +244,7 @@ mod tests {
             })
             .await?;
         let record = page.next().await.ok_or("missing original start")??;
-        assert_eq!(record.commit_id, admitted.start().commit_id);
+        assert_eq!(record.commit_id, admitted.start().await?.commit_id);
         events.push(serde_json::from_slice::<TraceRecord>(
             record.value.as_slice(),
         )?);

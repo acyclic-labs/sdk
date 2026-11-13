@@ -125,9 +125,13 @@ same active owner through `trace::observe`. `stream.read_open` names the bounded
 ordered-record cursor guarantee; `stream.seek_open` names bounded header-key
 selection. Their successful terminals describe opening the original cursor,
 without consuming records or estimating delivered bytes. Replay-page spans remain
-the separate delivery boundary and parent these admission spans. Diagnostic
-admission races original work, and completion submission adds no wait after a
-cursor becomes available.
+the separate delivery boundary and parent these admission spans. Inherited starts
+now submit their original append before polling work and expose their causal
+identity immediately. A terminal captures the return timestamp before waiting
+for that start in its owned append continuation, so ready work and ready records
+return without diagnostic IO while their original start and terminal remain
+owned. A failed start cannot publish a detached terminal. `Recording::start`
+awaits the actual retained receipt rather than inventing publication identity.
 `Stream::fork` and bounded `children` inherit this same producer. The commit span
 names the immutable selected prefix and its origin; the child-page I/O span names
 the bounded direct-child page at its namespace cut. Both return the original

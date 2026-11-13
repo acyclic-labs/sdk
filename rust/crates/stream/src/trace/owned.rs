@@ -137,6 +137,12 @@ impl<P: StreamProvider + ?Sized> super::context::Producer for super::Recorder<P>
         self: std::sync::Arc<Self>,
         request: super::Request,
     ) -> crate::BoxProviderFuture<'static, Result<OwnedRecording, crate::StreamError>> {
+        #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+        {
+            let recording = self.submit_start(request).map(Recording::into_owned);
+            Box::pin(std::future::ready(recording))
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "wasm")))]
         Box::pin(async move {
             super::Recorder::start(
                 &self,

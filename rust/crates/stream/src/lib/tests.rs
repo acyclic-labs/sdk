@@ -645,6 +645,7 @@ mod replay_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
         let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (release, resume) = futures::channel::oneshot::channel::<()>();
         let trace = Stream::new(
             Arc::new(Gapped {
                 inner: MemoryStream::default(),
@@ -653,7 +654,7 @@ mod replay_tests {
                 inspect_on_write: false,
                 pause_at: 1,
                 pause_write: Some(writes),
-                resume_write: None,
+                resume_write: Some(std::sync::Mutex::new(Some(resume))),
             }),
             "agents/worker/trace",
         )?;
@@ -671,6 +672,7 @@ mod replay_tests {
             )
             .await?
             .into_owned();
+        let parent = root.id();
         let mut work = Box::pin(root.within(data.head()));
         let std::task::Poll::Ready(result) = futures::poll!(&mut work) else {
             return Err("diagnostic admission delayed an original ready result".into());
@@ -682,26 +684,35 @@ mod replay_tests {
             trace.follow(0, Default::default()).await?,
             Default::default(),
         );
-        query.next().await?;
-        assert!(matches!(
-            query.next().await?,
-            Some(Observation::Completed {
-                result: Outcome::Succeeded,
-                ..
-            })
-        ));
-        assert_eq!(
-            trace.tail().await?,
-            2,
-            "abandoned diagnostic admission fabricated child settlement"
-        );
+        release
+            .send(())
+            .map_err(|_| "submitted start lost its original producer")?;
+        let mut completed = 0;
+        let mut child = false;
+        while completed < 2 {
+            if let Some(Observation::Completed { start, result, .. }) = query.next().await? {
+                completed += 1;
+                assert_eq!(result, Outcome::Succeeded);
+                if start.name == "stream.head" {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(
+                        start.guarantee.as_deref(),
+                        Some("atomic_history_durability_origin")
+                    );
+                    child = true;
+                }
+            }
+        }
+        assert!(child, "ready work lost its diagnostic start or terminal");
+        assert_eq!(trace.tail().await?, 4);
         Ok(())
     }
     #[cfg(feature = "serde")]
     #[tokio::test]
     async fn ready_cursor_record_is_not_held_by_diagnostic_admission()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::trace::{Mechanism, Outcome, Recorder};
+        use crate::trace::{Mechanism, Observation, Outcome, Recorder, TraceQuery};
+        let (release, resume) = futures::channel::oneshot::channel::<()>();
         let trace = Stream::new(
             Arc::new(Gapped {
                 inner: MemoryStream::default(),
@@ -710,7 +721,7 @@ mod replay_tests {
                 inspect_on_write: false,
                 pause_at: 3,
                 pause_write: Some(Arc::new(std::sync::atomic::AtomicUsize::new(0))),
-                resume_write: None,
+                resume_write: Some(std::sync::Mutex::new(Some(resume))),
             }),
             "agents/worker/trace",
         )?;
@@ -727,6 +738,7 @@ mod replay_tests {
             )
             .await?
             .into_owned();
+        let parent = root.id();
         let mut records = root.within(data.read(0, 1)).await?;
         let mut next = Box::pin(records.next());
         let std::task::Poll::Ready(record) = futures::poll!(&mut next) else {
@@ -739,11 +751,34 @@ mod replay_tests {
         drop(next);
         drop(records);
         let _completion = root.finish_submitted(None, Outcome::Succeeded)?;
-        assert_eq!(
-            trace.tail().await?,
-            4,
-            "abandoned record admission fabricated a diagnostic terminal"
+        release
+            .send(())
+            .map_err(|_| "record delivery start lost its producer")?;
+        let mut query = TraceQuery::new(
+            trace.follow(0, Default::default()).await?,
+            Default::default(),
         );
+        let mut completed = 0;
+        let mut delivered = false;
+        while completed < 3 {
+            if let Some(Observation::Completed {
+                start,
+                result,
+                bytes,
+                ..
+            }) = query.next().await?
+            {
+                completed += 1;
+                assert_eq!(result, Outcome::Succeeded);
+                if start.name == "stream.record_delivery" {
+                    assert_eq!(start.parent, Some(parent));
+                    assert_eq!(bytes, Some(8));
+                    delivered = true;
+                }
+            }
+        }
+        assert!(delivered, "ready delivery lost its start or terminal");
+        assert_eq!(trace.tail().await?, 6);
         Ok(())
     }
     #[cfg(all(feature = "serde", not(target_arch = "wasm32")))]

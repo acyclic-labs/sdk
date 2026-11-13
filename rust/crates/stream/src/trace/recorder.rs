@@ -1,4 +1,4 @@
-//! Explicit producer admission; no collector, background task or second store.
+//! Explicit producer admission through original owned appends, without a second store.
 use super::{Comparison, ComparisonKind, Mechanism, Outcome, SpanEvent, SpanId, TraceRecord};
 use crate::{AppendOutcome, IdempotencyKey, RetainedRecord, Stream, StreamError, StreamProvider};
 use std::sync::{
@@ -57,6 +57,9 @@ pub struct Recorder<P: ?Sized> {
 enum RecorderFailure {
     #[error("trace producer exhausted its span identities")]
     IdentityExhausted,
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    #[error("trace publication has no original executor")]
+    ExecutorUnavailable,
     #[error("trace producer monotonic timestamp exceeds its representation")]
     ClockOverflow,
     #[error("unconditional trace append returned a tail conflict at {0}")]
@@ -254,6 +257,22 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
         parent: Option<SpanId>,
         guarantee: Option<&'static str>,
     ) -> Result<Recording<P>, StreamError> {
+        let (id, event) = self.prepare_start(name, mechanism, parent, guarantee)?;
+        let start = self.publish(event).await?;
+        Ok(Recording {
+            recorder: self.clone(),
+            id,
+            start: Admission::Retained(start),
+        })
+    }
+
+    fn prepare_start(
+        &self,
+        name: &'static str,
+        mechanism: Mechanism,
+        parent: Option<SpanId>,
+        guarantee: Option<&'static str>,
+    ) -> Result<(SpanId, SpanEvent), StreamError> {
         let _ = self.terminal_available();
         let sequence = self
             .next
@@ -267,31 +286,97 @@ impl<P: StreamProvider + ?Sized> Recorder<P> {
             process: self.process,
             sequence,
         };
-        let start = self
-            .publish(SpanEvent::Started {
+        Ok((
+            id,
+            SpanEvent::Started {
                 id,
                 parent: parent.or_else(super::context::current),
                 name: name.to_owned(),
                 mechanism,
                 at_ns: self.now()?,
                 guarantee: guarantee.map(str::to_owned),
-            })
-            .await?;
+            },
+        ))
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    pub(super) fn submit_start(
+        self: &Arc<Self>,
+        request: Request,
+    ) -> Result<Recording<P>, StreamError> {
+        if !self.terminal_available() {
+            return Err(StreamError::Unavailable.with_source(RecorderFailure::ExecutorUnavailable));
+        }
+        let (id, event) = self.prepare_start(
+            request.name,
+            request.mechanism,
+            request.parent,
+            request.guarantee,
+        )?;
+        let start = self.publish_submitted(event, None)?;
         Ok(Recording {
             recorder: self.clone(),
             id,
-            start,
+            start: Admission::Submitted(start),
         })
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    fn publish_submitted(
+        &self,
+        event: SpanEvent,
+        before: Option<crate::AppendPending>,
+    ) -> Result<crate::AppendPending, StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _executor = self.executor.get().map(tokio::runtime::Handle::enter);
+        let (bytes, idempotency_key) = Self::encode(event)?;
+        let request = crate::AppendRequest {
+            path: self.stream.path().clone(),
+            records: vec![bytes.into()],
+            if_tail: None,
+            idempotency_key,
+        };
+        let command = request.clone();
+        let provider = self.stream.provider.clone();
+        Ok(crate::AppendPending::submit_task(
+            request,
+            super::context::disabled(async move {
+                if let Some(before) = before {
+                    retained_append(&before).await?;
+                }
+                provider.append(command).await
+            }),
+            &crate::runtime::PlatformExecutor,
+        ))
     }
 }
 
+enum Admission {
+    Retained(RetainedRecord),
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    Submitted(crate::AppendPending),
+}
+
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+async fn retained_append(pending: &crate::AppendPending) -> Result<RetainedRecord, StreamError> {
+    match pending.result().await? {
+        Ok(AppendOutcome::Committed(receipt)) => Ok(RetainedRecord {
+            commit_id: receipt.commit_id,
+            path: pending.request().path.clone(),
+            sequence: receipt.start,
+        }),
+        Ok(AppendOutcome::TailConflict { actual_tail }) => Err(StreamError::InvalidResponse
+            .with_source(RecorderFailure::UnexpectedConflict(*actual_tail))),
+        Err(error) => Err(error.clone()),
+    }
+}
 /// One original admission. Only consuming it can publish its terminal delta;
 /// descendants may retain its identity without retaining completion ownership.
 #[must_use = "finish observed settlement, or drop to retain an unfinished start"]
 pub struct Recording<P: ?Sized> {
     pub(super) recorder: Arc<Recorder<P>>,
     id: SpanId,
-    start: RetainedRecord,
+    start: Admission,
 }
 
 impl<P: StreamProvider + ?Sized> Recording<P> {
@@ -300,9 +385,14 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         self.id
     }
 
-    /// Original retained publication, usable even if no terminal is published.
-    pub fn start(&self) -> &RetainedRecord {
-        &self.start
+    /// Await the original start receipt, including a previously submitted start.
+    /// No retained-record identity is exposed before publication succeeds.
+    pub async fn start(&self) -> Result<RetainedRecord, StreamError> {
+        match &self.start {
+            Admission::Retained(start) => Ok(start.clone()),
+            #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+            Admission::Submitted(pending) => retained_append(pending).await,
+        }
     }
 
     /// Publish a comparison made from the request path's original integrity
@@ -324,10 +414,12 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         bytes: Option<u64>,
         result: Outcome,
     ) -> Result<RetainedRecord, StreamError> {
+        let at_ns = self.recorder.now()?;
+        self.start().await?;
         self.recorder
             .publish(SpanEvent::Finished {
                 id: self.id,
-                at_ns: self.recorder.now()?,
+                at_ns,
                 bytes,
                 result,
             })
@@ -343,30 +435,16 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
         bytes: Option<u64>,
         result: Outcome,
     ) -> Result<crate::AppendPending, StreamError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let _executor = self
-            .recorder
-            .executor
-            .get()
-            .map(tokio::runtime::Handle::enter);
-        let (bytes, idempotency_key) = Recorder::<P>::encode(SpanEvent::Finished {
+        let event = SpanEvent::Finished {
             id: self.id,
             at_ns: self.recorder.now()?,
             bytes,
             result,
-        })?;
-        let request = crate::AppendRequest {
-            path: self.recorder.stream.path().clone(),
-            records: vec![bytes.into()],
-            if_tail: None,
-            idempotency_key,
         };
-        let command = request.clone();
-        let provider = self.recorder.stream.provider.clone();
-        Ok(crate::AppendPending::submit_task(
-            request,
-            super::context::disabled(async move { provider.append(command).await }),
-            &crate::runtime::PlatformExecutor,
-        ))
+        let before = match self.start {
+            Admission::Retained(_) => None,
+            Admission::Submitted(pending) => Some(pending),
+        };
+        self.recorder.publish_submitted(event, before)
     }
 }
