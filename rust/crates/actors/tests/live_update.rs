@@ -363,7 +363,7 @@ fn host<P: StreamProvider + 'static>(
     )?);
     Ok((
         Host::new(
-            crate::guest::Requests::default(),
+            acyclic_actors::guest::Requests::default(),
             Store::new(Arc::clone(store.provider()), store.root().clone()),
             route.actor.clone(),
             handler.clone(),
@@ -872,7 +872,7 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
     .with_deployment_envelope(handler.envelope())?;
     let ticket = store.enqueue_invoke(&invocation).await?;
     let owner = Host::new(
-        crate::guest::Requests::default(),
+        acyclic_actors::guest::Requests::default(),
         Store::new(Arc::clone(&provider), store.root().clone()),
         actor.clone(),
         handler,
@@ -932,7 +932,7 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
         next_fence,
     )?);
     let owner = Host::new(
-        crate::guest::Requests::default(),
+        acyclic_actors::guest::Requests::default(),
         Store::new(provider, store.root().clone()),
         actor,
         handler,

@@ -1070,6 +1070,7 @@ async fn a_replay_with_nothing_to_deliver_settles_a_dead_owners_participant() ->
         let settled = usize::from(paused);
         assert_eq!(counts.committed.load(Ordering::SeqCst), settled);
         let runtime = super::super::runtime::Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(crate::conformance::Package::new()?),
             Arc::new(super::super::runtime::SystemClock),

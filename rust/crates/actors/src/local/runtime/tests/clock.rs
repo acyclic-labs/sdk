@@ -648,6 +648,7 @@ async fn a_malformed_window_record_refuses_only_itself() -> TestResult {
     let host = |now| {
         let (clock, control) = ControlledClock::new(now);
         let runtime = Runtime::new(
+            crate::guest::Requests::default(),
             store.clone(),
             Arc::new(Package::new()?),
             Arc::new(clock) as Arc<dyn Clock>,
