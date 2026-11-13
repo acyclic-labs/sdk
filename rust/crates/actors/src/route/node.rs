@@ -291,7 +291,7 @@ impl NodeActor {
                     }],
                 ),
                 state.presence()?,
-                store.activation(&actor),
+                store.activation(&actor)?,
             ],
         })
     }

@@ -47,7 +47,7 @@ async fn node_links_bind_owner_credentials_and_publish_only_lifecycle_changes() 
             records: vec![Bytes::from_static(b"owned by another package").into()],
         }],
     ))?;
-    foreign_creation.join(backend.store.activation(&foreign))?;
+    foreign_creation.join(backend.store.activation(&foreign)?)?;
     let outcome = backend
         .store
         .provider()
