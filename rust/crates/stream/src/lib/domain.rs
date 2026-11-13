@@ -557,8 +557,8 @@ impl Child {
 /// Bounded direct-child traversal at one authority snapshot per page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildrenPageRequest {
-    /// Optional relative stream whose last record is projected under each child.
-    pub tail_stream: Option<RelativePath>,
+    /// Optional child or relative stream projected at the same cut as the page.
+    pub tail_stream: Option<ChildTail>,
     /// Parent, or `None` for top-level paths.
     pub parent: Option<StreamPath>,
     /// Last path from the preceding page; exclusive.

@@ -159,7 +159,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             parent: Some(store.failures_path(&owner)?),
             after: None,
             hierarchy_version: None,
-            tail_stream: Some(StreamPath::new("status")?),
+            tail_stream: Some(StreamPath::new("status")?.into()),
             limit: 1,
         })
         .await?;
@@ -424,7 +424,7 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
             parent: Some(store.failures_path(&owner)?),
             after: Some(child.path.clone()),
             hierarchy_version: None,
-            tail_stream: Some(StreamPath::new("status")?),
+            tail_stream: Some(StreamPath::new("status")?.into()),
             limit: 1,
         })
         .await?;

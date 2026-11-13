@@ -460,7 +460,7 @@ fn bounded(path: &str, until: u64) -> wire::SessionFollow {
 }
 fn page(parent: &str, limit: u32) -> Result<crate::ChildrenPageRequest, StreamError> {
     Ok(crate::ChildrenPageRequest {
-        tail_stream: Some(StreamPath::new("status")?),
+        tail_stream: Some(StreamPath::new("status")?.into()),
         parent: Some(StreamPath::new(parent)?),
         after: None,
         hierarchy_version: None,
@@ -473,6 +473,36 @@ async fn tree(provider: &MemoryStream) -> Result<(), StreamError> {
     append(provider, "tree/c/other", 1).await
 }
 
+fn page_credential(parent: &str, follow: bool, predicate: bool) -> bytes::Bytes {
+    use acyclic_auth::contract::*;
+    acyclic_auth::testing::root(|block| {
+        let key = &mut block.certificates.as_mut().expect("signed fixture").keys[0].key;
+        key.grants = GrantSet {
+            grants: vec![Grant {
+                kind: GrantKind::Resource(ResourceGrant {
+                    resource: ResourcePattern {
+                        name: format!("streams:/{parent}"),
+                        prefix: true,
+                    },
+                    actions: if follow {
+                        vec!["streams/list".into(), "streams/follow".into()]
+                    } else {
+                        vec!["streams/list".into()]
+                    },
+                }),
+            }],
+        };
+        if predicate {
+            block.caveats.push(Caveat {
+                kind: CaveatKind::Pin(Pin {
+                    name: "owner".into(),
+                    value: PinValue::Literal(b"allowed".to_vec()),
+                }),
+            });
+        }
+    })
+    .into()
+}
 #[tokio::test]
 async fn bounded_follow_delivers_exactly_the_read_range_and_closes() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
@@ -586,8 +616,96 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
 }
 
 #[tokio::test]
+async fn child_own_tails_require_follow_authority_and_record_predicates() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    crate::conformance::verify_page_tails(provider.as_ref())
+        .await
+        .map_err(std::io::Error::other)?;
+    for (path, owner) in [
+        ("own-rows/a", b"allowed".as_slice()),
+        ("own-rows/b", b"denied".as_slice()),
+    ] {
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new(path)?,
+                records: vec![crate::AppendRecord {
+                    value: path.as_bytes().to_vec().into(),
+                    headers: crate::RecordHeaders::new(
+                        Vec::new(),
+                        vec![crate::Attribute {
+                            name: "owner".into(),
+                            value: owner.to_vec().into(),
+                        }],
+                    )?,
+                }],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    provider
+        .fork(crate::ForkRequest {
+            source: StreamPath::new("own-rows/a")?,
+            destination: StreamPath::new("own-rows/c")?,
+            at_tail: Some(0),
+            exclude: Vec::new(),
+            idempotency_key: crate::IdempotencyKey::unique(),
+        })
+        .await?;
+    let client = local(&provider)?;
+    for (slot, follow) in [(1, false), (2, true)] {
+        client.register_credential(slot, page_credential("own-rows", follow, true))?;
+    }
+    let request = crate::ChildrenPageRequest {
+        tail_stream: Some(crate::ChildTail::Child),
+        ..page("own-rows", 3)?
+    };
+    let counted = crate::testing::Counted::new(provider.as_ref().clone());
+    let direct = counted.children_page(request.clone()).await?;
+    assert_eq!(
+        counted.requests().class(crate::testing::RequestClass::List),
+        1
+    );
+    assert_eq!(counted.requests().control(), 1);
+    assert_eq!(
+        counted.requests().data(),
+        0,
+        "child rows must require no separate payload reads"
+    );
+    assert_eq!(direct.children.len(), 3);
+    assert!(
+        direct.children[..2]
+            .iter()
+            .all(|child| child.tail_record.is_some()),
+        "the negative control must contain both public and private records"
+    );
+    let listed = client.children_page(request.clone(), 1).await?;
+    assert_eq!(listed.children.len(), 3);
+    assert!(
+        listed
+            .children
+            .iter()
+            .all(|child| child.tail.is_none() && child.tail_record.is_none()),
+        "listing authority must not disclose even an empty stream's tail"
+    );
+    let visible = client.children_page(request, 2).await?;
+    assert_eq!(visible.children.len(), 3);
+    assert_eq!(
+        visible.children[0].tail_record,
+        direct.children[0].tail_record
+    );
+    assert_eq!(visible.children[0].tail, Some(1));
+    assert!(
+        visible.children[1].tail.is_none() && visible.children[1].tail_record.is_none(),
+        "the record predicate must also filter a child's own stream"
+    );
+    assert_eq!(visible.children[2].tail, Some(0));
+    assert!(visible.children[2].tail_record.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn child_visibility_keeps_selected_cursors_with_their_authorized_records() -> TestResult {
-    use acyclic_auth::contract::*;
     let provider = Arc::new(MemoryStream::default());
     tree(&provider).await?;
     provider
@@ -623,32 +741,7 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
     let mut construction = acyclic_test_support::AllocationInfo::default();
     let mut saved_owners = acyclic_test_support::AllocationInfo::default();
     for (follow, predicate) in [(false, false), (false, true), (true, true), (true, false)] {
-        let credential = acyclic_auth::testing::root(|block| {
-            let key = &mut block.certificates.as_mut().unwrap().keys[0].key;
-            key.grants = GrantSet {
-                grants: vec![Grant {
-                    kind: GrantKind::Resource(ResourceGrant {
-                        resource: ResourcePattern {
-                            name: "streams:/tree".into(),
-                            prefix: true,
-                        },
-                        actions: if follow {
-                            vec!["streams/list".into(), "streams/follow".into()]
-                        } else {
-                            vec!["streams/list".into()]
-                        },
-                    }),
-                }],
-            };
-            if predicate {
-                block.caveats.push(Caveat {
-                    kind: CaveatKind::Pin(Pin {
-                        name: "owner".into(),
-                        value: PinValue::Literal(b"allowed".to_vec()),
-                    }),
-                });
-            }
-        });
+        let credential = page_credential("tree", follow, predicate);
         let authority = crate::session::testing::authority();
         let mut slots = crate::session::testing::slots();
         authority.register(
@@ -774,7 +867,10 @@ async fn child_visibility_keeps_selected_cursors_with_their_authorized_records()
             // denied follow could hide it. Mutate only the captured request path.
             let oversized = StreamPath::new("x".repeat(crate::MAX_PATH_BYTES))?;
             assert_eq!(
-                visibility.page(original.clone(), Some(&oversized)),
+                visibility.page(
+                    original.clone(),
+                    Some(&crate::ChildTail::Relative(oversized))
+                ),
                 Err(StreamError::InvalidPath)
             );
         }

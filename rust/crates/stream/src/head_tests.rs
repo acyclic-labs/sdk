@@ -168,7 +168,7 @@ async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), St
     let selected = ChildrenPageRequest {
         parent: Some(StreamPath::new("membership")?),
         after: None,
-        tail_stream: Some(StreamPath::new("events")?),
+        tail_stream: Some(StreamPath::new("events")?.into()),
         hierarchy_version: None,
         limit: 2,
     };

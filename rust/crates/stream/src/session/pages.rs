@@ -35,7 +35,7 @@ impl Visibility {
     pub(super) fn page(
         &self,
         mut page: crate::ChildrenPage,
-        tail_stream: Option<&crate::RelativePath>,
+        tail_stream: Option<&crate::ChildTail>,
     ) -> Result<crate::ChildrenPage, StreamError> {
         let capability = self.authorization.current()?;
         let filter = std::cell::LazyCell::new(|| {
@@ -56,13 +56,14 @@ impl Visibility {
             )? {
                 continue;
             }
-            if let (Some(_), Some(relative)) = (child.tail, tail_stream) {
-                let target = format!("{}/{}", child.path, relative);
-                StreamPath::validate(&target)?;
+            if let (Some(_), Some(selection)) = (child.tail, tail_stream) {
+                let target = selection
+                    .target(&child.path)
+                    .ok_or(StreamError::InvalidPath)?;
                 if self.permits(
                     &capability,
                     crate::authorization::FOLLOW_ACTION.as_str(),
-                    &target,
+                    target.as_ref(),
                     crate::StreamMethod::Follow.authorization().scope,
                 )? {
                     if let Some(record) = child.tail_record.take() {

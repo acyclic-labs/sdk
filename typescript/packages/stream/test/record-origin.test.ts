@@ -67,6 +67,9 @@ test("nested fork records retain their original paths through read, follow and c
   expect(head.last?.origin).toBe("origin/a");
   const page = await provider.childrenPage({ parent: "origin", tailStream: "status", limit: 4 });
   expect(page.children.map(child => child.tailRecord?.origin)).toEqual(Array(4).fill("origin/root/status"));
+  const own = await provider.childrenPage({ parent: "origin", tailStream: "", limit: 4 });
+  expect(own.children.map(child => child.tail)).toEqual([2n, 2n, 3n, 1n]);
+  expect(own.children.map(child => child.tailRecord?.origin)).toEqual(["origin/a", "origin/a", "origin/c", "origin/root"]);
   if (!accepted.ok) throw new Error("original append refused");
   const envelope = await provider.readCommit(accepted.commitId);
   expect(envelope.mutations[0]?.records[0]?.origin).toBe("origin/c");

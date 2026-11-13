@@ -97,12 +97,13 @@ export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">> & { 
 export interface FollowOptions { readonly whenAbsent?: "not_found" | "wait"; readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
 export interface StreamChild {
   readonly path: string;
-  /** Selected relative stream's exclusive tail; missing differs from present empty (0n). */
+  /** Selected child or relative stream's exclusive tail; missing differs from present empty (0n). */
   readonly tail?: bigint;
   readonly tailRecord?: EncodedRecord;
   readonly origin?: ForkOrigin;
 }
-/** Each page uses the current snapshot. Supply hierarchyVersion to refuse a changed hierarchy. */
+/** Each page uses the current snapshot. Supply hierarchyVersion to refuse a changed hierarchy.
+ * tailStream: "" selects the child itself; a nonempty path selects a relative stream. */
 export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; after?: string; hierarchyVersion?: CommitId; limit: number }>;
 export interface ChildrenPage { readonly hierarchyVersion: CommitId; readonly children: readonly StreamChild[]; readonly nextAfter?: string }
 export type ForkReceipt = PublicWire<WireForkReceipt, { readonly commitId: CommitId }>;

@@ -332,7 +332,16 @@ pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
 ) -> Result<crate::ChildrenPageRequest, StreamError> {
     Ok(crate::ChildrenPageRequest {
-        tail_stream: value.tail_stream.map(path).transpose()?,
+        tail_stream: value
+            .tail_stream
+            .map(|value| {
+                if value.is_empty() {
+                    Ok(crate::ChildTail::Child)
+                } else {
+                    path(value).map(crate::ChildTail::Relative)
+                }
+            })
+            .transpose()?,
         parent: value.parent.map(path).transpose()?,
         after: value.after.map(path).transpose()?,
         hierarchy_version: value

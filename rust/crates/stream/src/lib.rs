@@ -183,6 +183,8 @@ pub use token::TokenOperation;
 #[path = "lib/path.rs"]
 mod path;
 pub use path::StreamPath;
+mod child_tail;
+pub use child_tail::ChildTail;
 #[path = "lib/revision.rs"]
 pub mod revision;
 pub use revision::{AppliedRevisions, Revision, RevisionCut, RevisionScope, RevisionTracker};

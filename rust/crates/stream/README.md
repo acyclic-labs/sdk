@@ -143,6 +143,11 @@ When a child page selects `tail_stream`, each `Child.tail` distinguishes a missi
 stream (`None`) from a present empty stream (`Some(0)`). A positive tail carries
 the original last record at `tail - 1`. These facts share the enclosing Heads cut;
 they require no additional per-child head request.
+`ChildTail::Child` projects the child stream itself; `ChildTail::Relative(path)`
+selects a stream within it. On the wire, a present empty `tail_stream` selects
+the child itself, a nonempty value selects a relative stream, and absence
+projects neither. Listing a child does not grant access to its projected record:
+session replies still require follow authority and the record predicate.
 
 `ReadRequest.key` seeks an exact opaque header key within
 `[from, min(key.before, tail at open))`. Its limit counts matching records;

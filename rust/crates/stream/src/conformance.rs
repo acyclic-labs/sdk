@@ -14,6 +14,7 @@ pub(crate) mod key_seek;
 pub(crate) mod selected;
 mod selectors;
 pub use selectors::verify as verify_read_selectors;
+mod child_tails;
 mod soft;
 mod views;
 #[path = "conformance"]
@@ -884,7 +885,7 @@ pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Res
             after: None,
             hierarchy_version: None,
             limit: 3,
-            tail_stream: Some(path("status")?),
+            tail_stream: Some(path("status")?.into()),
         })
         .await?;
     if page.children.len() != 3
@@ -936,7 +937,7 @@ pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Res
             after: None,
             hierarchy_version: None,
             limit: 3,
-            tail_stream: Some(path("status")?),
+            tail_stream: Some(path("status")?.into()),
         })
         .await?;
     if next.children.len() != 3 {
@@ -954,7 +955,7 @@ pub async fn verify_page_tails(provider: &(impl StreamProvider + ?Sized)) -> Res
     {
         return Err(violated!());
     }
-    Ok(())
+    child_tails::verify(provider).await
 }
 
 /// Projected values, headers and protobuf framing share the command byte ceiling.
@@ -1002,7 +1003,7 @@ pub async fn verify_page_tail_bytes(
         after: None,
         hierarchy_version: None,
         limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
-        tail_stream: Some(path("status")?),
+        tail_stream: Some(path("status")?.into()),
     };
     let mut seen = 0;
     while seen < count {

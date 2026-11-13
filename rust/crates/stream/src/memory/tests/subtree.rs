@@ -169,7 +169,7 @@ async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result
     let page = provider
         .children_page(ChildrenPageRequest {
             parent: Some(StreamPath::new("agents")?),
-            tail_stream: Some(StreamPath::new("status")?),
+            tail_stream: Some(StreamPath::new("status")?.into()),
             after: None,
             hierarchy_version: None,
             limit: 8,

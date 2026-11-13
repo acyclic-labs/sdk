@@ -652,7 +652,7 @@ pub fn page_tail_cut(split_reads: bool) {
                     after: None,
                     hierarchy_version: None,
                     limit: 2,
-                    tail_stream: Some(StreamPath::new("status").unwrap()),
+                    tail_stream: Some(StreamPath::new("status").unwrap().into()),
                 };
                 let mut page = block_on(provider.children_page(request.clone())).unwrap();
                 if split_reads {

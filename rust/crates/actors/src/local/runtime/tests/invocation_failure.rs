@@ -216,7 +216,7 @@ async fn terminal_cut<P: StreamProvider>(provider: Arc<Counted<P>>) -> TestResul
             parent: Some(store.failures_path(&address)?),
             after: None,
             hierarchy_version: None,
-            tail_stream: Some(StreamPath::new("status")?),
+            tail_stream: Some(StreamPath::new("status")?.into()),
             limit: 1,
         })
         .await?;

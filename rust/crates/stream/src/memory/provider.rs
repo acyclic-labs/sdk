@@ -306,18 +306,15 @@ fn namespace_page(
 fn projected_tail(
     paths: &Namespace,
     path: &StreamPath,
-    relative: Option<&StreamPath>,
+    selection: Option<&crate::ChildTail>,
 ) -> Result<(Option<u64>, Option<Record>), StreamError> {
-    let Some(relative) = relative else {
+    let Some(selection) = selection else {
         return Ok((None, None));
     };
-    // A combined path over the bound cannot exist, so that child has no tail;
-    // one long child never fails the page.
-    if path.as_str().len() + 1 + relative.as_str().len() > crate::MAX_PATH_BYTES {
+    let Some(target) = selection.target(path) else {
         return Ok((None, None));
-    }
-    let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
-    let Some(stream) = paths.get(&target) else {
+    };
+    let Some(stream) = paths.get(target.as_ref()) else {
         return Ok((None, None));
     };
     let record = last_record(stream);

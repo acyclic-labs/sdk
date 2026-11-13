@@ -320,6 +320,7 @@ message Child {
   optional uint64 tail = 4;
 }
 message ChildrenPageRequest {
+  // Absent: no projection. Empty: the child itself. Otherwise: relative stream.
   optional string tail_stream = 5;
   optional string parent = 1;
   optional string after = 2;

@@ -497,7 +497,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
             after: None,
             hierarchy_version: None,
             limit: 16,
-            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?),
+            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?.into()),
         })
         .await;
     assert!(
@@ -542,7 +542,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
             after: None,
             hierarchy_version: None,
             limit: 16,
-            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?),
+            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?.into()),
         })
         .await
         .map_err(storage)?;
@@ -671,7 +671,7 @@ async fn local_tree_reader_uses_only_its_enrolled_stream_scope() -> Result<()> {
             after: None,
             hierarchy_version: None,
             limit: 16,
-            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?),
+            tail_stream: Some(StreamPath::new("conversation").map_err(storage)?.into()),
         })
         .await
         .map_err(storage)?;
