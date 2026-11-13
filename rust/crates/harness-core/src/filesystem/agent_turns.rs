@@ -659,6 +659,7 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
     actor_root: Option<acyclic_stream::StreamPath>,
+    clock: Arc<dyn acyclic_actors::local::Clock>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
@@ -756,6 +757,7 @@ where
             within,
             clock: Arc::new(acyclic_actors::local::SystemClock),
             actor_root: None,
+            clock: Arc::new(acyclic_actors::local::SystemClock),
             host,
             issuer,
             templates,
@@ -1196,7 +1198,8 @@ where
                 io: None,
             },
         )?
-        .with_input_verifier(reader.clone());
+        .with_input_verifier(reader.clone())
+        .with_clock(self.clock.clone());
         let internal = self.internal_files(
             &storage.volume,
             private.volume()?,
