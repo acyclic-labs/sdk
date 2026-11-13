@@ -1,6 +1,17 @@
 use super::*;
 use crate::hooks::{HookEvent, HookInput, HookOutput, HookSite};
 
+/// Hook context (a Stop reason, tool-hook context, a settlement notice) is
+/// input to the turn it joins, appended where it occurred. It is not a
+/// standing instruction: a system message would be hoisted out of its place
+/// on some routes and pinned through compaction with its whole exchange.
+pub(super) fn hook_context(text: String) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text(text),
+    }
+}
+
 impl StockExecution<'_> {
     pub(super) fn append_hook_context(
         &self,
@@ -9,10 +20,7 @@ impl StockExecution<'_> {
     ) -> Result<()> {
         let blocked = output.take_block_reason();
         for text in blocked.into_iter().chain(output.additional_context) {
-            let message = ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(text),
-            };
+            let message = hook_context(text);
             message
                 .content
                 .validate_limits(self.stock.limits, &mut None)?;
