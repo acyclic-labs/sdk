@@ -437,9 +437,23 @@ mod checks {
             let expected = crate::model::ModelDataPart::File {file, policy:crate::model::FileProjectionPolicy::Reference};
             prop_assert!(matches!(&content, crate::model::ToolResultContent::Parts {parts} if parts.len() == 2 && parts.get(1) == Some(&expected)), "native file part changed or disappeared");
             let preview: Value = serde_json::from_str(bounded["parts"][0]["text"].as_str().unwrap()).unwrap();
-            let shown = preview["text"].as_str().unwrap();
-            prop_assert!(bytes.starts_with(shown.as_bytes()));
-            prop_assert_eq!(shown.len() as u64 + preview["omitted_bytes"].as_u64().unwrap(), bytes.len() as u64);
+            for (preview, source) in [(&preview, bytes.as_slice()), (&plain["value"], plain_bytes.as_slice())] {
+                let shown = preview["text"].as_str().unwrap();
+                let start = preview["omitted_range"]["start"].as_u64().unwrap() as usize;
+                let end = preview["omitted_range"]["end"].as_u64().unwrap() as usize;
+                let omitted = preview["omitted_bytes"].as_u64().unwrap();
+                prop_assert!(start <= end && end <= source.len());
+                prop_assert_eq!((end - start) as u64, omitted);
+                let prefix = std::str::from_utf8(&source[..start]).unwrap();
+                let suffix = std::str::from_utf8(&source[end..]).unwrap();
+                prop_assert_eq!(shown, format!("{prefix}{}{suffix}", window::notice(omitted, start as u64, end as u64)));
+                if omitted > 0 {
+                    prop_assert!(start > 0, "the opening bytes disappeared");
+                    prop_assert!(end < source.len(), "the final bytes disappeared");
+                } else {
+                    prop_assert_eq!(shown.as_bytes(), source);
+                }
+            }
             let mut broken = bounded;
             broken["parts"][0]["text"] = Value::String("missing retained-output identity".into());
             prop_assert!(definition.check_projection(&broken, crate::conversation::Limits::default(), None).unwrap().is_err());
@@ -453,6 +467,8 @@ mod checks {
                 r#"{"output_spill":{"path":"p","version":"v"},"text":"","omitted_bytes":-1}"#,
                 r#"{"output_spill":{"path":"p","version":"v"},"text":"","text":"other","omitted_bytes":0}"#,
                 r#"{"output_spill":{"path":"p","version":"v","extra":0},"text":"","omitted_bytes":0}"#,
+                r#"{"output_spill":{"path":"p","version":"v"},"text":"","omitted_bytes":2,"omitted_range":{"start":4,"end":2}}"#,
+                r#"{"output_spill":{"path":"p","version":"v"},"text":"","omitted_bytes":2,"omitted_range":{"start":1,"end":4}}"#,
             ] {
                 broken["parts"][0]["text"] = Value::String(invalid.into());
                 // The former prefix-only check accepts every one of these.
@@ -468,7 +484,7 @@ mod checks {
     fn spill_preview_keeps_original_credit_and_cancellation() -> Result<()> {
         let value = serde_json::json!({"kind":"parts","parts":[{
             "kind":"text",
-            "text":r#"{"output_spill":{"path":"p","version":"v"},"text":"\u03bb\\text","omitted_bytes":2}"#
+            "text":r#"{"output_spill":{"path":"p","version":"v"},"text":"\u03bb\\text","omitted_bytes":2,"omitted_range":{"start":1,"end":3}}"#
         }]});
         for native in [false, true] {
             let cancellation = acyclic_fs::CancellationToken::new();
