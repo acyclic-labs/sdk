@@ -707,6 +707,21 @@ fn deliver_overflow(watch: Arc<Shared>, ready: &mut Ready) {
 }
 
 impl Inbox {
+    /// Pins a complete routed prefix, including an outstanding overflow record.
+    pub(super) fn cut(&mut self) -> Result<usize, DemandError> {
+        if let Some(error) = self.failure.take() {
+            return Err(error);
+        }
+        self.bytes
+            .len()
+            .checked_add(if self.overflowed {
+                EVENT_HEADER_BYTES
+            } else {
+                0
+            })
+            .ok_or_else(|| WorkError::Overflow.into())
+    }
+
     fn append<W: SourceDemandReadWork>(
         &mut self,
         record: &[u8],
