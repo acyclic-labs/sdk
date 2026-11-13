@@ -43,3 +43,26 @@ Restore the source and require the same test to pass:
 ```sh
 git apply -R rust/fuzz/mutations/harness-supervision/ancestor-stop.patch
 ```
+
+Background shell supervision has two independent completion boundaries. The
+model receives an immutable start result; only the physical capture owner can
+publish `completed.json`, after it reaps the process tree. Its publication is
+followed and fenced by the same quiet actor that follows output activity.
+
+The normal tests include both negative controls: a start result must retain the
+original job, and a writable private-volume lookalike must not retire its alarm.
+Physical completion and an ordinary foreground terminal must retire it.
+
+| Mutation | Unchanged regression | Required failure |
+| --- | --- | --- |
+| `background-start-finish.patch` restores retirement on the logical start result. | `filesystem::execution_journal::supervision::tests::selected_check_repetitions_ignore_capture_options_but_stay_within_the_original_turn` | `background start receipt retired quiet supervision` |
+| `physical-completion.patch` discards the authoritative physical completion. | `agent_model::hosting::quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs` | `physical completion did not retire quiet supervision` |
+
+Run each regression before applying its mutation, require an actual assertion
+failure (not a compiler error), reverse the patch, and require the same test to
+pass. The library test uses `-p acyclic-harness-core --lib`; the actor test uses
+`-p acyclic-harness-core --test main`. Both use
+`--features test-support,acyclic-fs/test-support` and an exact nextest selector.
+`filesystem::hosting::journal_tests::call_output_uses_the_journal_without_granting_tools_its_writer`
+also proves the physical completion publication's original identity and replay
+through the shared output publisher.
