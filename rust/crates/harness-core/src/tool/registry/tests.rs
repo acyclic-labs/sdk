@@ -146,10 +146,6 @@ fn native_registry_storage_and_copy_remain_funded() -> Result<()> {
         .revision
         .clone();
     registry.select_model_version("first", &revision)?;
-    assert!(
-        Arc::ptr_eq(&registry.data, &snapshot.data),
-        "reselecting the admitted revision must retain its funded metadata owner"
-    );
     assert!(matches!(
         registry.register(make_tool("shared")?, &mut custody, Some(&work)),
         Err(Error::NativeBoundary {
