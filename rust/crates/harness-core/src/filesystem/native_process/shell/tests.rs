@@ -135,72 +135,84 @@ async fn abandoned_preparation_retains_its_root_and_leaves_the_executor_availabl
         }
     }
 
-    let project = tempfile::tempdir().map_err(Error::process_io)?;
-    let root = project.path().canonicalize().map_err(Error::process_io)?;
-    let mounts = Arc::new(table_with_home(root.clone(), true)?);
-    let home = mounts
-        .native_mounts()
-        .find(|(name, _, _)| *name == "volume:///home")
-        .expect("private home projection")
-        .1
-        .to_path_buf();
-    let native = invocation(&root);
-    let (entered, started) = tokio::sync::oneshot::channel();
-    let (release, released) = std::sync::mpsc::sync_channel(1);
-    let (retired, retirement) = tokio::sync::oneshot::channel();
-    let preparation_mounts = Arc::clone(&mounts);
-    let mut preparation = Box::pin(super::super::prepare_with_custody(
-        // Tuple fields retire in order: the event follows physical root cleanup.
-        (project, Retired(Some(retired))),
-        move |_| {
-            let _ = entered.send(());
-            released
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .map_err(|cause| {
-                    Error::Storage(format!("preparation blocked its executor: {cause}"))
-                })?;
-            prepare(
-                ShellInput {
-                    command: "echo prepared".into(),
-                    cwd: None,
-                    timeout_ms: None,
-                    background: false,
-                    target: None,
-                },
-                &preparation_mounts,
-                native,
-                1,
-                std::time::Instant::now(),
-            )
-        },
-    ));
-    {
-        // Even a callback admitting inline I/O must dispatch this preparation.
-        // An inline implementation reaches its bounded refusal before this
-        // executor can observe the worker's entry event.
-        let _inline = acyclic_native_runtime::InlineBlocking::enter();
-        tokio::select! {
-            biased;
-            _ = &mut preparation => panic!("preparation ran on the executor"),
-            started = started => started.map_err(|cause| Error::Storage(cause.to_string()))?,
+    for refuse in [false, true] {
+        let project = tempfile::tempdir().map_err(Error::process_io)?;
+        let root = project.path().canonicalize().map_err(Error::process_io)?;
+        let mounts = Arc::new(table_with_home(root.clone(), true)?);
+        let home = mounts
+            .native_mounts()
+            .find(|(name, _, _)| *name == "volume:///home")
+            .expect("private home projection")
+            .1
+            .to_path_buf();
+        if refuse {
+            std::fs::write(home.join("tmp"), b"occupied").map_err(Error::process_io)?;
         }
+        let native = invocation(&root);
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let (retired, retirement) = tokio::sync::oneshot::channel();
+        let preparation_mounts = Arc::clone(&mounts);
+        let (completed, completion) = tokio::sync::oneshot::channel();
+        let mut preparation = Box::pin(super::super::prepare_with_custody(
+            // Tuple fields retire in order: the event follows physical root cleanup.
+            (project, Retired(Some(retired))),
+            move |_| {
+                let _ = entered.send(());
+                released
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .map_err(|cause| {
+                        Error::Storage(format!("preparation blocked its executor: {cause}"))
+                    })?;
+                let prepared = prepare(
+                    ShellInput {
+                        command: "echo prepared".into(),
+                        cwd: None,
+                        timeout_ms: None,
+                        background: false,
+                        target: None,
+                    },
+                    &preparation_mounts,
+                    native,
+                    1,
+                    std::time::Instant::now(),
+                );
+                let _ = completed.send(prepared.is_err());
+                prepared
+            },
+        ));
+        {
+            // Even a callback admitting inline I/O must dispatch this preparation.
+            // An inline implementation reaches its bounded refusal before this
+            // executor can observe the worker's entry event.
+            let _inline = acyclic_native_runtime::InlineBlocking::enter();
+            tokio::select! {
+                biased;
+                _ = &mut preparation => panic!("preparation ran on the executor"),
+                started = started => started.map_err(|cause| Error::Storage(cause.to_string()))?,
+            }
+        }
+        drop(preparation);
+        assert!(
+            root.is_dir(),
+            "caller loss released the admitted root early"
+        );
+        release
+            .send(())
+            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        retirement
+            .await
+            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        assert!(!root.exists(), "completed preparation retained its root");
+        assert_eq!(
+            completion
+                .await
+                .map_err(|cause| Error::Storage(cause.to_string()))?,
+            refuse,
+            "preparation did not preserve the original filesystem outcome"
+        );
+        assert_eq!(home.join("tmp").is_dir(), !refuse);
     }
-    drop(preparation);
-    assert!(
-        root.is_dir(),
-        "caller loss released the admitted root early"
-    );
-    release
-        .send(())
-        .map_err(|cause| Error::Storage(cause.to_string()))?;
-    retirement
-        .await
-        .map_err(|cause| Error::Storage(cause.to_string()))?;
-    assert!(!root.exists(), "completed preparation retained its root");
-    assert!(
-        home.join("tmp").is_dir(),
-        "the original filesystem preparation did not finish"
-    );
     Ok(())
 }
 
