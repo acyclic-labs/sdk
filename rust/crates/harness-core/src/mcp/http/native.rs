@@ -664,7 +664,10 @@ mod tests {
                 };
                 assert_eq!(result?.content, [rmcp::model::ContentBlock::text(expected)]);
             } else {
-                assert!(matches!(result, Err(Error::Indeterminate(_))));
+                let error = result.expect_err("the original POST reply was lost");
+                assert_eq!(error.code(), crate::wire::ErrorCode::Indeterminate);
+                assert_eq!(error.operation_id(), Some(operation));
+                assert!(error.leaves_effect_uncertain());
             }
         }
         Ok(())
