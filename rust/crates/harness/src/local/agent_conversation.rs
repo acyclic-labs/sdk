@@ -1005,7 +1005,7 @@ impl Conversation {
         let observer = if replay_status {
             super::Observer::open(&self.connection, from, statuses.saturating_sub(1))?
         } else {
-            super::Observer::open_at_phase(&self.connection, from, statuses, &phase)?
+            super::Observer::open_at_phase(&self.connection, from, statuses)?
         };
         Ok((observer, phase))
     }

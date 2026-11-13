@@ -982,6 +982,9 @@ mod tests {
             ),
         )?
         .state_directory(state.path())
+        // This finite script measures prompt idempotency, not the optional
+        // feedback settlement turn, which has its own lifecycle coverage.
+        .feedback_plugin(false)
         // This lifecycle control executes no tools. Keep its small model's
         // request free of the unrelated coding-tool catalogue.
         .without_default_tools();

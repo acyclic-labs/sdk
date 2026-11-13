@@ -570,7 +570,37 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
             .state_directory(state.path().join("runtime")),
     )
     .await?;
-    let session_bindings = harness.session_bindings();
+    let selected_agent = crate::AgentId::from_bytes([1; 16]);
+    let private_home = VolumeRef::new(
+        harness.scratch.provider().clone(),
+        "selected-home".into(),
+        harness.scratch.class(),
+        crate::conversation::VolumeOwner::Agent(selected_agent),
+        &mut None,
+    )?;
+    harness.files.create_volume(&private_home).await?;
+    let read = private_home.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let write = private_home.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    let grants = crate::Capabilities::new(
+        harness
+            .signed
+            .capabilities()
+            .iter()
+            .chain([read.as_str(), write.as_str()]),
+    );
+    let signed = harness
+        .root_authority
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("test signing custody".into()))?
+        .bootstrap_scope("selected-home", &grants, Some(selected_agent), &mut None)?;
+    let mut session_bindings = harness.session_bindings().to_vec();
+    // A reused parent source is owned by its parent, not by this new binding.
+    // Exercise physical retirement of an auxiliary volume this binding creates.
+    session_bindings
+        .iter_mut()
+        .find(|entry| entry.name == crate::filesystem::HOME_VOLUME)
+        .ok_or_else(|| Error::NotFound("home binding".into()))?
+        .source = crate::agent::WorkspaceSource::Volume(private_home);
     let workspace = harness
         .workspace()
         .ok_or_else(|| Error::NotFound("binding workspace".into()))?;
@@ -590,7 +620,7 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
         .map_err(storage)?;
     let authority = crate::filesystem::NativeMountAuthority::admitted(
         harness.verifier.clone(),
-        harness.signed.copy(&mut None)?,
+        signed.copy(&mut None)?,
     );
     let owner = AgentOwner;
     let bound = workspace

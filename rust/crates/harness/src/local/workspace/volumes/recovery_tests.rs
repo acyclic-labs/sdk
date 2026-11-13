@@ -173,31 +173,8 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         acyclic_fs::NativeMountRecoveryOwner::acquire(&destination),
         Err(acyclic_fs::NativeMountError::DestinationBusy)
     ));
-    owner.0.kill()?;
-    owner.0.wait()?;
-    reject_alias();
-
-    // Negative control: cached attributes misclassify the dead provider as live.
-    assert!(std::fs::metadata(&destination).is_ok());
-    assert!(
-        require_recovered(&root, |root| {
-            if std::fs::metadata(root.join(HOME_PATH)).is_ok() {
-                Ok(())
-            } else {
-                recover(root)
-            }
-        })
-        .is_err()
-    );
-    assert_eq!(
-        std::fs::read(destination.join("authored"))
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::NotConnected
-    );
-
-    // Hold the actual destination flock, not a substitute synchronization model.
-    // Recovery must reject it without detaching; releasing it permits recovery.
+    // Pin the actual fence inode before exit. The accepted owner-exit action
+    // retains its lock until the physical unmount finishes, beyond waitpid.
     let controls = acyclic_fs::native_mount_control_paths(&destination)?;
     let fence = acyclic_native_runtime::FileLock::new(
         std::fs::OpenOptions::new()
@@ -205,26 +182,45 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             .write(true)
             .open(&controls[0])?,
     );
-    // A process spawned while the fence is open shares its open file
-    // description until it execs, as processes other tests spawn do; this one
-    // keeps it for the rest of the test. Releasing the fence only by closing
-    // it would leave the lock held and recovery below would fail with
-    // `DestinationBusy`; `FileLock` unlocks explicitly before closing.
+    assert_eq!(
+        fence
+            .try_lock(acyclic_native_runtime::FileLockMode::Exclusive)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    owner.0.kill()?;
+    owner.0.wait()?;
+    fence.lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
+    assert_eq!(
+        fence.metadata()?.ino(),
+        std::fs::metadata(&controls[0])?.ino()
+    );
+    reject_alias();
+    require_recovered(&root, recover)?;
+    assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
+    assert!(matches!(
+        acyclic_fs::NativeMountRecoveryOwner::acquire(&destination),
+        Err(acyclic_fs::NativeMountError::DestinationBusy)
+    ));
+
+    // A copy outlives this FileLock. Closing alone would retain its lock;
+    // explicit unlock must admit the next real administrative owner now.
     let _sharing = Sharing(
         Command::new("sleep")
             .arg("60")
             .stdin(fence.try_clone()?)
             .spawn()?,
     );
-    fence.try_lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
-    assert!(recover(&root).is_err(), "recovery bypassed the fence");
-    assert_eq!(
-        std::fs::read(destination.join("authored"))
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::NotConnected
-    );
     drop(fence);
+    let mut recovery = acyclic_fs::NativeMountRecoveryOwner::acquire(&destination)?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    recovery.detach(&work)?;
+    assert!(!recovery.cleanup_state()?.destination_fence_retained);
     require_recovered(&root, recover)?;
     assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
     let _remounted = start_owner(&root)?;

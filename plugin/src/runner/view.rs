@@ -210,6 +210,9 @@ impl View {
     }
     /// The process exit, each nonzero status with its reason.
     fn exit(&self) -> Result<(), Failure> {
+        if let Some(message) = &self.phase_failure {
+            return Err(Box::new(Exit::failed(message.clone())));
+        }
         match &self.outcome {
             Outcome::Settled => Ok(()),
             Outcome::Failed(message) => Err(Box::new(Exit::failed(message.clone()))),
@@ -272,6 +275,9 @@ struct View {
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
+    /// The terminal phase dominates any older turn replayed after attachment.
+    /// Retain its bounded diagnostic page for the process exit reason.
+    phase_failure: Option<String>,
     /// A cancel was sent and its turn has not stopped yet.
     cancelling: Option<u64>,
     outcome: Outcome,
@@ -390,6 +396,43 @@ impl View {
                 .map(|pending| pending.status),
             _ => None,
         };
+        let failure = match (&self.phase, &phase) {
+            (Some(previous), current) if previous == current => None,
+            (
+                _,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { message },
+                },
+            ) => Some(message.clone()),
+            (
+                _,
+                Phase::Done {
+                    outcome: AgentOutcome::FailedDiagnostic { diagnostic },
+                },
+            ) => {
+                let page = conversation
+                    .diagnostic_page(diagnostic, 0, acyclic_stream::MAX_RECORD_BYTES as u64)
+                    .await?;
+                let mut text = page.text;
+                if page.end < page.total {
+                    text.push_str(&format!(
+                        "\n\nComplete diagnostic: {} (next byte {}, total {}).",
+                        diagnostic.query_path(),
+                        page.end,
+                        page.total
+                    ));
+                }
+                Some(text)
+            }
+            _ => None,
+        };
+        if let Some(message) = &failure {
+            self.settle_pending();
+            self.failed(conversation, message);
+        }
+        if self.phase.as_ref() != Some(&phase) {
+            self.phase_failure = failure;
+        }
         self.phase = Some(phase);
         Ok(())
     }
@@ -489,33 +532,15 @@ impl View {
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     self.observe_settled_before(status.cursor);
                 }
-                let failure = match &status.phase {
-                    Phase::Done {
-                        outcome: AgentOutcome::Failed { message },
-                    } => Some(message.clone()),
-                    Phase::Done {
-                        outcome: AgentOutcome::FailedDiagnostic { diagnostic },
-                    } => {
-                        let page = conversation
-                            .diagnostic_page(diagnostic, 0, acyclic_stream::MAX_RECORD_BYTES as u64)
-                            .await?;
-                        let mut text = page.text;
-                        if page.end < page.total {
-                            text.push_str(&format!(
-                                "\n\nComplete diagnostic: {} (next byte {}, total {}).",
-                                diagnostic.query_path(),
-                                page.end,
-                                page.total
-                            ));
+                if matches!(status.phase, Phase::Idle | Phase::Done { .. })
+                    && !matches!(
+                        status.phase,
+                        Phase::Done {
+                            outcome: AgentOutcome::Failed { .. }
+                                | AgentOutcome::FailedDiagnostic { .. }
                         }
-                        Some(text)
-                    }
-                    _ => None,
-                };
-                if let Some(message) = failure {
-                    self.settle_pending();
-                    self.failed(conversation, &message);
-                } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
+                    )
+                {
                     // Idle acknowledges settlement, not that our cancellation
                     // won. Only its matching status or cancelled entry marks it.
                     self.cancelling = None;
@@ -619,6 +644,9 @@ impl View {
 
     /// Records a failure in the transcript, where it stays visible.
     fn failed(&mut self, conversation: &Conversation, message: &str) {
+        if self.phase_failure.as_deref() == Some(message) {
+            return;
+        }
         self.transcript.push(
             BlockKind::Answer,
             &format!("task {} failed: {message}", conversation.task()),
@@ -764,7 +792,7 @@ impl View {
         if !self.title.is_empty() {
             spans.push(Span::raw(format!(" · {}", self.title)));
         }
-        if self.outcome == Outcome::Cancelled && !self.busy() {
+        if self.phase_failure.is_none() && self.outcome == Outcome::Cancelled && !self.busy() {
             spans.push(Span::raw(" ■ STOPPED"));
         }
         Line::from(spans)
@@ -2406,6 +2434,172 @@ mod tests {
         view.phase = Some(Phase::Idle);
         assert!(view.approval_answer("yes")?.is_none());
         assert_eq!(prepared.1, binding);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restored_terminal_phase_displays_original_failure_without_a_turn()
+    -> Result<(), Failure> {
+        use acyclic_harness::{
+            LocalHarness,
+            agent::Diagnostic,
+            local::WorkspaceMounting,
+            model::Model,
+            test_support::{
+                ScriptedEvent, ScriptedModelProvider, ScriptedTurn, local_harness_config,
+            },
+        };
+        use acyclic_stream::{AppendRequest, IdempotencyKey, StreamProviderExt as _};
+
+        let directory = tempfile::tempdir()?;
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace)?;
+        let harness = Arc::new(
+            LocalHarness::open(
+                local_harness_config(
+                    &workspace,
+                    (
+                        Model::new("scripted".into(), "test".into(), "1".into())?,
+                        Arc::new(
+                            ScriptedModelProvider::new([
+                                ScriptedTurn::Text("saved answer".into()),
+                                ScriptedTurn::Events(vec![ScriptedEvent::Interrupted {
+                                    error: "saved turn failure".into(),
+                                }]),
+                            ])
+                            .with_context_capacity(
+                                acyclic_harness::context::ModelContextCapacity {
+                                    context_tokens: 32_768,
+                                    output_tokens: Some(4096),
+                                },
+                            ),
+                        ),
+                    ),
+                )?
+                .without_default_tools()
+                .feedback_plugin(false)
+                .compaction(acyclic_harness::context::CompactionPolicy::Disabled)
+                .state_directory(directory.path().join("state"))
+                .workspace_mounting(WorkspaceMounting::Physical),
+            )
+            .await?,
+        );
+        let (agents, root) = harness.agents().await?;
+        let conversation = Conversation::open(harness.connect().await?);
+        // Retain a real multi-page terminal diagnostic in the original store.
+        // No conversation entry can supply this explanation to the reopened UI.
+        let text = format!("saved failure: {}original suffix", "é".repeat(65536));
+        let diagnostic = Diagnostic {
+            agent: root.clone(),
+            digest: *blake3::hash(text.as_bytes()).as_bytes(),
+            bytes: text.len() as u64,
+        };
+        agents
+            .provider()
+            .append(AppendRequest {
+                path: diagnostic.path()?,
+                records: text
+                    .as_bytes()
+                    .chunks(acyclic_stream::MAX_RECORD_BYTES)
+                    .map(|chunk| chunk.to_vec().into())
+                    .collect(),
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        assert_eq!(conversation.settled().await?, 0);
+        for outcome in [
+            AgentOutcome::Failed {
+                message: "saved inline failure".into(),
+            },
+            AgentOutcome::FailedDiagnostic {
+                diagnostic: diagnostic.clone(),
+            },
+        ] {
+            let mut view = View::default();
+            // Both initial attachment and selection restore this opening phase
+            // before waiting on the observer, whose checkpoint is suppressed.
+            let phase = Phase::Done { outcome };
+            view.restore_phase(&conversation, phase.clone()).await?;
+            assert_eq!(view.phase.as_ref(), Some(&phase));
+            let Outcome::Failed(message) = &view.outcome else {
+                return Err("opening terminal failure was not displayed".into());
+            };
+            if matches!(
+                phase,
+                Phase::Done {
+                    outcome: AgentOutcome::FailedDiagnostic { .. }
+                }
+            ) {
+                assert!(message.starts_with("saved failure: "));
+                assert!(
+                    message.contains(&format!("Complete diagnostic: {}", diagnostic.query_path()))
+                );
+                assert!(
+                    !message.contains("original suffix"),
+                    "opening must read a bounded page"
+                );
+            } else {
+                assert_eq!(message, "saved inline failure");
+            }
+            assert!(
+                view.transcript
+                    .rows(200)
+                    .iter()
+                    .any(|row| row.to_string().contains("saved"))
+            );
+            let rows = view.transcript.rows(200).to_vec();
+            view.restore_phase(&conversation, phase).await?;
+            assert_eq!(
+                view.transcript.rows(200),
+                rows.as_slice(),
+                "same failure displayed twice"
+            );
+        }
+        assert_eq!(conversation.settled().await?, 0);
+        let mut events = conversation.observe(Some(0)).await?;
+        for id in [
+            "completed-before-terminal-failure",
+            "failed-before-terminal-failure",
+        ] {
+            let inbox = conversation.send(id, "saved prompt").await?;
+            let acyclic_harness::local::agent_conversation::Settlement::Reply(
+                acyclic_harness::agent::Reply::Answered {
+                    sequence, entry, ..
+                },
+            ) = conversation.settle(id, inbox, &mut events).await?
+            else {
+                return Err("saved turn did not settle".into());
+            };
+            let mut view = View::default();
+            let message = match &entry.outcome {
+                TurnOutcome::Completed => "later terminal failure".to_owned(),
+                TurnOutcome::Failed { message } => message.clone(),
+                _ => return Err("unexpected saved turn outcome".into()),
+            };
+            view.restore_phase(
+                &conversation,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed {
+                        message: message.clone(),
+                    },
+                },
+            )
+            .await?;
+            view.apply(&conversation, Event::Turn(entry), sequence + 1)
+                .await?;
+            let failure = view.exit().expect_err("old turn replaced terminal failure");
+            assert_eq!(failure.to_string(), message);
+            assert_eq!(
+                view.transcript
+                    .rows(200)
+                    .iter()
+                    .filter(|row| row.to_string().contains(&format!("failed: {message}")))
+                    .count(),
+                1,
+                "same restored failure displayed twice"
+            );
+        }
         Ok(())
     }
 

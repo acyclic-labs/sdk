@@ -269,11 +269,13 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     );
     let write_tool = files::write()?;
     let write_operation = OperationId::new();
+    // Authored paths do not acquire journal authority from their spelling.
+    let authored_path = ".system/authored.txt";
     let write_invocation = ToolInvocation {
         operation_id: write_operation,
         call_id: "write".into(),
         name: write_tool.definition.name.clone(),
-        arguments: json!({"path":"second.txt","content":"exact \u{e9}\r\n"}),
+        arguments: json!({"path":authored_path,"content":"exact \u{e9}\r\n"}),
     };
     let write_context = ToolContext::new(task.clone(), write_operation, "write")?;
     let written = write_tool
@@ -331,10 +333,10 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let later = writer
         .stage(
             OperationId::new(),
-            "second.txt",
+            authored_path,
             b"later user edit",
             "text/plain",
-            "second.txt",
+            "authored.txt",
             acyclic_harness::conversation::ContentAccess::default(),
         )?
         .await?
@@ -457,7 +459,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     )
     .await?;
     let write_tool = files::write()?;
-    for path in ["../escape.txt", ".system/private.json"] {
+    for path in ["../escape.txt", "nested/../escape.txt"] {
         let op = OperationId::new();
         let invalid = ToolInvocation {
             operation_id: op,

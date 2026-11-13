@@ -42,9 +42,9 @@ pub struct Observer {
     resource: String,
     /// Next conversation sequence not yet returned to the caller.
     next_turn: u64,
-    /// A phase-aware opening supplied this checkpoint's phase. A replayed idle
-    /// status must not replace accepted input that is already running.
-    status_floor: Option<(u64, bool)>,
+    /// A phase-aware opening already supplied the state through this checkpoint.
+    /// Replayed statuses must not replace that opening state.
+    status_floor: Option<u64>,
     tail: OutputTail,
 }
 
@@ -67,14 +67,9 @@ impl Observer {
         )
     }
 
-    pub(super) fn open_at_phase(
-        connection: &Connection,
-        from: u64,
-        statuses: u64,
-        phase: &crate::agent::Phase,
-    ) -> Result<Self> {
+    pub(super) fn open_at_phase(connection: &Connection, from: u64, statuses: u64) -> Result<Self> {
         let mut observer = Self::open(connection, from, statuses.saturating_sub(1))?;
-        observer.status_floor = Some((statuses, phase.in_turn()));
+        observer.status_floor = Some(statuses);
         Ok(observer)
     }
 
@@ -193,13 +188,14 @@ impl Observer {
     fn apply(&mut self, event: AgentEvent, after: Option<u64>) -> Result<Option<Event>> {
         Ok(match event {
             AgentEvent::Status { status, .. } => {
-                if let Some((floor, opening_turn)) = self.status_floor.take() {
+                if let Some(floor) = self.status_floor {
                     let after = after.ok_or_else(|| {
                         Error::Invalid("status delivery has no source cursor".into())
                     })?;
-                    if after <= floor && opening_turn && !status.phase.in_turn() {
+                    if after <= floor {
                         return Ok(None);
                     }
+                    self.status_floor = None;
                 }
                 if !status.phase.in_turn() {
                     self.reset_output()?;
