@@ -90,7 +90,10 @@ stop still take effect. Comparison reuses immutable chunks and bounded range
 reads. Cumulative steering is unbounded; each individual suffix uses the owner's
 ordinary input capacity. Rejection never replaces the admitted prefix. Clearing
 a pause retains spending totals, and every new dispatch checks that retained
-reservation before paid work.
+reservation before paid work. A stop also closes every child admitted in that
+same turn in the original subtree commit. Model and tool dispatches condition
+their original journal publication on the agent remaining open, even before its
+actor consumes the archive control. Accepted dispatches retain their exact replay.
 
 The first request of a new turn captures one original inbox cut and includes
 steering already committed there. A request whose input was already frozen
@@ -130,8 +133,8 @@ kind = "disabled"
 ```
 
 Role templates can select another configured provider/model with their `model`
-frontmatter. Automatic compaction requires a verified counter; the explicit
-disabled policy supports endpoints without one. Unattended owners read API keys
+frontmatter. Automatic compaction uses the selected model capacity; the explicit
+disabled policy avoids automatic context compaction. Unattended owners read API keys
 only from the process environment, using the provider's normal credential slot
 (for example, `MORPH_API_KEY` for catalog id `morph`). Keys do not enter guest
 environments, agent files or streams. Standard transient HTTP backpressure
