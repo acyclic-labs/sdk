@@ -177,6 +177,18 @@ async fn live_reply_flush_drains_inside_a_deferred_model_phase() -> Result<()> {
                 "live text became visible without a device drain"
             );
         }
+        let before = drains();
+        text.flush().await?;
+        assert_eq!(drains(), before, "empty live text added a device drain");
+        stream
+            .append(append())
+            .await
+            .map_err(|cause| storage(&cause))?;
+        assert_eq!(
+            drains(),
+            before,
+            "live text leaked eager durability into unrelated journal writes"
+        );
         Ok::<_, Error>(())
     })));
     let result = loop {
