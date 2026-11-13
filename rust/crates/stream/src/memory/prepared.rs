@@ -101,6 +101,8 @@ impl MemoryStream {
         ))?;
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
+        // A prepared commit publishes through the journal only.
+        durable_only(state.ephemeral.commit_scope(&state.paths, &request))?;
         let capacity_reservation = self.reserve_prepared_capacity(&state, &request, maximum)?;
         let retained = self.reserve_retained(&state)?;
         // The requested key bounds both lookup and insertion even when other
@@ -114,6 +116,7 @@ impl MemoryStream {
                 .ok_or(StreamError::Capacity)?,
         )?;
         self.reserve_commit_index(&mut probes)?;
+        self.extend_replay_probes(&mut probes, ephemeral_lookup_bound()?)?;
         let mut plan = self.plan_commit(
             &mut state,
             &[prepared_mutation(&request)?],
@@ -219,6 +222,12 @@ impl MemoryStream {
             }
             return Ok(None);
         }
+        let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
+        if state.ephemeral_key_is_spent(request.idempotency_key.as_bytes(), |items| {
+            work.record(work.meter.examine(items, 0))
+        })? {
+            return Err(StreamError::IdempotencyMismatch);
+        }
         for condition in request.conditions() {
             if !state
                 .paths
@@ -283,6 +292,7 @@ impl MemoryStream {
                 .and_then(|items| items.checked_add(8))
                 .ok_or(StreamError::Capacity)?,
         )?;
+        self.extend_replay_probes(&mut probes, ephemeral_lookup_bound()?)?;
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_observed(
             &meter,
@@ -290,11 +300,20 @@ impl MemoryStream {
             async move {
                 let state = state.read().await;
                 let (stored, observed) = read.attempt(|| {
-                    state.replay(recovery_key.as_bytes(), |items| probes.record(items))
+                    let stored =
+                        state.replay(recovery_key.as_bytes(), |items| probes.record(items))?;
+                    let collision = stored.is_none()
+                        && state.ephemeral_key_is_spent(recovery_key.as_bytes(), |items| {
+                            probes.record(items)
+                        })?;
+                    Ok::<_, std::io::Error>((stored, collision))
                 });
-                let stored = stored?;
+                let (stored, collision) = stored?;
                 let mut observed = observed.err();
                 let result = (|| {
+                    if collision {
+                        return Err(StreamError::IdempotencyMismatch);
+                    }
                     let Some(stored) = stored else {
                         return Ok((None, None));
                     };
@@ -399,6 +418,12 @@ impl PreparedCommit {
         let state = self.provider.state.write().await;
         let (mut conflicts, output_claim) = self.conflicts;
         let result = async {
+            // A lease may have reserved the destination since preparation.
+            durable_only(state.ephemeral.scope(
+                &state.paths,
+                [&append(&self.plan.result).path],
+                self.conditions.iter().map(CommitCondition::path),
+            ))?;
             if let Some(stored) = state.replay(self.key.as_bytes(), |items| {
                 self.provider.record_replay_probe(&mut self.probes, items);
                 Ok::<_, StreamError>(())
@@ -418,6 +443,12 @@ impl PreparedCommit {
                 )?;
                 let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
                 return Ok(result);
+            }
+            if state.ephemeral_key_is_spent(self.key.as_bytes(), |items| {
+                self.provider.record_replay_probe(&mut self.probes, items);
+                Ok::<_, StreamError>(())
+            })? {
+                return Err(StreamError::IdempotencyMismatch);
             }
             if self
                 .deadline
@@ -480,25 +511,32 @@ impl PreparedCommit {
             Decision::Accepted {
                 bytes,
                 install: |state: &mut State, _durable, at_millis| {
-                    let time = publication.bind_acceptance(state, at_millis)?;
+                    publication.bind_acceptance(state, at_millis)?;
                     let retained = self.provider.install_retained(state, self.retained)?;
                     publication.publish(
                         state,
                         &mut |items| self.provider.record_replay_probe(&mut self.probes, items),
                         self.key,
                         digest,
-                        time,
-                        retained,
+                        &Scope::Durable,
+                        PublicationRetention::Durable(retained),
                     )
                 },
             }
-            .durable(&self.provider, state, persist.as_mut())
+            .durable(&self.provider, state, false, persist.as_mut())
             .await
         }
         .await;
         let _ = work.record(self.probes.record(16));
         work.release_write();
         result
+    }
+}
+
+fn durable_only(scope: Result<Scope, StreamError>) -> Result<(), StreamError> {
+    match scope? {
+        Scope::Durable => Ok(()),
+        Scope::Ephemeral(_) => Err(StreamError::InvalidArgument),
     }
 }
 

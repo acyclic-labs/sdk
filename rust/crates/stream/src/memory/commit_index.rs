@@ -94,17 +94,26 @@ impl State {
             Ok(())
         };
         let (selected, _) = radix::select(self.commit_cursor(), id.as_bytes(), None, &mut observe)?;
-        match selected.link {
+        let durable = match selected.link {
             Some(RetainedIndexLink::Leaf(index)) => {
                 observe(32)?;
-                Ok(self
-                    .replay_entry(index)
+                self.replay_entry(index)
                     .envelope()
-                    .filter(|envelope| envelope.commit_id == *id))
+                    .filter(|envelope| envelope.commit_id == *id)
             }
-            None => Ok(None),
+            None => None,
             _ => unreachable!("selection returns a retained commit leaf"),
+        };
+        if durable.is_some() || self.ephemeral.roots.is_empty() {
+            return Ok(durable);
         }
+        Ok(self
+            .ephemeral
+            .receipts
+            .commits
+            .get(*id.as_bytes(), &mut ReceiptProbe(observe))?
+            .filter(|fact| fact.is_live())
+            .map(EphemeralReplay::envelope))
     }
 
     fn insert_commit(&mut self, index: usize, probe: &mut impl FnMut(u64)) {
@@ -179,15 +188,7 @@ impl MemoryStream {
         // caller budget exhaustion. Reserve shared traversal and complete key comparison now;
         // retain only records already admitted probes and refunds the unused tail.
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = &self.work {
-            let remaining = probes
-                .remaining
-                .checked_add(COMMIT_INDEX_PROBES)
-                .ok_or(StreamError::Capacity)?;
-            work.record(work.meter.reserve_examination(COMMIT_INDEX_PROBES))?;
-            probes.remaining = remaining;
-            probes.meter = Some(Arc::clone(&work.meter));
-        }
+        self.extend_replay_probes(probes, COMMIT_INDEX_PROBES)?;
         let _ = probes;
         Ok(())
     }

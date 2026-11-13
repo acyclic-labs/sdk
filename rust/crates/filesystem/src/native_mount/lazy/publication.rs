@@ -91,9 +91,9 @@ where
         E: From<MountSourceError> + From<crate::FsError> + Send + 'static,
     {
         let (work, cancellation) = match &accounting {
-            crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } => {
-                ((*work).clone(), *cancellation)
-            }
+            crate::kernel::KernelAccounting::NativeOriginal {
+                work, cancellation, ..
+            } => ((*work).clone(), *cancellation),
             _ => return Err(MountSourceError::OriginalSnapshotUnavailable.into()),
         };
         let mut carrier = adapter::NativeDemandCarrier::Native(&work);

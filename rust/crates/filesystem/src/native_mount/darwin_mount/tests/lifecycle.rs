@@ -286,7 +286,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
             argc,
             pointers.as_ptr().cast(),
             destination.as_ptr(),
-            Arc::as_ptr(&context) as usize,
+            &context as *const super::super::requests::CallbackTarget as usize,
             report_mounted,
             Arc::as_ptr(&resources).cast_mut().cast(),
             &mut interrupted,
@@ -471,6 +471,7 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
         loop_finished_before_teardown: None,
         loop_result: None,
         native_root_identity: None,
+        shared: None,
     };
     assert!(
         session
@@ -532,6 +533,7 @@ fn provider_unwind_publishes_shutdown_before_joining_its_original_panic() -> Tes
         loop_finished_before_teardown: None,
         loop_result: None,
         native_root_identity: None,
+        shared: None,
     };
     started.recv()?;
     drop(release);

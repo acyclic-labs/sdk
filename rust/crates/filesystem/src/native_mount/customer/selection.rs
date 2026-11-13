@@ -190,7 +190,10 @@ impl<'a> AdmittedSelection<'a> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         self.require_checkout(checkout)?;
-        let KernelAccounting::NativeOriginal { work, cancellation } = &*accounting else {
+        let KernelAccounting::NativeOriginal {
+            work, cancellation, ..
+        } = &*accounting
+        else {
             return Err(MountSourceError::OriginalSnapshotUnavailable.into());
         };
         let (work, cancellation) = (*work, *cancellation);

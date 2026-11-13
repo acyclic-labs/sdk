@@ -79,10 +79,7 @@ impl LocalHarness {
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         self.authorize_checkout_context(workspace, view.workspace(), &io, authority)
             .await?;
@@ -135,10 +132,7 @@ impl LocalHarness {
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         self.authorize_checkout_context(
             workspace,
@@ -196,10 +190,7 @@ impl LocalHarness {
             &cancellation,
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-            work: &work,
-            cancellation: &cancellation,
-        };
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::native(&work, &cancellation);
         let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
         self.authorize_checkout_context(
             workspace,
@@ -269,10 +260,10 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
         Box::pin(async move {
             let cut = revision.copied().unwrap_or(self.directory.cut);
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: self.directory.work,
-                cancellation: self.directory.work.cancellation(),
-            };
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(
+                self.directory.work,
+                self.directory.work.cancellation(),
+            );
             let Some(stat) = self
                 .directory
                 .view
@@ -309,10 +300,10 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                     "instruction archive exceeds path bound".into(),
                 ));
             }
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work: self.directory.work,
-                cancellation: self.directory.work.cancellation(),
-            };
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::native(
+                self.directory.work,
+                self.directory.work.cancellation(),
+            );
             let (bytes, _allocation) = match self
                 .directory
                 .view

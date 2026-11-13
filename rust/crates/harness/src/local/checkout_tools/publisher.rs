@@ -268,7 +268,7 @@ impl CheckoutPublisher {
                 Some(source) => Some(source.publication().await?),
                 None => None,
             };
-            let native = native.as_ref().and_then(|(guard, _)| guard.as_ref());
+            let native = native.as_ref().and_then(|guard| guard.as_ref());
             let workspace = mount.view.source.as_ref()
                 .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
             access::require_volume_access(workspace, &mount.view.volume, &self.tools.signed, ceiling.unwrap_or(self.tools.signed.capabilities()), "local checkout publication").await?;
@@ -609,7 +609,7 @@ impl ContentPublisher for CheckoutPublisher {
                         )?;
                         if let Some(source) = &mount.view.source {
                             let publication = source.publication().await?;
-                            if let Some(native) = publication.0.as_ref() {
+                            if let Some(native) = publication.as_ref() {
                                 native.advance_to_head().await?;
                             }
                         } else {
