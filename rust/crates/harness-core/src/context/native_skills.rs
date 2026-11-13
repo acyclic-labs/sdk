@@ -58,10 +58,6 @@ use retained::RetainedBatch;
 #[doc(hidden)]
 pub mod codec_fuzz;
 
-fn decode_materialized(bytes: &[u8]) -> Result<crate::resources::GenerationRef> {
-    serde_json::from_slice(bytes).map_err(storage)
-}
-
 /// A user catalog and the watch generation it was scanned at.
 type UserCatalog = Option<(u64, SkillCatalog)>;
 
@@ -187,6 +183,10 @@ pub struct NativeSkills {
     journal: VolumeRef,
     workspace: Option<SkillWorkspace>,
     pub(crate) materializer: super::skill_materializer::SkillMaterializer,
+    // Warm observations only. The filesystem operation journal owns recovery;
+    // a native file must never redirect an immutable source to another body.
+    materialized:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::resources::GenerationRef>>>,
     user_roots: Vec<PathBuf>,
     cache: crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalog>>,
     users: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
@@ -211,6 +211,7 @@ impl NativeSkills {
             journal,
             workspace: self.workspace.clone(),
             materializer: super::skill_materializer::SkillMaterializer::new(),
+            materialized: Arc::default(),
             user_roots: self.user_roots.clone(),
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
@@ -225,6 +226,7 @@ impl NativeSkills {
     pub(crate) fn retain_sources_from(&mut self, previous: &Self) {
         self.directory = previous.directory.clone();
         self.materializer = previous.materializer.clone();
+        self.materialized = Arc::clone(&previous.materialized);
     }
 
     pub(crate) fn volume(&self) -> &VolumeRef {
@@ -234,15 +236,12 @@ impl NativeSkills {
         &self,
         generation: &crate::resources::GenerationRef,
     ) -> Result<Option<crate::resources::GenerationRef>> {
-        let path = self.directory.join(format!(
-            "{}.body.json",
-            hex::encode(generation.as_resource().key())
-        ));
-        match std::fs::read(path) {
-            Ok(bytes) => decode_materialized(&bytes).map(Some),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(storage(error)),
-        }
+        Ok(self
+            .materialized
+            .lock()
+            .map_err(storage)?
+            .get(&hex::encode(generation.as_resource().key()))
+            .cloned())
     }
 
     pub(crate) fn retain_materialized(
@@ -250,21 +249,10 @@ impl NativeSkills {
         source: &crate::resources::GenerationRef,
         generation: &crate::resources::GenerationRef,
     ) -> Result<()> {
-        let path = self.directory.join(format!(
-            "{}.body.json",
-            hex::encode(source.as_resource().key())
-        ));
-        let temporary = self
-            .directory
-            .join(crate::identity::fresh_uuid().to_string());
-        std::fs::write(&temporary, serde_json::to_vec(generation).map_err(storage)?)
-            .map_err(storage)?;
-        if let Err(error) = std::fs::rename(&temporary, &path) {
-            std::fs::remove_file(&temporary).map_err(storage)?;
-            if !path.exists() {
-                return Err(storage(error));
-            }
-        }
+        self.materialized
+            .lock()
+            .map_err(storage)?
+            .insert(hex::encode(source.as_resource().key()), generation.clone());
         Ok(())
     }
 
@@ -309,6 +297,7 @@ impl NativeSkills {
             journal,
             workspace,
             materializer: super::skill_materializer::SkillMaterializer::new(),
+            materialized: Arc::default(),
             user_roots,
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),

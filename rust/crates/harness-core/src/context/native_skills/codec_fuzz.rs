@@ -2,10 +2,10 @@
 use super::*;
 use std::collections::HashMap;
 
-/// Check the deployed record and materialization receipt admission functions.
+/// Check retained records and the shared typed-generation admission contract.
 pub fn check(bytes: &[u8]) {
     let resource = serde_json::from_slice::<crate::resources::ResourceRef>(bytes);
-    let admitted = decode_materialized(bytes);
+    let admitted = serde_json::from_slice::<crate::resources::GenerationRef>(bytes);
     assert_eq!(
         admitted.is_ok(),
         resource
@@ -19,8 +19,10 @@ pub fn check(bytes: &[u8]) {
         wrong["kind"] = "workspace".into();
         assert!(
             matches!(
-                decode_materialized(&serde_json::to_vec(&wrong).unwrap()),
-                Err(Error::Storage(reason)) if reason.contains("typed resource kind mismatch")
+                serde_json::from_slice::<crate::resources::GenerationRef>(
+                    &serde_json::to_vec(&wrong).unwrap()
+                ),
+                Err(error) if error.to_string().contains("typed resource kind mismatch")
             ),
             "foreign skill receipt kind admitted or refusal changed"
         );

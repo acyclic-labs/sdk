@@ -185,16 +185,9 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
                 .is_some()
         );
         codec_fuzz::check(&bytes);
-        sources.retain_materialized(&skills[0].source.generation, &skills[0].source.generation)?;
-        assert_eq!(
-            sources.materialized(&skills[0].source.generation)?,
-            Some(skills[0].source.generation.clone())
-        );
-        let receipt = std::fs::read(sources.directory.join(format!(
-            "{}.body.json",
-            hex::encode(skills[0].source.generation.as_resource().key())
-        )))
-        .map_err(storage)?;
+        // The native source pin exercises the same typed resource codec used
+        // by publication generations and the cross-language JSON corpus.
+        let receipt = serde_json::to_vec(&skills[0].source.generation).map_err(storage)?;
         codec_fuzz::check(&receipt);
         if let Some(directory) = std::env::var_os("ACYCLIC_RETAINED_SKILL_CORPUS") {
             let directory = PathBuf::from(directory);

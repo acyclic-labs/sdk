@@ -140,12 +140,34 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
     let original = fixture.read(&fixture.host).await?;
     let source = &fixture.skills[0].source;
     assert!(fixture.sources.materialized(&source.generation)?.is_some());
-    // Recreate the crash window between the durable commit and local receipt.
+    let workspace = workspace_ref(
+        fixture.volume.provider().clone(),
+        &fixture.volume.storage_name(&mut None)?,
+    )?;
+    let original_generation = fixture.sources.materialized(&source.generation)?.unwrap();
+    let changed = fixture
+        .host
+        .apply(
+            &workspace,
+            Some(&original_generation),
+            &[WorkspaceMutation::PutFile {
+                path: format!("/{}", source.path),
+                bytes: b"substituted skill body".as_slice().into(),
+            }],
+            &IdempotencyKey::new("changed-skill-body")?,
+        )
+        .await?;
+    // A process restart loses the warm cache. A native sidecar must not
+    // redirect the original committed input to a later file generation.
     let receipt = fixture.retained.path().join("sources").join(format!(
         "{}.body.json",
         hex::encode(source.generation.as_resource().key())
     ));
-    std::fs::remove_file(receipt).map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::write(
+        receipt,
+        serde_json::to_vec(&changed).map_err(|error| Error::Storage(error.to_string()))?,
+    )
+    .map_err(|error| Error::Storage(error.to_string()))?;
     std::fs::remove_file(fixture.home.path().join("first/SKILL.md"))
         .map_err(|error| Error::Storage(error.to_string()))?;
     let sources = NativeSkills::new(
@@ -158,7 +180,10 @@ async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> 
         FilesystemHost::new(fixture.filesystem.clone(), fixture.volume.provider(), None)?
             .with_native_skills(sources.clone())?;
     assert_eq!(fixture.read(&reopened).await?, original);
-    assert!(sources.materialized(&source.generation)?.is_some());
+    assert_eq!(
+        sources.materialized(&source.generation)?,
+        Some(original_generation)
+    );
     Ok(())
 }
 
