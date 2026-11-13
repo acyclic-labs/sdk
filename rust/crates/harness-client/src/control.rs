@@ -445,6 +445,15 @@ impl AgentControls {
             .await
     }
 
+    /// Page original human prompts through the same credited input source.
+    pub async fn prompt_history_query(
+        &self,
+        agent: acyclic_harness_core::agent::AgentPath,
+        page: crate::AgentPageRequest,
+    ) -> Result<crate::InputQuery, AgentExchangeError> {
+        self.selected_input_query(agent, page, crate::InputSelection::History)
+            .await
+    }
     async fn selected_input_query(
         &self,
         agent: acyclic_harness_core::agent::AgentPath,
