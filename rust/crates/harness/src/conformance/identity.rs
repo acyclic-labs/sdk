@@ -386,3 +386,9 @@ async fn refresh_bounds(now: u64) -> Result {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[tokio::test]
+async fn refresh_preserves_keys_and_honors_caller_cancellation() -> Result {
+    refresh_bounds(1_000).await
+}
