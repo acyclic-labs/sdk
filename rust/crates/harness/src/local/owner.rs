@@ -257,17 +257,18 @@ impl RootWitness {
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.
 
-/// Version seven pins per-turn hook configurations in the host journal.
-/// Earlier owners retain private snapshots of interrupted turns, so refuse
-/// them before filesystem attachment or selecting a replacement configuration.
-const RECORD: &str = "owner.v7";
-const OLDER_RECORDS: [&str; 6] = [
+/// Version eight retains context delivery frontiers in the host journal.
+/// Earlier owners retain model-writable delivery state, so refuse them
+/// before filesystem attachment or replaying a different notice history.
+const RECORD: &str = "owner.v8";
+const OLDER_RECORDS: [&str; 7] = [
     "owner.json",
     "owner.v2",
     "owner.v3",
     "owner.v4",
     "owner.v5",
     "owner.v6",
+    "owner.v7",
 ];
 
 impl Owner {

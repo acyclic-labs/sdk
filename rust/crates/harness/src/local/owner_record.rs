@@ -2,7 +2,7 @@ use super::{AgentId, TaskId, VolumeRef};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Owner record v7: store-owned seed reference and journal-owned hook configuration.
+/// Owner record v8: store-owned seed reference and journal-owned delivery state.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Owner {

@@ -134,17 +134,23 @@ impl LocalHarness {
     /// intent binds the epoch, the source, both digests and the durable
     /// count. The retained outbox recovers a send interrupted by a crash;
     /// unchanged requests use the in-memory frontier without storage reads.
+    /// Delivery state belongs to the host journal, outside model-readable
+    /// inputs; live source discovery keeps its original task authority.
     pub(super) async fn announce_changes(
         &self,
         agent: &crate::agent::AgentState,
         epoch: &ContextEpoch,
         binding: &Binding<'_>,
         publisher: &dyn ContentPublisher,
-        reader: &dyn ContentResidencyVerifier,
+        delivery: &crate::runtime::ContentBindings,
     ) -> Result<Option<u64>> {
         let Some(hosted) = self.agents.get() else {
             return Ok(None);
         };
+        let delivery_writer = delivery
+            .writer
+            .as_deref()
+            .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?;
         let live = self.live_manifest(binding, publisher, Vec::new()).await?;
         let cached = self
             .told
@@ -152,14 +158,16 @@ impl LocalHarness {
             .map_err(|_| Error::Storage("context change lock poisoned".into()))?
             .remove(&agent.path)
             .filter(|told| told.epoch == *epoch.manifest());
-        let path = format!("{}.told.v1.json", epoch.manifest().path());
+        let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
+        let path = format!("context/told/{operation}.json");
         let mut told = match cached {
             Some(told) => told,
             None => {
-                let retained = reader
+                let retained = delivery
+                    .reader
                     .read_private_path(
-                        publisher.volume(),
-                        "inputs",
+                        &delivery.volume,
+                        "context/told",
                         &path,
                         None,
                         None,
@@ -180,7 +188,7 @@ impl LocalHarness {
                         None,
                         ToldState {
                             version: 1,
-                            digests: epoch.digests(reader, self.limits).await?,
+                            digests: epoch.digests(binding.reader, self.limits).await?,
                             sent: 0,
                             pending: None,
                         },
@@ -206,7 +214,7 @@ impl LocalHarness {
                     .map_err(storage)?,
             )?;
         }
-        for change in ContextEpoch::changes(&told.state.digests, &live, reader).await? {
+        for change in ContextEpoch::changes(&told.state.digests, &live, binding.reader).await? {
             let mut hash = blake3::Hasher::new_derive_key("acyclic.local.context-change.v1");
             hash.update(epoch.manifest().descriptor().sha256());
             hash.update(&(change.source.len() as u64).to_le_bytes());
@@ -236,12 +244,12 @@ impl LocalHarness {
             // same frontier; the operation receipt recovers an uncertain write.
             let (file, _) = match &told.file {
                 Some(file) => {
-                    publisher
+                    delivery_writer
                         .stage_at(operation, file, &bytes, None, None)?
                         .await?
                 }
                 None => {
-                    publisher
+                    delivery_writer
                         .stage_once(
                             operation,
                             &path,

@@ -300,6 +300,10 @@ impl TurnContext for LocalContext {
             let executor = executor
                 .with_context_epoch(&epoch, authority.content.reader.clone())
                 .await?;
+            let journal_content = authority
+                .journal
+                .output_content(turn)?
+                .ok_or_else(|| Error::Invalid("agent turn has no journal content".into()))?;
             // Before the turn's first request: the step-0 boundary appends
             // what changed since the epoch froze.
             let through = local
@@ -308,7 +312,7 @@ impl TurnContext for LocalContext {
                     &epoch,
                     &bindings.context,
                     &**writer,
-                    authority.content.reader.as_ref(),
+                    &journal_content,
                 )
                 .await?;
             if let Some(through) = through {
@@ -319,15 +323,10 @@ impl TurnContext for LocalContext {
                     .include_prepared_sources(turn, through)?;
             }
             #[cfg(any(test, not(target_arch = "wasm32")))]
-            let hook_content = authority
-                .journal
-                .output_content(turn)?
-                .ok_or_else(|| Error::Invalid("agent turn has no journal content".into()))?;
-            #[cfg(any(test, not(target_arch = "wasm32")))]
             let hooks = local
                 .turn_hooks(
                     turn,
-                    hook_content
+                    journal_content
                         .writer
                         .as_deref()
                         .ok_or_else(|| Error::Invalid("agent turn has no journal writer".into()))?,
@@ -346,7 +345,7 @@ impl TurnContext for LocalContext {
                     session_operation(&agent.path),
                     hooks
                         .as_ref()
-                        .map(|file| (file, hook_content.reader.as_ref())),
+                        .map(|file| (file, journal_content.reader.as_ref())),
                 )
                 .await?;
             #[cfg(not(any(test, not(target_arch = "wasm32"))))]

@@ -86,6 +86,39 @@ impl ObservedConversation {
     }
 }
 
+/// Read-only host inspection of one agent's journal through authenticated handles.
+pub(super) fn journal_content(
+    harness: &LocalHarness,
+    root: &crate::agent::AgentPath,
+) -> Result<crate::runtime::ContentBindings> {
+    let journal =
+        crate::conversation::journal_volume(harness.project.provider().clone(), &root.id())?;
+    let scope = harness
+        .root_authority
+        .as_ref()
+        .expect("scripted journals have local signing custody")
+        .bootstrap_scope(
+            "journal-inspection",
+            &crate::Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
+                journal.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+            ]),
+            Some(crate::AgentId::from_bytes(root.id_bytes())),
+            &mut None,
+        )?;
+    Ok(crate::runtime::ContentBindings {
+        reader: crate::filesystem::FilesystemContentVerifier::new(
+            harness.files.clone(),
+            &harness.verifier,
+            &scope,
+            harness.limits.file_bytes,
+            None,
+        )?,
+        writer: None,
+        volume: journal,
+    })
+}
+
 /// Inspect the immutable text bodies delivered through the real content reader.
 pub(super) async fn request_text(
     harness: &LocalHarness,

@@ -5216,9 +5216,8 @@ async fn archive_reactivates_paused_roots_and_open_descendants_for_closing() -> 
 
 /// Editing AGENTS.md between turns keeps the cached span (system block and
 /// tools) of the first request byte-identical in the second, and appends the
-/// edit as a notice the second request carries. Negative control: rendering
-/// the live manifest per request (origin/main) changes the second request's
-/// system block, failing the prefix assertion.
+/// edit as a notice the second request carries. Its host-only delivery
+/// frontier survives reopen and prevents losing or repeating transitions.
 #[tokio::test]
 async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> Result<()> {
     use crate::test_support::ScriptedTurn;
@@ -5245,6 +5244,41 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
     );
     std::fs::write(checkout.join("AGENTS.md"), b"RULE_TWO\n").map_err(agent)?;
     client.send("two", "SECOND_PROMPT").await?;
+    let (agents, root) = harness.agents().await?;
+    let root = root.clone();
+    let state = agents.state(&root).await.map_err(agent)?;
+    let operation = crate::context::ContextEpoch::operation(root.as_str(), state.checkpoint)?;
+    let frontier_path = format!("context/told/{operation}.json");
+    let content = super::journal_content(&harness, &root)?;
+    let (frontier, bytes, _) = content
+        .reader
+        .read_private_path(
+            &content.volume,
+            "context/told",
+            &frontier_path,
+            None,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?
+        .ok_or_else(|| Error::NotFound("journal context delivery frontier".into()))?;
+    assert_eq!(frontier.volume(), &content.volume);
+    let private = state
+        .volumes
+        .iter()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Private)
+        .ok_or_else(|| Error::NotFound("private volume".into()))?
+        .volume()?;
+    assert_ne!(frontier.volume(), private);
+    let delivered: serde_json::Value = serde_json::from_slice(&bytes).map_err(agent)?;
+    assert_eq!(delivered["sent"], 1);
+    assert!(delivered["pending"].is_object());
+    assert!(matches!(
+        harness.agents.get().unwrap().server().bound()
+            .read_file(&root, &frontier, 0, frontier.descriptor().byte_length()).await,
+        Err(crate::agent::Error::Turn(error)) if matches!(*error, Error::Unauthorized(_))
+    ));
+    drop(content);
     let request = |index| {
         provider
             .request(index)
@@ -5300,5 +5334,22 @@ async fn an_instruction_edit_appends_a_notice_and_keeps_the_cached_prefix() -> R
             "request {index} must deliver each transition once"
         );
     }
+    let content = super::journal_content(&harness, &root)?;
+    let (latest, bytes, _) = content
+        .reader
+        .read_private_path(
+            &content.volume,
+            "context/told",
+            &frontier_path,
+            None,
+            None,
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?
+        .ok_or_else(|| Error::NotFound("reopened context delivery frontier".into()))?;
+    assert_eq!(latest.volume(), frontier.volume());
+    assert_ne!(latest, frontier);
+    let delivered: serde_json::Value = serde_json::from_slice(&bytes).map_err(agent)?;
+    assert_eq!(delivered["sent"], 3);
     Ok(())
 }
