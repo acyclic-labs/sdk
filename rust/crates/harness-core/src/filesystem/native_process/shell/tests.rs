@@ -9,6 +9,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[cfg(unix)]
 use std::{fs::OpenOptions, io::Write};
 
+fn workspace_hints(environment: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    serde_json::from_str(&environment["ACYCLIC_WORKSPACES"]).expect("native discovery is JSON")
+}
+
 #[cfg(unix)]
 fn table(root: PathBuf) -> Result<MountTable<Arc<tempfile::TempDir>>> {
     table_with_home(root, false)
@@ -460,7 +464,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
     }
     // A logical binding grants file-tool access without fabricating an OS
     // projection, even when a same-named native directory happens to exist.
-    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_DATA"));
+    assert!(!workspace_hints(&mounts.environment()?).contains_key("data"));
     assert!(matches!(
         prepare(
             ShellInput {
@@ -482,7 +486,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
             mount.native_root = crate::workspace::NativeRoot::Path(volume.clone());
         }
     }
-    assert!(!mounts.environment()?.contains_key("ACYCLIC_VOLUME_SHARED"));
+    assert!(!workspace_hints(&mounts.environment()?).contains_key("shared"));
     let logical = prepare(
         crate::tools::ShellInput {
             cwd: Some("volume:///shared".into()),
@@ -503,7 +507,7 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
         (
             None,
             crate::tools::ShellCommand::Source(
-                r#"printf inside > inside; printf volume > "$ACYCLIC_VOLUME_DATA/written";
+                r#"printf inside > inside; printf volume > "$FIXTURE_DATA/written";
              printf temp > "$TMPDIR/tempfile";
              /bin/cat "$OUTSIDE" >/dev/null 2>&1 && exit 13;
              /bin/cat /proc/self/environ >/dev/null 2>&1 && exit 14;
@@ -524,6 +528,10 @@ async fn sandbox_denies_outside_write_including_descendants_and_volume_aliases()
         ),
     ] {
         let mut native = invocation(&mounts.root);
+        native.environment.insert(
+            "FIXTURE_DATA".into(),
+            workspace_hints(&mounts.environment()?)["data"].clone(),
+        );
         native.environment.insert(
             "OUTSIDE".into(),
             outside.to_str().expect("fixture path").into(),
@@ -667,7 +675,7 @@ fn bound_volume_cwd_keeps_its_authority() {
                     }
                     prop_assert_eq!(prepared.cwd, native.join(&component));
                     prop_assert_eq!(
-                        prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(),
+                        workspace_hints(&prepared.environment).get("data").unwrap(),
                         native.to_str().unwrap()
                     );
                 }
@@ -725,7 +733,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
                             "ACYCLIC_TEST_RENAMED_SECRET",
                             "fixture-only-renamed-credential",
                         )
-                        .env("ACYCLIC_VOLUME_DATA", "stale mount")
+                        .env("ACYCLIC_WORKSPACES", "stale mount")
                         .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
                         .env("BASH_ENV", &startup)
                         .env(
@@ -768,7 +776,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;
     let input = ShellInput {
-        command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${!ACYCLIC_TEST_NATIVE_BYTES*}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
+        command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${!ACYCLIC_TEST_NATIVE_BYTES*}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test -n "$ACYCLIC_WORKSPACES" && acyclic-explicit-path-only"#.into(),
         cwd: None,
         timeout_ms: Some(5000), background: false, target: None,
     };
@@ -794,8 +802,8 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         )?;
         assert!(!prepared.inherit_environment);
         assert_eq!(
-            prepared.environment.get("ACYCLIC_VOLUME_DATA"),
-            mounts.environment()?.get("ACYCLIC_VOLUME_DATA")
+            prepared.environment.get("ACYCLIC_WORKSPACES"),
+            mounts.environment()?.get("ACYCLIC_WORKSPACES")
         );
         let output = capture::capture_with_custody(
             prepared,
@@ -816,10 +824,9 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         assert!(output.stderr.is_empty());
     }
     let mut collision = configured(false);
-    collision.environment.insert(
-        "ACYCLIC_VOLUME_DATA_MODE".into(),
-        "stale explicit mode".into(),
-    );
+    collision
+        .environment
+        .insert("ACYCLIC_WORKSPACES".into(), "stale explicit mode".into());
     assert!(matches!(
         prepare(
             input.clone(),
@@ -929,8 +936,13 @@ async fn command_uses_the_composed_cwd_and_streams_before_returning_its_exit_cod
             .open(path)?
             .write_all(bytes)
     });
-    let output = run(ShellInput { command: r#"test "$ACYCLIC_VOLUME_DATA_MODE" = rw; IFS= read -r line < "$ACYCLIC_VOLUME_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), background: false, target: None, },
-        &mounts, invocation(&mounts.root), 1, Some(observer), || Ok(())).await?
+    let mut native = invocation(&mounts.root);
+    native.environment.insert(
+        "FIXTURE_DATA".into(),
+        workspace_hints(&mounts.environment()?)["data"].clone(),
+    );
+    let output = run(ShellInput { command: r#"test -n "$ACYCLIC_WORKSPACES"; IFS= read -r line < "$FIXTURE_DATA/input"; printf '%s' "$line" > result; printf streamed; printf diagnostic >&2; exit 7"#.into(), cwd: Some("src".into()), timeout_ms: Some(5000), background: false, target: None, },
+        &mounts, native, 1, Some(observer), || Ok(())).await?
         .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
     assert_eq!(output.exit_code, Some(7));
     assert!(!output.success);

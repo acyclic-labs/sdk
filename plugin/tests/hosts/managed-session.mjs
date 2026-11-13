@@ -51,8 +51,8 @@ async function effects(prompt){
  const agents=await scope.run(process.env.FIXTURE_ACYCLIC,['agents'],options());
  assert.equal(agents.code,0,JSON.stringify({step:'sandbox workspace discovery',
   code:agents.code,signal:agents.signal,stdout:agents.stdout,stderr:agents.stderr}));
- assert.ok(isAbsolute(process.env.ACYCLIC_VOLUME_HOME),'admitted home discovery is absent');
- await writeFile(join(process.env.ACYCLIC_VOLUME_HOME,'native-private.txt'),prompt);
+ assert.ok(isAbsolute(JSON.parse(process.env.ACYCLIC_WORKSPACES).home),'admitted home discovery is absent');
+ await writeFile(join(JSON.parse(process.env.ACYCLIC_WORKSPACES).home,'native-private.txt'),prompt);
  await assert.rejects(writeFile(process.env.FIXTURE_OUTSIDE,'denied'),
   error=>['EACCES','EPERM','EROFS'].includes(error.code));
  assert.ok(!existsSync(process.env.FIXTURE_OUTSIDE),'sandbox allowed an outside write');
@@ -91,7 +91,7 @@ async function host(){
  process.stdout.write(events[0]);
  const base=[...JSON.parse(process.env.FIXTURE_CODEX_ARGS),...codexSandboxConfig,'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"',
   '-c','sandbox_workspace_write.writable_roots='+JSON.stringify(args.flatMap((value,index)=>value==='--add-dir'?[args[index+1]]:[])),'--'];
- if(prompt==='resumed')assert.equal(await readFile(join(process.env.ACYCLIC_VOLUME_HOME,'native-private.txt'),'utf8'),'first');
+ if(prompt==='resumed')assert.equal(await readFile(join(JSON.parse(process.env.ACYCLIC_WORKSPACES).home,'native-private.txt'),'utf8'),'first');
  const checked=await scope.run(process.env.FIXTURE_CODEX,[...base,process.execPath,driver,'effects',prompt],options());
  assert.equal(checked.code,0,JSON.stringify({step:'native sandbox effects',
   program:process.env.FIXTURE_CODEX,args:[...base,process.execPath,driver,'effects',prompt],

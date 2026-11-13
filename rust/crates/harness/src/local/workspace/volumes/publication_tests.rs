@@ -117,8 +117,10 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
         )?;
         let native = std::fs::canonicalize(&scratch.destination).map_err(storage)?;
         assert_eq!(prepared.cwd, native);
+        let discovery: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&prepared.environment["ACYCLIC_WORKSPACES"]).map_err(storage)?;
         assert_eq!(
-            prepared.environment.get("ACYCLIC_VOLUME_HOME"),
+            discovery.get("home"),
             Some(&scratch.destination.to_string_lossy().into_owned())
         );
         write_projected(&scratch.destination.join("data"), b"acknowledged")?;

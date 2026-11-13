@@ -102,7 +102,7 @@ pub fn prepare<T>(
             .any(|key| super::invocation::environment_key_matches(key, &name))
         {
             return Err(Error::Invalid(
-                "volume discovery hint collides with the explicit process environment".into(),
+                "workspace discovery collides with the explicit process environment".into(),
             ));
         }
         invocation.environment.insert(name, value);

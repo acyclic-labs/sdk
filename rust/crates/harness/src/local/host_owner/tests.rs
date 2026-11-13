@@ -473,11 +473,21 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     ));
     let mut expected = first;
     expected["cwd"] = json!(view);
-    assert_eq!(
-        recovered["environment"]["ACYCLIC_VOLUME_PROJECT"],
-        json!(view)
-    );
-    expected["environment"]["ACYCLIC_VOLUME_PROJECT"] = json!(view);
+    let discovery: serde_json::Value = serde_json::from_str(
+        recovered["environment"]["ACYCLIC_WORKSPACES"]
+            .as_str()
+            .expect("workspace JSON"),
+    )
+    .map_err(storage)?;
+    assert_eq!(discovery["project"], json!(view));
+    let mut previous_discovery: serde_json::Value = serde_json::from_str(
+        expected["environment"]["ACYCLIC_WORKSPACES"]
+            .as_str()
+            .expect("workspace JSON"),
+    )
+    .map_err(storage)?;
+    previous_discovery["project"] = json!(view);
+    expected["environment"]["ACYCLIC_WORKSPACES"] = json!(previous_discovery.to_string());
     assert_eq!(recovered, expected);
     let first = recovered;
     assert!(matches!(

@@ -13,6 +13,10 @@ use std::{
     sync::Arc,
 };
 
+fn workspace_hints(environment: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    serde_json::from_str(&environment["ACYCLIC_WORKSPACES"]).expect("native discovery is JSON")
+}
+
 fn volume_config() -> acyclic_fs::VolumeConfig {
     #[cfg(not(target_arch = "wasm32"))]
     return acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
@@ -119,6 +123,54 @@ fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>
 fn root() -> PathBuf {
     std::env::current_dir().unwrap().join("task-view")
 }
+
+#[test]
+fn workspace_discovery_json_preserves_names_and_only_exposes_native_bindings() -> Result<()> {
+    let caller = principal("B");
+    let policy = policy(false);
+    let names = ["data;=雪 with space", "mixed", "MIXED"];
+    let mut others = names
+        .iter()
+        .map(|name| volume("B", name, policy.clone()))
+        .collect::<Result<Vec<_>>>()?;
+    others.push(volume("C", "hidden", policy.clone())?);
+    let mut table = compose(
+        root(),
+        &caller,
+        &capability(),
+        CONTEXT,
+        volume("B", "project", policy)?,
+        others,
+    )?;
+    let logical = table.environment()?;
+    assert_eq!(
+        logical.len(),
+        1,
+        "one discovery protocol replaces per-name variables"
+    );
+    assert_eq!(
+        workspace_hints(&logical).len(),
+        1,
+        "logical and denied entries have no native path"
+    );
+    expose_native_projections(&mut table);
+    let hints = table.environment()?;
+    assert_eq!(hints.len(), 1);
+    let workspaces = workspace_hints(&hints);
+    assert_eq!(workspaces.len(), names.len() + 1);
+    for name in names {
+        let (_, mount) = table
+            .mounts()
+            .find(|(_, mount)| mount.view.name == name)
+            .expect("binding stays visible");
+        assert_eq!(
+            Path::new(&workspaces[name]),
+            mount.native_root.override_path().unwrap().as_path()
+        );
+    }
+    assert!(!workspaces.contains_key("hidden"));
+    Ok(())
+}
 fn expose_native_projections(table: &mut MountTable<()>) {
     let root = table.root.clone();
     for (relative, mount) in table.mounts_mut() {
@@ -158,15 +210,11 @@ fn own_views_compose_and_ungranted_views_are_absent() -> Result<()> {
         table.context_line(),
         "Volumes: . (rw), volume:///data (logical, rw)"
     );
-    assert!(!table.environment()?.contains_key("ACYCLIC_VOLUME_DATA"));
+    assert!(!workspace_hints(&table.environment()?).contains_key("data"));
     expose_native_projections(&mut table);
     let hints = table.environment()?;
     assert_eq!(
-        hints.get("ACYCLIC_VOLUME_DATA_MODE").map(String::as_str),
-        Some("rw")
-    );
-    assert_eq!(
-        hints.get("ACYCLIC_VOLUME_DATA").map(PathBuf::from),
+        workspace_hints(&hints).get("data").map(PathBuf::from),
         Some(root().with_file_name("native-data"))
     );
     let (data, path) = table.resolve(Path::new("volume:///data/x"))?;
@@ -209,21 +257,11 @@ fn read_all_write_own_exposes_foreign_mounts_read_only() -> Result<()> {
         )
     };
     let mut table = build(false)?;
-    assert!(
-        !table
-            .environment()?
-            .contains_key("ACYCLIC_VOLUME_A_PROJECT_MODE")
-    );
+    assert!(!workspace_hints(&table.environment()?).contains_key("A/project"));
     expose_native_projections(&mut table);
     let (foreign, path) = table.resolve(Path::new("volume://A/project/x"))?;
     assert!(foreign.mode.read_only());
-    assert_eq!(
-        table
-            .environment()?
-            .get("ACYCLIC_VOLUME_A_PROJECT_MODE")
-            .map(String::as_str),
-        Some("ro")
-    );
+    assert!(workspace_hints(&table.environment()?).contains_key("A/project"));
     foreign.check(Action::Read, &path, 100)?;
     assert!(matches!(
         foreign.check(Action::Write, &path, 100),
@@ -301,11 +339,7 @@ fn hidden_stale_views_do_not_block_or_hide_primary_user_directories() -> Result<
         Err(Error::NotFound(_))
     ));
     assert_eq!(table.context_line(), "Volumes: . (rw)");
-    assert!(
-        !table
-            .environment()?
-            .contains_key("ACYCLIC_VOLUME_A_PROJECT")
-    );
+    assert!(!workspace_hints(&table.environment()?).contains_key("A/project"));
     Ok(())
 }
 
