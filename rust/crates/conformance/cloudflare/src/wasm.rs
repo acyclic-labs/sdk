@@ -384,11 +384,13 @@ async fn verify(
         .stream()
         .await
         .map_err(|error| failure(name, "stream-open", error))?;
-    acyclic_stream::conformance::verify(stream.as_ref())
+    // Each suite runs behind its own allocation: the export's future holds a
+    // pointer per suite, not both suites' state machines inline.
+    Box::pin(acyclic_stream::conformance::verify(stream.as_ref()))
         .await
         .map_err(|error| failure(name, "stream-suite", error))?;
     drop(stream);
-    acyclic_agent_host_conformance::verify(backend)
+    Box::pin(acyclic_agent_host_conformance::verify(backend))
         .await
         .map_err(|error| failure(name, "agent-host-suite", error))
 }

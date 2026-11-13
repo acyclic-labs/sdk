@@ -1,4 +1,4 @@
-import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeAgentRecord, decodeReadResponse } from "../generated/wasm/acyclic_harness_wasm.js";
+import init, { AgentGuest, roleModels, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeAgentRecord, decodeReadResponse } from "../generated/wasm/acyclic_harness_wasm.js";
 import { fromBinary } from "@bufbuild/protobuf";
 import { ReadResponseSchema, RecordBatchSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
@@ -20,6 +20,11 @@ export async function agentsFixture(id, reply, initialize = init) {
       yield* respond({ request, dispatch, texts, signal });
       yield { kind: "completed", metadata: {} };
     }, () => null, modelCapacity, modelTokenCount, { kind: "disabled" });
+  // The scripted provider serves every role model, then the fixture's own root binding.
+  for (const selection of roleModels()) {
+    const [provider, name] = selection.split("/");
+    configure({ provider, name, revision: "1" });
+  }
   configure({ provider: "browser-test", name: "scripted", revision: "1" });
   const options = {
     filesystem_database: `harness-agents-fs-${id}`, stream_database: `harness-agents-stream-${id}`,

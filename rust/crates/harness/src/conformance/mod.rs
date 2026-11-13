@@ -138,24 +138,27 @@ pub fn remote(handler: Arc<dyn Handler>) -> Result<Arc<dyn Handler>> {
     wire::remote(handler)
 }
 
-/// Execute every portable vector against fresh backend storage.
+/// Execute every portable vector against fresh backend storage. Each vector
+/// runs behind its own allocation, so a host that composes this suite into a
+/// larger future (a wasm export, a test runner) holds one pointer per vector
+/// instead of nesting every vector's state machine inline.
 pub async fn verify(backend: &dyn Backend) -> Result {
-    identified("controls", vectors::controls(backend).await)?;
-    identified("spawn", vectors::spawn_cut(backend).await)?;
-    identified("reply", reply::verify(backend).await)?;
-    identified("publication", publication::verify(backend).await)?;
-    identified("admission", admission::verify(backend).await)?;
-    identified("identity", identity::verify(backend).await)?;
-    identified("roots", roots::verify(backend).await)?;
-    identified("approvals", approvals::verify(backend).await)?;
-    identified("guest wire", wire::verify(backend).await)?;
-    identified("runtime interrupt (G41)", interrupt::verify(backend).await)?;
+    identified("controls", Box::pin(vectors::controls(backend)).await)?;
+    identified("spawn", Box::pin(vectors::spawn_cut(backend)).await)?;
+    identified("reply", Box::pin(reply::verify(backend)).await)?;
+    identified("publication", Box::pin(publication::verify(backend)).await)?;
+    identified("admission", Box::pin(admission::verify(backend)).await)?;
+    identified("identity", Box::pin(identity::verify(backend)).await)?;
+    identified("roots", Box::pin(roots::verify(backend)).await)?;
+    identified("approvals", Box::pin(approvals::verify(backend)).await)?;
+    identified("guest wire", Box::pin(wire::verify(backend)).await)?;
+    identified("runtime interrupt (G41)", Box::pin(interrupt::verify(backend)).await)?;
     identified(
         "activation checkpoint (G40)",
-        dispatcher::verify(backend).await,
+        Box::pin(dispatcher::verify(backend)).await,
     )?;
-    identified("restart", vectors::restart(backend).await)?;
-    identified("serving protocol", protocol::verify(backend).await)?;
+    identified("restart", Box::pin(vectors::restart(backend)).await)?;
+    identified("serving protocol", Box::pin(protocol::verify(backend)).await)?;
     Ok(())
 }
 
