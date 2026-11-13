@@ -150,7 +150,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let config = workspace.volume_config();
         let source = Arc::new(Routed::new(
             Empty,
-            LogicalName::new(NameEncoding::Utf8, b"evals".to_vec())?,
+            LogicalName::new(NameEncoding::Utf8, b"evals".to_vec())
+                .map_err(|_| io.invalid("evaluation route name is invalid"))?,
             crate::evals::StreamProvider::new(streams, agent)?.into_source(),
             config.limits,
         ));

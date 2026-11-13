@@ -141,8 +141,8 @@ impl TurnAdmission {
 /// filesystem selection; fresh allocations have a separate creation check.
 /// Attestation is deferred until execution needs a signed scope. Every
 /// read of a turn and its [`AgentAuthority`] require one.
-pub(super) struct AdmittedAgent<'v> {
-    path: &'v AgentPath,
+pub(super) struct AdmittedAgent<'v, 'p> {
+    path: &'p AgentPath,
     issuer: RuntimeAuthority,
     owner: crate::AgentId,
     volumes: &'v [WorkspaceEntry],
@@ -152,13 +152,13 @@ pub(super) struct AdmittedAgent<'v> {
     parent: Option<&'v Scope>,
 }
 
-impl<'v> AdmittedAgent<'v> {
+impl<'v, 'p> AdmittedAgent<'v, 'p> {
     /// Verifies the admission of the agent at `path` over `volumes`, signed
     /// with `issuer`'s custody. It performs no IO.
     pub(super) fn verify(
         issuer: &RuntimeAuthority,
         admission: &'v TurnAdmission,
-        path: &'v AgentPath,
+        path: &'p AgentPath,
         volumes: &'v [WorkspaceEntry],
     ) -> Result<Self> {
         let owner = crate::AgentId::from_bytes(path.id_bytes());
@@ -1086,7 +1086,7 @@ where
     }
 
     /// `agent`'s verified admission; it performs no IO.
-    fn admit<'v>(&'v self, agent: &'v AgentState) -> Result<AdmittedAgent<'v>> {
+    fn admit<'v>(&'v self, agent: &'v AgentState) -> Result<AdmittedAgent<'v, 'v>> {
         AdmittedAgent::verify(&self.issuer, &self.admission, &agent.path, &agent.volumes)
     }
 
@@ -1096,7 +1096,7 @@ where
     /// version.
     async fn journal(
         &self,
-        admitted: AdmittedAgent<'_>,
+        admitted: AdmittedAgent<'_, '_>,
         external: &[FileRef],
         retained: &[FileRef],
         context: Option<&mut TurnContext<'_>>,
@@ -1257,7 +1257,7 @@ where
     /// This reader and its journal write grant never enter the tool bindings.
     async fn journal_storage(
         &self,
-        admitted: &AdmittedAgent<'_>,
+        admitted: &AdmittedAgent<'_, '_>,
         retained: &[FileRef],
         external: &[FileRef],
     ) -> Result<JournalStorage<A, O>> {
@@ -1288,7 +1288,7 @@ where
     /// sequences, oldest first.
     async fn history(
         &self,
-        _: &AdmittedAgent<'_>,
+        _: &AdmittedAgent<'_, '_>,
         agent: &AgentState,
     ) -> Result<Vec<(u64, ConversationEntry)>> {
         if agent.conversation_tail == 0 {

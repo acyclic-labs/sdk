@@ -52,6 +52,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let work = caller
             .original_native_work()
             .ok_or_else(|| caller.invalid("lazy directory requires original native work"))?;
+        let before = work.receipt();
         let io = PreparationIo::from_native_work(work)?;
         let mut ctx = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
             work,
@@ -129,6 +130,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             entries,
             has_more: next.is_some(),
             next_residency: None,
+            work: work
+                .receipt()
+                .checked_sub_cumulative(&before)
+                .map_err(acyclic_fs::FsError::from)?,
         };
         let retained = raw_owned_bytes(&page)?
             - std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64
