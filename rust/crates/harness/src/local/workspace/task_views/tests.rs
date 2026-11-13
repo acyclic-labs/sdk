@@ -769,6 +769,21 @@ async fn child_projection_work(
         harness.project.owner().clone(),
         &mut None,
     )?;
+    let agent = crate::AgentId::from_bytes([53; 16]);
+    let private_home = VolumeRef::new(
+        harness.scratch.provider().clone(),
+        "child-home".into(),
+        crate::conversation::VolumeClass::AgentPrivate,
+        crate::conversation::VolumeOwner::Agent(agent),
+        &mut None,
+    )?;
+    harness.files.create_volume(&private_home).await?;
+    let mut bindings = harness.session_bindings();
+    bindings
+        .iter_mut()
+        .find(|binding| binding.role == crate::agent::WorkspaceRole::Home)
+        .expect("home binding")
+        .source = crate::agent::WorkspaceSource::Volume(private_home.clone());
     let cancellation = CancellationToken::new();
     let (view, _) = root
         .view()
@@ -789,23 +804,26 @@ async fn child_projection_work(
         .id();
     let read = project.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
     let write = project.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
-    let grants = crate::Capabilities::new(
-        harness
-            .signed
-            .capabilities()
-            .iter()
-            .chain([read.as_str(), write.as_str()]),
-    );
+    let home_read =
+        private_home.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let home_write =
+        private_home.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    let grants = crate::Capabilities::new(harness.signed.capabilities().iter().chain([
+        read.as_str(),
+        write.as_str(),
+        home_read.as_str(),
+        home_write.as_str(),
+    ]));
     let signed = harness
         .root_authority
         .as_ref()
         .expect("signing custody")
-        .bootstrap_scope("child-projection", &grants, None, &mut None)?;
+        .bootstrap_scope("child-projection", &grants, Some(agent), &mut None)?;
     let authority =
         crate::filesystem::NativeMountAuthority::admitted(harness.verifier.clone(), signed);
     let started = std::time::Instant::now();
     let result = root
-        .bound_task_view(view, &project, &[], &AgentOwner, &authority)
+        .bound_task_view(view, &project, &bindings, &AgentOwner, &authority)
         .await;
     if unavailable {
         assert!(
@@ -822,6 +840,17 @@ async fn child_projection_work(
     }
     let bound = result?;
     let elapsed = started.elapsed();
+    let home = bound.mounts.named(Some(crate::filesystem::HOME_VOLUME))?.1;
+    assert_eq!(home.view.volume, private_home);
+    assert!(
+        home.view
+            .source
+            .as_ref()
+            .expect("home binding")
+            .options
+            .is_some(),
+        "native child inherited the physical root's logical-only home"
+    );
     let mounted = bound
         .mounted
         .as_ref()
@@ -848,6 +877,34 @@ async fn child_projection_work(
             std::fs::read(bound.path.join(format!("file-{index:06}.bin"))).map_err(storage)?,
             payload
         );
+    }
+    if entries == 1 {
+        let source = home.view.source.as_ref().expect("home binding");
+        volumes::native_scope(&bound.mounts, async |claims| {
+            let mut environment = std::collections::BTreeMap::new();
+            crate::filesystem::native_process::shell::workspace_environment(
+                &bound.mounts,
+                &mut environment,
+            )?;
+            let temporary = PathBuf::from(environment.get("TMPDIR").expect("private scratch"));
+            assert_eq!(temporary, source.destination.join("tmp"));
+            std::fs::write(temporary.join("receipt"), b"private scratch").map_err(storage)?;
+            Ok(((), claims))
+        })
+        .await?;
+        let persisted = source
+            .workspace
+            .workspace()
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .read_range("/tmp/receipt", 0, 15, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        assert_eq!(persisted.bytes.as_ref(), b"private scratch");
+        assert!(!checkout.path().join("tmp").exists());
     }
     std::fs::write(bound.path.join("file-000000.bin"), b"child edit").map_err(storage)?;
     mounted.sync().await.map_err(storage)?;
