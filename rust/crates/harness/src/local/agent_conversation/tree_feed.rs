@@ -84,7 +84,7 @@ impl SupervisionFeed {
         {
             Ok(records) => records,
             Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(failed(error)),
+            Err(error) => return Err(feed.connection.stream_failure(error)),
         };
         records
             .try_next()
@@ -204,16 +204,19 @@ impl Connection {
             {
                 Ok(_) => {}
                 Err(acyclic_stream::StreamError::AccessDenied) => return Ok(feed),
-                Err(error) => return Err(failed(error)),
+                Err(error) => return Err(feed.connection.stream_failure(error)),
             }
             let records = records_only(
                 feed.connection
                     .session
                     .follow(FollowRequest::new(selected.source, 0))
                     .await
-                    .map_err(failed)?,
+                    .map_err(|error| feed.connection.stream_failure(error))?,
             );
-            feed.jobs.push(directory(DirectoryFollow { records }));
+            feed.jobs.push(directory(DirectoryFollow {
+                records,
+                connection: feed.connection.clone(),
+            }));
         }
         Ok(feed)
     }
@@ -318,7 +321,9 @@ impl TreeFeed {
                     self.jobs.push(source(records));
                 }
                 Update::Member(None) => {
-                    return Err(Error::Storage("membership follow ended".into()));
+                    return Err(self
+                        .connection
+                        .stream_failure(acyclic_stream::StreamError::Unavailable));
                 }
                 Update::Record(record, follow) => {
                     if record.stream == self.root_stream {
@@ -332,11 +337,14 @@ impl TreeFeed {
                 }
             }
         }
-        Err(Error::Storage("tree feed ended".into()))
+        Err(self
+            .connection
+            .stream_failure(acyclic_stream::StreamError::Unavailable))
     }
 }
 
 struct DirectoryFollow {
+    connection: Connection,
     records: RecordStream,
 }
 
@@ -347,8 +355,12 @@ fn directory(mut follow: DirectoryFollow) -> Job {
                 .records
                 .try_next()
                 .await
-                .map_err(failed)?
-                .ok_or_else(|| Error::Storage("session directory follow ended".into()))?;
+                .map_err(|error| follow.connection.stream_failure(error))?
+                .ok_or_else(|| {
+                    follow
+                        .connection
+                        .stream_failure(acyclic_stream::StreamError::Unavailable)
+                })?;
             match serde_json::from_slice::<crate::client_files::SessionDirectoryEntry>(
                 &record.value,
             )
@@ -390,10 +402,17 @@ fn node(
         let stream = StreamPath::new(format!("{agent}/{relative}")).map_err(failed)?;
         let mut request = FollowRequest::new(stream.clone(), 0);
         request.when_absent = acyclic_stream::WhenAbsent::Wait;
-        let records = records_only(connection.session.follow(request).await.map_err(failed)?);
+        let records = records_only(
+            connection
+                .session
+                .follow(request)
+                .await
+                .map_err(|error| connection.stream_failure(error))?,
+        );
         Ok(Update::Opened(
             members,
             SourceFollow {
+                connection,
                 agent,
                 stream,
                 records,
@@ -408,6 +427,7 @@ fn member(follow: MembershipFollow, finished: watch::Receiver<bool>) -> Job {
 }
 
 struct SourceFollow {
+    connection: Connection,
     agent: AgentPath,
     stream: StreamPath,
     records: RecordStream,
@@ -419,8 +439,12 @@ fn source(mut follow: SourceFollow) -> Job {
             .records
             .try_next()
             .await
-            .map_err(failed)?
-            .ok_or_else(|| Error::Storage("agent source follow ended".into()))?;
+            .map_err(|error| follow.connection.stream_failure(error))?
+            .ok_or_else(|| {
+                follow
+                    .connection
+                    .stream_failure(acyclic_stream::StreamError::Unavailable)
+            })?;
         Ok(Update::Record(
             TreeRecord {
                 agent: follow.agent.clone(),
@@ -449,7 +473,13 @@ impl MembershipFollow {
     ) -> Result<Self> {
         let mut request = FollowRequest::new(agent.membership().map_err(failed)?, next);
         request.until = bounded.then_some(u64::MAX);
-        let records = records_only(connection.session.follow(request).await.map_err(failed)?);
+        let records = records_only(
+            connection
+                .session
+                .follow(request)
+                .await
+                .map_err(|error| connection.stream_failure(error))?,
+        );
         Ok(Self {
             connection,
             agent,
@@ -474,11 +504,11 @@ impl MembershipFollow {
                     self = Self::open(self.connection, self.agent, self.next, true).await?;
                 }
                 record = self.records.try_next() => {
-                    let Some(record) = record.map_err(failed)? else {
+                    let Some(record) = record.map_err(|error| self.connection.stream_failure(error))? else {
                         return if self.bounded {
                             Ok(None)
                         } else {
-                            Err(Error::Storage("membership follow ended".into()))
+                            Err(self.connection.stream_failure(acyclic_stream::StreamError::Unavailable))
                         };
                     };
                     self.next = record.sequence + 1;

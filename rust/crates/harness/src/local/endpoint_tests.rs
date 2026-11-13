@@ -658,6 +658,9 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     );
     let connection = harness.connect().await?;
     let mut observer = Observer::open(&connection, 0, 0)?;
+    let mut tree = connection
+        .follow_tree(StreamPath::new("supervision").map_err(storage)?)
+        .await?;
     // Wait for the original adoption, not a guessed delay before cutting storage.
     loop {
         if matches!(observer.next().await?, Event::Status(status) if matches!(status.phase, crate::agent::Phase::Idle))
@@ -788,6 +791,16 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
     assert!(
         command.contains(&cause),
         "command lost original provider cause: {command}"
+    );
+    let tree_failure = loop {
+        match tree.next().await {
+            Ok(_) => continue,
+            Err(error) => break provider_message(error, original),
+        }
+    };
+    assert!(
+        tree_failure.contains(&cause),
+        "tree feed lost original provider cause: {tree_failure}"
     );
     let observed = provider_message(terminal(&mut observer).await, original);
     assert!(
