@@ -22,7 +22,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,
-        "observation-identity".into(),
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -36,18 +36,39 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
             id: crate::ConversationId::new().to_string(),
         },
     );
+    let private = crate::conversation::private_volume(
+        volume.provider().clone(),
+        &crate::agent::AgentId::from_bytes(agent.into_bytes()),
+    )?;
     let scope = issuer
         .bootstrap_scope(
             "owner",
             &crate::Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
             &mut None,
         )
         .expect("scope proof");
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
+    assert!(matches!(
+        FilesystemExecutionJournal::new(
+            stream.clone(),
+            host.clone(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &private,
+                verifier: &issuer.verifier(&mut None)?,
+                scope: &scope,
+                io: None,
+            },
+        ),
+        Err(Error::Invalid(reason))
+            if reason == "execution journal requires the agent's journal volume"
+    ));
     let open = |operation, turn| {
         FilesystemExecutionJournal::new(
             stream.clone(),

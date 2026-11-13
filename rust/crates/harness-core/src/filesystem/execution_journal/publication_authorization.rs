@@ -66,19 +66,39 @@ where
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::conversation::ContentPublisher as _;
     use crate::executor::ExecutionJournal;
 
     #[tokio::test]
     async fn original_publication_rejects_replacement_and_unrelated_refs() -> Result<()> {
-        let (private_journal, issuer) = super::super::test_support::journal().await?;
+        let (journal, issuer) = super::super::test_support::journal().await?;
+        let crate::conversation::VolumeOwner::Agent(owner) = journal.volume.owner() else {
+            unreachable!("agent journal fixture");
+        };
+        let private = crate::conversation::private_volume(
+            journal.volume.provider().clone(),
+            &crate::agent::AgentId::from_bytes(owner.into_bytes()),
+        )?;
+        journal.host.create_volume(&private).await?;
+        let private_scope = issuer.bootstrap_scope(
+            "private-publication",
+            &crate::Capabilities::new([
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
+            ]),
+            Some(*owner),
+            &mut None,
+        )?;
+        let private_writer = crate::filesystem::FilesystemContentPublisher::new(
+            journal.host.clone(),
+            &private,
+            &issuer.verifier(&mut None)?,
+            &private_scope,
+            super::super::MAXIMUM_PAYLOAD_BYTES,
+            None,
+        )?;
         let operation = OperationId::new();
-        let private_content = private_journal
-            .output_content(operation)?
-            .expect("private content");
-        let (private_file, _) = private_content
-            .writer
-            .as_deref()
-            .expect("private writer")
+        let (private_file, _) = private_writer
             .stage_once(
                 operation,
                 &crate::context::ContextEpoch::path(operation),
@@ -89,38 +109,10 @@ mod tests {
             )?
             .await?;
         assert!(
-            !private_journal
+            !journal
                 .authenticate_publication(operation, &private_file, None)?
                 .await?
         );
-        let crate::conversation::VolumeOwner::Agent(owner) = private_journal.volume.owner() else {
-            unreachable!("agent journal fixture");
-        };
-        let volume = crate::conversation::journal_volume(
-            private_journal.volume.provider().clone(),
-            &crate::agent::AgentId::from_bytes(owner.into_bytes()),
-        )?;
-        private_journal.host.create_volume(&volume).await?;
-        let scope = issuer.bootstrap_scope(
-            "host-journal-proof",
-            &crate::Capabilities::new([
-                crate::contract::capability::HARNESS_HOST.to_owned(),
-                volume.capability(VolumeOperation::Read, &mut None)?,
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(crate::AgentId::from_bytes(owner.into_bytes())),
-            &mut None,
-        )?;
-        let journal = FilesystemExecutionJournal::new(
-            Arc::new(acyclic_stream::MemoryStream::default()),
-            private_journal.host.clone(),
-            crate::filesystem::FilesystemJournalBinding {
-                volume: &volume,
-                verifier: &issuer.verifier(&mut None)?,
-                scope: &scope,
-                io: None,
-            },
-        )?;
         let content = journal.output_content(operation)?.expect("journal content");
         let writer = content.writer.as_deref().expect("journal writer");
         let path = crate::context::ContextEpoch::path(operation);

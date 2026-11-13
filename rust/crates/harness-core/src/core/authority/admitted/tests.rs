@@ -1121,7 +1121,7 @@ fn original_turn_interrupt_wakes_every_checkpoint_and_refuses_ready_completion()
         let agent = AgentId::from_bytes([186; 16]);
         let volume = VolumeRef::new(
             provider.clone(),
-            "private".into(),
+            "journal".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
             &mut None,
@@ -1131,6 +1131,7 @@ fn original_turn_interrupt_wakes_every_checkpoint_and_refuses_ready_completion()
         let caller = root.bootstrap_scope(
             "turn",
             &Capabilities::new([
+                crate::contract::capability::HARNESS_HOST.to_owned(),
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]),

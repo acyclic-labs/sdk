@@ -51,7 +51,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let agent = crate::AgentId::new();
     let private = VolumeRef::new(
         provider.clone(),
-        "private".into(),
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -68,6 +68,7 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let scope = issuer.bootstrap_scope(
         "source",
         &crate::Capabilities::new([
+            crate::contract::capability::HARNESS_HOST.to_owned(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
             private.capability(VolumeOperation::Read, &mut None)?,

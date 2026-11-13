@@ -1,4 +1,4 @@
-//! Stream-backed execution observations with private Filesystem payloads.
+//! Stream-backed execution observations with harness-owned journal payloads.
 
 use super::bounded_io::{PreparationIo, PreparationRecord};
 use super::{FilesystemHost, InternalContentClass};

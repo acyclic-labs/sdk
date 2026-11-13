@@ -37,7 +37,7 @@ where
     let agent = crate::AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,
-        "append-cost".into(),
+        "journal".into(),
         VolumeClass::AgentPrivate,
         crate::conversation::VolumeOwner::Agent(agent),
         &mut None,
@@ -54,6 +54,7 @@ where
     let scope = issuer.bootstrap_scope(
         "owner",
         &crate::Capabilities::new([
+            crate::contract::capability::HARNESS_HOST.to_owned(),
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]),

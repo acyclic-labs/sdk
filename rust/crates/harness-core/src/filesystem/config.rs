@@ -1,9 +1,9 @@
 use super::*;
 
-/// Authenticated private-volume binding and limits for a filesystem journal.
+/// Authenticated binding to a task or conversation's harness-owned journal.
 #[derive(Clone, Copy)]
 pub struct FilesystemJournalBinding<'a> {
-    /// Journal's private content volume.
+    /// The agent journal, outside the model-visible workspace table.
     pub volume: &'a VolumeRef,
     /// Verifier for the original journal owner.
     pub verifier: &'a AuthorityVerifier,

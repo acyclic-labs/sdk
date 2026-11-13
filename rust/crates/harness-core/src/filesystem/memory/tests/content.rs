@@ -167,22 +167,18 @@ async fn original_publication_receipts_require_write_but_not_directory_listing()
 #[tokio::test]
 async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> {
     let storage = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
-    // Exercise a valid host whose journal and private publisher share a volume.
-    let journal: Arc<dyn crate::executor::ExecutionJournal> =
-        Arc::new(crate::filesystem::FilesystemExecutionJournal::new(
-            Arc::clone(&storage.stream),
-            Arc::clone(&storage.host),
-            crate::filesystem::FilesystemJournalBinding {
-                volume: &storage.volume,
-                verifier: &storage.verifier(),
-                scope: &storage.scope,
-                io: None,
-            },
-        )?);
+    // Receipt observation retains its private writer independently of the
+    // host journal's read-only tool-output route.
+    let journal: Arc<dyn crate::executor::ExecutionJournal> = storage.journal.clone();
     let turn = OperationId::new();
+    let journal_volume = journal
+        .output_content(turn)?
+        .expect("journal output")
+        .volume;
     let effect = OperationId::new();
     run_admitted_file_case(&storage, Limits::default(), move |task| {
         let journal = Arc::clone(&journal);
+        let journal_volume = journal_volume.clone();
         async move {
             let context = crate::runtime::ToolContext::new(
                 Arc::new(task.with_execution_journal(journal, turn)?),
@@ -227,9 +223,9 @@ async fn private_publication_receipts_keep_the_observing_writer() -> Result<()> 
             let denied = context
                 .task()
                 .stage_file(
-                    Some(original.volume()),
+                    Some(&journal_volume),
                     OperationId::new(),
-                    "receipts/forged",
+                    "tools/forged",
                     b"forged",
                     "text/plain",
                     "forged",
