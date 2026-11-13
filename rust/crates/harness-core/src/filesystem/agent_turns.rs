@@ -2300,6 +2300,7 @@ where
                     turn,
                     inbox,
                     Arc::clone(&files),
+                    Arc::clone(&bindings.journal.reader),
                     Arc::clone(bindings.content.writer.as_ref().ok_or_else(|| {
                         Error::Invalid("agent turn has no private writer".into())
                     })?),
