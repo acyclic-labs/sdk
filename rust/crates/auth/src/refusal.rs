@@ -232,6 +232,7 @@ impl Refusal {
             &parts.details,
             &parts.metadata,
             canonical,
+            has_reported_cause,
         )
         .then(|| {
             if !parts.metadata.keys().all(|name| product(name, canonical)) {
@@ -340,6 +341,7 @@ fn differs(
     details: &[u8],
     metadata: &HeaderMap,
     canonical: Canonical<'_>,
+    has_reported_cause: bool,
 ) -> bool {
     // A cause-only refusal classifies as unavailable; other status classes need their parts.
     (has_reported_cause && code != 14)
