@@ -494,7 +494,7 @@ mod indexed_trace_tests {
         let original = provider
             .latest(
                 data.path().clone(),
-                bytes::Bytes::from_static(b"selected"),
+                bytes::Bytes::from_static(b"selected").into(),
                 Default::default(),
             )
             .await?;
@@ -513,7 +513,7 @@ mod indexed_trace_tests {
         let (selected, condition) = root
             .within(provider.latest_fenced(
                 data.path().clone(),
-                Some(bytes::Bytes::from_static(b"selected")),
+                Some(bytes::Bytes::from_static(b"selected").into()),
                 Default::default(),
             ))
             .await?;
@@ -528,7 +528,7 @@ mod indexed_trace_tests {
         assert!(
             root.within(provider.latest(
                 data.path().clone(),
-                bytes::Bytes::from_static(b"absent"),
+                bytes::Bytes::from_static(b"absent").into(),
                 Default::default()
             ))
             .await?
@@ -542,7 +542,7 @@ mod indexed_trace_tests {
         assert!(
             root.within(provider.latest(
                 trace.path().clone(),
-                bytes::Bytes::from_static(b"absent"),
+                bytes::Bytes::from_static(b"absent").into(),
                 Default::default()
             ))
             .await?
@@ -611,7 +611,7 @@ mod indexed_trace_tests {
             provider
                 .latest(
                     data.path().clone(),
-                    bytes::Bytes::from_static(b"selected"),
+                    bytes::Bytes::from_static(b"selected").into(),
                     Default::default()
                 )
                 .await?,

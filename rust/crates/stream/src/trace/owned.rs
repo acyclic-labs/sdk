@@ -91,6 +91,11 @@ impl<P: StreamProvider + ?Sized> Recording<P> {
 }
 
 impl OwnedRecording {
+    /// Original identity retained across this object-safe ownership boundary.
+    pub fn id(&self) -> SpanId {
+        self.id
+    }
+
     /// Poll diagnostic admission alongside original work. Pending diagnostics
     /// cannot delay a ready result; abandoned admission remains incomplete.
     /// Ready admission supplies the original parent for the remaining polls.

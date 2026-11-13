@@ -33,7 +33,7 @@ impl<R, H, I> Pending<R, H, I> {
         let (completion, producer) = Completion::prepare(request, storage);
         (Self { completion }, producer)
     }
-    /// Exact submitted bytes, conditions, deadline and recovery identity.
+    /// Exact submitted request and recovery identity.
     #[must_use]
     pub fn request(&self) -> &I {
         self.completion.identity()
