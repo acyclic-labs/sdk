@@ -445,7 +445,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             self.0.load(Ordering::SeqCst)
         }
     }
-    for completion in [0, 1, 2] {
+    for completion in [0, 1, 2, 3] {
         let finish = completion != 0;
         let commit_clock = Arc::new(CommitClock(AtomicU64::new(100)));
         let stream = Arc::new(MemoryStream::new_with_clock(
@@ -506,7 +506,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
         ];
         keys.sort_unstable();
         let started = serde_json::json!({"version":1,"call":call,"event":{
-            "kind":"started","run":run,"execution":execution,"quiet_ms":10,
+            "kind":"started","run":run,"execution":execution,"quiet_ms":if completion == 3 { u64::MAX } else { 10 },
             "action":Action::Pause,"at_ms":100,"source":{"stream":format!("{agent}/execution"),"sequence":0}
         }});
         stream
@@ -547,7 +547,19 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
                 }
             }
         };
+        let agent_failure = bound
+            .agents()
+            .runtime()
+            .delivery_failure(&bound.agents().actor(&agent)?)?;
         let exercise = async {
+            if completion == 3 {
+                let failure = agent_failure.await;
+                assert!(
+                    failure.to_string().contains("quiet deadline overflow"),
+                    "{failure}"
+                );
+                return Ok::<_, Box<dyn std::error::Error>>(());
+            }
             wait(&mut states, Some(110), false).await?;
             commit_clock.0.store(105, Ordering::SeqCst);
             let path = acyclic_harness_core::runtime::tool_output_activity_path(execution, call);
@@ -874,7 +886,7 @@ async fn quiet_tool_alarm_rearms_on_output_and_refuses_completed_jobs() -> Resul
             Ok::<_, Box<dyn std::error::Error>>(())
         };
         tokio::select! {
-            result = bound.agents().run(|actor, error| panic!("quiet actor {actor:?}: {error}")) => match result {
+            result = bound.agents().run(|actor, error| { if completion != 3 { panic!("quiet actor {actor:?}: {error}"); } }) => match result {
                 Err(error) => return Err(error.into()), Ok(never) => match never {},
             },
             result = exercise => result?,

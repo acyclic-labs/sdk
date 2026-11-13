@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/lib/provider_ext.rs b/rust/crates/stream/src/lib/provider_ext.rs
+--- a/rust/crates/stream/src/lib/provider_ext.rs
++++ b/rust/crates/stream/src/lib/provider_ext.rs
+@@ -220,9 +220,6 @@
+             let record = records.next().await.transpose()?;
+             if let Some(record) = &record {
+                 selection.validate(record)?;
+-                if records.next().await.transpose()?.is_some() {
+-                    return Err(StreamError::InvalidResponse);
+-                }
+             }
+             Ok(record)
+         }

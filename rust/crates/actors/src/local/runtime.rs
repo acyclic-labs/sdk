@@ -51,6 +51,8 @@ use std::{
 
 struct Slot {
     failure: OnceLock<Arc<failure::Signal>>,
+    failure_owner: OnceLock<ActorReference>,
+    owner_failure: OnceLock<Arc<failure::Signal>>,
     registration: Registration<ActorReference>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
@@ -119,19 +121,33 @@ impl Drop for Settlement<'_> {
             return;
         };
         if self.failed {
+            let cause = Arc::new(self.cause.take().unwrap_or_else(|| DeliveryFailure {
+                message: format!(
+                    "actor {:?}: delivery producer disappeared before reporting an outcome",
+                    self.actor
+                ),
+            }));
             self.slot
                 .failure
                 .get_or_init(|| self.failures.signal(self.actor))
-                .failed(self.cause.take().unwrap_or_else(|| DeliveryFailure {
-                    message: format!(
-                        "actor {:?}: delivery producer disappeared before reporting an outcome",
-                        self.actor
-                    ),
-                }));
+                .failed(self.actor, Arc::clone(&cause));
+            if let Some(owner) = self.slot.failure_owner.get() {
+                self.slot
+                    .owner_failure
+                    .get_or_init(|| self.failures.signal(owner))
+                    .failed(self.actor, cause);
+            }
             self.slot.refresh.store(true, Ordering::Release);
             self.slot.registration.suspend_alarm();
-        } else if let Some(failure) = self.slot.failure.get() {
-            failure.healthy();
+        } else {
+            if let Some(failure) = self.slot.failure.get() {
+                failure.healthy(self.actor);
+            }
+            if let Some(owner) = self.slot.failure_owner.get()
+                && let Some(failure) = self.failures.existing(owner)
+            {
+                failure.healthy(self.actor);
+            }
         }
         flight.finish(self.failed);
         if let Some(work) = self.work.take() {
@@ -464,8 +480,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let ready = &self.ready[self.handler.admission_class(&actor).index()];
         let registration = ready.register(actor.clone())?;
         if unplaced {
-            // An undelivered activation has the same checkpoint custody as an
-            // unfinished delivery. Placement alone does not consume its input.
+            // Placement does not consume the unfinished activation's input.
             drop(ready.flight(&actor));
         }
         let waker = registration.waker();
@@ -477,6 +492,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             actor,
             Arc::new(Slot {
                 failure,
+                failure_owner: OnceLock::new(),
+                owner_failure: OnceLock::new(),
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
@@ -1364,8 +1381,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                     .fetch_max(cursor.saturating_add(1), Ordering::AcqRel);
                             }
                             // Released: this one entry is its handoff, which
-                            // the next placer's wake owns; the mark ends here,
-                            // and reading the entry back retakes no custody.
+                            // the next placer's wake owns; reading the entry
+                            // back must not retake its checkpoint custody.
                             None => {
                                 self.ready[self.handler.admission_class(actor).index()]
                                     .forget(actor);
@@ -1393,9 +1410,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         if let Some(slot) = self.slot(actor) {
             slot.failure.get_or_init(|| Arc::clone(&signal));
         }
-        signal.failed(DeliveryFailure {
+        let cause = Arc::new(DeliveryFailure {
             message: format!("actor {actor:?}: {error}"),
         });
+        signal.failed(actor, Arc::clone(&cause));
+        if let Some(slot) = self.slot(actor)
+            && let Some(owner) = slot.failure_owner.get()
+        {
+            slot.owner_failure
+                .get_or_init(|| self.failures.signal(owner))
+                .failed(actor, cause);
+        }
     }
 
     fn slot(&self, actor: &ActorReference) -> Option<Arc<Slot>> {
@@ -1598,6 +1623,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 slot.registration.suspend_alarm();
                 return Ok(true);
             };
+            if slot.failure_owner.get().is_none()
+                && let Some(owner) = self.handler.failure_owner(actor, state.checkpoint())
+                && &owner != actor
+                && self.includes(&owner)
+            {
+                let _ = slot.failure_owner.set(owner);
+            }
             if state.deleted() {
                 self.external.remove(actor);
                 // Deletion is terminal: nothing is left to deliver or wake.

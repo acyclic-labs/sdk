@@ -20,12 +20,12 @@ pub struct ToolOutputActivity {
 
 /// Exact filesystem key followed by the original job's alarm actor.
 pub fn tool_output_activity_path(turn: OperationId, call: OperationId) -> String {
-    format!("tools/{turn}/{call}/activity.json")
+    tool_output_path(turn, call, "activity.json")
 }
 
 /// Host-owned physical completion, distinct from a background start receipt.
 pub fn tool_output_completion_path(turn: OperationId, call: OperationId) -> String {
-    format!("tools/{turn}/{call}/completed.json")
+    tool_output_path(turn, call, "completed.json")
 }
 
 /// Version-one physical terminal identity; output counts belong to activity.

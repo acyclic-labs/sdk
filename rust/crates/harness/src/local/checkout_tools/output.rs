@@ -135,8 +135,15 @@ impl Output {
         Ok(())
     }
 
-    pub(super) async fn completed(&self) -> Result<()> {
-        self.writer.lock().await.output.finish().await
+    pub(super) async fn completed(
+        &self,
+        outcome: &crate::filesystem::native_process::capture::NativeProcessOutcome,
+    ) -> Result<()> {
+        crate::filesystem::native_process::capture::finish_output(
+            &self.writer.lock().await.output,
+            outcome,
+        )
+        .await
     }
 }
 

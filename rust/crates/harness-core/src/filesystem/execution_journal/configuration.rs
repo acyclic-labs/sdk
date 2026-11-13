@@ -14,8 +14,7 @@ where
         *self.verified.get_mut() = SummaryCache::default();
     }
 
-    /// Uses the actor owner's alarm clock for tool quiet and reversible
-    /// preparation deadlines.
+    /// Use the original host alarm clock for tool quiet and preparation deadlines.
     #[must_use]
     pub fn with_clock(mut self, clock: Arc<dyn acyclic_actors::local::Clock>) -> Self {
         self.clock = clock;

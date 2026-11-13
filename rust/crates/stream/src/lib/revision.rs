@@ -63,6 +63,21 @@ impl Revision {
 pub struct RevisionCut(Vec<Revision>);
 
 impl RevisionCut {
+    /// Copies the participant vector only after original native admission.
+    /// Shared scope backing keeps its existing custody; the returned owner
+    /// retains the copied vector until the consuming request has retired.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native_clone(
+        &self,
+        meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<crate::NativeStreamOutput<Self>> {
+        meter.check()?;
+        let mut allocation = acyclic_native_runtime::ReadAllocation::empty(meter);
+        let revisions = crate::native::copy_vector(&self.0, meter, &mut allocation)?;
+        meter.check()?;
+        Ok(crate::NativeStreamOutput::new(Self(revisions), allocation))
+    }
+
     /// A cut with one participant.
     #[must_use]
     pub fn of(revision: Revision) -> Self {

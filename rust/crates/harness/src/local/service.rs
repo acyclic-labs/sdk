@@ -10,6 +10,9 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+#[path = "service_exit.rs"]
+pub(super) mod exit;
+
 /// The checkout's private service rendezvous, outside the repository.
 #[derive(Clone)]
 pub struct Directory(PathBuf);
@@ -18,6 +21,7 @@ pub struct Directory(PathBuf);
 #[serde(deny_unknown_fields)]
 struct Descriptor {
     version: u32,
+    owner: crate::OperationId,
     credential: String,
     // Optional negotiation metadata: absence grants no configuration match.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -76,6 +80,7 @@ impl Directory {
             .map_err(storage)?;
         Ok(Owner {
             directory: self.clone(),
+            exit: exit::Journal::new(self)?,
             configuration: Default::default(),
             _lock: lock,
             publication: std::sync::Mutex::new(Some(publication)),
@@ -151,9 +156,15 @@ impl Directory {
         acyclic_native_runtime::ipc::endpoint(&self.0).map_err(storage)
     }
 
-    pub(super) async fn connection(&self) -> Result<(crate::server::LocalConnection, String)> {
+    pub(super) async fn connection(
+        &self,
+    ) -> Result<(crate::server::LocalConnection, String, exit::Observation)> {
         let (connection, descriptor) = self.descriptor().await?;
-        Ok((connection, descriptor.credential))
+        Ok((
+            connection,
+            descriptor.credential,
+            exit::Observation::new(self, descriptor.owner),
+        ))
     }
     async fn descriptor(&self) -> Result<(crate::server::LocalConnection, Descriptor)> {
         use acyclic_native_runtime::ipc::PeerCredentials;
@@ -176,9 +187,9 @@ impl Directory {
         bytes.resize(length, 0);
         connection.read_exact(&mut bytes).await.map_err(storage)?;
         let descriptor: Descriptor = serde_json::from_slice(&bytes).map_err(storage)?;
-        if descriptor.version != 1 {
+        if descriptor.version != 2 {
             return Err(Error::Unsupported(
-                "local service descriptor requires version 1".into(),
+                "local service descriptor requires version 2".into(),
             ));
         }
         Ok((crate::server::LocalConnection::new(connection), descriptor))
@@ -188,6 +199,7 @@ impl Directory {
 /// OS ownership retained for the entire serving lifetime, including shutdown.
 pub struct Owner {
     directory: Directory,
+    exit: Arc<exit::Journal>,
     configuration: std::collections::BTreeMap<String, [u8; 32]>,
     publication: std::sync::Mutex<Option<FileLock>>,
     bootstrap: Arc<OnceLock<Arc<[u8]>>>,
@@ -212,7 +224,8 @@ impl Owner {
             .as_ref()
             .ok_or_else(|| Error::Invalid("local service requires a client credential".into()))?;
         let bytes = serde_json::to_vec(&Descriptor {
-            version: 1,
+            version: 2,
+            owner: self.exit.incarnation(),
             credential: observation.credential.clone(),
             configuration: self.configuration.clone(),
         })
@@ -281,16 +294,30 @@ pub async fn serve(
     ready: acyclic_native_runtime::ServiceReadySignal,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
+    let journal = Arc::clone(&owner.exit);
     let listener = match owner.listener() {
         Ok(listener) => listener,
         Err(error) => {
             let _ = ready.fail(&error.to_string());
-            return Err(storage(error));
+            return journal.complete(Err(error));
         }
     };
     let (failed, failure) = tokio::sync::oneshot::channel();
     let mut ready = Some(ready);
     let mut publication = Ok(());
+    let crate::server::ServerConfig {
+        harness,
+        verifier,
+        tls,
+    } = config;
+    let config = crate::server::ServerConfig {
+        harness: exit::Recorded {
+            composition: harness,
+            journal: Arc::clone(&journal),
+        },
+        verifier,
+        tls,
+    };
     let result = crate::server::serve(
         listener,
         config,
@@ -301,13 +328,13 @@ pub async fn serve(
             match owner.publish(endpoint) {
                 Ok(()) => {
                     if let Err(error) = ready.signal() {
-                        publication = Err(storage(error));
+                        publication = journal.complete(Err(storage(error)));
                         let _ = failed.send(());
                     }
                 }
                 Err(error) => {
                     let _ = ready.fail(&error.to_string());
-                    publication = Err(error);
+                    publication = journal.complete(Err(error));
                     let _ = failed.send(());
                 }
             }
@@ -328,8 +355,9 @@ pub async fn serve(
     {
         let _ = ready.fail(&error.to_string());
     }
+    let result = journal.complete(Error::after_cleanup(result, publication));
     drop(owner);
-    result.and(publication)
+    result
 }
 
 #[cfg(test)]

@@ -216,8 +216,8 @@ pub fn encode_transition(
     response: Option<Vec<u8>>,
 ) -> Result<Vec<u8>, JsValue> {
     guest::wire::encode_transition(&guest::Transition {
-        response: response.map(Into::into),
         pause: false,
+        response: response.map(Into::into),
         checkpoint: guest::Checkpoint {
             codec: guest::CodecIdentity {
                 name: codec_name,

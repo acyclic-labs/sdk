@@ -347,6 +347,16 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
     fn admission_class(&self, _actor: &ActorReference) -> AdmissionClass {
         AdmissionClass::Work
     }
+    /// Original host-owned dependency whose waiters must observe this actor's
+    /// delivery failures too. Ownership is stable for this actor incarnation;
+    /// it grants no execution or observation authority. None isolates failures.
+    fn failure_owner(
+        &self,
+        _actor: &ActorReference,
+        _checkpoint: Option<&Checkpoint>,
+    ) -> Option<ActorReference> {
+        None
+    }
     /// Whether to retain a paused actor's resident cache. False evicts only
     /// host memory and subscriptions after a confirmed paused cut; durable
     /// state remains intact. Owner resume publishes the ordinary activation.

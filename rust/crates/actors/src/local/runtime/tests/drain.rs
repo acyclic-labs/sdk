@@ -1,5 +1,97 @@
 use super::*;
 
+struct OwnedGated {
+    gated: Gated,
+    owner: ActorReference,
+}
+impl Handler for OwnedGated {
+    fn manifest(&self) -> &Manifest {
+        self.gated.manifest()
+    }
+    fn failure_owner(
+        &self,
+        actor: &ActorReference,
+        _: Option<&Checkpoint>,
+    ) -> Option<ActorReference> {
+        actor
+            .id()
+            .starts_with("dependent-")
+            .then(|| self.owner.clone())
+    }
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        self.gated.on_record(delivery, checkpoint, cancellation)
+    }
+}
+
+#[tokio::test]
+async fn dependent_failures_survive_owner_success_and_clear_only_on_source_recovery() -> TestResult
+{
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(provider.clone(), root()?);
+    let owner = spawn_with(&store, "owner", &[b"emit"]).await?;
+    let first = spawn_with(&store, "dependent-first", &[b"emit"]).await?;
+    let second = spawn_with(&store, "dependent-second", &[b"emit"]).await?;
+    let unrelated = spawn_with(&store, "unrelated", &[b"emit"]).await?;
+    let handler = Arc::new(OwnedGated {
+        gated: Gated::new()?,
+        owner: owner.clone(),
+    });
+    let hosted = Arc::new(crate::guest::HostedHandler::new(
+        handler.clone(),
+        handler.clone(),
+        |_: &ActorReference| true,
+    ));
+    let runtime = Runtime::new(
+        crate::guest::Requests::default(),
+        store,
+        hosted,
+        Arc::new(SystemClock),
+    );
+    let observed = runtime.delivery_failure(&owner)?;
+    for actor in [&first, &second] {
+        runtime.host(actor.clone())?;
+        let mut delivery = Box::pin(runtime.drain_actor(actor));
+        assert!(futures::poll!(delivery.as_mut()).is_pending());
+        drop(delivery);
+    }
+    assert!(observed.await.to_string().contains("dependent-"));
+    let unpolled = runtime.delivery_failure(&owner)?;
+    // A healthy owner cannot erase either failed dependency.
+    for actor in [&owner, &first] {
+        runtime.host(actor.clone())?;
+        handler.gated.gate.add_permits(1);
+        runtime.drain_actor(actor).await?;
+    }
+    assert!(
+        runtime
+            .delivery_failure(&owner)?
+            .await
+            .to_string()
+            .contains("dependent-second")
+    );
+    // Hibernation and recreation cannot lose the source-specific recovery key.
+    assert!(runtime.release(&second));
+    runtime.host(second.clone())?;
+    handler.gated.gate.add_permits(1);
+    runtime.drain_actor(&second).await?;
+    assert!(unpolled.await.to_string().contains("dependent-"));
+    let mut healthy = runtime.delivery_failure(&owner)?;
+    assert!(futures::poll!(healthy.as_mut()).is_pending());
+    let unrelated_failure = runtime.delivery_failure(&unrelated)?;
+    runtime.host(unrelated.clone())?;
+    let mut delivery = Box::pin(runtime.drain_actor(&unrelated));
+    assert!(futures::poll!(delivery.as_mut()).is_pending());
+    drop(delivery);
+    assert!(unrelated_failure.await.to_string().contains("unrelated"));
+    assert!(futures::poll!(healthy.as_mut()).is_pending());
+    Ok(())
+}
+
 /// The producer's receipt and the dispatcher's delayed follow are one event.
 /// A fresh committed activation is the control that still permits recovery.
 #[tokio::test]

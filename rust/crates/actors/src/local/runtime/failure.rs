@@ -44,10 +44,10 @@ impl Signals {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct State {
     latest: Option<Arc<DeliveryFailure>>,
-    failed: bool,
+    active: std::collections::BTreeMap<ActorReference, Arc<DeliveryFailure>>,
 }
 
 pub(super) struct Signal {
@@ -58,38 +58,36 @@ pub(super) struct Signal {
 }
 
 impl Signal {
-    pub(super) fn failed(&self, cause: DeliveryFailure) {
-        self.state.send_replace(State {
-            latest: Some(Arc::new(cause)),
-            failed: true,
+    pub(super) fn failed(&self, actor: &ActorReference, cause: Arc<DeliveryFailure>) {
+        self.state.send_modify(|state| {
+            state.latest = Some(Arc::clone(&cause));
+            state.active.insert(actor.clone(), cause);
         });
     }
 
-    pub(super) fn healthy(&self) {
+    pub(super) fn healthy(&self, actor: &ActorReference) {
         self.state
-            .send_if_modified(|state| std::mem::take(&mut state.failed));
+            .send_if_modified(|state| state.active.remove(actor).is_some());
     }
 
     pub(super) fn observe(self: Arc<Self>) -> BoxProviderFuture<'static, DeliveryFailure> {
         let mut updates = self.state.subscribe();
         let mut lifetime = self.lifetime.clone();
-        let observed = updates.borrow_and_update().clone();
+        let (observed, active) = {
+            let state = updates.borrow_and_update();
+            (state.latest.clone(), state.active.values().next().cloned())
+        };
         Box::pin(async move {
             // Keep the sender and its weak index alive across slot release.
             // A new resident slot finds this same signal; actor I/O is freed.
             let _signal = self;
-            if observed.failed {
-                return observed
-                    .latest
-                    .expect("failed state has a cause")
-                    .as_ref()
-                    .clone();
+            if let Some(cause) = active {
+                return cause.as_ref().clone();
             }
             loop {
-                let current = updates.borrow_and_update().clone();
-                if let Some(cause) = current.latest
+                let current = updates.borrow_and_update().latest.clone();
+                if let Some(cause) = current
                     && observed
-                        .latest
                         .as_ref()
                         .is_none_or(|seen| !Arc::ptr_eq(seen, &cause))
                 {
@@ -97,7 +95,11 @@ impl Signal {
                 }
                 tokio::select! {
                     biased;
-                    changed = updates.changed() => { changed.expect("observer retains its sender"); },
+                    changed = updates.changed() => {
+                        if changed.is_err() {
+                            return DeliveryFailure { message: format!("actor {:?}: failure producer closed", _signal.actor) };
+                        }
+                    },
                     _ = lifetime.changed() => return DeliveryFailure {
                         message: format!("actor {:?}: runtime released", _signal.actor),
                     },

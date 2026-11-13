@@ -31,9 +31,10 @@ pub struct Connection {
     /// The in-process harness serving the tree: a connection keeps it
     /// running, so its prompts' turns run for as long as any clone lives.
     pub(super) _host: Option<Arc<LocalHarness>>,
+    owner_exit: Option<super::service::exit::Observation>,
 }
 
-/// The client's cause together with the one its in-process owner retained.
+/// The client failure with its original in-process or recorded owner cause.
 #[derive(Debug, thiserror::Error)]
 enum OwnerFailure<E: std::error::Error + 'static> {
     #[error("{client}; {owner}")]
@@ -48,6 +49,29 @@ enum OwnerFailure<E: std::error::Error + 'static> {
         client: E,
         owner: String,
     },
+    #[error("{client}; {owner}")]
+    Recorded {
+        client: E,
+        #[source]
+        owner: OwnerCause,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+enum OwnerCause {
+    #[error("local owner{0}")]
+    Recorded(#[source] acyclic_auth::refusal::Refusal),
+    #[error("cannot read the original owner's exit record: {0}")]
+    Unreadable(#[source] Error),
+}
+
+impl OwnerCause {
+    fn recorded(observation: &super::service::exit::Observation) -> Self {
+        match observation.cause() {
+            Ok(cause) => Self::Recorded(cause),
+            Err(error) => Self::Unreadable(error),
+        }
+    }
 }
 
 impl Connection {
@@ -60,14 +84,14 @@ impl Connection {
                 let directory = directory.clone();
                 let bootstrap = Arc::clone(&bootstrap);
                 async move {
-                    let (connection, credential) = directory
+                    let (connection, credential, owner_exit) = directory
                         .connection()
                         .await
                         .map_err(|error| std::io::Error::other(error.to_string()))?;
                     // The session retains its original authority across
                     // authenticated transport reconnects. The server validates
                     // that capability on every reopened session.
-                    bootstrap.get_or_init(|| credential);
+                    bootstrap.get_or_init(|| (credential, owner_exit));
                     Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(connection))
                 }
             }))
@@ -75,7 +99,7 @@ impl Connection {
             .map_err(|error| {
                 Error::exchange(ExchangeStep::Step("connect to the local owner"), error)
             })?;
-        let credential = credential
+        let (credential, owner_exit) = credential
             .get()
             .ok_or_else(|| Error::Storage("local connection did not bootstrap".into()))?;
         let bytes = acyclic_auth::credential::capability_from_text(credential)
@@ -84,7 +108,7 @@ impl Connection {
             channel,
             acyclic_auth::credential::CredentialProvider::transport_identity(),
         );
-        Self::bind(
+        let mut connection = Self::bind(
             client.session_client().map_err(|error| {
                 Error::exchange(ExchangeStep::Step("open the local owner session"), error)
             })?,
@@ -93,6 +117,33 @@ impl Connection {
             false,
         )
         .await
+        .map_err(|error| {
+            let unavailable = match &error {
+                Error::Exchange { source, .. } => {
+                    source
+                        .downcast_ref::<AgentExchangeError>()
+                        .is_some_and(|cause| cause.code() == "unavailable")
+                        || source
+                            .downcast_ref::<acyclic_stream::StreamError>()
+                            .is_some_and(|cause| {
+                                cause.category() == acyclic_stream::StreamError::Unavailable
+                            })
+                }
+                _ => false,
+            };
+            if !unavailable {
+                return error;
+            }
+            Error::exchange(
+                ExchangeStep::Session,
+                OwnerFailure::Recorded {
+                    client: error,
+                    owner: OwnerCause::recorded(owner_exit),
+                },
+            )
+        })?;
+        connection.owner_exit = Some(owner_exit.clone());
+        Ok(connection)
     }
 
     /// Refuse explicit launch requirements before creating a session or sending input.
@@ -170,7 +221,16 @@ impl Connection {
                 );
             }
         }
-        Error::exchange(ExchangeStep::Session, error)
+        match &self.owner_exit {
+            Some(observation) => Error::exchange(
+                ExchangeStep::Session,
+                OwnerFailure::Recorded {
+                    client: error,
+                    owner: OwnerCause::recorded(observation),
+                },
+            ),
+            None => Error::exchange(ExchangeStep::Session, error),
+        }
     }
 
     /// Executes `command` once on this connection's tree.
@@ -216,11 +276,14 @@ impl Connection {
         // or directory capability. A selected read-only view is not a change
         // to that caller's authority, and transport constructors cannot infer
         // directory authority from their local attachment mode.
-        let (controls, tools) = self
-            .controls
-            .select(agent.clone())
-            .await
-            .map_err(|error| Error::exchange(ExchangeStep::Step("select agent"), error))?;
+        let (controls, tools) = self.controls.select(agent.clone()).await.map_err(|error| {
+            self.command_failure(
+                &AgentCommand::Bind {
+                    agent: Some(agent.clone()),
+                },
+                error,
+            )
+        })?;
         Ok(Self {
             session: controls.observation_session(),
             controls: Arc::new(controls),
@@ -228,6 +291,7 @@ impl Connection {
             tools,
             _host: self._host.clone(),
             directory: self.directory,
+            owner_exit: self.owner_exit.clone(),
         })
     }
 
@@ -343,6 +407,7 @@ impl Connection {
             tools,
             _host: host,
             directory,
+            owner_exit: None,
         })
     }
 }
@@ -458,11 +523,19 @@ impl LocalHarness {
             let Some(agent) = agent else {
                 return Ok(connection);
             };
-            let (controls, tools) = connection
-                .controls
-                .select(agent.clone())
-                .await
-                .map_err(|error| Error::exchange(ExchangeStep::Step("select agent"), error))?;
+            let (controls, tools) =
+                connection
+                    .controls
+                    .select(agent.clone())
+                    .await
+                    .map_err(|error| {
+                        connection.command_failure(
+                            &AgentCommand::Bind {
+                                agent: Some(agent.clone()),
+                            },
+                            error,
+                        )
+                    })?;
             Ok(Connection {
                 session: controls.observation_session(),
                 controls: Arc::new(controls),
@@ -470,6 +543,7 @@ impl LocalHarness {
                 tools,
                 _host: connection._host,
                 directory,
+                owner_exit: connection.owner_exit,
             })
         };
         if live {

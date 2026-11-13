@@ -52,12 +52,25 @@ impl Serialize for Arguments<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        // A shell's exact program bytes define repetition. Capture and
-        // scheduling options cannot turn the same check into another check.
-        match self.command {
-            Some(command) => serializer.serialize_str(command),
-            None => self.value.serialize(serializer),
+        // Preserve execution inputs, including cwd, target and lifetime.
+        // Only capture and return-scheduling options leave the check unchanged.
+        if self.command.is_none() {
+            return self.value.serialize(serializer);
         }
+        let Some(arguments) = self.value.as_object() else {
+            return self.value.serialize(serializer);
+        };
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(None)?;
+        for (name, value) in arguments {
+            if !matches!(
+                name.as_str(),
+                "yield_time_ms" | "max_output_tokens" | "background"
+            ) {
+                map.serialize_entry(name, value)?;
+            }
+        }
+        map.end()
     }
 }
 
@@ -378,11 +391,6 @@ where
                 let value = &result.value;
                 let shell = invocation.name == "shell";
                 background_started = shell
-                    && invocation
-                        .arguments
-                        .get("background")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(true)
                     && value.get("background").and_then(serde_json::Value::as_bool) == Some(true);
                 let failed = shell
                     && (value.get("success").and_then(serde_json::Value::as_bool) == Some(false)

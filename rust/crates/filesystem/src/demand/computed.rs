@@ -10,8 +10,9 @@ use std::sync::Arc;
 pub struct ViewCut {
     /// Last included stream position (exclusive).
     pub sequence: u64,
-    /// Exact authored volume generation.
-    pub generation: [u8; 32],
+    /// Exact authored input, when the projection uses one. A stream-only view
+    /// has no authored generation; it must not invent a zero digest for it.
+    pub generation: Option<[u8; 32]>,
 }
 
 /// Read-only backing for a view. Implementations supply their stream/cache
@@ -154,7 +155,8 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
         let mut hash = blake3::Hasher::new();
         let bytes = 48
             + 8
-            + 32
+            + 1
+            + cut.generation.map_or(0, |_| 32)
             + names
                 .clone()
                 .map(|name| 9 + name.as_bytes().len() as u64)
@@ -166,7 +168,10 @@ impl<V: View, P: ViewProvider<Snapshot = V::Snapshot, Record = V::Record>> Compu
         hash.update(&self.view.identity());
         hash.update(&provider_identity);
         hash.update(&cut.sequence.to_le_bytes());
-        hash.update(&cut.generation);
+        hash.update(&[u8::from(cut.generation.is_some())]);
+        if let Some(generation) = cut.generation {
+            hash.update(&generation);
+        }
         for name in names {
             hash.update(&[name.encoding().tag()]);
             hash.update(&(name.as_bytes().len() as u64).to_le_bytes());

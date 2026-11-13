@@ -552,7 +552,7 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
                 0,
                 call_id.clone(),
                 "shell".into(),
-                serde_json::json!({"command":command,"yield_time_ms":index+1,"max_output_tokens":100+index,"background":true}),
+                serde_json::json!({"command":command,"yield_time_ms":index+1,"max_output_tokens":100+index,"background":index!=0}),
                 None,
             )?;
             let original_call = invocation.operation_id;
@@ -689,16 +689,17 @@ async fn selected_check_repetitions_ignore_capture_options_but_stay_within_the_o
 
 #[tokio::test]
 async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors() -> Result<()> {
-    for (name, failed, same_error, exact_command) in [
-        ("shell", true, false, true),
-        ("shell", true, true, true),
-        ("shell", true, true, false),
-        ("spawn", true, false, true),
-        ("spawn", true, true, true),
-        ("spawn", true, true, false),
-        ("spawn", false, true, true),
+    for (name, failed, same_error, exact_command, same_cwd) in [
+        ("shell", true, false, true, true),
+        ("shell", true, true, true, true),
+        ("shell", true, true, false, true),
+        ("spawn", true, false, true, true),
+        ("spawn", true, true, true, true),
+        ("spawn", true, true, false, true),
+        ("spawn", false, true, true, true),
+        ("shell", true, true, true, false),
     ] {
-        let repeated = failed && same_error && exact_command;
+        let repeated = failed && same_error && exact_command && same_cwd;
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let run = OperationId::new();
         let agent = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([58; 16]));
@@ -731,7 +732,7 @@ async fn tool_failures_use_original_invocations_and_do_not_count_distinct_errors
                 call_id.clone(),
                 name.into(),
                 if name == "shell" {
-                    serde_json::json!({"command":command,"yield_time_ms":index + 1,"max_output_tokens":100 + index})
+                    serde_json::json!({"command":command,"cwd":if same_cwd {"project".into()} else {format!("project-{index}")},"yield_time_ms":index + 1,"max_output_tokens":100 + index})
                 } else {
                     serde_json::json!({"role":command})
                 },

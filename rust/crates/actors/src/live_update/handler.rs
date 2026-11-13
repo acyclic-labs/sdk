@@ -124,6 +124,13 @@ impl Handler for FencedHandler {
     fn external_subscriptions(&self) -> &[String] {
         self.package.handler.external_subscriptions()
     }
+    fn failure_owner(
+        &self,
+        actor: &crate::addressing::ActorReference,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Option<crate::addressing::ActorReference> {
+        self.package.handler.failure_owner(actor, checkpoint)
+    }
 
     fn retain_paused(
         &self,
