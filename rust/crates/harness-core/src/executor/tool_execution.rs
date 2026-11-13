@@ -94,22 +94,22 @@ impl StockExecutor {
     /// The original journal must authenticate `parent` and implement child
     /// effect custody. A live duplicate refuses before any replay read. Work
     /// and retained output use the supplied preparation owner.
-    pub fn settle_invocation<'a>(
-        &'a self,
+    pub fn settle_invocation<'a, 'io: 'a>(
+        &'io self,
         journal: &'a dyn ExecutionJournal,
         parent: (OperationId, u32),
         call: (ToolInvocation, Arc<crate::tool::Tool>),
         metadata: &'a Value,
         hook_context: &'a mut Vec<ModelMessage>,
-        io: Option<&'a PreparationIo>,
+        io: Option<&'io PreparationIo>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
-            ExecutionProgress<Option<ToolCallSettlement<'a>>>,
+            ExecutionProgress<Option<ToolCallSettlement<'io>>>,
         >,
     > {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            let execution = StockExecution {
+            let execution: StockExecution<'io> = StockExecution {
                 io,
                 ..StockExecution::ordinary(self)
             };
