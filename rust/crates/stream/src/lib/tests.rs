@@ -489,8 +489,8 @@ mod indexed_trace_tests {
         let data = Stream::new(provider.clone(), "agents/worker/data")?;
         data.append(
             AppendRecord::latest(
-                bytes::Bytes::from_static(b"original"),
-                bytes::Bytes::from_static(b"selected"),
+                OwnedBytes::from_static(b"original"),
+                OwnedBytes::from_static(b"selected"),
                 false,
             )?,
             IdempotencyKey::unique(),
@@ -499,7 +499,7 @@ mod indexed_trace_tests {
         let original = provider
             .latest(
                 data.path().clone(),
-                bytes::Bytes::from_static(b"selected"),
+                OwnedBytes::from_static(b"selected"),
                 Default::default(),
             )
             .await?;
@@ -518,7 +518,7 @@ mod indexed_trace_tests {
         let (selected, condition) = root
             .within(provider.latest_fenced(
                 data.path().clone(),
-                Some(bytes::Bytes::from_static(b"selected")),
+                Some(OwnedBytes::from_static(b"selected")),
                 Default::default(),
             ))
             .await?;
@@ -533,7 +533,7 @@ mod indexed_trace_tests {
         assert!(
             root.within(provider.latest(
                 data.path().clone(),
-                bytes::Bytes::from_static(b"absent"),
+                OwnedBytes::from_static(b"absent"),
                 Default::default()
             ))
             .await?
@@ -547,7 +547,7 @@ mod indexed_trace_tests {
         assert!(
             root.within(provider.latest(
                 trace.path().clone(),
-                bytes::Bytes::from_static(b"absent"),
+                OwnedBytes::from_static(b"absent"),
                 Default::default()
             ))
             .await?
@@ -616,7 +616,7 @@ mod indexed_trace_tests {
             provider
                 .latest(
                     data.path().clone(),
-                    bytes::Bytes::from_static(b"selected"),
+                    OwnedBytes::from_static(b"selected"),
                     Default::default()
                 )
                 .await?,
