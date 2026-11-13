@@ -173,6 +173,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         paths.clone(),
         Arc::new(super::super::PeerAccountPolicy::new(
             provider.clone(),
+            paths.clone(),
             node,
             funding.clone(),
         )),
@@ -340,7 +341,7 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
         route::Routed::Rejected(route::Rejection::NoSuchActor)
     );
     assert_eq!(provider.tail(paths.relay(&first.source)?).await?, 2);
-    assert_eq!(provider.tail(debit).await?, 4);
+    assert_eq!(provider.tail(debit.clone()).await?, 4);
     for root in &roots {
         assert!(
             matches!(
@@ -350,6 +351,50 @@ async fn signed_account_admission_preserves_membership_and_original_outcomes()
             "the account router must not host a session inbox"
         );
     }
+    // A receiver that opted out must still settle its previously admitted input.
+    client.register_credential(3, credential(&first.to, &destination, true))?;
+    let original = provider
+        .record_at(paths.relay(&destination)?, 0)
+        .await?
+        .ok_or("original relay missing")?;
+    let receipt = route::RelayReceipt {
+        commit_id: original.commit_id,
+        sequence: original.sequence,
+    };
+    let peer = PeerRoute::parse(&first)?;
+    let status = crate::agent::SentReplyStatus::Answered { sequence: 1 };
+    let second_record = provider
+        .record_at(paths.relay(&destination)?, 1)
+        .await?
+        .ok_or("second relay missing")?;
+    let unrelated = route::RelayReceipt {
+        commit_id: second_record.commit_id,
+        sequence: second_record.sequence,
+    };
+    let forged = peer.result(destination.clone(), &unrelated, status.clone())?;
+    assert!(
+        route::admit(&client, 3, &forged, 4096).await.is_err(),
+        "a valid receipt for another send authorized this settlement"
+    );
+    assert_eq!(provider.tail(debit.clone()).await?, 4);
+    let terminal = peer.result(destination.clone(), &receipt, status)?;
+    let before = provider.named_head_selections();
+    let outcome = route::admit(&client, 3, &terminal, 4096).await?;
+    assert!(matches!(
+        outcome,
+        route::Routed::Relayed { relay_seq: 2, .. }
+    ));
+    assert_eq!(
+        provider.named_head_selections() - before,
+        2,
+        "terminal admission must read only immutable source/destination placements, not membership rows"
+    );
+    assert_eq!(route::admit(&client, 3, &terminal, 4096).await?, outcome);
+    assert_eq!(
+        provider.tail(debit).await?,
+        5,
+        "exact terminal replay debited storage twice"
+    );
     let revoked = peer_envelope(
         &roots[0],
         &roots[2],

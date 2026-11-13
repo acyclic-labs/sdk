@@ -1,15 +1,16 @@
 //! Account admission reads directory rows, never a remote agent's state.
-use super::{Error, PeerRoute, route};
+use super::{Error, PeerResultRoute, PeerRoute, route};
 use crate::agent::{SessionPublication, SessionRow};
 use acyclic_stream::session::CallAuthorization;
 use acyclic_stream::{CommitCondition, CommitEffect, HeadProjection, HeadsRequest, StreamProvider};
 use std::sync::Arc;
 
-/// Shared peer-message admission for an account's ordinary routing service.
+/// Shared peer-message and receipt-verified outcome admission on the account.
 /// The host supplies the sender-bound grant and storage/residency policy;
 /// neither a node namespace grant nor directory membership supplies funding.
 pub struct PeerAccountPolicy<P: StreamProvider + ?Sized> {
     provider: Arc<P>,
+    paths: route::Paths,
     account_node: route::NodeId,
     funded: Arc<dyn route::AdmissionPolicy>,
 }
@@ -19,11 +20,13 @@ impl<P: StreamProvider + ?Sized> PeerAccountPolicy<P> {
     /// and current, conditionally guarded directory membership observation.
     pub fn new(
         provider: Arc<P>,
+        paths: route::Paths,
         account_node: route::NodeId,
         funded: Arc<dyn route::AdmissionPolicy>,
     ) -> Self {
         Self {
             provider,
+            paths,
             account_node,
             funded,
         }
@@ -36,7 +39,7 @@ impl<P: StreamProvider + ?Sized> route::AdmissionPolicy for PeerAccountPolicy<P>
         authorization: &CallAuthorization,
         message: &route::Envelope,
     ) -> Result<(), acyclic_stream::StreamError> {
-        PeerRoute::parse(message).map_err(|_| acyclic_stream::StreamError::AccessDenied)?;
+        AccountInput::parse(message).map_err(|_| acyclic_stream::StreamError::AccessDenied)?;
         self.funded.authorize(authorization, message)
     }
 
@@ -47,7 +50,13 @@ impl<P: StreamProvider + ?Sized> route::AdmissionPolicy for PeerAccountPolicy<P>
         destination: Option<&'a route::Placement>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<route::Admission, route::Error>> {
         Box::pin(async move {
-            let peer = PeerRoute::parse(message).map_err(account_error)?;
+            let input = AccountInput::parse(message).map_err(account_error)?;
+            if let AccountInput::Result(result) = &input {
+                result
+                    .verify_original(self.provider.as_ref(), &self.paths)
+                    .await
+                    .map_err(account_error)?;
+            }
             let funded = self
                 .funded
                 .prepare(authorization, message, destination)
@@ -55,15 +64,41 @@ impl<P: StreamProvider + ?Sized> route::AdmissionPolicy for PeerAccountPolicy<P>
             // Funding may suspend. Do not read another membership cut after
             // the sender's grant has been revoked during that preparation.
             self.funded.authorize(authorization, message)?;
-            peer.account_admission(
-                self.provider.as_ref(),
-                destination,
-                &self.account_node,
-                funded,
-            )
-            .await
-            .map_err(account_error)
+            match input {
+                AccountInput::Message(peer) => peer
+                    .account_admission(
+                        self.provider.as_ref(),
+                        destination,
+                        &self.account_node,
+                        funded,
+                    )
+                    .await
+                    .map_err(account_error),
+                AccountInput::Result(_) => match funded {
+                    route::Admission::Reject { .. } => Err(route::Error::InvalidRecord),
+                    // The original receipt authorizes only this settlement.
+                    // Current membership cannot revoke an admitted outcome,
+                    // and a terminal cannot create another rejection terminal.
+                    admission => Ok(admission),
+                },
+            }
         })
+    }
+}
+
+enum AccountInput<'a> {
+    Message(PeerRoute<'a>),
+    Result(PeerResultRoute<'a>),
+}
+
+impl<'a> AccountInput<'a> {
+    fn parse(message: &'a route::Envelope) -> Result<Self, Error> {
+        // These strict canonical schemas are disjoint. Classification performs
+        // no authorization; both variants use the same funded host policy.
+        if let Ok(peer) = PeerRoute::parse(message) {
+            return Ok(Self::Message(peer));
+        }
+        PeerResultRoute::parse(message).map(Self::Result)
     }
 }
 
