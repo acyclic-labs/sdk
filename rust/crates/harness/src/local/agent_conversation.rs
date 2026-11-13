@@ -268,7 +268,9 @@ impl Conversation {
         })
     }
 
-    /// Prepare a message to a named member root, without writing its inbox.
+    /// Prepare a message to a member root or an owned descendant, without
+    /// writing its inbox. Descendants use existing tree control authority;
+    /// ordinary peer membership never grants child access.
     /// This uses the connection's existing user authority and grants no new
     /// directory, file, control or child access.
     ///
@@ -281,28 +283,35 @@ impl Conversation {
         prompt: &str,
     ) -> Result<PreparedPeerMessage> {
         let sender = self.agent().clone();
-        if sender.depth() != 0 || recipient.depth() != 0 || sender == recipient {
+        let owned = sender != recipient && sender.contains(&recipient);
+        if sender.depth() != 0 || (recipient.depth() != 0 && !owned) || sender == recipient {
             return Err(Error::Invalid(
-                "peer messages require distinct session roots".into(),
+                "message requires a peer root or the sender's own descendant".into(),
             ));
         }
-        let admission = match self
-            .connection
-            .execute(&AgentCommand::PreparePeer {
-                sender: sender.clone(),
-                agent: recipient.clone(),
-            })
-            .await?
-        {
-            AgentReply::PeerAdmission {
-                admission: Some(admission),
-            } => admission,
-            AgentReply::PeerAdmission { admission: None } => {
-                return Err(Error::Refused(
-                    "the sessions do not admit peer messages".into(),
-                ));
-            }
-            _ => return Err(unexpected()),
+        let admission = if owned {
+            None
+        } else {
+            Some(
+                match self
+                    .connection
+                    .execute(&AgentCommand::PreparePeer {
+                        sender: sender.clone(),
+                        agent: recipient.clone(),
+                    })
+                    .await?
+                {
+                    AgentReply::PeerAdmission {
+                        admission: Some(admission),
+                    } => admission,
+                    AgentReply::PeerAdmission { admission: None } => {
+                        return Err(Error::Refused(
+                            "the sessions do not admit peer messages".into(),
+                        ));
+                    }
+                    _ => return Err(unexpected()),
+                },
+            )
         };
         Ok(PreparedPeerMessage {
             sender: sender.clone(),

@@ -329,11 +329,16 @@ pub enum AgentCommand {
     },
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
-        /// Selected sending root and prepared admission. The host checks the
-        /// connection's authority over that root. Retain on uncertain retry.
+        /// Selected sending root and prepared peer admission. An absent inner
+        /// admission is only for a descendant under that root's existing tree
+        /// control authority. Foreign roots always require the peer witness.
+        /// The host checks both paths; retain this value on uncertain retry.
         #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        peer: Option<(AgentPath, acyclic_harness_core::agent::PeerAdmission)>,
+        peer: Option<(
+            AgentPath,
+            Option<acyclic_harness_core::agent::PeerAdmission>,
+        )>,
         /// Exact recipient; selection changes cannot retarget a prepared command.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,

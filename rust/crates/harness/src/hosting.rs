@@ -1115,11 +1115,20 @@ where
             } => {
                 let agent = self.within_tree(agent)?;
                 let source = self.within_tree(source)?;
-                let state = agents.state(source).await?;
-                if !state
-                    .profile
-                    .as_ref()
-                    .is_some_and(|profile| profile.peers.contains(crate::agent::SEND_PEER))
+                if admission.is_none()
+                    && (source.depth() != 0 || source == agent || !source.contains(agent))
+                {
+                    return Err(Error::Record(
+                        "tree attribution requires the sender's own descendant",
+                    ));
+                }
+                if admission.is_some()
+                    && !agents
+                        .state(source)
+                        .await?
+                        .profile
+                        .as_ref()
+                        .is_some_and(|profile| profile.peers.contains(crate::agent::SEND_PEER))
                 {
                     return Err(Error::Record("the sender lacks peer message authority"));
                 }
@@ -1130,15 +1139,21 @@ where
                 // project skills, attachment expansion, or approval controls.
                 let body = self.bound.stage_prompt(agent, &sender, id, body).await?;
                 let message = Message {
-                    from: sender,
+                    from: sender.clone(),
                     id: id.clone(),
                     body: Box::new(body),
                     re: None,
                     attachments: None,
                 };
-                Ok(AgentReply::Delivered {
-                    delivery: agents.send_peer(agent, source, &message, admission).await?,
-                })
+                let delivery = match admission {
+                    Some(admission) => agents.send_peer(agent, source, &message, admission).await?,
+                    None => {
+                        agents
+                            .send(agent, &sender, &InboxRecord::Message(message))
+                            .await?
+                    }
+                };
+                Ok(AgentReply::Delivered { delivery })
             }
             AgentCommand::Prompt {
                 agent,

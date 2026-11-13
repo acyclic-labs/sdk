@@ -72,8 +72,23 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         agent: recipient.clone(),
         id: IntentId::try_from("external-message")?,
         body: ModelContent::Text("Please report your current status.".into()),
-        peer: Some((sender.clone(), admission.clone())),
+        peer: Some((sender.clone(), Some(admission.clone()))),
     };
+    // Full directory authority does not turn absent membership into a peer
+    // grant. Only a sender's own descendants may use tree attribution.
+    for target in [recipient.clone(), sender.clone()] {
+        let unadmitted = AgentCommand::Prompt {
+            agent: target,
+            id: IntentId::try_from("missing-admission")?,
+            body: ModelContent::Text("Unadmitted input".into()),
+            peer: Some((sender.clone(), None)),
+        };
+        assert!(matches!(
+            call(&client, "agents", &unadmitted).await?,
+            Err(_)
+        ));
+    }
+    assert_eq!(stream.tail(recipient.inbox()?).await?, 1);
     // A sender's tree credential must not silently acquire directory access.
     client.register_credential(0, credential(server.resource()))?;
     assert!(!matches!(
@@ -155,7 +170,7 @@ async fn authenticated_peer_delivery_pins_attribution_opt_out_and_exact_retry() 
         agent: recipient.clone(),
         id: IntentId::try_from("stale-admission")?,
         body: body.clone(),
-        peer: Some((sender, admission)),
+        peer: Some((sender, Some(admission))),
     };
     assert!(matches!(call(&client, "agents", &stale).await?, Err(_)));
     assert_eq!(stream.tail(recipient.inbox()?).await?, 2);

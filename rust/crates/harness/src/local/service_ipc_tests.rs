@@ -8,6 +8,7 @@ use crate::{
     model::Model,
     test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const DIRECTORY: &str = "ACYCLIC_IPC_TEST_DIRECTORY";
 const SENDER: &str = "ACYCLIC_IPC_TEST_SENDER";
@@ -41,22 +42,34 @@ async fn external_process_delivers_attributed_peer_input_to_a_running_session() 
         ));
         return Ok(());
     }
+    for owned_descendant in [false, true] {
+        external_message_case(owned_descendant).await?;
+    }
+    Ok(())
+}
+
+async fn external_message_case(owned_descendant: bool) -> Result<()> {
     let workspace = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let (entered, entering) = tokio::sync::oneshot::channel();
     let entered = std::sync::Mutex::new(Some(entered));
+    let dispatch_enabled = Arc::new(AtomicBool::new(false));
+    let enabled = dispatch_enabled.clone();
     let provider = Arc::new(
-        ScriptedModelProvider::new([
-            ScriptedTurn::Text("received".into()),
-            ScriptedTurn::Text("no follow-up work".into()),
-        ])
+        ScriptedModelProvider::new(if owned_descendant {
+            vec![ScriptedTurn::Text("ready".into())]
+        } else {
+            Vec::new()
+        })
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 32_768,
             output_tokens: Some(4096),
             output_shares_context: false,
         })
         .with_dispatch_observer(move |_| {
-            if let Some(entered) = entered.lock().unwrap().take() {
+            if enabled.load(Ordering::SeqCst)
+                && let Some(entered) = entered.lock().unwrap().take()
+            {
                 let _ = entered.send(());
             }
             Box::pin(async { Ok(()) })
@@ -77,7 +90,41 @@ async fn external_process_delivers_attributed_peer_input_to_a_running_session() 
     let local = Arc::new(super::super::LocalHarness::open(config).await?);
     let connection = local.connect_sessions().await?;
     let sender = sessions::create(&connection, "sender", None).await?;
-    let recipient = sessions::create(&connection, "recipient", None).await?;
+    let recipient = if owned_descendant {
+        let crate::client::AgentReply::Spawned { agent, .. } = sender
+            .execute(&crate::client::AgentCommand::Spawn {
+                parent: sender.root().clone(),
+                id: crate::agent::IntentId::try_from("named-worker").map_err(storage)?,
+                brief: crate::model::ModelContent::Text(
+                    "Prepare to receive a supervision message.".into(),
+                ),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Storage("named child was not spawned".into()));
+        };
+        let selected = sender.select(agent).await?;
+        Conversation::open(selected.clone())
+            .wait_current_input()
+            .await?;
+        // Turning off default peering cannot revoke the owner's existing tree
+        // controls or prevent its ordinary parent-to-descendant messages.
+        sessions::set_peers(&sender, "disable-default-peering", false).await?;
+        selected
+    } else {
+        sessions::create(&connection, "recipient", None).await?
+    };
+    let before = Conversation::open(recipient.clone())
+        .wait_current_input()
+        .await?
+        .conversation;
+    let before_requests = provider.request_count();
+    provider.extend([
+        ScriptedTurn::Text("received".into()),
+        ScriptedTurn::Text("no follow-up work".into()),
+    ]);
+    dispatch_enabled.store(true, Ordering::SeqCst);
     let hosted = local
         .agents
         .get()
@@ -138,13 +185,18 @@ async fn external_process_delivers_attributed_peer_input_to_a_running_session() 
             }
         }
         let settled = recipient.wait_current_input().await?;
-        assert_eq!(settled.conversation, 1);
+        assert_eq!(settled.conversation, before + 1);
         assert!(matches!(settled.phase, crate::agent::Phase::Idle));
-        let entries = recipient.entries(0, 1).await?;
+        let entries = recipient.entries(before, before + 1).await?;
         assert!(matches!(entries.as_slice(), [entry] if matches!(&entry.input, TurnInput::Message { from: Sender::Agent { path }, .. } if path == sender.root())));
-        assert_eq!(recipient.output_text_at(0, &entries[0]).await?, "received");
+        assert_eq!(recipient.output_text_at(before, &entries[0]).await?, "received");
+        assert!(provider.requests()[before_requests..].iter().any(|request|
+            request.messages.iter().flat_map(|message| message.content.parts()).any(|part|
+                matches!(part, crate::model::ModelContentPart::Notices { notices } if notices.iter().any(|notice|
+                    notice.kind == "peer.message" && notice.source == sender.root().as_str() && notice.body["id"] == "external-message"))
+            )), "external message was not rendered as peer input");
         let sender = Conversation::open(sender);
-        assert!(sender.text(&entries[0].output).await.is_err());
+        if !owned_descendant { assert!(sender.text(&entries[0].output).await.is_err()); }
 
         Ok(())
     }.await;
