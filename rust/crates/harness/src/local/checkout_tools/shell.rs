@@ -169,6 +169,9 @@ impl CheckoutTools {
         } else {
             completion.await?
         };
+        // The native capture future owns and reaps the complete process tree.
+        // Publish that fact before checkout capture or result presentation.
+        files.completed().await?;
         let state = match state {
             Some(state) => state,
             None => lock_owned(StateArc::clone(&self.state)).await,
